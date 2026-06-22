@@ -1,0 +1,3 @@
+interface:
+  display_name: AI Coding Workflow
+  short_description: Install and use a local multi-agent coding workflow for Codex, Claude Code, MiMo, and DeepSeek.
