@@ -13,6 +13,13 @@ ai-coding-workflow 可以为仓库自动配置：
 - Codex + Claude Code 工作流的安全调度/审查脚本
 - 幂等更新的托管块（managed blocks）
 
+## 两个动作
+
+| 动作 | 时机 | 命令 |
+|------|------|------|
+| **安装 Skill** | 每台电脑一次 | `python scripts/install_for_codex.py` |
+| **引导项目** | 每个仓库一次 | `python scripts/install_workflow.py .` |
+
 ## 仓库结构
 
 ```
@@ -41,9 +48,21 @@ ai-coding-workflow/
     review-with-codex.sh← 向 Codex/GPT 发送证据审查
 ```
 
-## 安装为 Codex 技能
+---
+
+## 场景 A：在新电脑安装 Skill
+
+将 Skill 安装到用户级 Codex skills 目录。每台电脑只需执行一次。
 
 ### Windows PowerShell
+
+```powershell
+git clone https://github.com/luozj1020/ai-coding-workflow.git
+cd ai-coding-workflow
+python .\scripts\install_for_codex.py
+```
+
+或手动安装：
 
 ```powershell
 git clone https://github.com/luozj1020/ai-coding-workflow.git
@@ -54,14 +73,15 @@ New-Item -ItemType Directory -Force "$env:USERPROFILE\.codex\skills" | Out-Null
 Copy-Item -Recurse -Force ".\ai-coding-workflow" $dst
 ```
 
-或使用安装脚本：
+### macOS / Linux
 
-```powershell
+```bash
+git clone https://github.com/luozj1020/ai-coding-workflow.git
 cd ai-coding-workflow
-python .\scripts\install_for_codex.py
+python scripts/install_for_codex.py
 ```
 
-### macOS / Linux
+或手动安装：
 
 ```bash
 git clone https://github.com/luozj1020/ai-coding-workflow.git
@@ -70,43 +90,96 @@ rm -rf ~/.codex/skills/ai-coding-workflow
 cp -R ai-coding-workflow ~/.codex/skills/ai-coding-workflow
 ```
 
-## 引导仓库
+然后重启 Codex。
 
-安装技能后，引导任意仓库：
+**测试是否生效：**
+
+```
+Use ai-coding-workflow to explain how to install the workflow in this repo.
+```
+
+如果 Codex 能回答并引用此 Skill 的安装器，说明 Skill 已生效。
+
+---
+
+## 场景 B：引导新项目
+
+Skill 安装完成后，引导任意仓库。每个项目只需执行一次。
 
 ### Windows PowerShell
 
 ```powershell
-python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py E:\path\to\repo
+cd E:\path\to\your-new-project
+python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .
 ```
 
 ### macOS / Linux
 
 ```bash
-python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py /path/to/repo
+cd /path/to/your-new-project
+python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 ```
 
-## 更新现有仓库
+这会在项目中生成或更新以下文件：
+
+```
+AGENTS.md
+CLAUDE.md
+ai/task-card-template.md
+ai/evidence-packet-template.md
+ai/README.md
+ai/dispatch-to-claude.sh
+ai/review-with-codex.sh
+.worktrees/.gitkeep
+```
+
+---
+
+## 更新现有项目
 
 再次运行相同命令。安装程序使用托管块来保留项目特定规则：
 
 ```powershell
 # Windows
-python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py E:\path\to\repo
+python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .
 ```
 
 ```bash
 # macOS / Linux
-python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py /path/to/repo
+python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 ```
 
-## 典型工作流程
+---
 
-1. **生成任务卡** - 使用 `ai/task-card-template.md`
-2. **收集证据** - 优先使用 LSP/codegraph/MCP
-3. **分发给 Claude Code** - `bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md`
-4. **Codex 审查** - `bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timestamp>/result.json .worktrees/claude-<timestamp>/diff.patch`
-5. **人工审查** - 最终合并
+## 日常工作流程
+
+**步骤 1：初始化项目**（一次性）
+
+```powershell
+python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .
+```
+
+**步骤 2：创建任务卡**（在 Codex 中）
+
+```
+Use ai-coding-workflow to create a task card for implementing <功能>.
+```
+
+**步骤 3：Claude Code 执行**
+
+```
+Use the coding executor workflow. Execute this task card and return an evidence packet.
+```
+
+**步骤 4：Codex 审查**
+
+```
+Use ai-coding-workflow to review this execution evidence packet and diff. Decide accept / revise / split / reject.
+```
+
+**步骤 5：人工审查并合并**
+
+---
 
 ## Windows 注意事项
 
@@ -118,6 +191,8 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py /path/to/r
 1. 安装 Git for Windows，确保 `C:\Program Files\Git\bin` 在 PATH 中位于 WSL 之前
 2. 安装 WSL 发行版（`wsl --install -d Ubuntu`）
 3. 通过安装程序验证，而不是直接运行 `bash -n`
+
+---
 
 ## 安全策略
 
@@ -135,9 +210,11 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py /path/to/r
 
 智能体不得擅自执行上述操作。如有疑问，请停止并询问人工。
 
+---
+
 ## 验证安装
 
-运行验证命令确认安装成功：
+运行以下命令确认安装成功：
 
 ```powershell
 # Windows PowerShell
@@ -163,6 +240,8 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 - ai/ 目录存在
 - .worktrees/.gitkeep 存在
 - 第二次运行报告文件未变/已跳过
+
+---
 
 ## 许可证
 
