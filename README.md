@@ -2,6 +2,8 @@
 
 A reusable Codex / Claude Code workflow skill for installing a local multi-agent coding workflow into software repositories.
 
+English | [中文](README_CN.md)
+
 ## What it does
 
 ai-coding-workflow bootstraps repositories with:
