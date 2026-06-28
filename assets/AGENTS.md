@@ -3,10 +3,18 @@
 This file defines shared rules for all AI agents working in this repository.
 
 <!-- AI-CODING-WORKFLOW:BEGIN managed -->
+## Core Principle
+
+**Codex designs and reviews. Claude edits. Tools gather low-token evidence first.**
+
+- Codex/GPT is responsible for top-level design, planning, and review.
+- Claude Code is responsible for concrete file modifications.
+- LSP, codegraph, and MCP tools are used before broad file reads or repository scans.
+
 ## Agent Roles
 
-- **Codex / GPT**  -  planner and reviewer. Decomposes work into task cards, reviews execution evidence, returns accept/revise/split/reject.
-- **Claude Code**  -  executor. Implements task cards in isolated worktrees, runs tests and lint, produces evidence packets.
+- **Codex / GPT**  -  planner and reviewer. Decomposes work into task cards, gathers context using low-token tools, reviews execution evidence, returns structured accept/revise/split/reject decisions with explicit next-loop instructions. Does NOT write code during review.
+- **Claude Code**  -  executor. Implements task cards in isolated worktrees, makes concrete file edits, runs tests and lint, produces evidence packets with assumptions, failed checks, and lessons learned.
 - **MiMo / DeepSeek**  -  optional high-token helper. Assists with exhaustive diff scanning, long log analysis, test suggestions.
 - **LSP / Codegraph / MCP**  -  low-token project intelligence. First choice for definitions, references, diagnostics, callers, callees, impact analysis.
 
@@ -21,12 +29,16 @@ This file defines shared rules for all AI agents working in this repository.
 
 ## Workflow
 
-1. Human or Codex/GPT creates a task card from `ai/task-card-template.md`.
-2. Claude Code executes the task card in an isolated worktree via `ai/dispatch-to-claude.sh`.
-3. Claude Code produces an evidence packet from `ai/evidence-packet-template.md`.
-4. Codex/GPT reviews the evidence via `ai/review-with-codex.sh`.
-5. Decision: accept, revise, split, or reject.
-6. Human performs final merge.
+The workflow is an explicit loop, not a linear handoff. See `ai/README.md` for local usage details.
+
+1. **OBSERVE:** Codex/GPT gathers context using low-token tools (LSP, codegraph, MCP).
+2. **PLAN:** Codex/GPT creates or revises a task card from `ai/task-card-template.md` with acceptance criteria, budget, and stop conditions.
+3. **DISPATCH:** Task card is sent to Claude Code via `ai/dispatch-to-claude.sh` or `ai/run-loop.sh`.
+4. **EXECUTE:** Claude Code implements the task card in an isolated worktree.
+5. **VERIFY:** Claude Code runs checks and produces an evidence packet from `ai/evidence-packet-template.md`.
+6. **REVIEW:** Codex/GPT reviews the evidence via `ai/review-with-codex.sh` or `ai/run-loop.sh` and returns a structured decision.
+7. **LEARN:** Both agents capture lessons from the iteration.
+8. Loop continues until: accept, max iterations reached, token budget exhausted, human stops, or reject without alternative.
 
 ## Safety Rules
 

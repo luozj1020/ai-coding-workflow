@@ -10,7 +10,7 @@ ai-coding-workflow 可以为仓库自动配置：
 - `AGENTS.md` - 所有智能体的共享规则
 - `CLAUDE.md` - Claude Code 执行规则
 - 任务卡和证据包模板
-- Codex + Claude Code 工作流的安全调度/审查脚本
+- Codex + Claude Code 工作流的安全调度/审查/循环脚本
 - 幂等更新的托管块（managed blocks）
 
 ## 两个动作
@@ -38,6 +38,7 @@ ai-coding-workflow/
     task-card-template.md
     evidence-packet-template.md
   references/
+    loop-model.md       ← 循环状态机和停止条件
     operating-model.md  ← 智能体角色和交接模型
     review-policy.md    ← 代码审查分工
     mcp-policy.md       ← 信息检索顺序
@@ -46,6 +47,7 @@ ai-coding-workflow/
     install_for_codex.py← 安装技能供 Codex 发现
     dispatch-to-claude.sh← 向 Claude Code 分发任务卡
     review-with-codex.sh← 向 Codex/GPT 发送证据审查
+    run-loop.sh         ← 可选循环运行器（调度 + 审查）
 ```
 
 ---
@@ -130,6 +132,7 @@ ai/evidence-packet-template.md
 ai/README.md
 ai/dispatch-to-claude.sh
 ai/review-with-codex.sh
+ai/run-loop.sh
 .worktrees/.gitkeep
 ```
 
@@ -153,31 +156,77 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 
 ## 日常工作流程
 
+工作流是一个显式循环：**观察  ->  计划  ->  调度  ->  执行  ->  验证  ->  审查  ->  学习  ->  重复。**
+
+**核心原则：** Codex 负责设计和审查。Claude 负责编辑。工具优先收集低 token 证据。
+
 **步骤 1：初始化项目**（一次性）
 
 ```powershell
 python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .
 ```
 
-**步骤 2：创建任务卡**（在 Codex 中）
+**步骤 2：创建任务卡**（在 Codex 中  -  观察 + 计划）
 
 ```
 Use ai-coding-workflow to create a task card for implementing <功能>.
 ```
 
-**步骤 3：Claude Code 执行**
+**步骤 3：Claude Code 执行**（调度 + 执行 + 验证）
 
 ```
 Use the coding executor workflow. Execute this task card and return an evidence packet.
 ```
 
-**步骤 4：Codex 审查**
+这会在 `.worktrees/` 下生成以下产物：
+
+| 产物 | 说明 |
+|------|------|
+| `*.result.json` | Claude 原始 JSON 输出 |
+| `*.status.txt` | Claude 标准错误 / 执行日志 |
+| `*.diffstat.txt` | 已跟踪文件的 `git diff --stat` |
+| `*.diff` | 完整差异，包含未跟踪实现文件 |
+| `*.source-status.txt` | 调度前源仓库状态 |
+| `*.worktree-status.txt` | 执行后工作树状态 |
+| `*.untracked.txt` | 未跟踪文件列表和 patch 证据 |
+| `*.usage.txt` | Claude Token/费用使用摘要 |
+| `*.report.md` | Claude 修改报告，供人工和 Codex 审查 |
+| `*.review.txt` | 持久化的 Codex 审查输出 |
+| `*.codex-events.jsonl` | 可用时记录的 Codex 原始 JSON 事件 |
+| `*.codex-usage.txt` | 可用时记录的 Codex 审查 Token/费用摘要 |
+
+**步骤 4：Codex 审查**（审查）
 
 ```
 Use ai-coding-workflow to review this execution evidence packet and diff. Decide accept / revise / split / reject.
 ```
 
-**步骤 5：人工审查并合并**
+要将 token/费用和仓库状态证据纳入审查：
+
+```bash
+bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
+  .worktrees/claude-<id>.result.json \
+  .worktrees/claude-<id>.diff \
+  .worktrees/claude-<id>.usage.txt \
+  .worktrees/claude-<id>.source-status.txt \
+  .worktrees/claude-<id>.worktree-status.txt \
+  .worktrees/claude-<id>.untracked.txt
+```
+
+**步骤 5：循环或合并**
+
+- 如果 **accept**：人工审查并合并。
+- 如果 **revise**：更新任务卡的修订说明，回到步骤 3。
+- 如果 **split**：分解为子任务卡。
+- 如果 **reject**：重新规划。
+
+**可选：使用循环运行器**
+
+```bash
+bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
+```
+
+循环运行器自动执行步骤 3-5，在接受、达到最大迭代次数或人工干预时停止。它还会写入 `.worktrees/loop-<timestamp>/loop-usage-summary.md`，汇总可用的 Claude 和 Codex 使用量。它不会自动合并。
 
 ---
 

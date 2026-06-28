@@ -10,7 +10,7 @@ ai-coding-workflow bootstraps repositories with:
 - `AGENTS.md` - shared rules for all agents
 - `CLAUDE.md` - Claude Code execution rules
 - Task-card and evidence-packet templates
-- Safe dispatch/review scripts for Codex + Claude Code workflows
+- Safe dispatch/review/loop scripts for Codex + Claude Code workflows
 - Managed blocks for idempotent updates
 
 ## Two actions
@@ -38,6 +38,7 @@ ai-coding-workflow/
     task-card-template.md
     evidence-packet-template.md
   references/
+    loop-model.md       ← Loop state machine and stop conditions
     operating-model.md  ← Agent roles and handoff model
     review-policy.md    ← Code review division of labor
     mcp-policy.md       ← Information retrieval order
@@ -46,6 +47,7 @@ ai-coding-workflow/
     install_for_codex.py← Install skill for Codex discovery
     dispatch-to-claude.sh← Dispatch task cards to Claude Code
     review-with-codex.sh← Send evidence to Codex/GPT for review
+    run-loop.sh         ← Optional loop runner (dispatch + review)
 ```
 
 ---
@@ -130,6 +132,7 @@ ai/evidence-packet-template.md
 ai/README.md
 ai/dispatch-to-claude.sh
 ai/review-with-codex.sh
+ai/run-loop.sh
 .worktrees/.gitkeep
 ```
 
@@ -153,31 +156,77 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 
 ## Typical daily workflow
 
+The workflow is an explicit loop: **OBSERVE  ->  PLAN  ->  DISPATCH  ->  EXECUTE  ->  VERIFY  ->  REVIEW  ->  LEARN  ->  repeat.**
+
+**Core principle:** Codex designs and reviews. Claude edits. Tools gather low-token evidence first.
+
 **Step 1: Initialize project** (once)
 
 ```powershell
 python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .
 ```
 
-**Step 2: Create task card** (in Codex)
+**Step 2: Create task card** (in Codex  -  OBSERVE + PLAN)
 
 ```
 Use ai-coding-workflow to create a task card for implementing <feature>.
 ```
 
-**Step 3: Execute with Claude Code**
+**Step 3: Execute with Claude Code** (DISPATCH + EXECUTE + VERIFY)
 
 ```
 Use the coding executor workflow. Execute this task card and return an evidence packet.
 ```
 
-**Step 4: Review with Codex**
+This generates these artifacts under `.worktrees/`:
+
+| Artifact | Description |
+|----------|-------------|
+| `*.result.json` | Raw Claude JSON output |
+| `*.status.txt` | Claude stderr / execution log |
+| `*.diffstat.txt` | `git diff --stat` for tracked files |
+| `*.diff` | Full diff, including untracked implementation files |
+| `*.source-status.txt` | Source repo state before dispatch |
+| `*.worktree-status.txt` | Worktree state after execution |
+| `*.untracked.txt` | Listing and patch evidence for untracked files |
+| `*.usage.txt` | Claude token/cost usage summary |
+| `*.report.md` | Claude modification report for human/Codex review |
+| `*.review.txt` | Persisted Codex review output |
+| `*.codex-events.jsonl` | Raw Codex JSON events when available |
+| `*.codex-usage.txt` | Codex review token/cost usage summary when available |
+
+**Step 4: Review with Codex** (REVIEW)
 
 ```
 Use ai-coding-workflow to review this execution evidence packet and diff. Decide accept / revise / split / reject.
 ```
 
-**Step 5: Human reviews and merges**
+To include token/cost and repository status evidence in the review:
+
+```bash
+bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
+  .worktrees/claude-<id>.result.json \
+  .worktrees/claude-<id>.diff \
+  .worktrees/claude-<id>.usage.txt \
+  .worktrees/claude-<id>.source-status.txt \
+  .worktrees/claude-<id>.worktree-status.txt \
+  .worktrees/claude-<id>.untracked.txt
+```
+
+**Step 5: Loop or Merge**
+
+- If **accept**: human reviews and merges.
+- If **revise**: update the task card with revision instructions and go to Step 3.
+- If **split**: decompose into child task cards.
+- If **reject**: re-plan with updated context.
+
+**Optional: Use the loop runner**
+
+```bash
+bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
+```
+
+The loop runner automates Steps 3-5, stopping on accept, max iterations, or human intervention. It also writes `.worktrees/loop-<timestamp>/loop-usage-summary.md` with available Claude and Codex usage summaries. It does NOT merge automatically.
 
 ---
 

@@ -44,9 +44,10 @@ The installer performs these steps:
 5. Create `ai/README.md`  -  local usage guide.
 6. Create `ai/dispatch-to-claude.sh`  -  dispatches task cards to Claude Code in an isolated worktree.
 7. Create `ai/review-with-codex.sh`  -  sends execution evidence to Codex/GPT for review.
-8. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
-9. Make shell scripts executable (`chmod +x`).
-10. Validate shell scripts with `bash -n`.
+8. Create `ai/run-loop.sh`  -  optional loop runner that composes dispatch and review.
+9. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
+10. Make shell scripts executable (`chmod +x`).
+11. Validate shell scripts with `bash -n`.
 
 ## Mode: Update
 
@@ -66,19 +67,15 @@ Update behavior:
 
 ## Mode: Use
 
-### 1. Produce Task Cards
+### Core Principle
 
-Use `ai/task-card-template.md` to create a task card for each work item. The card captures:
+**Codex designs and reviews. Claude edits. Tools gather low-token evidence first.**
 
-- Goal and context
-- Acceptance criteria
-- Files/modules involved
-- Dependencies and constraints
-- LSP/codegraph/MCP evidence gathered before implementation
+The workflow is an explicit loop: OBSERVE  ->  PLAN  ->  DISPATCH  ->  EXECUTE  ->  VERIFY  ->  REVIEW  ->  LEARN  ->  repeat.
 
-### 2. Prefer LSP / Codegraph / MCP Evidence
+### 1. Gather Context (OBSERVE)
 
-Before reading large files or scanning the full repository, gather evidence through:
+Before creating a task card, gather context using low-token tools:
 
 1. LSP definitions, references, and diagnostics
 2. Codegraph callers, callees, dependencies, and impact radius
@@ -89,7 +86,18 @@ Before reading large files or scanning the full repository, gather evidence thro
 
 See `references/mcp-policy.md` for details.
 
-### 3. Route Implementation to Claude Code
+### 2. Produce Task Cards (PLAN)
+
+Use `ai/task-card-template.md` to create a task card for each work item. The card captures:
+
+- Goal and context
+- Acceptance criteria
+- Files/modules involved
+- Dependencies and constraints
+- LSP/codegraph/MCP evidence gathered before implementation
+- Loop context (for revision iterations): parent task, iteration, prior decision, revision instructions, budget/stop conditions
+
+### 3. Route Implementation to Claude Code (DISPATCH)
 
 Dispatch a task card to Claude Code:
 
@@ -97,17 +105,66 @@ Dispatch a task card to Claude Code:
 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
-This creates an isolated git worktree, invokes `claude -p` with `--permission-mode acceptEdits`, and saves the result, status, diffstat, and diff under `.worktrees/`. It does **not** merge automatically.
+This creates an isolated git worktree, invokes `claude -p` with `--permission-mode acceptEdits`, and saves these artifacts under `.worktrees/`:
 
-### 4. Route Final Review to Codex / GPT
+| Artifact | Description |
+|----------|-------------|
+| `*.result.json` | Raw Claude JSON output |
+| `*.status.txt` | Claude stderr / execution log |
+| `*.diffstat.txt` | `git diff --stat` for tracked files |
+| `*.diff` | Full diff, including untracked implementation files |
+| `*.source-status.txt` | Source repo state before dispatch |
+| `*.worktree-status.txt` | Worktree state after execution |
+| `*.untracked.txt` | Listing and patch evidence for untracked files |
+| `*.usage.txt` | Claude token/cost usage summary extracted from the JSON result |
+| `*.report.md` | Claude modification report for human/Codex review |
+| `*.review.txt` | Persisted Codex review output |
+| `*.codex-events.jsonl` | Raw Codex JSON events when available |
+| `*.codex-usage.txt` | Codex review token/cost usage summary when available |
+
+It does **not** merge automatically.
+
+### 4. Route Final Review to Codex / GPT (REVIEW)
 
 Send execution evidence to Codex/GPT for review:
 
 ```bash
-bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timestamp>/result.json .worktrees/claude-<timestamp>/diff.patch
+bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timestamp>.result.json .worktrees/claude-<timestamp>.diff
 ```
 
-Codex reviews the work and returns a decision: **accept**, **revise**, **split**, or **reject**.
+To include extra evidence (usage summary, repository status, untracked files):
+
+```bash
+bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timestamp>.result.json .worktrees/claude-<timestamp>.diff .worktrees/claude-<timestamp>.usage.txt .worktrees/claude-<timestamp>.source-status.txt .worktrees/claude-<timestamp>.worktree-status.txt .worktrees/claude-<timestamp>.untracked.txt
+```
+
+Codex reviews the work and returns a structured decision: **accept**, **revise**, **split**, or **reject**, with explicit next-loop instructions.
+
+### 5. Run the Loop (Optional)
+
+Use the loop runner to compose dispatch and review automatically:
+
+```bash
+bash ai/run-loop.sh ai/task-cards/PROJ-123.md [max-iterations]
+```
+
+The loop runner:
+- Dispatches the task card to Claude Code.
+- Sends evidence to Codex/GPT for review.
+- If the decision is `revise`, creates a revised task card and loops.
+- Stops on `accept`, `split`, `reject`, max iterations, or unknown decision.
+- Persists all decision/review output in `.worktrees/loop-<timestamp>/`.
+- Writes `loop-usage-summary.md` with available Claude and Codex usage summaries.
+- Does NOT merge automatically. Human must review and merge.
+
+### 6. Learn and Repeat
+
+After each iteration, both agents capture lessons:
+- Codex records planning lessons (what approaches worked, what to avoid).
+- Claude records execution lessons (what commands failed, what assumptions were made).
+- Review feedback flows into the next iteration's task card.
+
+See `references/loop-model.md` for the full loop state machine.
 
 ## Safety Constraints
 
@@ -146,6 +203,7 @@ After running `install_for_codex.py`, restart or reload your Codex session. The 
 
 For more detail, see:
 
+- `references/loop-model.md`  -  loop state machine, role responsibilities, stop conditions
 - `references/operating-model.md`  -  agent roles and handoff model
-- `references/review-policy.md`  -  code review division of labor
+- `references/review-policy.md`  -  code review division of labor and structured decisions
 - `references/mcp-policy.md`  -  information retrieval order

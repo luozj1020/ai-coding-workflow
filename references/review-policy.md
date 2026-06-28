@@ -12,6 +12,7 @@ Responsibilities:
 - Verify build succeeds
 - Fix obvious bugs (typos, off-by-one errors, missing imports)
 - Produce evidence packets with diffstat, diff, and test results
+- Record assumptions, attempted commands, failed checks, and lessons learned
 
 Claude Code handles the mechanical, verifiable aspects of code quality. It does not make architectural judgments.
 
@@ -34,13 +35,9 @@ Responsibilities:
 - Assess regression risk  -  what could break, what depends on this
 - Review design decisions  -  is this the right abstraction, the right boundary
 - Check for security implications
-- Return a decision:
-  - **Accept**  -  implementation is correct and complete
-  - **Revise**  -  implementation needs changes, with specific instructions
-  - **Split**  -  the task should be broken into smaller task cards
-  - **Reject**  -  the approach is fundamentally wrong, needs re-planning
+- Return a structured decision (see below)
 
-Codex/GPT does not write code during review. It evaluates and decides.
+**Codex/GPT does NOT write code during review.** It evaluates and decides. Implementation is always delegated to Claude Code.
 
 ### Human  -  Final Authority
 
@@ -62,13 +59,62 @@ The following always require explicit human approval  -  agents must not perform
 - Secret or credential edits
 - Production data changes
 
+## Structured Review Decision
+
+When Codex/GPT reviews an evidence packet, it must produce a structured decision with the following fields:
+
+### Decision
+
+One of: **accept**, **revise**, **split**, **reject**.
+
+### Reasoning
+
+A concise explanation of why this decision was made. Reference specific acceptance criteria, evidence, or concerns.
+
+### Next-Loop Instructions
+
+For **accept**: state that the change is ready for human merge.
+
+For **revise**: provide specific, actionable revision instructions. These instructions become the "Revision instructions" field in the next iteration's task card. Be explicit about:
+- What needs to change and why
+- Which files or modules are affected
+- What evidence the next iteration should produce
+
+For **split**: decompose the task into smaller child task cards. For each child, provide:
+- A goal
+- Acceptance criteria
+- Estimated scope
+
+For **reject**: explain why the approach is fundamentally wrong and suggest an alternative approach. Include:
+- What went wrong
+- Why the current approach cannot be salvaged
+- What alternative approach should be tried
+
+### Reusable Lessons
+
+Record any knowledge gained during review that could inform future planning:
+- Patterns that worked well
+- Patterns to avoid
+- Better approaches discovered during review
+
 ## Review Workflow
 
 1. Claude Code produces an evidence packet after executing a task card.
-2. The evidence packet is sent to Codex/GPT via `ai/review-with-codex.sh`.
-3. Codex/GPT reviews and returns a decision.
+2. The evidence packet is sent to Codex/GPT via `ai/review-with-codex.sh` or `ai/run-loop.sh`.
+3. Codex/GPT reviews and returns a structured decision.
 4. If **accept**: the change is ready for human merge.
-5. If **revise**: a new task card is created with revision instructions, and Claude Code re-executes.
-6. If **split**: the original task card is decomposed into smaller cards.
-7. If **reject**: the task returns to planning.
+5. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes.
+6. If **split**: the original task card is decomposed into smaller child cards, each entering its own loop.
+7. If **reject**: the task returns to OBSERVE with the rejection reasoning as new context.
 8. Human performs final merge and any required high-risk approvals.
+
+## Loop Integration
+
+The review decision drives the loop state machine defined in `references/loop-model.md`:
+
+- Each decision includes next-loop instructions that feed into the next PLAN or OBSERVE phase.
+- The task card carries loop metadata (parent task, iteration, prior decision, revision instructions).
+- The evidence packet records review feedback for traceability.
+- Lessons learned flow from review back into future planning.
+
+See `references/loop-model.md` for the full loop state machine.

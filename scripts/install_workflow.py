@@ -45,6 +45,7 @@ DIRECT_COPY = [
 SCRIPTS = [
     ("dispatch-to-claude.sh", "ai/dispatch-to-claude.sh"),
     ("review-with-codex.sh", "ai/review-with-codex.sh"),
+    ("run-loop.sh", "ai/run-loop.sh"),
 ]
 
 
