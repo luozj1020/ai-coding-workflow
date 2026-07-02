@@ -227,6 +227,8 @@ def run_doctor(repo_path=None):
         findings.append((INFO, "artifacts", ".worktrees/ is clean (no runtime entries)"))
     if tmp_count > 0:
         findings.append((INFO, "artifacts", "Root has {} tmp-* artifact(s)".format(tmp_count)))
+    if wt_count > 0 or tmp_count > 0:
+        findings.append((INFO, "artifacts", "Run 'python ai/clean_runtime.py' to preview, '--apply' to remove"))
 
     # 4. Bash resolution
     bash_path, bash_label = _resolve_bash()

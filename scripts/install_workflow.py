@@ -60,6 +60,7 @@ POWERSHELL_SCRIPTS = [
 # Python helpers to install (source relative to scripts/, dest relative to repo root)
 PYTHON_SCRIPTS = [
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
+    ("clean_runtime.py", "ai/clean_runtime.py"),
 ]
 
 

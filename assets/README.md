@@ -40,6 +40,7 @@ ai/
   cleanup-worktree.sh         # Remove stopped Claude worktrees safely
   pwsh-utf8.ps1                # Configure PowerShell UTF-8 session defaults
   doctor_workflow.py          # Read-only readiness check for dispatch/review loop
+  clean_runtime.py            # Preview/remove ignored runtime artifacts
   README.md                   # This file
 .worktrees/                   # Isolated git worktrees for execution
 AGENTS.md                     # Shared agent rules
@@ -64,6 +65,8 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
 This creates an isolated worktree under `.worktrees/`, runs Claude Code, and saves these artifacts:
+
+If Claude Code is not installed, the rest of the workflow files remain useful for planning, review, and readiness checks. Dispatch execution requires the `claude` command; the dispatcher checks for it before creating a worktree.
 
 **Proxy behavior:** `dispatch-to-claude.sh` runs Claude Code with common proxy environment variables cleared by default (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, and lowercase variants). This lets Codex keep using your shell proxy while Claude Code goes direct. If Claude Code must inherit the proxy, run:
 

@@ -48,7 +48,8 @@ The installer performs these steps:
 9. Create `ai/status-claude.sh`, `ai/watch-claude.sh`, `ai/kill-claude.sh`, and `ai/cleanup-worktree.sh`  -  control-plane helpers for stuck or completed Claude dispatches.
 10. Create `ai/pwsh-utf8.ps1`  -  Windows PowerShell UTF-8 session helper.
 11. Create `ai/doctor_workflow.py`  -  read-only readiness check for the dispatch/review loop.
-12. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
+12. Create `ai/clean_runtime.py`  -  preview and remove ignored runtime artifacts.
+13. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
 13. Make shell scripts executable (`chmod +x`).
 14. Validate shell scripts with `bash -n`.
 
@@ -132,6 +133,8 @@ It does **not** merge automatically.
 By default, `dispatch-to-claude.sh` clears common proxy environment variables only for the Claude Code subprocess (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, and lowercase variants), so Codex can keep using proxy settings while Claude Code goes direct. Set `CLAUDE_CODE_PROXY_MODE=inherit` to pass proxy variables through to Claude Code.
 
 The dispatcher also refuses to create a Claude worktree from a dirty source worktree by default because Claude would run from stale `HEAD`. Tracked changes, staged changes, and unrelated untracked files block dispatch; the current task card may be untracked and is exempt. Set `CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1` only when intentionally dispatching from stale `HEAD`.
+
+If Claude Code is not installed, installation, task-card generation, doctor checks, and Codex review still work. Only dispatch execution is unavailable. `dispatch-to-claude.sh` checks for the `claude` command before creating a worktree and exits with a clear error if the CLI is missing.
 
 ### 4. Route Final Review to Codex / GPT (REVIEW)
 
@@ -249,6 +252,8 @@ The doctor is read-only and reports:
 | codex-skill | `~/.codex/skills/ai-coding-workflow` exists |
 
 Exit code `0` means no hard errors; non-zero means at least one `ERROR` was found. Warnings do not cause a non-zero exit.
+
+When runtime artifacts exist, the doctor suggests running `ai/clean_runtime.py` to preview and optionally remove them.
 
 ## Troubleshooting
 

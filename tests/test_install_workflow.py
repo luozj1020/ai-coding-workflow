@@ -131,6 +131,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn('WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"', dispatch)
             self.assertIn('Watch Progress:', dispatch)
             self.assertIn('Watch Details:', dispatch)
+            self.assertIn('command -v claude', dispatch)
+            self.assertIn('claude CLI is not installed or not in PATH', dispatch)
             self.assertIn('CLAUDE_CODE_ALLOW_DIRTY_SOURCE', dispatch)
             self.assertIn('Source worktree is dirty. Claude would run from stale HEAD.', dispatch)
             self.assertIn('grep -vxF "$TASK_CARD_REL"', dispatch)

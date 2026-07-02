@@ -49,6 +49,7 @@ ai-coding-workflow/
     review-with-codex.sh← 向 Codex/GPT 发送证据审查
     run-loop.sh         ← 可选循环运行器（调度 + 审查）
     doctor_workflow.py  ← 调度/审查循环就绪检查（只读）
+    clean_runtime.py    ← 预览/清理已忽略的运行时产物
 ```
 
 ---
@@ -135,6 +136,7 @@ ai/dispatch-to-claude.sh
 ai/review-with-codex.sh
 ai/run-loop.sh
 ai/doctor_workflow.py
+ai/clean_runtime.py
 .worktrees/.gitkeep
 ```
 
@@ -371,6 +373,16 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 
 ```bash
 python ai/doctor_workflow.py
+```
+
+**清理运行时产物：**
+
+```bash
+# 预览将要删除的内容（干运行）
+python ai/clean_runtime.py
+
+# 实际删除产物
+python ai/clean_runtime.py --apply
 ```
 
 ---

@@ -54,6 +54,7 @@ ai-coding-workflow/
     cleanup-worktree.sh  -> Remove stopped worktrees while preserving evidence
     pwsh-utf8.ps1        -> Configure PowerShell UTF-8 sessions
     doctor_workflow.py   -> Read-only readiness check for dispatch/review loop
+    clean_runtime.py     -> Preview/remove ignored runtime artifacts
   tests/
     test_*.py            -> Installer, dispatch, and helper regression tests
 ```
@@ -110,6 +111,10 @@ Use ai-coding-workflow to explain how to install the workflow in this repo.
 
 If Codex can answer and reference this skill's installer, the skill is active.
 
+### If Claude Code is not installed
+
+The skill can still install, generate task cards, run the workflow doctor, and support Codex review. Only the execution step that calls `claude -p` is unavailable. `dispatch-to-claude.sh` checks for the `claude` command before creating a worktree and exits with a clear error if it is missing. Run `python ai/doctor_workflow.py` in a bootstrapped project to confirm whether Claude CLI is available.
+
 ---
 
 ## Scenario B: Bootstrap a new project
@@ -147,6 +152,7 @@ ai/kill-claude.sh
 ai/cleanup-worktree.sh
 ai/pwsh-utf8.ps1
 ai/doctor_workflow.py
+ai/clean_runtime.py
 .worktrees/.gitkeep
 ```
 
@@ -404,6 +410,16 @@ Expected result:
 
 ```bash
 python ai/doctor_workflow.py
+```
+
+**Clean up runtime artifacts:**
+
+```bash
+# Preview what would be removed (dry-run)
+python ai/clean_runtime.py
+
+# Actually remove artifacts
+python ai/clean_runtime.py --apply
 ```
 
 ---
