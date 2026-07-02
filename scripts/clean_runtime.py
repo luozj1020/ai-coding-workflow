@@ -114,10 +114,12 @@ def _active_worktree_prefixes(worktrees_dir):
 def collect_candidates(repo_root):
     """Collect runtime artifact candidates for cleanup.
 
-    Returns list of (path, description) tuples.
+    Returns list of (path, description, is_worktree) tuples.
     Only includes paths that are git-ignored and not tracked.
+    *is_worktree* is True for directories that are registered git worktrees.
     """
     candidates = []
+    wt_paths = _registered_worktree_paths(repo_root)
 
     # 1. .worktrees/* except .gitkeep
     worktrees_dir = os.path.join(repo_root, ".worktrees")
@@ -130,7 +132,8 @@ def collect_candidates(repo_root):
                 continue
             full = os.path.join(worktrees_dir, entry)
             if _is_git_ignored(repo_root, full) and not _is_tracked(repo_root, full):
-                candidates.append((full, ".worktrees/{}".format(entry)))
+                is_wt = os.path.isdir(full) and os.path.normpath(full) in wt_paths
+                candidates.append((full, ".worktrees/{}".format(entry), is_wt))
 
     # 2. root tmp-*
     for entry in sorted(os.listdir(repo_root)):
@@ -138,7 +141,7 @@ def collect_candidates(repo_root):
             continue
         full = os.path.join(repo_root, entry)
         if _is_git_ignored(repo_root, full) and not _is_tracked(repo_root, full):
-            candidates.append((full, entry))
+            candidates.append((full, entry, False))
 
     # 3. stale task-cards/ if ignored
     task_cards_dir = os.path.join(repo_root, "task-cards")
@@ -146,9 +149,53 @@ def collect_candidates(repo_root):
         repo_root, task_cards_dir
     ):
         if not _is_tracked(repo_root, task_cards_dir):
-            candidates.append((task_cards_dir, "task-cards/"))
+            candidates.append((task_cards_dir, "task-cards/", False))
 
     return candidates
+
+
+def _registered_worktree_paths(repo_root):
+    """Return the set of absolute paths for all git-registered worktrees."""
+    try:
+        r = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if r.returncode != 0:
+            return set()
+    except FileNotFoundError:
+        return set()
+
+    paths = set()
+    for line in r.stdout.splitlines():
+        if line.startswith("worktree "):
+            wt_path = line[len("worktree "):]
+            paths.add(os.path.normpath(os.path.join(repo_root, wt_path)))
+    return paths
+
+
+def _remove_worktree(repo_root, path):
+    """Remove a registered git worktree without --force.
+
+    Returns True on success, False if the worktree is dirty or otherwise
+    unsafe to remove.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "worktree", "remove", path],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return r.returncode == 0
+    except FileNotFoundError:
+        return False
 
 
 def remove_path(path):
@@ -189,16 +236,26 @@ def main():
 
     if args.apply:
         print("Removing {} runtime artifact(s):".format(len(candidates)))
-        for path, desc in candidates:
-            try:
-                remove_path(path)
-                print("  removed: {}".format(desc))
-            except OSError as e:
-                print("  FAILED: {} ({})".format(desc, e))
+        for path, desc, is_wt in candidates:
+            if is_wt:
+                if _remove_worktree(repo_root, path):
+                    print("  removed: {} (worktree)".format(desc))
+                else:
+                    print(
+                        "  skipped: {} (worktree is dirty or has unmerged"
+                        " changes; use 'git worktree remove' manually)".format(desc)
+                    )
+            else:
+                try:
+                    remove_path(path)
+                    print("  removed: {}".format(desc))
+                except OSError as e:
+                    print("  FAILED: {} ({})".format(desc, e))
     else:
         print("Dry-run: {} runtime artifact(s) would be removed:".format(len(candidates)))
-        for _, desc in candidates:
-            print("  {}".format(desc))
+        for _, desc, is_wt in candidates:
+            label = "{} (worktree)".format(desc) if is_wt else desc
+            print("  {}".format(label))
         print("\nRun with --apply to delete.")
 
 

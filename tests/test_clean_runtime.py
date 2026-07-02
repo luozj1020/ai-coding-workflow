@@ -299,6 +299,95 @@ class CleanRuntimeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("task-cards/", result.stdout)
 
+    # --- Registered worktree handling ---
+
+    def _add_worktree(self, repo, name):
+        """Create a registered git worktree under .worktrees/<name>."""
+        wt_dir = repo / ".worktrees" / name
+        wt_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", str(wt_dir)],
+            cwd=str(repo),
+            capture_output=True,
+            check=True,
+        )
+        return wt_dir
+
+    def test_apply_removes_clean_registered_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            wt_dir = self._add_worktree(repo, "claude-clean")
+            self.assertTrue(wt_dir.exists())
+
+            result = self.run_clean(repo, ["--apply"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("removed: .worktrees/claude-clean (worktree)", result.stdout)
+            # Worktree directory should be gone
+            self.assertFalse(wt_dir.exists())
+
+    def test_apply_skips_dirty_registered_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            wt_dir = self._add_worktree(repo, "claude-dirty")
+            # Create an uncommitted file inside the worktree
+            (wt_dir / "uncommitted.txt").write_text("pending changes\n", encoding="utf-8")
+            self.assertTrue(wt_dir.exists())
+
+            result = self.run_clean(repo, ["--apply"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("skipped: .worktrees/claude-dirty", result.stdout)
+            self.assertIn("dirty", result.stdout.lower())
+            # Worktree directory must NOT be removed
+            self.assertTrue(wt_dir.exists())
+
+    def test_dry_run_annotates_registered_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            wt_dir = self._add_worktree(repo, "claude-dry")
+            self.assertTrue(wt_dir.exists())
+
+            result = self.run_clean(repo)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Dry-run", result.stdout)
+            self.assertIn(".worktrees/claude-dry (worktree)", result.stdout)
+            # Should not have deleted anything
+            self.assertTrue(wt_dir.exists())
+
+    def test_adjacent_artifacts_cleaned_when_worktree_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            wt_dir = self._add_worktree(repo, "claude-mixed")
+            # Make the worktree dirty so it gets skipped
+            (wt_dir / "wip.txt").write_text("work in progress\n", encoding="utf-8")
+            # Add adjacent artifact files (not a worktree, just files)
+            (repo / ".worktrees" / "claude-mixed.result.json").write_text("{}", encoding="utf-8")
+            (repo / ".worktrees" / "claude-mixed.pid").write_text("not-a-pid", encoding="utf-8")
+
+            result = self.run_clean(repo, ["--apply"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Dirty worktree should be skipped
+            self.assertIn("skipped: .worktrees/claude-mixed", result.stdout)
+            self.assertTrue(wt_dir.exists())
+            # Adjacent artifacts should still be cleaned
+            self.assertFalse((repo / ".worktrees" / "claude-mixed.result.json").exists())
+            self.assertFalse((repo / ".worktrees" / "claude-mixed.pid").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
