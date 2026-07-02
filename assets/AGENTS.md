@@ -40,6 +40,32 @@ The workflow is an explicit loop, not a linear handoff. See `ai/README.md` for l
 7. **LEARN:** Both agents capture lessons from the iteration.
 8. Loop continues until: accept, max iterations reached, token budget exhausted, human stops, or reject without alternative.
 
+## Token Budget and Delegation Contract
+
+**Codex is constrained to low-token evidence before dispatch and review.** Broad reads, long logs, multi-file implementation, and full repository scans are routed to Claude Code by default.
+
+### Codex responsibilities (low-token)
+
+- Gather context using LSP, codegraph, MCP, and targeted snippet reads only.
+- Do not read files > 200 lines during planning; delegate that to Claude.
+- Do not paste large logs or full files into the task card; link to artifacts instead.
+- Record a context budget estimate in the task card before dispatch.
+- During review, check whether the delegation policy was followed.
+
+### Claude Code responsibilities (high-token)
+
+- Handle all whole-file reads, multi-file implementation, long log analysis, and exhaustive scans.
+- Return compressed evidence: summaries and artifact paths, not pasted large logs or full files.
+- Record actual context budget used in the evidence packet.
+
+### Evidence compression
+
+Claude must not paste large logs, full diffs, or multi-file dumps into the evidence packet. Instead:
+- Summarize each changed file in one paragraph.
+- Link to diff files and artifact paths.
+- Provide pass/fail counts for tests, not full output.
+- Attach paths to any generated reports or diagnostics.
+
 ## Safety Rules
 
 All of the following require **explicit human approval** before execution:

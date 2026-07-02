@@ -253,6 +253,37 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Timed out?", evidence)
             self.assertIn("Fallback report generated?", evidence)
 
+    def test_installed_templates_include_token_budget_and_delegation_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            self.run_installer(repo)
+
+            task_card = (repo / "ai" / "task-card-template.md").read_text(encoding="utf-8")
+            evidence = (repo / "ai" / "evidence-packet-template.md").read_text(encoding="utf-8")
+            agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
+            claude = (repo / "CLAUDE.md").read_text(encoding="utf-8")
+
+            # Task card must have token budget and delegation fields
+            self.assertIn("## Codex Context Budget", task_card)
+            self.assertIn("## LSP / Codegraph Evidence", task_card)
+            self.assertIn("## High-Token Delegation Gate", task_card)
+            self.assertIn("## Evidence Compression Requirements", task_card)
+
+            # Evidence packet must have context budget and compression fields
+            self.assertIn("## Context Budget Used", evidence)
+            self.assertIn("## High-Token Work Delegated", evidence)
+            self.assertIn("## Compressed Evidence Summary", evidence)
+
+            # AGENTS.md managed section must describe the delegation contract
+            self.assertIn("## Token Budget and Delegation Contract", agents)
+            self.assertIn("low-token evidence", agents)
+            self.assertIn("compressed evidence", agents)
+
+            # CLAUDE.md managed section must describe evidence compression
+            self.assertIn("Evidence compression", claude)
+            self.assertIn("summaries and artifact paths", claude)
+
 
 if __name__ == "__main__":
     unittest.main()

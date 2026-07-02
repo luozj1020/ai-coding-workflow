@@ -75,6 +75,8 @@ Update behavior:
 
 **Codex designs and reviews. Claude edits. Tools gather low-token evidence first.**
 
+Codex is constrained to low-token evidence (LSP, codegraph, targeted snippets). Broad reads, long logs, multi-file implementation, and full scans are delegated to Claude Code. Claude returns compressed evidence (summaries + artifact paths), not pasted large logs.
+
 The workflow is an explicit loop: OBSERVE  ->  PLAN  ->  DISPATCH  ->  EXECUTE  ->  VERIFY  ->  REVIEW  ->  LEARN  ->  repeat.
 
 ### 1. Gather Context (OBSERVE)

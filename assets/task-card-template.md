@@ -47,6 +47,46 @@
 
 <!-- List the files or modules expected to be modified. Include LSP/codegraph evidence if available. -->
 
+## Codex Context Budget
+
+<!-- Estimated token budget Codex should spend on context gathering before dispatch. Set to 0 if LSP/codegraph evidence is sufficient. Claude Code handles high-token reads by default. -->
+
+| Metric | Target |
+|--------|--------|
+| Max Codex context tokens | |
+| LSP/codegraph queries planned | |
+| Whole-file reads planned (Codex) | |
+
+## LSP / Codegraph Evidence
+
+<!-- Structured low-token evidence gathered before implementation. Attach definitions, references, callers, callees, impact analysis. Prefer this over whole-file reads. -->
+
+| Query Type | Symbol / File | Result Summary |
+|-----------|---------------|----------------|
+| LSP definition | | |
+| LSP references | | |
+| Codegraph callers | | |
+| Codegraph impact | | |
+
+## High-Token Delegation Gate
+
+<!-- Codex must delegate the following to Claude Code unless explicitly approved for Codex execution. Check items that apply to this task. -->
+
+- [ ] Reading files > 200 lines
+- [ ] Multi-file implementation or refactoring
+- [ ] Long log or test output analysis
+- [ ] Full repository scan
+- [ ] Exhaustive diff review
+
+## Evidence Compression Requirements
+
+<!-- Claude Code must return compressed evidence, not paste large logs or full files. Requirements for this task: -->
+
+- Summarize test output; attach artifact paths instead of full logs
+- Link to diff files instead of pasting full diffs into context
+- Provide one-paragraph summaries for each changed file
+- Attach paths to any generated artifacts (reports, diagnostics, logs)
+
 ## Dependencies
 
 <!-- Other task cards, external services, data requirements, blocking decisions. -->

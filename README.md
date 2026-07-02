@@ -178,7 +178,7 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 
 The workflow is an explicit loop: **OBSERVE  ->  PLAN  ->  DISPATCH  ->  EXECUTE  ->  VERIFY  ->  REVIEW  ->  LEARN  ->  repeat.**
 
-**Core principle:** Codex designs and reviews. Claude edits. Tools gather low-token evidence first.
+**Core principle:** Codex designs and reviews. Claude edits. Tools gather low-token evidence first. Codex stays within a low-token context budget; broad reads and multi-file work are delegated to Claude. Claude returns compressed evidence (summaries + artifact paths) instead of pasted logs.
 
 **Step 1: Initialize project** (once)
 

@@ -90,6 +90,34 @@
 | Codex usage | |
 | Loop usage summary | |
 
+## Context Budget Used
+
+<!-- Actual token budget consumed during planning and execution. Compare against the task card's Codex Context Budget. -->
+
+| Metric | Task Card Target | Actual |
+|--------|-----------------|--------|
+| Codex context tokens | | |
+| LSP/codegraph queries run | | |
+| Whole-file reads (Codex) | | |
+
+## High-Token Work Delegated
+
+<!-- List high-token work explicitly delegated to Claude Code. This should match the task card's High-Token Delegation Gate. -->
+
+| Delegated Task | Rationale |
+|---------------|-----------|
+| | |
+
+## Compressed Evidence Summary
+
+<!-- Compressed evidence: summaries and artifact paths instead of pasted large logs or full files. -->
+
+| Evidence Type | Summary | Artifact Path |
+|--------------|---------|---------------|
+| Test output | | |
+| Diff | | |
+| Diagnostics | | |
+
 ## Changes
 
 <!-- List of files modified with a brief description per file. -->

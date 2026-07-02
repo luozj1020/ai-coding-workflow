@@ -29,6 +29,8 @@ This is the default operating principle for all work in this workflow:
 - Produces evidence packets documenting what changed, why, and how it was verified.
 - Records assumptions, attempted commands, failed checks, and lessons learned.
 - Works within the LSP/codegraph/MCP evidence hierarchy to minimize unnecessary file reads.
+- Handles all high-token work: whole-file reads > 200 lines, multi-file implementation, long log analysis, exhaustive scans.
+- Returns compressed evidence: summaries and artifact paths, not pasted large logs or full files.
 
 ### MiMo / DeepSeek  -  High-Token Execution Helpers
 
@@ -78,6 +80,10 @@ Fields:
 - **Context**  -  background, related work, constraints
 - **Acceptance criteria**  -  how to verify the work is complete
 - **Files / modules**  -  the scope of changes expected
+- **Codex context budget**  -  estimated token budget for Codex context gathering; 0 if LSP/codegraph is sufficient
+- **LSP / codegraph evidence**  -  structured low-token evidence gathered before implementation
+- **High-token delegation gate**  -  checklist of what must be delegated to Claude (reads > 200 lines, multi-file work, long logs, full scans)
+- **Evidence compression requirements**  -  instructions for Claude to return summaries + artifact paths, not pasted logs
 - **Dependencies**  -  other task cards, external services, data requirements
 - **Evidence**  -  LSP/codegraph/MCP data gathered before implementation
 - **Loop context**  -  parent task ID, iteration, prior decision, revision instructions, budget/stop conditions, required evidence
@@ -92,6 +98,9 @@ Fields:
 
 - **Task card reference**  -  which task card was executed
 - **Summary**  -  what was done in one paragraph
+- **Context budget used**  -  actual token budget consumed by Codex during planning vs task card target
+- **High-token work delegated**  -  list of high-token tasks explicitly delegated to Claude
+- **Compressed evidence summary**  -  summaries and artifact paths instead of pasted large logs
 - **Changes**  -  list of files modified with a brief description per file
 - **Diffstat**  -  file-level change summary
 - **Diff**  -  full patch

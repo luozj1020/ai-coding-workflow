@@ -35,6 +35,10 @@ Responsibilities:
 - Assess regression risk  -  what could break, what depends on this
 - Review design decisions  -  is this the right abstraction, the right boundary
 - Check for security implications
+- Check whether the token budget and delegation policy was followed:
+  - Did Codex stay within the context budget during planning?
+  - Were high-token reads and multi-file work delegated to Claude?
+  - Did Claude return compressed evidence (summaries + artifact paths) instead of pasted large logs?
 - Return a structured decision (see below)
 
 **Codex/GPT does NOT write code during review.** It evaluates and decides. Implementation is always delegated to Claude Code.

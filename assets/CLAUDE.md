@@ -60,6 +60,15 @@ All of the following require **explicit human approval** before execution:
 
 Do not perform any of the above autonomously. When in doubt, stop and ask the human.
 
+### Evidence compression:
+
+Do not paste large logs, full diffs, or multi-file dumps into the evidence packet or report. Instead:
+- Summarize each changed file in one paragraph.
+- Return summaries and artifact paths rather than pasting full diffs or logs.
+- Provide pass/fail counts for tests, not full output.
+- Attach paths to generated reports, diagnostics, and logs.
+- Record actual context budget used in the evidence packet.
+
 ### Communication:
 
 - Be concise. State what you did, what you verified, and what remains.

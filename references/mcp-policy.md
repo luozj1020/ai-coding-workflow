@@ -60,6 +60,32 @@ Scan the entire repository only when:
 
 Full repository scans are expensive and slow. They should be the exception, not the norm.
 
+## Budget Gates and Delegation Thresholds
+
+This policy applies to both Codex (during OBSERVE/PLAN) and Claude Code (during EXECUTE), but the delegation boundary is different:
+
+### Codex budget gate
+
+Codex should stop reading and dispatch to Claude when:
+- A file exceeds 200 lines and LSP/codegraph cannot answer the question.
+- More than 3 whole-file reads would be needed to plan the task.
+- A full repository scan is required.
+- Long test logs or CI output need analysis.
+
+In these cases, Codex records what it knows and delegates the high-token investigation to Claude Code in the task card.
+
+### Claude evidence compression gate
+
+Claude must not return large pasted content to Codex. Instead:
+- Summarize findings in one paragraph per file.
+- Link to artifact paths (diff files, reports, diagnostics).
+- Provide pass/fail counts, not full test output.
+- Record actual token budget used in the evidence packet.
+
+### Delegation checklist for task cards
+
+Every task card should include a `## High-Token Delegation Gate` section listing which reads or investigations are delegated to Claude. The reviewer checks whether this policy was followed.
+
 ## Principle
 
 **Read less, query more.** Every file read costs tokens. LSP and codegraph queries return structured data at a fraction of the cost. Prefer them.

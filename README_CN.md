@@ -162,7 +162,7 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 
 工作流是一个显式循环：**观察  ->  计划  ->  调度  ->  执行  ->  验证  ->  审查  ->  学习  ->  重复。**
 
-**核心原则：** Codex 负责设计和审查。Claude 负责编辑。工具优先收集低 token 证据。
+**核心原则：** Codex 负责设计和审查。Claude 负责编辑。工具优先收集低 token 证据。Codex 保持在低 token 上下文预算内；宽泛读取和多文件工作委托给 Claude。Claude 返回压缩证据（摘要 + 产物路径），而非粘贴大段日志。
 
 **步骤 1：初始化项目**（一次性）
 
