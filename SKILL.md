@@ -47,9 +47,10 @@ The installer performs these steps:
 8. Create `ai/run-loop.sh`  -  optional loop runner that composes dispatch and review.
 9. Create `ai/status-claude.sh`, `ai/watch-claude.sh`, `ai/kill-claude.sh`, and `ai/cleanup-worktree.sh`  -  control-plane helpers for stuck or completed Claude dispatches.
 10. Create `ai/pwsh-utf8.ps1`  -  Windows PowerShell UTF-8 session helper.
-11. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
-12. Make shell scripts executable (`chmod +x`).
-13. Validate shell scripts with `bash -n`.
+11. Create `ai/doctor_workflow.py`  -  read-only readiness check for the dispatch/review loop.
+12. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
+13. Make shell scripts executable (`chmod +x`).
+14. Validate shell scripts with `bash -n`.
 
 ## Mode: Update
 
@@ -225,6 +226,29 @@ All of the following require **explicit human approval** before execution:
 - Production data changes
 
 Agents must not perform any of the above on their own initiative. When in doubt, stop and ask the human.
+
+## Workflow Doctor
+
+Run the doctor to check whether a repository is ready for the dispatch/review loop:
+
+```bash
+python ai/doctor_workflow.py
+```
+
+The doctor is read-only and reports:
+
+| Check | What it looks for |
+|-------|-------------------|
+| repo | .git directory exists |
+| git | git CLI available in PATH |
+| dirty | uncommitted changes in source worktree |
+| artifacts | runtime entries under `.worktrees/` and `tmp-*` at repo root |
+| bash | bash resolution; warns if WSL may intercept on Windows |
+| claude | Claude CLI in PATH |
+| proxy | common proxy env vars (values are masked) |
+| codex-skill | `~/.codex/skills/ai-coding-workflow` exists |
+
+Exit code `0` means no hard errors; non-zero means at least one `ERROR` was found. Warnings do not cause a non-zero exit.
 
 ## Troubleshooting
 

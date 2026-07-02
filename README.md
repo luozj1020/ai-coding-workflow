@@ -53,6 +53,7 @@ ai-coding-workflow/
     kill-claude.sh       -> Stop a recorded Claude dispatch process
     cleanup-worktree.sh  -> Remove stopped worktrees while preserving evidence
     pwsh-utf8.ps1        -> Configure PowerShell UTF-8 sessions
+    doctor_workflow.py   -> Read-only readiness check for dispatch/review loop
   tests/
     test_*.py            -> Installer, dispatch, and helper regression tests
 ```
@@ -145,6 +146,7 @@ ai/watch-claude.sh
 ai/kill-claude.sh
 ai/cleanup-worktree.sh
 ai/pwsh-utf8.ps1
+ai/doctor_workflow.py
 .worktrees/.gitkeep
 ```
 
@@ -394,8 +396,15 @@ Expected result:
 - AGENTS.md exists
 - CLAUDE.md exists
 - ai/ directory exists
+- ai/doctor_workflow.py exists
 - .worktrees/.gitkeep exists
 - Second run reports unchanged/skipped files
+
+**Run the workflow doctor to verify readiness:**
+
+```bash
+python ai/doctor_workflow.py
+```
 
 ---
 

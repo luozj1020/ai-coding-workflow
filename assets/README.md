@@ -39,6 +39,7 @@ ai/
   kill-claude.sh              # Stop a Claude dispatch by PID artifact
   cleanup-worktree.sh         # Remove stopped Claude worktrees safely
   pwsh-utf8.ps1                # Configure PowerShell UTF-8 session defaults
+  doctor_workflow.py          # Read-only readiness check for dispatch/review loop
   README.md                   # This file
 .worktrees/                   # Isolated git worktrees for execution
 AGENTS.md                     # Shared agent rules

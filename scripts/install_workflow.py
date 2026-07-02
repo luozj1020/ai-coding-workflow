@@ -57,6 +57,11 @@ POWERSHELL_SCRIPTS = [
     ("pwsh-utf8.ps1", "ai/pwsh-utf8.ps1"),
 ]
 
+# Python helpers to install (source relative to scripts/, dest relative to repo root)
+PYTHON_SCRIPTS = [
+    ("doctor_workflow.py", "ai/doctor_workflow.py"),
+]
+
 
 def get_script_dir():
     """Return the directory containing this script."""
@@ -457,6 +462,14 @@ def main():
 
     # --- Install PowerShell helpers ---
     for src_name, dest_rel in POWERSHELL_SCRIPTS:
+        src = os.path.join(scripts_dir, src_name)
+        dest = os.path.join(repo_path, dest_rel)
+        status = install_or_update_plain(read_file(src), dest)
+        results[status].append(dest_rel)
+        print(f"  {status}: {dest_rel}")
+
+    # --- Install Python helpers ---
+    for src_name, dest_rel in PYTHON_SCRIPTS:
         src = os.path.join(scripts_dir, src_name)
         dest = os.path.join(repo_path, dest_rel)
         status = install_or_update_plain(read_file(src), dest)
