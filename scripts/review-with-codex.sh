@@ -12,6 +12,11 @@
 
 set -euo pipefail
 
+# Git for Windows can be launched through bin/bash.exe without the usual Unix tool PATH.
+# Prepending these paths is harmless on Unix and makes helper scripts stable on Windows.
+PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
+export PATH
+
 if [ $# -lt 3 ]; then
     echo "Usage: $0 <task-card> <result-json> <diff-file> [extra-evidence ...]" >&2
     echo "" >&2
@@ -21,6 +26,8 @@ if [ $# -lt 3 ]; then
     echo "  worktree-status.txt - Worktree state after execution" >&2
     echo "  untracked.txt       - Untracked files listing" >&2
     echo "  report.md           - Claude modification report" >&2
+    echo "  progress.log        - Claude dispatch heartbeat/progress log" >&2
+    echo "  pid                 - Claude subprocess PID artifact" >&2
     exit 1
 fi
 

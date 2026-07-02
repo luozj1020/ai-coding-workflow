@@ -180,6 +180,12 @@ Use the coding executor workflow. Execute this task card and return an evidence 
 
 这会在 `.worktrees/` 下生成以下产物：
 
+**代理行为：** `dispatch-to-claude.sh` 默认会在运行 Claude Code 前清理常见代理环境变量（`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 及其小写形式）。这样 Codex 可以继续使用当前 shell 的代理，而 Claude Code 默认直连。若 Claude Code 必须继承代理，请运行：
+
+```bash
+CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
 | 产物 | 说明 |
 |------|------|
 | `*.result.json` | Claude 原始 JSON 输出 |
@@ -232,6 +238,28 @@ bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
 
 ## Windows 注意事项
 
+### PowerShell UTF-8 设置
+
+Windows PowerShell 的控制台代码页, `$OutputEncoding` 和子进程编码不一致时，容易把中文等非 ASCII 文本写成乱码或 `?`。在 PowerShell 里编辑或生成中文文档前，先 dot-source helper：
+
+```powershell
+. .\scripts\pwsh-utf8.ps1
+```
+
+在已安装 workflow 的项目里，使用：
+
+```powershell
+. .\ai\pwsh-utf8.ps1
+```
+
+如需对后续 PowerShell 会话生效，可选择写入 profile：
+
+```powershell
+. .\ai\pwsh-utf8.ps1 -Persist
+```
+
+该 helper 会设置 console input/output encoding, `$OutputEncoding`, `PYTHONUTF8`, `PYTHONIOENCODING` 和 code page `65001`。优先使用它，不要临时手写 `chcp` 或用包含中文的 PowerShell here-string 做文本替换。
+
 在 Windows 上，PATH 中的 `bash` 可能解析为 WSL 而非 Git Bash。如果 WSL 没有默认发行版，直接调用 `bash -n` 会失败。这并不意味着脚本无效。
 
 安装程序（`install_workflow.py`）会显式搜索 Git Bash，当 bash 不可用时报告 `WARN_SKIPPED`，不会将其视为硬性失败。
@@ -240,6 +268,52 @@ bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
 1. 安装 Git for Windows，确保 `C:\Program Files\Git\bin` 在 PATH 中位于 WSL 之前
 2. 安装 WSL 发行版（`wsl --install -d Ubuntu`）
 3. 通过安装程序验证，而不是直接运行 `bash -n`
+
+---
+
+## 调度可观测性
+
+`dispatch-to-claude.sh` 在 Claude Code 运行期间会在 `.worktrees/` 下写入 PID 和心跳日志：
+
+- `.worktrees/claude-<id>.pid` 记录 Claude 子进程 PID。
+- `.worktrees/claude-<id>.progress.log` 记录启动、心跳、超时和完成事件。
+- `CLAUDE_CODE_HEARTBEAT_SECONDS` 控制心跳频率，默认 `30`。
+- `CLAUDE_CODE_TIMEOUT_SECONDS` 控制最长运行时间，默认 `600` 秒；设为 `0` 可禁用超时。
+- `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` 可选地在 result/status/report/progress 产物长期无变化时停止 Claude；默认 `0` 为禁用，仅在需要快速失败时设为正数。
+
+`dispatch-to-claude.sh` 会在 Claude 启动后和完成摘要中直接打印可复制的 `Watch Progress` 和 `Watch Details` 命令，用户无需打开文档或 artifact 文件就能在 Codex CLI 查看进度。
+
+即使 Claude 超时或非零退出，调度器仍会尽量收集 diffstat、diff、未跟踪文件、usage fallback、worktree status 和 fallback report。
+
+对于复杂或多次修订的任务，在任务卡中添加 `## Execution Phases` 表。Claude 必须将它作为外层执行合同，在阶段边界更新进度，并在长时间验证或跨过停止门之前写入 `CLAUDE_REPORT.md`。
+```bash
+CLAUDE_CODE_TIMEOUT_SECONDS=600 CLAUDE_CODE_HEARTBEAT_SECONDS=15 \
+  bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+---
+
+## 控制面例外
+
+默认角色分工是：Codex 负责规划/审查，Claude Code 负责修改。例外情况是 workflow 控制面自身损坏：如果 dispatcher、installer、review script 或 loop runner 阻止了安全分发或证据收集，Codex 可以在记录任务卡和验证证据后做窄范围热修。该例外只用于恢复 workflow 本身；普通产品/代码修改仍应回到 Claude Code 执行。
+
+## Claude 调度运维
+
+当 Claude 运行缓慢、卡住或需要清理时，可以使用以下辅助脚本：
+
+```bash
+# 查看最近一次 Claude 运行状态，或传入具体 claude-<timestamp> id
+bash ai/status-claude.sh
+bash ai/status-claude.sh claude-20260701-093934
+
+# 只停止该 dispatch 的 PID artifact 记录的 Claude 进程
+bash ai/kill-claude.sh claude-20260701-093934
+
+# 移除已停止的 worktree，同时保留 .worktrees/claude-<id>.* 证据 artifact
+bash ai/cleanup-worktree.sh claude-20260701-093934
+```
+
+`cleanup-worktree.sh` 会在记录的 Claude PID 仍存活时拒绝运行。仅当 `git worktree remove` 因损坏或 dirty worktree 需要时才使用 `--force`。
 
 ---
 
@@ -291,6 +365,16 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 - 第二次运行报告文件未变/已跳过
 
 ---
+
+## 开发验证
+
+修改安装器或工作流脚本前，运行本地 smoke tests：
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+测试只使用 Python 标准库，覆盖安装器幂等性、managed block 用户内容保留、`CLAUDE.md` import 位置，以及 Codex skill 复制时的运行时产物排除规则。
 
 ## 许可证
 

@@ -29,6 +29,24 @@
 |-------|-------|--------|------------|----------------|
 |       |       |        |            |                |
 
+## Claude Dispatch Progress
+
+<!-- Paste or link dispatch observability artifacts. These help reviewers distinguish a clean run from timeout/kill/fallback evidence collection. -->
+
+| Artifact | Path | Notes |
+|----------|------|-------|
+| Claude PID | | |
+| Progress log | | |
+| Claude self-reported progress | | |
+| Status log | | |
+
+| State | Value |
+|-------|-------|
+| Claude exit status | |
+| Timed out? | yes/no |
+| Killed by dispatcher or helper? | yes/no |
+| Fallback report generated? | yes/no |
+
 ## Repository Status
 
 ### Source Status (before dispatch)
@@ -91,6 +109,15 @@
 ```diff
 <!-- Paste the full diff or a link to the diff file here. -->
 ```
+
+## Phase Execution Evidence
+
+<!-- For phased task cards, record what happened at each phase boundary. Claude should update CLAUDE_REPORT.md before long-running validation or before moving to the next phase. -->
+
+| Phase | Status | Evidence | Next Step / Stop Reason |
+|-------|--------|----------|-------------------------|
+|       |        |          |                         |
+
 
 ## Tests
 

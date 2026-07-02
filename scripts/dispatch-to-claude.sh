@@ -8,13 +8,18 @@
 #   2. Records source repository status (tracked + untracked) before dispatch.
 #   3. Creates an isolated git worktree under .worktrees/claude-<timestamp>.
 #   4. Copies the task card to TASK_CARD.md in the worktree.
-#   5. Invokes claude -p in non-interactive mode.
+#   5. Invokes claude -p in non-interactive mode, without inherited proxy env by default.
 #   6. Saves result, status, diffstat, diff, untracked files, usage, and report.
 #   7. Records worktree status (tracked + untracked) after execution.
 #   8. Prints paths to generated result files.
 #   9. Does NOT merge automatically.
 
 set -euo pipefail
+
+# Git for Windows can be launched through bin/bash.exe without the usual Unix tool PATH.
+# Prepending these paths is harmless on Unix and makes helper scripts stable on Windows.
+PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
+export PATH
 
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <task-card-path>" >&2
@@ -38,7 +43,15 @@ if ! command -v claude &>/dev/null; then
     exit 1
 fi
 
+CLAUDE_CODE_PROXY_MODE="${CLAUDE_CODE_PROXY_MODE:-direct}"
+if [ "$CLAUDE_CODE_PROXY_MODE" != "direct" ] && [ "$CLAUDE_CODE_PROXY_MODE" != "inherit" ]; then
+    echo "Error: CLAUDE_CODE_PROXY_MODE must be 'direct' or 'inherit'." >&2
+    exit 1
+fi
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 TASK_ID="claude-${TIMESTAMP}"
 WORKTREE_DIR="${REPO_ROOT}/.worktrees/${TASK_ID}"
@@ -55,9 +68,13 @@ WORKTREE_STATUS_FILE="${WORKTREE_ROOT}/${TASK_ID}.worktree-status.txt"
 UNTRACKED_FILE="${WORKTREE_ROOT}/${TASK_ID}.untracked.txt"
 USAGE_FILE="${WORKTREE_ROOT}/${TASK_ID}.usage.txt"
 REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
+CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
+PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
+PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 
 for f in "$RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" \
-         "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE"; do
+         "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
+         "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$PROGRESS_FILE"; do
     mkdir -p "$(dirname "$f")"
 done
 
@@ -80,6 +97,48 @@ done
 
 echo "Source status saved to: $SOURCE_STATUS_FILE"
 
+TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
+if [ -z "$TASK_CARD_REL" ]; then
+    TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --others --exclude-standard --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
+fi
+if [ -z "$TASK_CARD_REL" ]; then
+    TASK_CARD_ABS="$(cd "$(dirname "$TASK_CARD")" && pwd)/$(basename "$TASK_CARD")"
+    case "$TASK_CARD_ABS" in
+        "$REPO_ROOT"/*) TASK_CARD_REL="${TASK_CARD_ABS#"$REPO_ROOT"/}" ;;
+        *) TASK_CARD_REL="$TASK_CARD" ;;
+    esac
+fi
+
+DIRTY_TRACKED="$(git diff --name-only 2>/dev/null || true)"
+DIRTY_STAGED="$(git diff --cached --name-only 2>/dev/null || true)"
+DIRTY_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null | grep -v -E "^\.worktrees/${TASK_ID}\." | grep -vxF "$TASK_CARD_REL" || true)"
+
+if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" ]; then
+    if [ "${CLAUDE_CODE_ALLOW_DIRTY_SOURCE:-0}" = "1" ]; then
+        echo "Warning: Source worktree is dirty; proceeding because CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1." >&2
+    else
+        echo "Error: Source worktree is dirty. Claude would run from stale HEAD." >&2
+        echo "Commit or stash source changes first, or set CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1 to override." >&2
+        echo "The current task card may be untracked and is exempt from the untracked-file check." >&2
+        if [ -n "$DIRTY_TRACKED" ]; then
+            echo "" >&2
+            echo "Tracked changes:" >&2
+            echo "$DIRTY_TRACKED" | sed 's/^/  /' >&2
+        fi
+        if [ -n "$DIRTY_STAGED" ]; then
+            echo "" >&2
+            echo "Staged changes:" >&2
+            echo "$DIRTY_STAGED" | sed 's/^/  /' >&2
+        fi
+        if [ -n "$DIRTY_UNTRACKED" ]; then
+            echo "" >&2
+            echo "Unrelated untracked files:" >&2
+            echo "$DIRTY_UNTRACKED" | sed 's/^/  /' >&2
+        fi
+        exit 1
+    fi
+fi
+
 BRANCH_NAME="claude-task-${TIMESTAMP}"
 git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" HEAD 2>/dev/null || {
     echo "Error: Failed to create git worktree at $WORKTREE_DIR" >&2
@@ -95,7 +154,22 @@ echo "Task card copied to: ${WORKTREE_DIR}/TASK_CARD.md"
 cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
 You are the executor in a Codex/Claude Code workflow.
 
-Execute the task card below. In addition to making the requested edits, create `CLAUDE_REPORT.md` in the worktree before finishing.
+Execute the task card below. While working, maintain `CLAUDE_PROGRESS.md` in the worktree so the dispatcher can show user-visible progress without interrupting you.
+
+`CLAUDE_PROGRESS.md` requirements:
+- Create it before doing substantial exploration or edits.
+- Keep it short and append/update it at natural milestones: context gathered, plan chosen, files being edited, checks running, blocker encountered, finalizing.
+- Before any command or investigation that may take more than a few minutes, write what you are about to do and what result you expect.
+- Do not include secrets, large logs, or full diffs.
+
+
+Phase-gate requirements:
+- If the task card has an `## Execution Phases` table, follow it as the outer execution contract. You may break down work inside a phase, but do not silently combine phases.
+- At each phase boundary, update `CLAUDE_PROGRESS.md` with the current phase, completed evidence, and the next intended action.
+- Create or update `CLAUDE_REPORT.md` before running long validation commands, before waiting on potentially slow commands, and before moving to a later phase marked `Stop Before Next Phase? = yes`.
+- If validation fails, hangs, or is blocked, stop after recording the exact command, observed output, and proposed next phase instead of continuing broad edits.
+
+In addition to making the requested edits, create `CLAUDE_REPORT.md` in the worktree before finishing.
 
 `CLAUDE_REPORT.md` must include:
 - Task card ID/path and a concise requirements summary.
@@ -110,22 +184,168 @@ Execute the task card below. In addition to making the requested edits, create `
 EOF
 cat "${WORKTREE_DIR}/TASK_CARD.md" >> "${WORKTREE_DIR}/CLAUDE_PROMPT.md"
 
+CLAUDE_CODE_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-600}"
+CLAUDE_CODE_HEARTBEAT_SECONDS="${CLAUDE_CODE_HEARTBEAT_SECONDS:-30}"
+CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
+
+case "$CLAUDE_CODE_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*)
+        echo "Error: CLAUDE_CODE_TIMEOUT_SECONDS must be a non-negative integer." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_HEARTBEAT_SECONDS" in
+    ''|*[!0-9]*)
+        echo "Error: CLAUDE_CODE_HEARTBEAT_SECONDS must be a positive integer." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*)
+        echo "Error: CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS must be a non-negative integer." >&2
+        exit 1
+        ;;
+esac
+if [ "$CLAUDE_CODE_HEARTBEAT_SECONDS" -eq 0 ]; then
+    echo "Error: CLAUDE_CODE_HEARTBEAT_SECONDS must be greater than 0." >&2
+    exit 1
+fi
+
+progress_log() {
+    local message="$1"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message" | tee -a "$PROGRESS_FILE"
+}
+
+file_size() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        wc -c < "$file" 2>/dev/null | tr -d ' ' || echo 0
+    else
+        echo 0
+    fi
+}
+
+stop_claude() {
+    local reason="$1"
+    local elapsed="$2"
+    progress_log "Stopping Claude (${reason}) after ${elapsed}s; sending TERM to pid=${CLAUDE_PID}"
+    kill "$CLAUDE_PID" 2>/dev/null || true
+    sleep 5
+    if kill -0 "$CLAUDE_PID" 2>/dev/null; then
+        progress_log "Claude still alive after TERM; sending KILL to pid=${CLAUDE_PID}"
+        kill -9 "$CLAUDE_PID" 2>/dev/null || true
+    fi
+}
+
+run_claude() {
+    if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
+        claude -p \
+            --permission-mode acceptEdits \
+            --output-format json \
+            < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
+    else
+        (
+            unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+            unset http_proxy https_proxy all_proxy no_proxy
+            claude -p \
+                --permission-mode acceptEdits \
+                --output-format json \
+                < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
+        )
+    fi
+}
+
 echo "Invoking Claude Code..."
+echo "Progress log: $PROGRESS_FILE"
+echo "Watch Progress: bash \"$WATCH_SCRIPT\" \"$TASK_ID\""
+echo "Watch Details:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"
 cd "$WORKTREE_DIR"
 
-claude -p \
-    --permission-mode acceptEdits \
-    --output-format json \
-    < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}" || {
-    echo "Warning: claude exited with non-zero status. Check $STATUS_FILE" >&2
-}
+: > "$PROGRESS_FILE"
+progress_log "Starting Claude Code: proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}"
+
+set +e
+run_claude &
+CLAUDE_PID=$!
+echo "$CLAUDE_PID" > "$PID_FILE"
+progress_log "Claude process started: pid=${CLAUDE_PID}"
+
+START_EPOCH="$(date +%s)"
+CLAUDE_TIMED_OUT=0
+CLAUDE_NO_OUTPUT_TIMED_OUT=0
+LAST_ACTIVITY_EPOCH="$START_EPOCH"
+LAST_TOTAL_BYTES=0
+while kill -0 "$CLAUDE_PID" 2>/dev/null; do
+    sleep "$CLAUDE_CODE_HEARTBEAT_SECONDS"
+    NOW_EPOCH="$(date +%s)"
+    ELAPSED=$((NOW_EPOCH - START_EPOCH))
+
+    if ! kill -0 "$CLAUDE_PID" 2>/dev/null; then
+        break
+    fi
+
+    RESULT_BYTES="$(file_size "$RESULT_FILE")"
+    STATUS_BYTES="$(file_size "$STATUS_FILE")"
+    REPORT_BYTES="$(file_size "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
+    CLAUDE_PROGRESS_BYTES="$(file_size "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
+    TOTAL_BYTES=$((RESULT_BYTES + STATUS_BYTES + REPORT_BYTES + CLAUDE_PROGRESS_BYTES))
+    if [ "$TOTAL_BYTES" -ne "$LAST_TOTAL_BYTES" ]; then
+        LAST_TOTAL_BYTES="$TOTAL_BYTES"
+        LAST_ACTIVITY_EPOCH="$NOW_EPOCH"
+    fi
+    QUIET_SECONDS=$((NOW_EPOCH - LAST_ACTIVITY_EPOCH))
+    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}"
+
+    if [ "$CLAUDE_CODE_TIMEOUT_SECONDS" -gt 0 ] && [ "$ELAPSED" -ge "$CLAUDE_CODE_TIMEOUT_SECONDS" ]; then
+        CLAUDE_TIMED_OUT=1
+        stop_claude "runtime timeout" "$ELAPSED"
+        break
+    fi
+
+    if [ "$CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && [ "$QUIET_SECONDS" -ge "$CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS" ]; then
+        CLAUDE_NO_OUTPUT_TIMED_OUT=1
+        stop_claude "no output for ${QUIET_SECONDS}s" "$ELAPSED"
+        break
+    fi
+done
+
+wait "$CLAUDE_PID"
+CLAUDE_STATUS=$?
+set -e
+
+END_EPOCH="$(date +%s)"
+ELAPSED=$((END_EPOCH - START_EPOCH))
+if [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ]; then
+    {
+        echo ""
+        echo "[dispatch] Claude stopped after ${ELAPSED}s because no result/status/report/progress output changed for ${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}s."
+        echo "[dispatch] No-output timeout seconds: ${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}"
+        echo "[dispatch] Progress log: ${PROGRESS_FILE}"
+    } >> "$STATUS_FILE"
+    progress_log "Claude finished by no-output timeout: elapsed_seconds=${ELAPSED}, wait_status=${CLAUDE_STATUS}"
+    echo "Warning: claude produced no observable output for ${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}s. Check $STATUS_FILE and $PROGRESS_FILE" >&2
+elif [ "$CLAUDE_TIMED_OUT" -eq 1 ]; then
+    {
+        echo ""
+        echo "[dispatch] Claude timed out after ${ELAPSED}s."
+        echo "[dispatch] Timeout seconds: ${CLAUDE_CODE_TIMEOUT_SECONDS}"
+        echo "[dispatch] Progress log: ${PROGRESS_FILE}"
+    } >> "$STATUS_FILE"
+    progress_log "Claude finished by timeout: elapsed_seconds=${ELAPSED}, wait_status=${CLAUDE_STATUS}"
+    echo "Warning: claude timed out after ${ELAPSED}s. Check $STATUS_FILE and $PROGRESS_FILE" >&2
+elif [ "$CLAUDE_STATUS" -ne 0 ]; then
+    progress_log "Claude exited non-zero: status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
+    echo "Warning: claude exited with non-zero status $CLAUDE_STATUS. Check $STATUS_FILE" >&2
+else
+    progress_log "Claude completed successfully: elapsed_seconds=${ELAPSED}"
+fi
 
 cd "$WORKTREE_DIR"
 git diff --stat > "$DIFFSTAT_FILE" 2>/dev/null || true
 git diff > "$DIFF_FILE" 2>/dev/null || true
 
 FILTERED_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null \
-    | grep -v -E '^(TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT)' || true)"
+    | grep -v -E '^(TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)' || true)"
 
 {
     echo "# Untracked Files in Worktree - ${TIMESTAMP}"
@@ -238,6 +458,18 @@ echo "Usage summary saved to: $USAGE_FILE"
 
 echo "Worktree status saved to: $WORKTREE_STATUS_FILE"
 
+if [ -f "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" ]; then
+    cp "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "$CLAUDE_PROGRESS_FILE"
+else
+    {
+        echo "# Claude Progress"
+        echo ""
+        echo "Claude did not create CLAUDE_PROGRESS.md. Check dispatch progress and status artifacts."
+    } > "$CLAUDE_PROGRESS_FILE"
+fi
+
+echo "Claude progress saved to: $CLAUDE_PROGRESS_FILE"
+
 if [ -f "${WORKTREE_DIR}/CLAUDE_REPORT.md" ]; then
     cp "${WORKTREE_DIR}/CLAUDE_REPORT.md" "$REPORT_FILE"
 else
@@ -262,6 +494,7 @@ else
         echo "- Worktree status: $WORKTREE_STATUS_FILE"
         echo "- Untracked files: $UNTRACKED_FILE"
         echo "- Usage summary: $USAGE_FILE"
+        echo "- Claude progress: $CLAUDE_PROGRESS_FILE"
         echo ""
         echo "## Human Review Checklist"
         echo "- [ ] Compare diff against task card acceptance criteria."
@@ -284,7 +517,12 @@ echo "Source Status:   $SOURCE_STATUS_FILE"
 echo "Worktree Status: $WORKTREE_STATUS_FILE"
 echo "Untracked Files: $UNTRACKED_FILE"
 echo "Usage Summary:   $USAGE_FILE"
+echo "Claude Progress: $CLAUDE_PROGRESS_FILE"
 echo "Report:          $REPORT_FILE"
+echo "Claude PID:      $PID_FILE"
+echo "Progress Log:    $PROGRESS_FILE"
+echo "Watch Progress:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\""
+echo "Watch Details:   bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"
 echo ""
 echo "Changes have NOT been merged. Review the diff and merge manually."
 echo "To remove the worktree: git worktree remove $WORKTREE_DIR"

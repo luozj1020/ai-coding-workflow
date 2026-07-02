@@ -4,6 +4,18 @@
 
 <!-- e.g., PROJ-123 -->
 
+## Task Type
+
+<!-- normal | control-plane -->
+
+## Executor
+
+<!-- Claude Code | Codex control-plane hotfix | human -->
+
+## Control-Plane Exception Rationale
+
+<!-- Fill only when Task Type is control-plane. Explain why normal Claude delegation is unsafe or unavailable, and what condition returns work to the normal Codex-plan / Claude-execute flow. -->
+
 ## Goal
 
 <!-- What needs to be accomplished in one sentence. -->
@@ -19,6 +31,17 @@
 - [ ] Criterion 1
 - [ ] Criterion 2
 - [ ] Criterion 3
+
+## Execution Phases
+
+<!-- Split non-trivial work into reviewable phases. Claude Code may decompose work inside a phase, but must not merge phases unless this section explicitly allows it. -->
+
+| Phase | Scope | Exit Evidence | Stop Before Next Phase? |
+|-------|-------|---------------|-------------------------|
+| A | <!-- e.g., tests only / implementation only / docs only --> | <!-- exact files, test output, or report update expected --> | yes/no |
+| B | | | |
+| C | | | |
+
 
 ## Files / Modules
 

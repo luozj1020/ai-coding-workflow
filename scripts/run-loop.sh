@@ -8,6 +8,11 @@
 
 set -euo pipefail
 
+# Git for Windows can be launched through bin/bash.exe without the usual Unix tool PATH.
+# Prepending these paths is harmless on Unix and makes helper scripts stable on Windows.
+PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
+export PATH
+
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <task-card-path> [max-iterations]" >&2
     exit 1
@@ -106,6 +111,9 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     UNTRACKED_FILE="$(parse_path "Untracked Files" "$DISPATCH_LOG")"
     USAGE_FILE="$(parse_path "Usage Summary" "$DISPATCH_LOG")"
     REPORT_FILE="$(parse_path "Report" "$DISPATCH_LOG")"
+    CLAUDE_PROGRESS_FILE="$(parse_path "Claude Progress" "$DISPATCH_LOG")"
+    CLAUDE_PID_FILE="$(parse_path "Claude PID" "$DISPATCH_LOG")"
+    PROGRESS_FILE="$(parse_path "Progress Log" "$DISPATCH_LOG")"
 
     if [ -z "$RESULT_FILE" ] || [ -z "$DIFF_FILE" ]; then
         echo "Error: Dispatch did not produce result.json or diff files." >&2
@@ -114,12 +122,27 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     fi
 
     for f in "$RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" \
-             "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE"; do
+             "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
+             "$CLAUDE_PROGRESS_FILE" "$CLAUDE_PID_FILE" "$PROGRESS_FILE"; do
         copy_if_present "$f" "$DISPATCH_OUTPUT"
     done
 
     {
         echo "## Iteration ${ITERATION}"
+        echo ""
+        echo "### Claude Progress"
+        if [ -n "$PROGRESS_FILE" ] && [ -f "$PROGRESS_FILE" ]; then
+            cat "$PROGRESS_FILE"
+        else
+            echo "Claude progress unavailable."
+        fi
+        echo ""
+        echo "### Claude Self-Reported Progress"
+        if [ -n "$CLAUDE_PROGRESS_FILE" ] && [ -f "$CLAUDE_PROGRESS_FILE" ]; then
+            cat "$CLAUDE_PROGRESS_FILE"
+        else
+            echo "Claude self-reported progress unavailable."
+        fi
         echo ""
         echo "### Claude Usage"
         if [ -n "$USAGE_FILE" ] && [ -f "$USAGE_FILE" ]; then
@@ -136,7 +159,8 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     echo "Sending evidence to Codex/GPT for review..."
     set +e
     bash "$REVIEW_SCRIPT" "$CURRENT_TASK" "$RESULT_FILE" "$DIFF_FILE" \
-        "$USAGE_FILE" "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$REPORT_FILE" 2>&1 | tee "$REVIEW_OUTPUT"
+        "$USAGE_FILE" "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$REPORT_FILE" \
+        "$CLAUDE_PROGRESS_FILE" "$PROGRESS_FILE" "$CLAUDE_PID_FILE" 2>&1 | tee "$REVIEW_OUTPUT"
     REVIEW_STATUS=${PIPESTATUS[0]}
     set -e
 

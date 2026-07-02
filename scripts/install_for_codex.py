@@ -17,13 +17,15 @@ Uses only the Python standard library.
 import os
 import shutil
 import sys
+from fnmatch import fnmatch
 
 EXCLUDE_DIRS = {
-    ".git", "__pycache__", ".worktrees", "node_modules",
+    ".git", "__pycache__", ".worktrees", "node_modules", "task-cards",
     ".mypy_cache", ".pytest_cache", ".ruff_cache",
 }
 EXCLUDE_FILES = {"*.pyc", ".DS_Store", "Thumbs.db"}
-EXCLUDE_PATTERNS = ["test-repo", "test_repo", ".cache"]
+EXCLUDE_NAME_PATTERNS = ["tmp-*", "test-repo", "test_repo"]
+EXCLUDE_PATH_PATTERNS = [".cache"]
 
 
 def get_skill_dir():
@@ -42,9 +44,12 @@ def should_exclude(name, full_path):
     if name in EXCLUDE_DIRS:
         return True
     for pattern in EXCLUDE_FILES:
-        if name == pattern:
+        if fnmatch(name, pattern):
             return True
-    for pat in EXCLUDE_PATTERNS:
+    for pattern in EXCLUDE_NAME_PATTERNS:
+        if fnmatch(name, pattern):
+            return True
+    for pat in EXCLUDE_PATH_PATTERNS:
         if pat in full_path:
             return True
     return False

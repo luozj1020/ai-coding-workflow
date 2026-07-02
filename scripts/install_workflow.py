@@ -46,6 +46,15 @@ SCRIPTS = [
     ("dispatch-to-claude.sh", "ai/dispatch-to-claude.sh"),
     ("review-with-codex.sh", "ai/review-with-codex.sh"),
     ("run-loop.sh", "ai/run-loop.sh"),
+    ("status-claude.sh", "ai/status-claude.sh"),
+    ("watch-claude.sh", "ai/watch-claude.sh"),
+    ("kill-claude.sh", "ai/kill-claude.sh"),
+    ("cleanup-worktree.sh", "ai/cleanup-worktree.sh"),
+]
+
+# PowerShell helpers to install (source relative to scripts/, dest relative to repo root)
+POWERSHELL_SCRIPTS = [
+    ("pwsh-utf8.ps1", "ai/pwsh-utf8.ps1"),
 ]
 
 
@@ -445,6 +454,14 @@ def main():
             results["warned"].append(dest_rel)
         else:
             results["failed"].append(dest_rel)
+
+    # --- Install PowerShell helpers ---
+    for src_name, dest_rel in POWERSHELL_SCRIPTS:
+        src = os.path.join(scripts_dir, src_name)
+        dest = os.path.join(repo_path, dest_rel)
+        status = install_or_update_plain(read_file(src), dest)
+        results[status].append(dest_rel)
+        print(f"  {status}: {dest_rel}")
 
     # --- Create .worktrees/.gitkeep ---
     worktrees_gitkeep = os.path.join(repo_path, ".worktrees", ".gitkeep")

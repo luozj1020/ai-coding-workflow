@@ -45,9 +45,11 @@ The installer performs these steps:
 6. Create `ai/dispatch-to-claude.sh`  -  dispatches task cards to Claude Code in an isolated worktree.
 7. Create `ai/review-with-codex.sh`  -  sends execution evidence to Codex/GPT for review.
 8. Create `ai/run-loop.sh`  -  optional loop runner that composes dispatch and review.
-9. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
-10. Make shell scripts executable (`chmod +x`).
-11. Validate shell scripts with `bash -n`.
+9. Create `ai/status-claude.sh`, `ai/watch-claude.sh`, `ai/kill-claude.sh`, and `ai/cleanup-worktree.sh`  -  control-plane helpers for stuck or completed Claude dispatches.
+10. Create `ai/pwsh-utf8.ps1`  -  Windows PowerShell UTF-8 session helper.
+11. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
+12. Make shell scripts executable (`chmod +x`).
+13. Validate shell scripts with `bash -n`.
 
 ## Mode: Update
 
@@ -96,6 +98,7 @@ Use `ai/task-card-template.md` to create a task card for each work item. The car
 - Dependencies and constraints
 - LSP/codegraph/MCP evidence gathered before implementation
 - Loop context (for revision iterations): parent task, iteration, prior decision, revision instructions, budget/stop conditions
+- Execution phases for non-trivial work: phase scope, exit evidence, and whether Claude must stop before the next phase
 
 ### 3. Route Implementation to Claude Code (DISPATCH)
 
@@ -118,11 +121,16 @@ This creates an isolated git worktree, invokes `claude -p` with `--permission-mo
 | `*.untracked.txt` | Listing and patch evidence for untracked files |
 | `*.usage.txt` | Claude token/cost usage summary extracted from the JSON result |
 | `*.report.md` | Claude modification report for human/Codex review |
+| `*.claude-progress.md` | Claude self-reported milestone progress for status display and review evidence |
 | `*.review.txt` | Persisted Codex review output |
 | `*.codex-events.jsonl` | Raw Codex JSON events when available |
 | `*.codex-usage.txt` | Codex review token/cost usage summary when available |
 
 It does **not** merge automatically.
+
+By default, `dispatch-to-claude.sh` clears common proxy environment variables only for the Claude Code subprocess (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, and lowercase variants), so Codex can keep using proxy settings while Claude Code goes direct. Set `CLAUDE_CODE_PROXY_MODE=inherit` to pass proxy variables through to Claude Code.
+
+The dispatcher also refuses to create a Claude worktree from a dirty source worktree by default because Claude would run from stale `HEAD`. Tracked changes, staged changes, and unrelated untracked files block dispatch; the current task card may be untracked and is exempt. Set `CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1` only when intentionally dispatching from stale `HEAD`.
 
 ### 4. Route Final Review to Codex / GPT (REVIEW)
 
@@ -135,7 +143,7 @@ bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timest
 To include extra evidence (usage summary, repository status, untracked files):
 
 ```bash
-bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timestamp>.result.json .worktrees/claude-<timestamp>.diff .worktrees/claude-<timestamp>.usage.txt .worktrees/claude-<timestamp>.source-status.txt .worktrees/claude-<timestamp>.worktree-status.txt .worktrees/claude-<timestamp>.untracked.txt
+bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timestamp>.result.json .worktrees/claude-<timestamp>.diff .worktrees/claude-<timestamp>.usage.txt .worktrees/claude-<timestamp>.source-status.txt .worktrees/claude-<timestamp>.worktree-status.txt .worktrees/claude-<timestamp>.untracked.txt .worktrees/claude-<timestamp>.claude-progress.md .worktrees/claude-<timestamp>.progress.log .worktrees/claude-<timestamp>.pid
 ```
 
 Codex reviews the work and returns a structured decision: **accept**, **revise**, **split**, or **reject**, with explicit next-loop instructions.
@@ -166,6 +174,42 @@ After each iteration, both agents capture lessons:
 
 See `references/loop-model.md` for the full loop state machine.
 
+## Dispatch Observability
+
+`dispatch-to-claude.sh` records Claude execution progress while the executor is running:
+
+- `*.pid` stores the Claude subprocess PID.
+- `*.progress.log` stores dispatcher heartbeat, timeout, and completion events.
+- `*.claude-progress.md` stores Claude self-reported milestone progress copied from `CLAUDE_PROGRESS.md`.
+- `CLAUDE_CODE_HEARTBEAT_SECONDS` controls heartbeat frequency and defaults to `30`.
+- `CLAUDE_CODE_TIMEOUT_SECONDS` controls maximum runtime and defaults to `600`; `0` disables timeout.
+- `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` optionally stops Claude when result/status/report/progress artifacts do not change; default is `0` disabled. Set it to a positive number only when you want fast-fail behavior.
+
+The dispatcher prints copy-paste `Watch Progress` and `Watch Details` commands as soon as Claude starts and again in the completion summary, so users can view progress in Codex CLI without opening documentation or artifact files.
+
+If Claude times out or exits non-zero, the dispatcher continues to collect available evidence instead of aborting before diff/report generation.
+
+For complex or repeatedly revised tasks, use `## Execution Phases` in the task card. The dispatcher prompt requires Claude to treat that table as the outer execution contract, update progress at phase boundaries, and write `CLAUDE_REPORT.md` before long-running validation or before crossing a stop gate.
+
+## Control-Plane Exception
+
+The default workflow is strict: Codex plans/reviews and Claude Code edits. If the workflow control plane itself is broken (for example `dispatch-to-claude.sh`, `review-with-codex.sh`, `run-loop.sh`, or the installer prevents delegation or evidence collection), Codex may make a narrowly scoped hotfix directly. Requirements for this exception:
+
+- Record a task card describing the control-plane defect.
+- Keep edits limited to workflow infrastructure.
+- Preserve existing user-owned content and safety constraints.
+- Run local verification and document exact evidence.
+- Return normal implementation work to Claude Code after delegation is reliable again.
+
+## Claude Dispatch Operations
+
+Installed projects include helper scripts for stuck or long-running Claude dispatches:
+
+- `ai/status-claude.sh [claude-<timestamp>]` shows PID state, artifact sizes, progress tail, status tail, and worktree git status.
+- `ai/watch-claude.sh [claude-<timestamp>]` shows an obvious CLI status panel by default, using the live worktree `CLAUDE_PROGRESS.md` while a run is active; use `--details` to expand progress tails, and `--stale-after seconds` to surface stuck-run analysis.
+- `ai/kill-claude.sh <claude-<timestamp>> [--kill-after seconds]` stops only the Claude process recorded in the PID artifact.
+- `ai/cleanup-worktree.sh <claude-<timestamp>> [--force]` removes a stopped Claude worktree while preserving `.worktrees/claude-<id>.*` evidence artifacts.
+
 ## Safety Constraints
 
 All of the following require **explicit human approval** before execution:
@@ -183,6 +227,23 @@ All of the following require **explicit human approval** before execution:
 Agents must not perform any of the above on their own initiative. When in doubt, stop and ask the human.
 
 ## Troubleshooting
+
+
+### Windows: PowerShell UTF-8 setup
+
+When reading or writing non-ASCII files from Windows PowerShell, first dot-source the installed helper:
+
+```powershell
+. .\ai\pwsh-utf8.ps1
+```
+
+Use `-Persist` only when the user explicitly wants the helper added to their PowerShell profile:
+
+```powershell
+. .\ai\pwsh-utf8.ps1 -Persist
+```
+
+Agents should prefer UTF-8 file APIs and this helper over PowerShell here-strings containing non-ASCII text. This avoids mojibake and replacement characters in files such as `README_CN.md`.
 
 ### Windows: `bash` resolves to broken WSL
 
