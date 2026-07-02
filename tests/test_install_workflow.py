@@ -139,6 +139,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn('Phase-gate requirements:', dispatch)
             self.assertIn('## Execution Phases', dispatch)
             self.assertIn('before running long validation commands', dispatch)
+            self.assertIn('git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" HEAD ||', dispatch)
 
     def test_installed_run_loop_preserves_dispatch_observability_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -147,6 +148,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.run_installer(repo)
 
             run_loop = (repo / "ai" / "run-loop.sh").read_text(encoding="utf-8")
+            self.assertIn("Dispatch execution requires Claude Code", run_loop)
+            self.assertIn("doctor_workflow.py to verify readiness", run_loop)
             self.assertIn('CLAUDE_PID_FILE="$(parse_path "Claude PID" "$DISPATCH_LOG")"', run_loop)
             self.assertIn('PROGRESS_FILE="$(parse_path "Progress Log" "$DISPATCH_LOG")"', run_loop)
             self.assertIn('CLAUDE_PROGRESS_FILE="$(parse_path "Claude Progress" "$DISPATCH_LOG")"', run_loop)

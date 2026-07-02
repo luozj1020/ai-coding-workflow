@@ -160,6 +160,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stale HEAD", result.stderr)
         self.assertIn("scratch.txt", result.stderr)
+        worktrees = self.repo / ".worktrees"
+        artifacts = sorted(p.name for p in worktrees.glob("claude-*")) if worktrees.exists() else []
+        self.assertEqual([], artifacts)
 
     def test_tracked_diff_blocks(self):
         self._write_task_card()
@@ -195,6 +198,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1", result.stderr)
         self.assertIn("Dispatch Complete", result.stdout)
+        self.assertIn("Source status saved to:", result.stdout)
+        self.assertTrue(list((self.repo / ".worktrees").glob("claude-*.source-status.txt")))
 
 
 if __name__ == "__main__":

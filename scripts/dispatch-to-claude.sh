@@ -78,24 +78,6 @@ for f in "$RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" \
     mkdir -p "$(dirname "$f")"
 done
 
-{
-    echo "# Source Repository Status - ${TIMESTAMP}"
-    echo "# Recorded before worktree creation"
-    echo ""
-    echo "## Tracked Changes (git diff --stat)"
-    DIFF_OUT="$(git diff --stat 2>/dev/null || true)"
-    if [ -z "$DIFF_OUT" ]; then echo "(none)"; else echo "$DIFF_OUT"; fi
-    echo ""
-    echo "## Staged Changes (git diff --cached --stat)"
-    CACHED_OUT="$(git diff --cached --stat 2>/dev/null || true)"
-    if [ -z "$CACHED_OUT" ]; then echo "(none)"; else echo "$CACHED_OUT"; fi
-    echo ""
-    echo "## Untracked Files"
-    UNTRACKED_SRC="$(git ls-files --others --exclude-standard 2>/dev/null || true)"
-    if [ -z "$UNTRACKED_SRC" ]; then echo "(none)"; else echo "$UNTRACKED_SRC"; fi
-} > "$SOURCE_STATUS_FILE"
-
-echo "Source status saved to: $SOURCE_STATUS_FILE"
 
 TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
 if [ -z "$TASK_CARD_REL" ]; then
@@ -140,13 +122,32 @@ if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" 
 fi
 
 BRANCH_NAME="claude-task-${TIMESTAMP}"
-git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" HEAD 2>/dev/null || {
+git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" HEAD || {
     echo "Error: Failed to create git worktree at $WORKTREE_DIR" >&2
     exit 1
 }
 
 echo "Created worktree: $WORKTREE_DIR"
 echo "Branch: $BRANCH_NAME"
+
+{
+    echo "# Source Repository Status - ${TIMESTAMP}"
+    echo "# Recorded after preflight checks and worktree creation"
+    echo ""
+    echo "## Tracked Changes (git diff --stat)"
+    DIFF_OUT="$(git diff --stat 2>/dev/null || true)"
+    if [ -z "$DIFF_OUT" ]; then echo "(none)"; else echo "$DIFF_OUT"; fi
+    echo ""
+    echo "## Staged Changes (git diff --cached --stat)"
+    CACHED_OUT="$(git diff --cached --stat 2>/dev/null || true)"
+    if [ -z "$CACHED_OUT" ]; then echo "(none)"; else echo "$CACHED_OUT"; fi
+    echo ""
+    echo "## Untracked Files"
+    UNTRACKED_SRC="$(git ls-files --others --exclude-standard 2>/dev/null || true)"
+    if [ -z "$UNTRACKED_SRC" ]; then echo "(none)"; else echo "$UNTRACKED_SRC"; fi
+} > "$SOURCE_STATUS_FILE"
+
+echo "Source status saved to: $SOURCE_STATUS_FILE"
 
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD.md"
 echo "Task card copied to: ${WORKTREE_DIR}/TASK_CARD.md"

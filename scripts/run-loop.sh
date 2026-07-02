@@ -26,12 +26,19 @@ if [ ! -f "$TASK_CARD" ]; then
     exit 1
 fi
 
-for tool in git claude codex; do
+for tool in git codex; do
     if ! command -v "$tool" &>/dev/null; then
         echo "Error: $tool is not installed or not in PATH." >&2
         exit 1
     fi
 done
+
+if ! command -v claude &>/dev/null; then
+    echo "Error: claude CLI is not installed or not in PATH." >&2
+    echo "Dispatch execution requires Claude Code. Planning, task-card generation, doctor checks, and Codex review remain usable." >&2
+    echo "Install Claude Code or run the non-dispatch workflow pieces manually; use doctor_workflow.py to verify readiness." >&2
+    exit 1
+fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
