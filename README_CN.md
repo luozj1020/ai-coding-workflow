@@ -50,6 +50,7 @@ ai-coding-workflow/
     run-loop.sh         ← 可选循环运行器（调度 + 审查）
     doctor_workflow.py  ← 调度/审查循环就绪检查（只读）
     clean_runtime.py    ← 预览/清理已忽略的运行时产物
+    install_context_tools.py ← 检查/安装上下文工具（LSP、代码检查）
 ```
 
 ---
@@ -137,6 +138,7 @@ ai/review-with-codex.sh
 ai/run-loop.sh
 ai/doctor_workflow.py
 ai/clean_runtime.py
+ai/install_context_tools.py
 .worktrees/.gitkeep
 ```
 
@@ -384,6 +386,23 @@ python ai/clean_runtime.py
 # 实际删除产物
 python ai/clean_runtime.py --apply
 ```
+
+**检查上下文工具：**
+
+```bash
+# 检查哪些 LSP/代码检查工具可用（只读）
+python ai/install_context_tools.py
+
+# 显示某个 profile 的安装命令（干运行）
+python ai/install_context_tools.py --apply python --manager npm
+
+# 实际安装（需要 --apply、--manager 和 --yes）
+python ai/install_context_tools.py --apply python --manager npm --yes
+```
+
+上下文工具助手检查常见的 LSP、代码检查和代码智能工具（pyright、ruff、mypy、typescript-language-server、gopls、rust-analyzer）。默认调用为只读。实际执行包管理器命令需要三个标志：`--apply PROFILE`、`--manager MANAGER` 和 `--yes`。
+
+注意：安装上下文工具二进制文件不会自动将它们暴露为 Codex LSP/codegraph 工具。Codex 代理需要单独配置才能使用它们。
 
 ---
 

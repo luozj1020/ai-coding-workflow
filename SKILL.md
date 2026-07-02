@@ -49,9 +49,10 @@ The installer performs these steps:
 10. Create `ai/pwsh-utf8.ps1`  -  Windows PowerShell UTF-8 session helper.
 11. Create `ai/doctor_workflow.py`  -  read-only readiness check for the dispatch/review loop.
 12. Create `ai/clean_runtime.py`  -  preview and remove ignored runtime artifacts.
-13. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
-14. Make shell scripts executable (`chmod +x`).
-15. Validate shell scripts with `bash -n`.
+13. Create `ai/install_context_tools.py`  -  check and optionally install context tools (LSP, linting).
+14. Create `.worktrees/.gitkeep`  -  placeholder for isolated worktrees.
+15. Make shell scripts executable (`chmod +x`).
+16. Validate shell scripts with `bash -n`.
 
 ## Mode: Update
 

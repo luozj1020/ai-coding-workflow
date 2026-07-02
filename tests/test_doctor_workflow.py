@@ -162,6 +162,41 @@ class DoctorWorkflowTests(unittest.TestCase):
             result = self.run_doctor(repo)
             self.assertIn("[codex-skill]", result.stdout)
 
+    def test_doctor_reports_context_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            result = self.run_doctor(repo)
+            self.assertIn("[context-tools]", result.stdout)
+            # Should mention either Available or Missing
+            self.assertTrue(
+                "Available:" in result.stdout or "Missing:" in result.stdout,
+                msg="Expected 'Available:' or 'Missing:' in context-tools output"
+            )
+
+
+    def test_context_tools_resolve_cmd_on_path(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            if sys.platform == "win32":
+                fake_tool = pathlib.Path(tmp) / "pyright.cmd"
+                fake_tool.write_text("@echo off\nexit /b 0\n", encoding="utf-8")
+            else:
+                fake_tool = pathlib.Path(tmp) / "pyright"
+                fake_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                fake_tool.chmod(0o755)
+
+            old_path = os.environ.get("PATH", "")
+            old_tools = module.CONTEXT_TOOLS
+            try:
+                os.environ["PATH"] = tmp
+                module.CONTEXT_TOOLS = [("pyright", ["pyright", "--version"])]
+                self.assertEqual(module._check_context_tools(), [("pyright", True)])
+            finally:
+                os.environ["PATH"] = old_path
+                module.CONTEXT_TOOLS = old_tools
+
     def test_doctor_reports_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"

@@ -186,6 +186,46 @@ def _check_codex_skill():
     return None
 
 
+# Context tools to check. Each entry: (name, check_command).
+# These are common LSP/linting tools. Presence on PATH is informational only;
+# installing them does NOT guarantee Codex can see them as LSP/codegraph APIs.
+CONTEXT_TOOLS = [
+    ("pyright", ["pyright", "--version"]),
+    ("ruff", ["ruff", "--version"]),
+    ("mypy", ["mypy", "--version"]),
+    ("typescript-language-server", ["typescript-language-server", "--version"]),
+    ("gopls", ["gopls", "version"]),
+    ("rust-analyzer", ["rust-analyzer", "--version"]),
+]
+
+
+def _check_context_tools():
+    """Check which context tools are available on PATH.
+
+    Returns list of (name, available) tuples.
+    """
+    results = []
+    for name, check_cmd in CONTEXT_TOOLS:
+        run_cmd = list(check_cmd)
+        executable = shutil.which(run_cmd[0])
+        if executable is None:
+            results.append((name, False))
+            continue
+        run_cmd[0] = executable
+        try:
+            r = subprocess.run(
+                run_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            results.append((name, r.returncode == 0))
+        except (FileNotFoundError, OSError):
+            results.append((name, False))
+    return results
+
+
 def run_doctor(repo_path=None):
     """Run all checks. Returns (findings, has_error).
 
@@ -263,6 +303,22 @@ def run_doctor(repo_path=None):
         findings.append((WARN, "codex-skill", skill_path))
     else:
         findings.append((INFO, "codex-skill", "Skill installed: {}".format(skill_path)))
+
+    # 8. Context tools (LSP/linting availability)
+    ctx_tools = _check_context_tools()
+    found = [name for name, ok in ctx_tools if ok]
+    missing = [name for name, ok in ctx_tools if not ok]
+    if found:
+        findings.append((INFO, "context-tools", "Available: {}".format(", ".join(found))))
+    if missing:
+        findings.append((WARN, "context-tools",
+                         "Missing: {}. Run 'python ai/install_context_tools.py' for details. "
+                         "Note: installing binaries does NOT guarantee Codex LSP/codegraph exposure.".format(
+                             ", ".join(missing))))
+    elif found:
+        findings.append((INFO, "context-tools",
+                         "All checked context tools are available. "
+                         "Note: installing binaries does NOT guarantee Codex LSP/codegraph exposure."))
 
     return findings, has_error
 

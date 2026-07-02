@@ -55,6 +55,7 @@ ai-coding-workflow/
     pwsh-utf8.ps1        -> Configure PowerShell UTF-8 sessions
     doctor_workflow.py   -> Read-only readiness check for dispatch/review loop
     clean_runtime.py     -> Preview/remove ignored runtime artifacts
+    install_context_tools.py -> Check/install context tools (LSP, linting)
   tests/
     test_*.py            -> Installer, dispatch, and helper regression tests
 ```
@@ -153,6 +154,7 @@ ai/cleanup-worktree.sh
 ai/pwsh-utf8.ps1
 ai/doctor_workflow.py
 ai/clean_runtime.py
+ai/install_context_tools.py
 .worktrees/.gitkeep
 ```
 
@@ -421,6 +423,28 @@ python ai/clean_runtime.py
 # Actually remove artifacts
 python ai/clean_runtime.py --apply
 ```
+
+**Check context tools:**
+
+```bash
+# Check which LSP/linting tools are available (read-only)
+python ai/install_context_tools.py
+
+# Show planned install commands for a profile (dry-run)
+python ai/install_context_tools.py --apply python --manager npm
+
+# Actually install (requires --apply, --manager, and --yes)
+python ai/install_context_tools.py --apply python --manager npm --yes
+```
+
+The context tools helper checks for common LSP, linting, and code intelligence
+tools (pyright, ruff, mypy, typescript-language-server, gopls, rust-analyzer).
+Default invocation is read-only. Actual package execution requires all three
+flags: `--apply PROFILE`, `--manager MANAGER`, and `--yes`.
+
+Note: installing context tool binaries does NOT automatically expose them as
+Codex LSP/codegraph tools. The Codex agent must be configured separately to
+use them.
 
 ---
 

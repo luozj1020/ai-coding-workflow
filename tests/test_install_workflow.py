@@ -48,6 +48,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "kill-claude.sh").exists())
             self.assertTrue((repo / "ai" / "cleanup-worktree.sh").exists())
             self.assertTrue((repo / "ai" / "pwsh-utf8.ps1").exists())
+            self.assertTrue((repo / "ai" / "install_context_tools.py").exists())
             self.assertTrue((repo / ".worktrees" / ".gitkeep").exists())
 
     def test_update_preserves_user_owned_content(self):

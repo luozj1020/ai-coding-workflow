@@ -41,6 +41,7 @@ ai/
   pwsh-utf8.ps1                # Configure PowerShell UTF-8 session defaults
   doctor_workflow.py          # Read-only readiness check for dispatch/review loop
   clean_runtime.py            # Preview/remove ignored runtime artifacts
+  install_context_tools.py    # Check/install context tools (LSP, linting)
   README.md                   # This file
 .worktrees/                   # Isolated git worktrees for execution
 AGENTS.md                     # Shared agent rules

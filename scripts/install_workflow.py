@@ -61,6 +61,7 @@ POWERSHELL_SCRIPTS = [
 PYTHON_SCRIPTS = [
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
     ("clean_runtime.py", "ai/clean_runtime.py"),
+    ("install_context_tools.py", "ai/install_context_tools.py"),
 ]
 
 
