@@ -24,30 +24,37 @@ ai-coding-workflow bootstraps repositories with:
 
 ```
 ai-coding-workflow/
-  README.md              ← English documentation
-  README_CN.md           ← Chinese documentation
-  LICENSE                ← MIT license
+  README.md              -> English documentation
+  README_CN.md           -> Chinese documentation
+  LICENSE                -> MIT license
   .gitignore
-  SKILL.md              ← Skill entry point for Codex discovery
+  SKILL.md               -> Skill entry point for Codex discovery
   agents/
-    openai.yaml         ← Skill metadata for OpenAI/Codex
+    openai.yaml          -> Skill metadata for OpenAI/Codex
   assets/
-    AGENTS.md           ← Template for agent rules
-    CLAUDE.md           ← Template for Claude Code rules
-    README.md           ← Template for local usage guide
+    AGENTS.md            -> Template for agent rules
+    CLAUDE.md            -> Template for Claude Code rules
+    README.md            -> Template for local usage guide
     task-card-template.md
     evidence-packet-template.md
   references/
-    loop-model.md       ← Loop state machine and stop conditions
-    operating-model.md  ← Agent roles and handoff model
-    review-policy.md    ← Code review division of labor
-    mcp-policy.md       ← Information retrieval order
+    loop-model.md        -> Loop state machine and stop conditions
+    operating-model.md   -> Agent roles and handoff model
+    review-policy.md     -> Code review division of labor
+    mcp-policy.md        -> Information retrieval order
   scripts/
-    install_workflow.py ← Bootstrap a repository
-    install_for_codex.py← Install skill for Codex discovery
-    dispatch-to-claude.sh← Dispatch task cards to Claude Code
-    review-with-codex.sh← Send evidence to Codex/GPT for review
-    run-loop.sh         ← Optional loop runner (dispatch + review)
+    install_workflow.py  -> Bootstrap a repository
+    install_for_codex.py -> Install skill for Codex discovery
+    dispatch-to-claude.sh -> Dispatch task cards to Claude Code
+    review-with-codex.sh -> Send evidence to Codex/GPT for review
+    run-loop.sh          -> Optional loop runner (dispatch + review)
+    status-claude.sh     -> Inspect Claude dispatch status and artifacts
+    watch-claude.sh      -> Show CLI progress panel for running dispatches
+    kill-claude.sh       -> Stop a recorded Claude dispatch process
+    cleanup-worktree.sh  -> Remove stopped worktrees while preserving evidence
+    pwsh-utf8.ps1        -> Configure PowerShell UTF-8 sessions
+  tests/
+    test_*.py            -> Installer, dispatch, and helper regression tests
 ```
 
 ---
@@ -133,6 +140,11 @@ ai/README.md
 ai/dispatch-to-claude.sh
 ai/review-with-codex.sh
 ai/run-loop.sh
+ai/status-claude.sh
+ai/watch-claude.sh
+ai/kill-claude.sh
+ai/cleanup-worktree.sh
+ai/pwsh-utf8.ps1
 .worktrees/.gitkeep
 ```
 
@@ -395,7 +407,7 @@ Run the local smoke tests before changing installer or workflow scripts:
 python -m unittest discover -s tests -v
 ```
 
-The tests use only the Python standard library and cover installer idempotency, managed-block preservation, `CLAUDE.md` import placement, and Codex skill copy exclusions.
+The tests use only the Python standard library and cover installer idempotency, managed-block preservation, `CLAUDE.md` import placement, Codex skill copy exclusions, dispatch dirty-source guard behavior, proxy defaults, progress artifacts, watcher parsing, and operation helper installation. Runtime artifacts are created only under ignored workspace paths such as `.worktrees/` and are not part of the release contents.
 
 ## License
 
