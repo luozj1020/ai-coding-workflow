@@ -27,12 +27,42 @@ This copies the Skill to:
 
 To update the installed Skill, run the same command again.
 
-## Mode: Install
+Installing the Skill only makes it discoverable to Codex. It does **not** create the local `ai/` workflow directory in each target repository. If a target repository reports that `ai/dispatch-to-claude.sh` is missing, bootstrap that repository first:
 
-Run the installer to bootstrap a repository with multi-agent workflow files:
+**Windows PowerShell:**
+```powershell
+python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .
+```
+
+**Unix/macOS:**
+```bash
+python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
+```
+
+From a cloned copy of this Skill repository, `install_for_codex.py` can also install the Skill and bootstrap a target repository in one command:
 
 ```bash
-python ai/scripts/install_workflow.py /path/to/repo
+python scripts/install_for_codex.py --bootstrap-repo /path/to/repo
+```
+
+## Mode: Install
+
+Run the installer to bootstrap a repository with multi-agent workflow files. From an installed Skill, use:
+
+**Windows PowerShell:**
+```powershell
+python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py /path/to/repo
+```
+
+**Unix/macOS:**
+```bash
+python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py /path/to/repo
+```
+
+From a cloned copy of this repository, use:
+
+```bash
+python scripts/install_workflow.py /path/to/repo
 ```
 
 The installer performs these steps:
@@ -56,10 +86,16 @@ The installer performs these steps:
 
 ## Mode: Update
 
-Run the same installer again to update previously installed files:
+Run the same installed Skill bootstrap command again to update previously installed files:
 
+**Windows PowerShell:**
+```powershell
+python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py /path/to/repo
+```
+
+**Unix/macOS:**
 ```bash
-python ai/scripts/install_workflow.py /path/to/repo
+python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py /path/to/repo
 ```
 
 Update behavior:
@@ -71,6 +107,17 @@ Update behavior:
 - The `## Project-specific rules` section in `AGENTS.md` is always user-owned.
 
 ## Mode: Use
+
+### Project Bootstrap Preflight
+
+Before creating or running a dispatch command, check whether the target repository has `ai/dispatch-to-claude.sh` and `ai/task-card-template.md`.
+
+If the local `ai/` workflow directory is missing:
+
+1. Treat this as a repository bootstrap gap, not a Claude Code failure.
+2. Run the installed Skill bootstrap command for the target repository, for example `python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .` on Unix/macOS or `python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .` on Windows PowerShell.
+3. Run `python ai/doctor_workflow.py` after bootstrap and report any remaining hard errors.
+4. Do not attempt `bash ai/dispatch-to-claude.sh ...` until the bootstrap check passes.
 
 ### Core Principle
 

@@ -13,6 +13,7 @@ Uses only the Python standard library.
 
 import glob
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,25 @@ import sys
 ERROR = "ERROR"
 WARN = "WARN"
 INFO = "INFO"
+
+WORKFLOW_REQUIRED_FILES = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "ai/task-card-template.md",
+    "ai/evidence-packet-template.md",
+    "ai/README.md",
+    "ai/dispatch-to-claude.sh",
+    "ai/review-with-codex.sh",
+    "ai/run-loop.sh",
+    "ai/status-claude.sh",
+    "ai/watch-claude.sh",
+    "ai/kill-claude.sh",
+    "ai/cleanup-worktree.sh",
+    "ai/doctor_workflow.py",
+    "ai/clean_runtime.py",
+    "ai/install_context_tools.py",
+    ".worktrees/.gitkeep",
+]
 
 
 def _find_repo_root(start):
@@ -186,6 +206,50 @@ def _check_codex_skill():
     return None
 
 
+def _quote_cmd_arg(value):
+    """Quote a command argument for display."""
+    if sys.platform == "win32":
+        return subprocess.list2cmdline([value])
+    return shlex.quote(value)
+
+
+def _candidate_workflow_installers():
+    """Return candidate install_workflow.py paths without requiring they exist."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    home = os.path.expanduser("~")
+    return [
+        os.path.join(home, ".codex", "skills", "ai-coding-workflow", "scripts", "install_workflow.py"),
+        os.path.join(script_dir, "install_workflow.py"),
+    ]
+
+
+def _workflow_bootstrap_command(repo_root):
+    """Return a concrete command to bootstrap this repository when possible."""
+    python_cmd = sys.executable or "python"
+    for installer in _candidate_workflow_installers():
+        if os.path.isfile(installer):
+            return "{} {} {}".format(
+                _quote_cmd_arg(python_cmd),
+                _quote_cmd_arg(installer),
+                _quote_cmd_arg(repo_root),
+            )
+    if sys.platform == "win32":
+        installer = r"%USERPROFILE%\.codex\skills\ai-coding-workflow\scripts\install_workflow.py"
+    else:
+        installer = "~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py"
+    return "python {} {}".format(installer, _quote_cmd_arg(repo_root))
+
+
+def _missing_project_workflow_files(repo_root):
+    """Return workflow files missing from a bootstrapped target repository."""
+    missing = []
+    for rel in WORKFLOW_REQUIRED_FILES:
+        path = os.path.join(repo_root, *rel.split("/"))
+        if not os.path.exists(path):
+            missing.append(rel)
+    return missing
+
+
 # Context tools to check. Each entry: (name, check_command).
 # These are common LSP/linting tools. Presence on PATH is informational only;
 # installing them does NOT guarantee Codex can see them as LSP/codegraph APIs.
@@ -244,6 +308,17 @@ def run_doctor(repo_path=None):
         return findings, has_error
 
     findings.append((INFO, "repo", "Repository root: {}".format(root)))
+
+    missing_workflow = _missing_project_workflow_files(root)
+    if missing_workflow:
+        has_error = True
+        shown = ", ".join(missing_workflow[:6])
+        if len(missing_workflow) > 6:
+            shown += ", ..."
+        findings.append((ERROR, "workflow", "Project workflow is not bootstrapped; missing: {}".format(shown)))
+        findings.append((INFO, "workflow", "Bootstrap command: {}".format(_workflow_bootstrap_command(root))))
+    else:
+        findings.append((INFO, "workflow", "Project workflow files are installed"))
 
     git_path, git_version = _git_available()
     if git_path is None:

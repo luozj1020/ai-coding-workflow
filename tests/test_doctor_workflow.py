@@ -43,8 +43,8 @@ class DoctorWorkflowTests(unittest.TestCase):
 
     # --- Exit code behavior ---
 
-    def test_doctor_exits_zero_on_clean_repo(self):
-        """Doctor exits 0 when run on a valid git repo with no hard errors."""
+    def test_doctor_exits_nonzero_when_workflow_missing(self):
+        """Doctor reports a git repo that has not been bootstrapped yet."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
             repo.mkdir()
@@ -54,8 +54,24 @@ class DoctorWorkflowTests(unittest.TestCase):
                 check=True,
             )
             result = self.run_doctor(repo)
-            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertEqual(result.returncode, 1)
             self.assertIn("Workflow Doctor", result.stdout)
+            self.assertIn("Project workflow is not bootstrapped", result.stdout)
+            self.assertIn("install_workflow.py", result.stdout)
+
+    def test_doctor_exits_zero_on_bootstrapped_repo(self):
+        """Doctor exits 0 when workflow files are installed in a git repo."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            subprocess.run(
+                ["git", "init", str(repo)],
+                capture_output=True,
+                check=True,
+            )
+            result = self.run_doctor(repo)
+            self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+            self.assertIn("Project workflow files are installed", result.stdout)
 
     def test_doctor_exits_nonzero_without_git(self):
         """Doctor exits 1 when no .git is found."""

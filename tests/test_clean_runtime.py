@@ -269,6 +269,15 @@ class CleanRuntimeTests(unittest.TestCase):
             repo = pathlib.Path(tmp) / "repo"
             repo.mkdir()
             _init_repo(repo)
+            subprocess.run(
+                [sys.executable, str(INSTALLER), str(repo)],
+                cwd=str(ROOT),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=True,
+            )
             (repo / ".worktrees").mkdir(exist_ok=True)
             (repo / ".worktrees" / "claude-1234.result.json").write_text("{}", encoding="utf-8")
 

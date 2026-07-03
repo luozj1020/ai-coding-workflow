@@ -20,6 +20,8 @@ ai-coding-workflow 可以为仓库自动配置：
 | **安装 Skill** | 每台电脑一次 | `python scripts/install_for_codex.py` |
 | **引导项目** | 每个仓库一次 | `python scripts/install_workflow.py .` |
 
+这两个动作是分开的。安装 Skill 只会让 Codex 发现该 workflow，不会自动在目标仓库创建 `ai/` 目录。如果 dispatch 报告缺少 `ai/dispatch-to-claude.sh`，先对该仓库执行“引导项目”。
+
 ## 仓库结构
 
 ```
@@ -97,6 +99,16 @@ cp -R ai-coding-workflow ~/.codex/skills/ai-coding-workflow
 
 然后重启 Codex。
 
+安装器会在安装完成后打印精确的项目引导命令。也可以在这个 Skill 仓库的克隆目录中，用一条命令完成“安装 Skill + 引导目标项目”：
+
+```powershell
+python .\scripts\install_for_codex.py --bootstrap-repo E:\path\to\your-project
+```
+
+```bash
+python scripts/install_for_codex.py --bootstrap-repo /path/to/your-project
+```
+
 **测试是否生效：**
 
 ```
@@ -109,7 +121,7 @@ Use ai-coding-workflow to explain how to install the workflow in this repo.
 
 ## 场景 B：引导新项目
 
-Skill 安装完成后，引导任意仓库。每个项目只需执行一次。
+Skill 安装完成后，引导任意仓库。每个项目只需执行一次。这一步会在项目中创建 `ai/dispatch-to-claude.sh` 以及其他本地工作流文件。
 
 ### Windows PowerShell
 
@@ -376,6 +388,8 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 ```bash
 python ai/doctor_workflow.py
 ```
+
+如果 doctor 报告 `Project workflow is not bootstrapped`，按它打印的 bootstrap 命令先引导项目。仓库没有本地 `ai/` 工作流目录时，不能直接运行 `bash ai/dispatch-to-claude.sh ...`。
 
 **清理运行时产物：**
 

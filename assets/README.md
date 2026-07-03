@@ -2,17 +2,29 @@
 
 ## Installing This Skill for Codex
 
-To make this Skill discoverable by Codex, run:
+To make this Skill discoverable by Codex, install it from a cloned copy of `ai-coding-workflow`:
 
 ```bash
-python ai/scripts/install_for_codex.py
+python scripts/install_for_codex.py
 ```
 
 This copies the Skill to:
 - Windows: `%USERPROFILE%\.codex\skills\ai-coding-workflow`
 - Unix/macOS: `$HOME/.codex/skills/ai-coding-workflow`
 
-To update, run the same command again.
+Skill installation and project bootstrap are separate. If another repository does not have `ai/dispatch-to-claude.sh`, run the installed Skill bootstrap command in that repository:
+
+```bash
+python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
+```
+
+On Windows PowerShell:
+
+```powershell
+python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .
+```
+
+To update, run the same install/bootstrap commands again.
 
 ## What Is This?
 
@@ -165,16 +177,31 @@ You can also run the loop manually:
 
 ## Updating the Workflow
 
-To update workflow files without losing project-specific rules:
+To update workflow files without losing project-specific rules, run the installed Skill bootstrap command again from the target repository:
 
 ```bash
-python ai/scripts/install_workflow.py /path/to/repo
+python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
+```
+
+On Windows PowerShell:
+
+```powershell
+python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .
 ```
 
 The installer preserves content outside managed markers and only replaces managed blocks.
 
 ## Troubleshooting
 
+### Missing `ai/` After Installing the Skill
+
+Installing the Codex Skill does not automatically modify every repository. If dispatch fails because `ai/dispatch-to-claude.sh` is missing, run the installed Skill bootstrap command in that repository, then verify with:
+
+```bash
+python ai/doctor_workflow.py
+```
+
+Do not run `bash ai/dispatch-to-claude.sh ...` until the doctor reports that project workflow files are installed.
 
 ### Windows: PowerShell UTF-8 setup
 

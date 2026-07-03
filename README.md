@@ -20,6 +20,8 @@ ai-coding-workflow bootstraps repositories with:
 | **Install Skill** | Once per computer | `python scripts/install_for_codex.py` |
 | **Bootstrap project** | Once per repository | `python scripts/install_workflow.py .` |
 
+These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create the target repository's `ai/` directory. If dispatch reports that `ai/dispatch-to-claude.sh` is missing, bootstrap that repository first.
+
 ## Repository layout
 
 ```
@@ -104,6 +106,16 @@ cp -R ai-coding-workflow ~/.codex/skills/ai-coding-workflow
 
 Then restart Codex.
 
+The installer prints exact bootstrap commands after installation. From this cloned Skill repository, you can also install the Skill and bootstrap a target project in one command:
+
+```powershell
+python .\scripts\install_for_codex.py --bootstrap-repo E:\path\to\your-project
+```
+
+```bash
+python scripts/install_for_codex.py --bootstrap-repo /path/to/your-project
+```
+
 **Test it works:**
 
 ```
@@ -120,7 +132,7 @@ The skill can still install, generate task cards, run the workflow doctor, and s
 
 ## Scenario B: Bootstrap a new project
 
-After the skill is installed, bootstrap any repository. Do this once per project.
+After the skill is installed, bootstrap any repository. Do this once per project. This is the step that creates `ai/dispatch-to-claude.sh` and the rest of the local workflow files.
 
 ### Windows PowerShell
 
@@ -413,6 +425,8 @@ Expected result:
 ```bash
 python ai/doctor_workflow.py
 ```
+
+If the doctor reports `Project workflow is not bootstrapped`, run the bootstrap command it prints. A repository cannot use `bash ai/dispatch-to-claude.sh ...` until the local `ai/` workflow directory exists.
 
 **Clean up runtime artifacts:**
 
