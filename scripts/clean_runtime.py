@@ -15,6 +15,7 @@ Never deletes tracked files. Uses only the Python standard library.
 """
 
 import argparse
+import ctypes
 import os
 import shutil
 import subprocess
@@ -90,11 +91,33 @@ def _process_running(pid_file):
     except (OSError, ValueError):
         return False
 
+    if sys.platform == "win32":
+        return _windows_process_running(pid)
+
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         return False
+
+
+def _windows_process_running(pid):
+    """Check process existence on Windows without sending a signal."""
+    process_query_limited_information = 0x1000
+    handle = ctypes.windll.kernel32.OpenProcess(
+        process_query_limited_information,
+        False,
+        pid,
+    )
+    if not handle:
+        return False
+    ctypes.windll.kernel32.CloseHandle(handle)
+    return True
+
+
+def _canon_path(path):
+    """Return a path form suitable for cross-platform equality checks."""
+    return os.path.normcase(os.path.abspath(os.path.normpath(path)))
 
 
 def _active_worktree_prefixes(worktrees_dir):
@@ -132,7 +155,7 @@ def collect_candidates(repo_root):
                 continue
             full = os.path.join(worktrees_dir, entry)
             if _is_git_ignored(repo_root, full) and not _is_tracked(repo_root, full):
-                is_wt = os.path.isdir(full) and os.path.normpath(full) in wt_paths
+                is_wt = os.path.isdir(full) and _canon_path(full) in wt_paths
                 candidates.append((full, ".worktrees/{}".format(entry), is_wt))
 
     # 2. root tmp-*
@@ -174,7 +197,9 @@ def _registered_worktree_paths(repo_root):
     for line in r.stdout.splitlines():
         if line.startswith("worktree "):
             wt_path = line[len("worktree "):]
-            paths.add(os.path.normpath(os.path.join(repo_root, wt_path)))
+            if not os.path.isabs(wt_path):
+                wt_path = os.path.join(repo_root, wt_path)
+            paths.add(_canon_path(wt_path))
     return paths
 
 

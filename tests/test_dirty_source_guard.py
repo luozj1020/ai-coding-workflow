@@ -74,13 +74,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
     def _write_fake_claude(self):
         fake = self.fake_bin / "claude"
-        fake.write_text(
-            "#!/usr/bin/env bash\n"
-            "cat >/dev/null\n"
-            "printf '%s\\n' '{\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}'\n",
-            encoding="utf-8",
-            newline="\n",
-        )
+        with open(fake, "w", encoding="utf-8", newline="\n") as f:
+            f.write(
+                "#!/usr/bin/env bash\n"
+                "cat >/dev/null\n"
+                "printf '%s\\n' '{\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}'\n"
+            )
         os.chmod(fake, 0o755)
 
     def _run(self, args, cwd=None, env=None, timeout=60):
