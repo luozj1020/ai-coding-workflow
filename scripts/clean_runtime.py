@@ -134,6 +134,14 @@ def _active_worktree_prefixes(worktrees_dir):
     return active
 
 
+def _is_registered_worktree(path, registered_paths):
+    """Return True for git worktrees using path and metadata evidence."""
+    if _canon_path(path) in registered_paths:
+        return True
+    # Git worktree directories contain a .git file pointing to the common dir.
+    return os.path.isfile(os.path.join(path, ".git"))
+
+
 def collect_candidates(repo_root):
     """Collect runtime artifact candidates for cleanup.
 
@@ -155,7 +163,7 @@ def collect_candidates(repo_root):
                 continue
             full = os.path.join(worktrees_dir, entry)
             if _is_git_ignored(repo_root, full) and not _is_tracked(repo_root, full):
-                is_wt = os.path.isdir(full) and _canon_path(full) in wt_paths
+                is_wt = os.path.isdir(full) and _is_registered_worktree(full, wt_paths)
                 candidates.append((full, ".worktrees/{}".format(entry), is_wt))
 
     # 2. root tmp-*
