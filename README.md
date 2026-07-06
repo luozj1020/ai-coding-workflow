@@ -13,11 +13,12 @@ ai-coding-workflow bootstraps repositories with:
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
 - Managed blocks for idempotent updates
 
-## Two actions
+## Common actions
 
 | Action | When | Command |
 |--------|------|---------|
 | **Install Skill** | Once per computer | `python scripts/install_for_codex.py` |
+| **Update Skill** | After pulling a newer checkout | `python scripts/update_skill.py --bootstrap-current` |
 | **Bootstrap project** | Once per repository | `python scripts/install_workflow.py .` |
 
 These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create the target repository's `ai/` directory. If dispatch reports that `ai/dispatch-to-claude.sh` is missing, bootstrap that repository first.
@@ -39,15 +40,21 @@ ai-coding-workflow/
     README.md            -> Template for local usage guide
     task-card-template.md
     evidence-packet-template.md
+    plan-task-template.md
+    plan-findings-template.md
+    plan-progress-template.md
   references/
     loop-model.md        -> Loop state machine and stop conditions
     operating-model.md   -> Agent roles and handoff model
     review-policy.md     -> Code review division of labor
     mcp-policy.md        -> Information retrieval order
+    benchmark-policy.md  -> Quality / speed / cost / stability evaluation
   scripts/
     install_workflow.py  -> Bootstrap a repository
     install_for_codex.py -> Install skill for Codex discovery
+    update_skill.py      -> Convenience updater for skill + optional repo bootstrap
     dispatch-to-claude.sh -> Dispatch task cards to Claude Code
+    check-worktree.sh    -> Run checker-only validation and write a checker report
     review-with-codex.sh -> Send evidence to Codex/GPT for review
     run-loop.sh          -> Optional loop runner (dispatch + review)
     status-claude.sh     -> Inspect Claude dispatch status and artifacts
@@ -58,6 +65,9 @@ ai-coding-workflow/
     doctor_workflow.py   -> Read-only readiness check for dispatch/review loop
     clean_runtime.py     -> Preview/remove ignored runtime artifacts
     install_context_tools.py -> Check/install context tools (LSP, linting)
+    summarize-loop-run.py -> Summarize workflow quality, speed, cost, and stability
+    init-plan.py         -> Create ai/plans/<task-id>/ planning files
+    session-catchup.py   -> Generate resume-context.md from plan and artifacts
   tests/
     test_*.py            -> Installer, dispatch, and helper regression tests
 ```
@@ -116,6 +126,29 @@ python .\scripts\install_for_codex.py --bootstrap-repo E:\path\to\your-project
 python scripts/install_for_codex.py --bootstrap-repo /path/to/your-project
 ```
 
+For routine updates from a cloned checkout, use the wrapper:
+
+```bash
+python scripts/update_skill.py
+python scripts/update_skill.py --bootstrap-current
+python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
+```
+
+When running from an already installed skill but updating from a separate clone, point it at the clone:
+
+```bash
+python ~/.codex/skills/ai-coding-workflow/scripts/update_skill.py \
+  --source /path/to/ai-coding-workflow \
+  --bootstrap-current
+```
+
+During Skill installation, the installer performs a read-only context intelligence check:
+- LSP tools such as `pyright`, `typescript-language-server`, `gopls`, and `rust-analyzer`.
+- CodeGraph CLI availability.
+- CodeGraph repository initialization when `--bootstrap-current` or `--bootstrap-repo` is used.
+
+It only prints suggestions. It does not install LSP tools and does not run `codegraph init` automatically. Use `python ~/.codex/skills/ai-coding-workflow/scripts/install_context_tools.py` to inspect LSP install suggestions, and run `codegraph init` inside a target repository when you want that repository indexed.
+
 **Test it works:**
 
 ```
@@ -155,8 +188,12 @@ AGENTS.md
 CLAUDE.md
 ai/task-card-template.md
 ai/evidence-packet-template.md
+ai/plan-task-template.md
+ai/plan-findings-template.md
+ai/plan-progress-template.md
 ai/README.md
 ai/dispatch-to-claude.sh
+ai/check-worktree.sh
 ai/review-with-codex.sh
 ai/run-loop.sh
 ai/status-claude.sh
@@ -167,6 +204,9 @@ ai/pwsh-utf8.ps1
 ai/doctor_workflow.py
 ai/clean_runtime.py
 ai/install_context_tools.py
+ai/summarize-loop-run.py
+ai/init-plan.py
+ai/session-catchup.py
 .worktrees/.gitkeep
 ```
 
@@ -206,6 +246,18 @@ python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflo
 Use ai-coding-workflow to create a task card for implementing <feature>.
 ```
 
+**Optional: create persistent planning files** for long-running work:
+
+```bash
+python ai/init-plan.py PROJ-123
+```
+
+This creates `ai/plans/PROJ-123/task_plan.md`, `findings.md`, and `progress.md`. To resume after context loss or `/clear`:
+
+```bash
+python ai/session-catchup.py --plan PROJ-123
+```
+
 **Step 3: Execute with Claude Code** (DISPATCH + EXECUTE + VERIFY)
 
 ```
@@ -227,6 +279,8 @@ CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-
 | `*.status.txt` | Claude stderr / execution log |
 | `*.diffstat.txt` | `git diff --stat` for tracked files |
 | `*.diff` | Full diff, including untracked implementation files |
+| `*.checker-report.md` | Checker-only validation report from `ai/check-worktree.sh` |
+| `*.checker-logs/` | Full logs for checker commands |
 | `*.source-status.txt` | Source repo state before dispatch |
 | `*.worktree-status.txt` | Worktree state after execution |
 | `*.untracked.txt` | Listing and patch evidence for untracked files |
@@ -239,18 +293,21 @@ CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-
 | `*.codex-events.jsonl` | Raw Codex JSON events when available |
 | `*.codex-usage.txt` | Codex review token/cost usage summary when available |
 
+While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
+
 **Step 4: Review with Codex** (REVIEW)
 
 ```
 Use ai-coding-workflow to review this execution evidence packet and diff. Decide accept / revise / split / reject.
 ```
 
-To include token/cost and repository status evidence in the review:
+To include checker, token/cost, and repository status evidence in the review:
 
 ```bash
 bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
   .worktrees/claude-<id>.result.json \
   .worktrees/claude-<id>.diff \
+  .worktrees/claude-<id>.checker-report.md \
   .worktrees/claude-<id>.usage.txt \
   .worktrees/claude-<id>.source-status.txt \
   .worktrees/claude-<id>.worktree-status.txt \
@@ -271,6 +328,20 @@ bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
 ```
 
 The loop runner automates Steps 3-5, stopping on accept, max iterations, or human intervention. It also writes `.worktrees/loop-<timestamp>/loop-usage-summary.md` with available Claude and Codex usage summaries. It does NOT merge automatically.
+
+**Checker-only validation:** Installed projects include `ai/check-worktree.sh`. The dispatcher runs it after Claude finishes and records a checker report. The checker discovers common validation commands, runs them without editing files, preserves failed command output, and marks the report `ALL GREEN` or `FAILED`.
+
+**Workflow quality summary:** `ai/run-loop.sh` also writes `.worktrees/loop-<timestamp>/loop-quality-summary.md` and `.json`. To summarize an existing run manually:
+
+```bash
+python ai/summarize-loop-run.py .worktrees/loop-<timestamp> \
+  --output .worktrees/loop-<timestamp>/loop-quality-summary.md \
+  --json-output .worktrees/loop-<timestamp>/loop-quality-summary.json
+```
+
+**Append-only loop events:** `ai/run-loop.sh` writes `.worktrees/loop-<timestamp>/loop-events.jsonl`, an append-only event stream for run start, iteration start, dispatch completion, review completion, decisions, revision task creation, and stop reasons. This preserves recovery context without rewriting prior observations.
+
+**Structured progress memory:** Claude is instructed to maintain `CLAUDE_PROGRESS.md` with stable fields: Goal, Current Phase, Next Check, Blocker, and Last Update. This keeps long-running tasks anchored without pasting large logs into prompts.
 
 ---
 

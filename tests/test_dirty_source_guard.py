@@ -133,6 +133,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Dispatch Complete", result.stdout)
+        self.assertIn("Checker Report:", result.stdout)
+        self.assertTrue(list((self.repo / ".worktrees").glob("claude-*.checker-report.md")))
 
     def test_untracked_task_card_only_succeeds(self):
         self._write_task_card()

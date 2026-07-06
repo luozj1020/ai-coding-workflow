@@ -39,6 +39,11 @@ Responsibilities:
   - Did Codex stay within the context budget during planning?
   - Were high-token reads and multi-file work delegated to Claude?
   - Did Claude return compressed evidence (summaries + artifact paths) instead of pasted large logs?
+- Check validation evidence quality:
+  - Was `ai/check-worktree.sh` run when available?
+  - Are failed commands, exit codes, key original output lines, and `file:line` locations preserved?
+  - Did any checker command mutate the worktree?
+  - Did the loop stop when failures repeated, regressed, or stopped improving?
 - Return a structured decision (see below)
 
 **Codex/GPT does NOT write code during review.** It evaluates and decides. Implementation is always delegated to Claude Code.

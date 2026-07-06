@@ -24,6 +24,49 @@
 
 <!-- Background, related work, constraints, links to design docs or discussions. -->
 
+## Execution Readiness Gate
+
+<!-- Codex completes this before dispatch. If any required field is not ready, create an exploration/prototype task instead of an implementation task. -->
+
+| Check | Ready? | Evidence / Follow-up |
+|-------|--------|----------------------|
+| Acceptance criteria are testable | yes/no | |
+| Expected files/modules are scoped | yes/no | |
+| Unknowns and decision gates are explicit | yes/no | |
+| Validation commands are known or discoverable | yes/no | |
+| Task is implementation-ready, not exploration-only | yes/no | |
+
+## Unknowns
+
+<!-- Codex uses this to reduce the information gap before Claude edits. Keep it concise and actionable. -->
+
+| Type | Notes | Owner / Resolution |
+|------|-------|--------------------|
+| Known knowns | <!-- Facts already established. --> | |
+| Known unknowns | <!-- Questions known before dispatch. --> | |
+| Assumed knowns | <!-- Constraints obvious to the human/Codex but easy for Claude to miss. --> | |
+| Unknown-unknown scan request | <!-- Blindspot pass Claude should perform before implementation. --> | |
+
+## Decision Gates
+
+<!-- Decisions that may change architecture, data model, UX, risk, or scope. Say whether Claude may decide, must choose the conservative option, or must stop and report. -->
+
+| Decision | Why It Matters | Claude Authority | Stop Condition |
+|----------|----------------|------------------|----------------|
+| | | autonomous / conservative / stop-and-report | |
+
+## Handoff Contract
+
+<!-- Compact executor contract. This is the fastest section for Claude and reviewers to compare against. -->
+
+| Field | Items |
+|-------|-------|
+| Must do | |
+| Must not do | |
+| May decide | |
+| Must report | |
+| Stop condition | |
+
 ## Acceptance Criteria
 
 <!-- How to verify the work is complete. Be specific and testable. -->
@@ -31,6 +74,24 @@
 - [ ] Criterion 1
 - [ ] Criterion 2
 - [ ] Criterion 3
+
+## Validation Contract
+
+<!-- List the exact checks expected for this task. If unknown, require Claude to discover project checks and record what it found. Prefer aggregate commands such as pnpm check when available. -->
+
+| Check | Command | Required? | Notes |
+|-------|---------|-----------|-------|
+| Tests | | yes/no | |
+| Lint | | yes/no | |
+| Type check | | yes/no | |
+| Build | | yes/no | |
+| Format check | | yes/no | |
+| Project aggregate check | | yes/no | |
+
+Checker expectations:
+- Run `bash ai/check-worktree.sh` when available.
+- Preserve failed command, exit code, key original output, and `file:line` locations.
+- Do not weaken, delete, skip, or rewrite checks just to get a green result.
 
 ## Execution Phases
 
@@ -42,6 +103,17 @@
 | B | | | |
 | C | | | |
 
+## Wait Policy
+
+<!-- Used by ai/watch-claude.sh and ai/status-claude.sh to avoid both blind waiting and premature interruption. Choose small for narrow fixes, medium for ordinary feature/test work, and large for broad refactors or slow validation. -->
+
+| Field | Value |
+|-------|-------|
+| Wait profile | small / medium / large |
+| Startup grace seconds | |
+| Stale review seconds | |
+| Consider interrupt after seconds | |
+| Partial diff review rule | Continue waiting when partial work matches the plan; consider interrupting when it is off-plan, risky, or no longer making useful progress. |
 
 ## Files / Modules
 
@@ -113,3 +185,14 @@
 - **Revision instructions:** <!-- Specific instructions from the reviewer for this iteration -->
 - **Budget / Stop conditions:** <!-- e.g., max 5 iterations, token budget, or "human stop only" -->
 - **Required evidence:** <!-- Types of evidence the reviewer expects: e.g., test output, LSP diagnostics, diffstat -->
+
+## Loop Stop Rules
+
+<!-- Override only when this task has stricter project-specific rules. -->
+
+- Stop on ALL GREEN.
+- Stop when max iterations are reached.
+- Stop when the same failure appears in two consecutive iterations.
+- Stop when a fix causes a previously passing check to fail.
+- Stop when failure count does not decrease for two consecutive iterations.
+- Stop when blocked by external dependency, environment, permission, or unavailable service.

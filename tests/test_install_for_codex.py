@@ -36,6 +36,7 @@ class InstallForCodexTests(unittest.TestCase):
             (src / "__pycache__").mkdir()
             (src / ".worktrees").mkdir()
             (src / "README.md").write_text("ok\n", encoding="utf-8")
+            (src / "scripts" / "update_skill.py").write_text("ok\n", encoding="utf-8")
             (src / "scripts" / "tool.pyc").write_text("compiled\n", encoding="utf-8")
             (src / "__pycache__" / "x.pyc").write_text("compiled\n", encoding="utf-8")
             (src / ".worktrees" / "artifact.txt").write_text("artifact\n", encoding="utf-8")
@@ -43,6 +44,7 @@ class InstallForCodexTests(unittest.TestCase):
             self.module.copy_skill(str(src), str(dest))
 
             self.assertTrue((dest / "README.md").exists())
+            self.assertTrue((dest / "scripts" / "update_skill.py").exists())
             self.assertFalse((dest / "scripts" / "tool.pyc").exists())
             self.assertFalse((dest / "__pycache__").exists())
             self.assertFalse((dest / ".worktrees").exists())
@@ -70,6 +72,12 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn("ai-coding-workflow", cmd)
             self.assertIn(".", cmd)
 
+    def test_skill_entrypoint_stays_concise(self):
+        skill = ROOT / "SKILL.md"
+        lines = skill.read_text(encoding="utf-8").splitlines()
+        self.assertLessEqual(len(lines), 120)
+        self.assertIn("When To Load More", skill.read_text(encoding="utf-8"))
+
     def test_main_prints_bootstrap_next_steps(self):
         with tempfile.TemporaryDirectory() as tmp:
             skills_dir = pathlib.Path(tmp) / "skills"
@@ -86,7 +94,13 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn("Next step for each target repository", output)
             self.assertIn("--bootstrap-current", output)
             self.assertIn("--bootstrap-repo", output)
+            self.assertIn("Convenient update command", output)
+            self.assertIn("update_skill.py", output)
             self.assertIn("ai/dispatch-to-claude.sh is missing", output)
+            self.assertIn("Context intelligence check", output)
+            self.assertIn("CodeGraph CLI:", output)
+            self.assertIn("CodeGraph init:", output)
+            self.assertIn("install_context_tools.py", output)
             self.assertTrue((skills_dir / "ai-coding-workflow" / "SKILL.md").exists())
 
     def test_main_bootstrap_repo_installs_workflow_directory(self):
@@ -107,6 +121,45 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertTrue((repo / "CLAUDE.md").exists())
             self.assertTrue((repo / "ai" / "dispatch-to-claude.sh").exists())
             self.assertTrue((repo / "ai" / "doctor_workflow.py").exists())
+            self.assertIn("Context intelligence check", stdout.getvalue())
+            self.assertIn("CodeGraph index for", stdout.getvalue())
+
+    def test_detect_context_tools_reports_codegraph_initialization(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+
+            status = self.module.detect_context_tools(str(repo))
+            self.assertIn("lsp", status)
+            self.assertIn("codegraph_cli", status)
+            self.assertFalse(status["codegraph_initialized"])
+
+            (repo / ".codegraph").mkdir()
+            status = self.module.detect_context_tools(str(repo))
+            self.assertTrue(status["codegraph_initialized"])
+
+    def test_update_skill_helper_builds_install_command(self):
+        helper = ROOT / "scripts" / "update_skill.py"
+        spec = importlib.util.spec_from_file_location("update_skill", helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / "source"
+            (source / "scripts").mkdir(parents=True)
+            (source / "assets").mkdir()
+            installer = source / "scripts" / "install_for_codex.py"
+            installer.write_text("ok\n", encoding="utf-8")
+
+            resolved_source, resolved_installer = module.validate_source(str(source))
+            self.assertEqual(pathlib.Path(resolved_source), source)
+            self.assertEqual(pathlib.Path(resolved_installer), installer)
+
+            args = module.parse_args(["--source", str(source), "--bootstrap-repo", "/tmp/repo"])
+            cmd = module.build_install_command(str(installer), args)
+            self.assertIn(str(installer), cmd)
+            self.assertIn("--bootstrap-repo", cmd)
+            self.assertIn("/tmp/repo", cmd)
 
 
 if __name__ == "__main__":

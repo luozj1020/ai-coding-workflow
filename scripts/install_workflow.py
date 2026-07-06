@@ -38,12 +38,16 @@ AGENTS_IMPORT = "@AGENTS.md"
 DIRECT_COPY = [
     ("task-card-template.md", "ai/task-card-template.md"),
     ("evidence-packet-template.md", "ai/evidence-packet-template.md"),
+    ("plan-task-template.md", "ai/plan-task-template.md"),
+    ("plan-findings-template.md", "ai/plan-findings-template.md"),
+    ("plan-progress-template.md", "ai/plan-progress-template.md"),
     ("README.md", "ai/README.md"),
 ]
 
 # Shell scripts to install (source relative to scripts/, dest relative to repo root)
 SCRIPTS = [
     ("dispatch-to-claude.sh", "ai/dispatch-to-claude.sh"),
+    ("check-worktree.sh", "ai/check-worktree.sh"),
     ("review-with-codex.sh", "ai/review-with-codex.sh"),
     ("run-loop.sh", "ai/run-loop.sh"),
     ("status-claude.sh", "ai/status-claude.sh"),
@@ -62,6 +66,9 @@ PYTHON_SCRIPTS = [
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
     ("clean_runtime.py", "ai/clean_runtime.py"),
     ("install_context_tools.py", "ai/install_context_tools.py"),
+    ("summarize-loop-run.py", "ai/summarize-loop-run.py"),
+    ("init-plan.py", "ai/init-plan.py"),
+    ("session-catchup.py", "ai/session-catchup.py"),
 ]
 
 

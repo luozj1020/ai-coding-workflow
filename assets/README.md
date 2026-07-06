@@ -24,7 +24,19 @@ On Windows PowerShell:
 python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflow.py .
 ```
 
-To update, run the same install/bootstrap commands again.
+For routine updates, use the convenience wrapper from a cloned `ai-coding-workflow` checkout:
+
+```bash
+python scripts/update_skill.py --bootstrap-current
+```
+
+If running from the installed Skill while using a separate clone as the update source:
+
+```bash
+python ~/.codex/skills/ai-coding-workflow/scripts/update_skill.py \
+  --source /path/to/ai-coding-workflow \
+  --bootstrap-current
+```
 
 ## What Is This?
 
@@ -43,7 +55,11 @@ This repository has been set up with a multi-agent AI coding workflow. The workf
 ai/
   task-card-template.md      # Template for planning work items
   evidence-packet-template.md # Template for documenting execution results
+  plan-task-template.md       # Persistent task plan template
+  plan-findings-template.md   # Persistent findings template
+  plan-progress-template.md   # Persistent progress template
   dispatch-to-claude.sh       # Dispatches task cards to Claude Code
+  check-worktree.sh           # Runs checker-only validation and writes a report
   review-with-codex.sh        # Sends evidence to Codex/GPT for review
   run-loop.sh                 # Optional loop runner (dispatch + review)
   status-claude.sh            # Inspect Claude dispatch progress/artifacts
@@ -54,8 +70,12 @@ ai/
   doctor_workflow.py          # Read-only readiness check for dispatch/review loop
   clean_runtime.py            # Preview/remove ignored runtime artifacts
   install_context_tools.py    # Check/install context tools (LSP, linting)
+  summarize-loop-run.py       # Summarize workflow quality, speed, cost, and stability
+  init-plan.py                # Create ai/plans/<task-id>/ planning files
+  session-catchup.py          # Generate resume-context.md from plan and artifacts
   README.md                   # This file
 .worktrees/                   # Isolated git worktrees for execution
+ai/plans/                     # Persistent planning files for long-running tasks
 AGENTS.md                     # Shared agent rules
 CLAUDE.md                     # Claude Code configuration
 ```
@@ -69,6 +89,18 @@ Copy the template and fill it in:
 ```bash
 cp ai/task-card-template.md ai/task-cards/PROJ-123.md
 # Edit ai/task-cards/PROJ-123.md
+```
+
+For longer tasks, create persistent planning files:
+
+```bash
+python ai/init-plan.py PROJ-123
+```
+
+To recover after context loss or `/clear`:
+
+```bash
+python ai/session-catchup.py --plan PROJ-123
 ```
 
 ### 2. Dispatch to Claude Code
@@ -94,6 +126,8 @@ CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-
 | `*.status.txt` | Claude stderr / execution log |
 | `*.diffstat.txt` | `git diff --stat` for tracked files |
 | `*.diff` | Full diff, including untracked implementation files |
+| `*.checker-report.md` | Checker-only validation report from `ai/check-worktree.sh` |
+| `*.checker-logs/` | Full logs for checker commands |
 | `*.source-status.txt` | Source repo state before dispatch |
 | `*.worktree-status.txt` | Worktree state after execution |
 | `*.untracked.txt` | Listing and patch evidence for untracked files |
@@ -108,18 +142,21 @@ CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-
 
 It does **not** merge automatically.
 
+While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
+
 ### 3. Review with Codex
 
 ```bash
 bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timestamp>.result.json .worktrees/claude-<timestamp>.diff
 ```
 
-To include token/cost and repository status evidence in the review:
+To include checker, token/cost, and repository status evidence in the review:
 
 ```bash
 bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
   .worktrees/claude-<timestamp>.result.json \
   .worktrees/claude-<timestamp>.diff \
+  .worktrees/claude-<timestamp>.checker-report.md \
   .worktrees/claude-<timestamp>.usage.txt \
   .worktrees/claude-<timestamp>.source-status.txt \
   .worktrees/claude-<timestamp>.worktree-status.txt \
@@ -128,6 +165,10 @@ bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
 ```
 
 Codex reviews the work and returns a structured decision: accept, revise, split, or reject, with explicit next-loop instructions.
+
+### Checker-Only Validation
+
+Installed projects include `ai/check-worktree.sh`. The dispatcher runs it after Claude finishes and records a checker report. The checker discovers common validation commands, runs them without editing files, preserves failed command output, and marks the report `ALL GREEN` or `FAILED`.
 
 ### 4. Merge
 
@@ -161,7 +202,19 @@ The loop runner:
 - Stops on `accept`, `split`, `reject`, max iterations, or unknown decision.
 - Persists all output in `.worktrees/loop-<timestamp>/`.
 - Writes `loop-usage-summary.md` with available Claude and Codex usage summaries.
+- Writes `loop-quality-summary.md` and `loop-quality-summary.json` with quality, speed, cost, and stability metrics.
+- Writes `loop-events.jsonl` as an append-only event stream for run start, iteration start, dispatch/review completion, decisions, revisions, and stop reasons.
 - Does NOT merge automatically. Human must review and merge.
+
+To summarize an existing loop run manually:
+
+```bash
+python ai/summarize-loop-run.py .worktrees/loop-<timestamp> \
+  --output .worktrees/loop-<timestamp>/loop-quality-summary.md \
+  --json-output .worktrees/loop-<timestamp>/loop-quality-summary.json
+```
+
+Claude also maintains `CLAUDE_PROGRESS.md` as a compact progress memory with stable fields: Goal, Current Phase, Next Check, Blocker, and Last Update.
 
 For the full state model, see the installed `ai-coding-workflow` Skill documentation.
 

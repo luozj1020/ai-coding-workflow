@@ -17,8 +17,8 @@
 set -euo pipefail
 
 # Git for Windows can be launched through bin/bash.exe without the usual Unix tool PATH.
-# Prepending these paths is harmless on Unix and makes helper scripts stable on Windows.
-PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
+# Append common Unix tool paths without overriding caller-provided shims or test fakes.
+PATH="${PATH}:/usr/bin:/bin:/mingw64/bin"
 export PATH
 
 if [ $# -lt 1 ]; then
@@ -63,6 +63,8 @@ RESULT_FILE="${WORKTREE_ROOT}/${TASK_ID}.result.json"
 STATUS_FILE="${WORKTREE_ROOT}/${TASK_ID}.status.txt"
 DIFFSTAT_FILE="${WORKTREE_ROOT}/${TASK_ID}.diffstat.txt"
 DIFF_FILE="${WORKTREE_ROOT}/${TASK_ID}.diff"
+CHECKER_REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker-report.md"
+CHECKER_LOGS_DIR="${WORKTREE_ROOT}/${TASK_ID}.checker-logs"
 SOURCE_STATUS_FILE="${WORKTREE_ROOT}/${TASK_ID}.source-status.txt"
 WORKTREE_STATUS_FILE="${WORKTREE_ROOT}/${TASK_ID}.worktree-status.txt"
 UNTRACKED_FILE="${WORKTREE_ROOT}/${TASK_ID}.untracked.txt"
@@ -72,7 +74,7 @@ CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
 PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 
-for f in "$RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" \
+for f in "$RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
          "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
          "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$PROGRESS_FILE"; do
     mkdir -p "$(dirname "$f")"
@@ -160,8 +162,15 @@ Execute the task card below. While working, maintain `CLAUDE_PROGRESS.md` in the
 `CLAUDE_PROGRESS.md` requirements:
 - Create it before doing substantial exploration or edits.
 - Keep it short and append/update it at natural milestones: context gathered, plan chosen, files being edited, checks running, blocker encountered, finalizing.
+- Keep these stable fields near the top so the current goal stays in recent attention:
+  - Goal
+  - Current Phase
+  - Next Check
+  - Blocker
+  - Last Update
 - Before any command or investigation that may take more than a few minutes, write what you are about to do and what result you expect.
 - Do not include secrets, large logs, or full diffs.
+- Preserve failed commands and observations instead of deleting or rewriting them; later recovery depends on that evidence.
 
 
 Phase-gate requirements:
@@ -170,12 +179,36 @@ Phase-gate requirements:
 - Create or update `CLAUDE_REPORT.md` before running long validation commands, before waiting on potentially slow commands, and before moving to a later phase marked `Stop Before Next Phase? = yes`.
 - If validation fails, hangs, or is blocked, stop after recording the exact command, observed output, and proposed next phase instead of continuing broad edits.
 
+Unknowns and decision gates:
+- If the task card has `## Execution Readiness Gate`, verify it against the repository before editing. If the task is not implementation-ready, stop after recording why an exploration/prototype task is needed.
+- If the task card has `## Unknowns`, perform the requested blindspot pass before implementation and record material findings in `CLAUDE_PROGRESS.md` or `CLAUDE_REPORT.md`.
+- If the task card has `## Decision Gates`, obey the listed authority: autonomous decisions may proceed, conservative decisions must choose the least risky compatible path, and stop-and-report decisions must not be crossed silently.
+- If the task card has `## Handoff Contract`, treat Must do / Must not do / May decide / Must report / Stop condition as the primary executor contract.
+- If implementation reality conflicts with the plan, choose a conservative path when safe, record the deviation under `Deviations From Plan`, and continue only when the task card permits it.
+
+Wait policy requirements:
+- If the task card has an `## Wait Policy` table, treat it as the observer contract for how long Codex/humans should give you before reviewing or interrupting.
+- Keep `CLAUDE_PROGRESS.md` fresh enough that quiet time reflects real tool/model waiting, not missing progress notes.
+- When partial implementation exists but validation is still running or blocked, update `CLAUDE_REPORT.md` with enough file-level summary for Codex to compare the partial diff against the plan.
+
 In addition to making the requested edits, create `CLAUDE_REPORT.md` in the worktree before finishing.
+
+Checker expectations:
+- Run project validation before finishing. If `ai/check-worktree.sh` is available, use it.
+- Preserve failed command, exit code, key original output, and file:line details.
+- Do not weaken, delete, skip, or rewrite checks just to get a green result.
+- If a validation blocker is environmental or external, stop and record the blocker instead of guessing.
 
 `CLAUDE_REPORT.md` must include:
 - Task card ID/path and a concise requirements summary.
 - Files changed with one-line purpose per file.
 - Acceptance criteria mapping: met / not met / partial.
+- Plan Match: full / partial / off-plan.
+- Validation Confidence: high / medium / low.
+- Reviewer Should Check: concise list of areas Codex/human should inspect.
+- Unknowns resolved, unknown-unknowns discovered, and decision gates crossed.
+- Deviations From Plan: original plan, discovered constraint, action taken, and reviewer decision needed.
+- Reviewer Briefing: behavior changed, critical paths, risks, and verification guidance.
 - Checks run and exact outcomes.
 - Known risks, assumptions, and open questions.
 - Human review checklist.
@@ -226,6 +259,20 @@ file_size() {
     fi
 }
 
+worktree_change_count() {
+    git status --porcelain --untracked-files=all 2>/dev/null \
+        | grep -v -E '^(.. )?(TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' \
+        | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0
+}
+
+worktree_digest() {
+    {
+        git status --porcelain --untracked-files=all 2>/dev/null \
+            | grep -v -E '^(.. )?(TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true
+        git diff --shortstat 2>/dev/null || true
+    } | sha1sum 2>/dev/null | awk '{print $1}' || true
+}
+
 stop_claude() {
     local reason="$1"
     local elapsed="$2"
@@ -236,6 +283,20 @@ stop_claude() {
         progress_log "Claude still alive after TERM; sending KILL to pid=${CLAUDE_PID}"
         kill -9 "$CLAUDE_PID" 2>/dev/null || true
     fi
+}
+
+claude_is_running() {
+    if ! kill -0 "$CLAUDE_PID" 2>/dev/null; then
+        return 1
+    fi
+    if command -v ps >/dev/null 2>&1; then
+        local state
+        state="$(ps -p "$CLAUDE_PID" -o stat= 2>/dev/null | awk '{print $1}' || true)"
+        case "$state" in
+            Z*) return 1 ;;
+        esac
+    fi
+    return 0
 }
 
 run_claude() {
@@ -276,12 +337,13 @@ CLAUDE_TIMED_OUT=0
 CLAUDE_NO_OUTPUT_TIMED_OUT=0
 LAST_ACTIVITY_EPOCH="$START_EPOCH"
 LAST_TOTAL_BYTES=0
-while kill -0 "$CLAUDE_PID" 2>/dev/null; do
+LAST_WORKTREE_DIGEST="$(worktree_digest)"
+while claude_is_running; do
     sleep "$CLAUDE_CODE_HEARTBEAT_SECONDS"
     NOW_EPOCH="$(date +%s)"
     ELAPSED=$((NOW_EPOCH - START_EPOCH))
 
-    if ! kill -0 "$CLAUDE_PID" 2>/dev/null; then
+    if ! claude_is_running; then
         break
     fi
 
@@ -289,13 +351,20 @@ while kill -0 "$CLAUDE_PID" 2>/dev/null; do
     STATUS_BYTES="$(file_size "$STATUS_FILE")"
     REPORT_BYTES="$(file_size "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
     CLAUDE_PROGRESS_BYTES="$(file_size "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
+    WORKTREE_CHANGES="$(worktree_change_count)"
+    CURRENT_WORKTREE_DIGEST="$(worktree_digest)"
     TOTAL_BYTES=$((RESULT_BYTES + STATUS_BYTES + REPORT_BYTES + CLAUDE_PROGRESS_BYTES))
-    if [ "$TOTAL_BYTES" -ne "$LAST_TOTAL_BYTES" ]; then
+    WORKTREE_CHANGED=0
+    if [ "$CURRENT_WORKTREE_DIGEST" != "$LAST_WORKTREE_DIGEST" ]; then
+        WORKTREE_CHANGED=1
+        LAST_WORKTREE_DIGEST="$CURRENT_WORKTREE_DIGEST"
+    fi
+    if [ "$TOTAL_BYTES" -ne "$LAST_TOTAL_BYTES" ] || [ "$WORKTREE_CHANGED" -eq 1 ]; then
         LAST_TOTAL_BYTES="$TOTAL_BYTES"
         LAST_ACTIVITY_EPOCH="$NOW_EPOCH"
     fi
     QUIET_SECONDS=$((NOW_EPOCH - LAST_ACTIVITY_EPOCH))
-    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}"
+    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}"
 
     if [ "$CLAUDE_CODE_TIMEOUT_SECONDS" -gt 0 ] && [ "$ELAPSED" -ge "$CLAUDE_CODE_TIMEOUT_SECONDS" ]; then
         CLAUDE_TIMED_OUT=1
@@ -342,6 +411,31 @@ else
 fi
 
 cd "$WORKTREE_DIR"
+
+CHECK_SCRIPT="${SCRIPT_DIR}/check-worktree.sh"
+if [ -f "$CHECK_SCRIPT" ]; then
+    progress_log "Starting checker helper: ${CHECK_SCRIPT}"
+    set +e
+    bash "$CHECK_SCRIPT" --report "$CHECKER_REPORT_FILE" --logs-dir "$CHECKER_LOGS_DIR" >> "$STATUS_FILE" 2>&1
+    CHECKER_STATUS=$?
+    set -e
+    if [ "$CHECKER_STATUS" -eq 0 ]; then
+        progress_log "Checker helper completed: ALL GREEN"
+    else
+        progress_log "Checker helper completed: FAILED status=${CHECKER_STATUS}; report=${CHECKER_REPORT_FILE}"
+        echo "Warning: checker helper reported failures. Review $CHECKER_REPORT_FILE" >&2
+    fi
+else
+    {
+        echo "# Checker Report"
+        echo ""
+        echo "FAILED"
+        echo ""
+        echo "Checker helper not found: ${CHECK_SCRIPT}"
+    } > "$CHECKER_REPORT_FILE"
+    progress_log "Checker helper unavailable: ${CHECK_SCRIPT}"
+fi
+
 git diff --stat > "$DIFFSTAT_FILE" 2>/dev/null || true
 git diff > "$DIFF_FILE" 2>/dev/null || true
 
@@ -491,6 +585,7 @@ else
         echo "- Status log: $STATUS_FILE"
         echo "- Diffstat: $DIFFSTAT_FILE"
         echo "- Diff: $DIFF_FILE"
+        echo "- Checker report: $CHECKER_REPORT_FILE"
         echo "- Source status: $SOURCE_STATUS_FILE"
         echo "- Worktree status: $WORKTREE_STATUS_FILE"
         echo "- Untracked files: $UNTRACKED_FILE"
@@ -514,6 +609,7 @@ echo "Result:          $RESULT_FILE"
 echo "Status:          $STATUS_FILE"
 echo "Diffstat:        $DIFFSTAT_FILE"
 echo "Diff:            $DIFF_FILE"
+echo "Checker Report:  $CHECKER_REPORT_FILE"
 echo "Source Status:   $SOURCE_STATUS_FILE"
 echo "Worktree Status: $WORKTREE_STATUS_FILE"
 echo "Untracked Files: $UNTRACKED_FILE"

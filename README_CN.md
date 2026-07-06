@@ -13,14 +13,15 @@ ai-coding-workflow 可以为仓库自动配置：
 - Codex + Claude Code 工作流的安全调度/审查/循环脚本
 - 幂等更新的托管块（managed blocks）
 
-## 两个动作
+## 常用动作
 
 | 动作 | 时机 | 命令 |
 |------|------|------|
 | **安装 Skill** | 每台电脑一次 | `python scripts/install_for_codex.py` |
+| **更新 Skill** | 拉取新版本后 | `python scripts/update_skill.py --bootstrap-current` |
 | **引导项目** | 每个仓库一次 | `python scripts/install_workflow.py .` |
 
-这两个动作是分开的。安装 Skill 只会让 Codex 发现该 workflow，不会自动在目标仓库创建 `ai/` 目录。如果 dispatch 报告缺少 `ai/dispatch-to-claude.sh`，先对该仓库执行“引导项目”。
+安装 Skill 只会让 Codex 发现该 workflow，不会自动在目标仓库创建 `ai/` 目录。如果 dispatch 报告缺少 `ai/dispatch-to-claude.sh`，先对该仓库执行“引导项目”。更新 Skill 可以顺手带上 `--bootstrap-current` 来刷新当前仓库的 workflow 文件。
 
 ## 仓库结构
 
@@ -39,20 +40,29 @@ ai-coding-workflow/
     README.md           ← 本地使用指南模板
     task-card-template.md
     evidence-packet-template.md
+    plan-task-template.md
+    plan-findings-template.md
+    plan-progress-template.md
   references/
     loop-model.md       ← 循环状态机和停止条件
     operating-model.md  ← 智能体角色和交接模型
     review-policy.md    ← 代码审查分工
     mcp-policy.md       ← 信息检索顺序
+    benchmark-policy.md ← 质量 / 速度 / 成本 / 稳定性评估
   scripts/
     install_workflow.py ← 引导仓库
     install_for_codex.py← 安装技能供 Codex 发现
+    update_skill.py     ← 便捷更新 Skill，并可选更新当前项目 workflow
     dispatch-to-claude.sh← 向 Claude Code 分发任务卡
+    check-worktree.sh   ← 运行只检查不修改的验证并写入 checker report
     review-with-codex.sh← 向 Codex/GPT 发送证据审查
     run-loop.sh         ← 可选循环运行器（调度 + 审查）
     doctor_workflow.py  ← 调度/审查循环就绪检查（只读）
     clean_runtime.py    ← 预览/清理已忽略的运行时产物
     install_context_tools.py ← 检查/安装上下文工具（LSP、代码检查）
+    summarize-loop-run.py ← 汇总 workflow 质量、速度、成本和稳定性
+    init-plan.py        ← 创建 ai/plans/<task-id>/ 计划文件
+    session-catchup.py  ← 根据计划和 artifacts 生成 resume-context.md
 ```
 
 ---
@@ -109,6 +119,29 @@ python .\scripts\install_for_codex.py --bootstrap-repo E:\path\to\your-project
 python scripts/install_for_codex.py --bootstrap-repo /path/to/your-project
 ```
 
+日常更新可以使用更短的 wrapper：
+
+```bash
+python scripts/update_skill.py
+python scripts/update_skill.py --bootstrap-current
+python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
+```
+
+如果从已安装的 Skill 入口运行，但希望用另一个克隆目录作为更新源：
+
+```bash
+python ~/.codex/skills/ai-coding-workflow/scripts/update_skill.py \
+  --source /path/to/ai-coding-workflow \
+  --bootstrap-current
+```
+
+安装 Skill 时，安装器会执行只读的上下文智能检查：
+- LSP 工具，例如 `pyright`、`typescript-language-server`、`gopls`、`rust-analyzer`。
+- CodeGraph CLI 是否可用。
+- 使用 `--bootstrap-current` 或 `--bootstrap-repo` 时，目标仓库是否已经有 `.codegraph/` 索引目录。
+
+安装器只打印建议，不会自动安装 LSP 工具，也不会自动运行 `codegraph init`。如需查看 LSP 安装建议，可运行 `python ~/.codex/skills/ai-coding-workflow/scripts/install_context_tools.py`；如需为某个仓库启用 CodeGraph，请在目标仓库内显式运行 `codegraph init`。
+
 **测试是否生效：**
 
 ```
@@ -144,13 +177,20 @@ AGENTS.md
 CLAUDE.md
 ai/task-card-template.md
 ai/evidence-packet-template.md
+ai/plan-task-template.md
+ai/plan-findings-template.md
+ai/plan-progress-template.md
 ai/README.md
 ai/dispatch-to-claude.sh
+ai/check-worktree.sh
 ai/review-with-codex.sh
 ai/run-loop.sh
 ai/doctor_workflow.py
 ai/clean_runtime.py
 ai/install_context_tools.py
+ai/summarize-loop-run.py
+ai/init-plan.py
+ai/session-catchup.py
 .worktrees/.gitkeep
 ```
 
@@ -190,6 +230,18 @@ python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflo
 Use ai-coding-workflow to create a task card for implementing <功能>.
 ```
 
+**可选：为长任务创建持久计划文件**
+
+```bash
+python ai/init-plan.py PROJ-123
+```
+
+这会创建 `ai/plans/PROJ-123/task_plan.md`、`findings.md` 和 `progress.md`。如果上下文丢失或执行了 `/clear`，可生成恢复上下文：
+
+```bash
+python ai/session-catchup.py --plan PROJ-123
+```
+
 **步骤 3：Claude Code 执行**（调度 + 执行 + 验证）
 
 ```
@@ -210,6 +262,8 @@ CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-
 | `*.status.txt` | Claude 标准错误 / 执行日志 |
 | `*.diffstat.txt` | 已跟踪文件的 `git diff --stat` |
 | `*.diff` | 完整差异，包含未跟踪实现文件 |
+| `*.checker-report.md` | `ai/check-worktree.sh` 生成的只检查不修改验证报告 |
+| `*.checker-logs/` | checker 命令的完整日志 |
 | `*.source-status.txt` | 调度前源仓库状态 |
 | `*.worktree-status.txt` | 执行后工作树状态 |
 | `*.untracked.txt` | 未跟踪文件列表和 patch 证据 |
@@ -219,18 +273,21 @@ CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-
 | `*.codex-events.jsonl` | 可用时记录的 Codex 原始 JSON 事件 |
 | `*.codex-usage.txt` | 可用时记录的 Codex 审查 Token/费用摘要 |
 
+Claude 运行期间，`*.progress.log` 会同时记录产物增长和实现工作树变化。`ai/watch-claude.sh` 与 `ai/status-claude.sh` 会展示部分工作树的 diffstat/status。最初几个等待回合里，如果工作树仍在变化，应先对照任务卡审查部分 diff；若修改方向符合 plan，就继续等待 Claude 完成。只有当部分实现已经偏离 plan、风险过高，或不再产生有效进展时，才考虑中断 Claude。
+
 **步骤 4：Codex 审查**（审查）
 
 ```
 Use ai-coding-workflow to review this execution evidence packet and diff. Decide accept / revise / split / reject.
 ```
 
-要将 token/费用和仓库状态证据纳入审查：
+要将 checker、token/费用和仓库状态证据纳入审查：
 
 ```bash
 bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
   .worktrees/claude-<id>.result.json \
   .worktrees/claude-<id>.diff \
+  .worktrees/claude-<id>.checker-report.md \
   .worktrees/claude-<id>.usage.txt \
   .worktrees/claude-<id>.source-status.txt \
   .worktrees/claude-<id>.worktree-status.txt \
@@ -251,6 +308,20 @@ bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
 ```
 
 循环运行器自动执行步骤 3-5，在接受、达到最大迭代次数或人工干预时停止。它还会写入 `.worktrees/loop-<timestamp>/loop-usage-summary.md`，汇总可用的 Claude 和 Codex 使用量。它不会自动合并。
+
+**只检查验证：** 安装后的项目包含 `ai/check-worktree.sh`。dispatcher 会在 Claude 结束后运行它并记录 checker report。checker 会发现常见项目检查命令，只运行验证、不修改文件，保留失败命令输出，并将结果标记为 `ALL GREEN` 或 `FAILED`。
+
+**Workflow 质量汇总：** `ai/run-loop.sh` 还会写入 `.worktrees/loop-<timestamp>/loop-quality-summary.md` 和 `.json`。也可以手动汇总已有运行：
+
+```bash
+python ai/summarize-loop-run.py .worktrees/loop-<timestamp> \
+  --output .worktrees/loop-<timestamp>/loop-quality-summary.md \
+  --json-output .worktrees/loop-<timestamp>/loop-quality-summary.json
+```
+
+**追加式 loop 事件：** `ai/run-loop.sh` 会写入 `.worktrees/loop-<timestamp>/loop-events.jsonl`，记录 run start、iteration start、dispatch complete、review complete、decision、revision task created 和 stop reason。它保留恢复上下文，不重写旧观察。
+
+**结构化进度记忆：** Claude 会维护包含稳定字段的 `CLAUDE_PROGRESS.md`：Goal、Current Phase、Next Check、Blocker、Last Update。这样长任务能持续锚定目标，又不需要把大日志塞回 prompt。
 
 ---
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # watch-claude.sh  -  Stream compact Claude dispatch progress for CLI observers.
 #
-# Usage: bash ai/watch-claude.sh [claude-<timestamp>] [--interval seconds] [--lines count] [--once] [--details] [--stale-after seconds]
+# Usage: bash ai/watch-claude.sh [claude-<timestamp>] [--interval seconds] [--lines count] [--once] [--details] [--stale-after seconds] [--wait-profile small|medium|large] [--startup-grace seconds] [--interrupt-after seconds]
 
 set -euo pipefail
 
@@ -15,6 +15,10 @@ ONCE=0
 DETAILS=0
 PLAIN=0
 STALE_AFTER=120
+STALE_AFTER_EXPLICIT=0
+WAIT_PROFILE="${CLAUDE_CODE_WAIT_PROFILE:-medium}"
+STARTUP_GRACE=""
+INTERRUPT_AFTER=""
 TASK_REF=""
 
 while [ $# -gt 0 ]; do
@@ -39,9 +43,22 @@ while [ $# -gt 0 ]; do
         --stale-after)
             shift
             STALE_AFTER="${1:-}"
+            STALE_AFTER_EXPLICIT=1
+            ;;
+        --wait-profile)
+            shift
+            WAIT_PROFILE="${1:-}"
+            ;;
+        --startup-grace)
+            shift
+            STARTUP_GRACE="${1:-}"
+            ;;
+        --interrupt-after)
+            shift
+            INTERRUPT_AFTER="${1:-}"
             ;;
         -h|--help)
-            echo "Usage: $0 [claude-<timestamp>] [--interval seconds] [--lines count] [--once] [--details] [--plain] [--stale-after seconds]"
+            echo "Usage: $0 [claude-<timestamp>] [--interval seconds] [--lines count] [--once] [--details] [--plain] [--stale-after seconds] [--wait-profile small|medium|large] [--startup-grace seconds] [--interrupt-after seconds]"
             exit 0
             ;;
         *)
@@ -55,7 +72,35 @@ while [ $# -gt 0 ]; do
     shift || true
 done
 
-for value_name in INTERVAL TAIL_LINES STALE_AFTER; do
+case "$WAIT_PROFILE" in
+    small)
+        DEFAULT_STARTUP_GRACE=30
+        DEFAULT_STALE_AFTER=60
+        DEFAULT_INTERRUPT_AFTER=240
+        ;;
+    medium)
+        DEFAULT_STARTUP_GRACE=60
+        DEFAULT_STALE_AFTER=120
+        DEFAULT_INTERRUPT_AFTER=600
+        ;;
+    large)
+        DEFAULT_STARTUP_GRACE=120
+        DEFAULT_STALE_AFTER=300
+        DEFAULT_INTERRUPT_AFTER=1200
+        ;;
+    *)
+        echo "Error: --wait-profile must be one of: small, medium, large." >&2
+        exit 1
+        ;;
+esac
+
+if [ "$STALE_AFTER_EXPLICIT" -eq 0 ]; then
+    STALE_AFTER="$DEFAULT_STALE_AFTER"
+fi
+STARTUP_GRACE="${STARTUP_GRACE:-$DEFAULT_STARTUP_GRACE}"
+INTERRUPT_AFTER="${INTERRUPT_AFTER:-$DEFAULT_INTERRUPT_AFTER}"
+
+for value_name in INTERVAL TAIL_LINES STALE_AFTER STARTUP_GRACE INTERRUPT_AFTER; do
     value="${!value_name}"
     case "$value" in
         ''|*[!0-9]*) echo "Error: ${value_name} must be a non-negative integer." >&2; exit 1 ;;
@@ -103,6 +148,54 @@ field_from_line() {
     local line="$1"
     local key="$2"
     echo "$line" | sed -n "s/.*${key}=\([0-9][0-9]*\).*/\1/p"
+}
+
+worktree_change_count() {
+    if [ ! -d "$WORKTREE_DIR" ]; then
+        echo 0
+        return
+    fi
+    git -c "safe.directory=$WORKTREE_DIR" -C "$WORKTREE_DIR" status --porcelain --untracked-files=all 2>/dev/null \
+        | grep -v -E '^(.. )?(TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' \
+        | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0
+}
+
+partial_diffstat() {
+    if [ ! -d "$WORKTREE_DIR" ]; then
+        echo "(worktree unavailable)"
+        return
+    fi
+    local out
+    out="$(git -c "safe.directory=$WORKTREE_DIR" -C "$WORKTREE_DIR" diff --shortstat 2>/dev/null || true)"
+    if [ -z "$out" ]; then
+        out="$(git -c "safe.directory=$WORKTREE_DIR" -C "$WORKTREE_DIR" status --short --untracked-files=all 2>/dev/null \
+            | grep -v -E ' (TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' \
+            | head -5 || true)"
+    fi
+    if [ -z "$out" ]; then
+        echo "(no implementation changes detected)"
+    else
+        echo "$out"
+    fi
+}
+
+partial_risk_summary() {
+    if [ ! -d "$WORKTREE_DIR" ]; then
+        echo "files=0 tests_touched=0 high_risk=0"
+        return
+    fi
+    local files file_count test_count high_risk_count
+    files="$(git -c "safe.directory=$WORKTREE_DIR" -C "$WORKTREE_DIR" status --porcelain --untracked-files=all 2>/dev/null \
+        | grep -v -E ' (TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' \
+        | sed 's/^...//' || true)"
+    if [ -z "$files" ]; then
+        echo "files=0 tests_touched=0 high_risk=0"
+        return
+    fi
+    file_count="$(printf '%s\n' "$files" | sed '/^$/d' | wc -l 2>/dev/null | tr -d '[:space:]')"
+    test_count="$(printf '%s\n' "$files" | grep -Eic '(^|/)(test|tests|spec|__tests__)/|(_test|\.test|\.spec)\.' || true)"
+    high_risk_count="$(printf '%s\n' "$files" | grep -Eic '(^|/)(migrations?|infra|deploy|auth|security|billing|payment)(/|$)|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|go\.sum|requirements.*\.txt' || true)"
+    echo "files=${file_count:-0} tests_touched=${test_count:-0} high_risk=${high_risk_count:-0}"
 }
 
 progress_bar() {
@@ -211,6 +304,7 @@ stuck_reason() {
     local report_bytes="$5"
     local claude_progress_bytes="$6"
     local claude_progress_source="$7"
+    local worktree_changes="$8"
 
     if [ "$running" = "no" ]; then
         if [ "$result_bytes" -gt 0 ]; then
@@ -223,6 +317,8 @@ stuck_reason() {
 
     if [ "$quiet" -lt "$STALE_AFTER" ]; then
         echo "none: progress changed recently or stale threshold not reached."
+    elif [ "$worktree_changes" -gt 0 ]; then
+        echo "partial-implementation-present: worktree has changes; review partial diff and continue waiting if it aligns with the plan."
     elif [ "$claude_progress_bytes" -eq 0 ] && [ "$result_bytes" -eq 0 ] && [ "$status_bytes" -eq 0 ]; then
         echo "startup/network/auth wait suspected: no result, stderr, or progress after ${quiet}s."
     elif [ "$claude_progress_bytes" -gt 0 ] && [ -f "$claude_progress_source" ]; then
@@ -234,19 +330,54 @@ stuck_reason() {
     fi
 }
 
+recommended_action() {
+    local running="$1"
+    local elapsed="$2"
+    local quiet="$3"
+    local result_bytes="$4"
+    local status_bytes="$5"
+    local claude_progress_bytes="$6"
+    local worktree_changes="$7"
+
+    if [ "$running" = "no" ]; then
+        if [ "$result_bytes" -gt 0 ]; then
+            echo "COMPLETE"
+        else
+            echo "INSPECT_ARTIFACTS"
+        fi
+        return
+    fi
+
+    if [ "$elapsed" -lt "$STARTUP_GRACE" ]; then
+        echo "CONTINUE_WAITING"
+    elif [ "$quiet" -lt "$STALE_AFTER" ]; then
+        echo "CONTINUE_WAITING"
+    elif [ "$worktree_changes" -gt 0 ] && [ "$quiet" -lt "$INTERRUPT_AFTER" ]; then
+        echo "REVIEW_PARTIAL_DIFF"
+    elif [ "$worktree_changes" -gt 0 ]; then
+        echo "CONSIDER_INTERRUPT"
+    elif [ "$result_bytes" -eq 0 ] && [ "$status_bytes" -eq 0 ] && [ "$claude_progress_bytes" -eq 0 ]; then
+        echo "LIKELY_STUCK"
+    elif [ "$quiet" -ge "$INTERRUPT_AFTER" ]; then
+        echo "LIKELY_STUCK"
+    else
+        echo "CONSIDER_INTERRUPT"
+    fi
+}
+
 print_header() {
     if [ "$printed_header" -eq 0 ]; then
         if [ "$PLAIN" -eq 1 ]; then
             echo "# Claude Watch"
             echo "Task ID: $TASK_ID"
             echo "Mode: plain compact (use --details to show full progress tails)"
-            echo "Stale threshold: ${STALE_AFTER}s"
+            echo "Wait policy: profile=${WAIT_PROFILE} startup_grace=${STARTUP_GRACE}s stale_after=${STALE_AFTER}s interrupt_after=${INTERRUPT_AFTER}s"
         else
             echo "============================================================"
             echo " CLAUDE CODE WATCH"
             echo " task: ${TASK_ID}"
             echo " mode: status panel (use --details for full tails, --plain for compact text)"
-            echo " stale threshold: ${STALE_AFTER}s"
+            echo " wait policy: profile=${WAIT_PROFILE} startup_grace=${STARTUP_GRACE}s stale_after=${STALE_AFTER}s interrupt_after=${INTERRUPT_AFTER}s"
             echo "============================================================"
         fi
         echo ""
@@ -280,12 +411,19 @@ print_details_if_needed() {
         echo "## Status Tail"
         tail -n "$TAIL_LINES" "$STATUS_FILE"
     fi
+    if [ -d "$WORKTREE_DIR" ]; then
+        echo ""
+        echo "## Partial Worktree"
+        echo "Change count: $(worktree_change_count)"
+        echo "Diffstat/status:"
+        partial_diffstat
+    fi
 }
 
 print_snapshot() {
     print_header
 
-    local claude_progress_source running last_line elapsed quiet result_bytes status_bytes report_bytes claude_progress_bytes diff_bytes percent bar milestone reason digest show_details
+    local claude_progress_source running last_line elapsed quiet result_bytes status_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary percent bar milestone reason action digest show_details
     claude_progress_source="$(select_claude_progress_file)"
     if is_running "$PID_FILE"; then running="yes"; else running="no"; fi
     last_line="$(last_dispatch_line)"
@@ -296,12 +434,17 @@ print_snapshot() {
     report_bytes="$(file_size "$REPORT_FILE")"
     claude_progress_bytes="$(file_size "$claude_progress_source")"
     diff_bytes="$(file_size "$DIFF_FILE")"
+    worktree_changes="$(field_from_line "$last_line" "worktree_changes")"
+    worktree_changes="${worktree_changes:-$(worktree_change_count)}"
+    partial_summary="$(partial_diffstat | head -1)"
+    risk_summary="$(partial_risk_summary)"
     percent="$(progress_percent "$claude_progress_source")"
     bar="$(progress_bar "$percent")"
     milestone="$(current_milestone "$claude_progress_source")"
-    reason="$(stuck_reason "$running" "$quiet" "$result_bytes" "$status_bytes" "$report_bytes" "$claude_progress_bytes" "$claude_progress_source")"
+    reason="$(stuck_reason "$running" "$quiet" "$result_bytes" "$status_bytes" "$report_bytes" "$claude_progress_bytes" "$claude_progress_source" "$worktree_changes")"
+    action="$(recommended_action "$running" "$elapsed" "$quiet" "$result_bytes" "$status_bytes" "$claude_progress_bytes" "$worktree_changes")"
 
-    digest="${running}|${elapsed}|${quiet}|${result_bytes}|${status_bytes}|${report_bytes}|${claude_progress_bytes}|${percent}|${milestone}|${reason}"
+    digest="${running}|${elapsed}|${quiet}|${result_bytes}|${status_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${percent}|${milestone}|${reason}|${action}"
     if [ "$digest" != "$last_digest" ]; then
         if [ "$running" = "yes" ]; then
             state="RUNNING"
@@ -314,7 +457,10 @@ print_snapshot() {
         if [ "$PLAIN" -eq 1 ]; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] state=${state} elapsed=${elapsed}s quiet=${quiet}s ${bar}"
             echo "current: ${milestone}"
-            echo "artifacts: result=${result_bytes}B status=${status_bytes}B report=${report_bytes}B progress=${claude_progress_bytes}B diff=${diff_bytes}B"
+            echo "artifacts: result=${result_bytes}B status=${status_bytes}B report=${report_bytes}B progress=${claude_progress_bytes}B diff=${diff_bytes}B changes=${worktree_changes}"
+            echo "partial: ${partial_summary}"
+            echo "risk: ${risk_summary}"
+            echo "action: ${action}"
             echo "analysis: ${reason}"
             echo ""
         else
@@ -323,7 +469,10 @@ print_snapshot() {
             printf ' TIME     : elapsed=%ss  quiet=%ss\n' "$elapsed" "$quiet"
             printf ' PROGRESS : %s\n' "$bar"
             printf ' CURRENT  : %s\n' "$milestone"
-            printf ' FILES    : result=%sB  status=%sB  report=%sB  progress=%sB  diff=%sB\n' "$result_bytes" "$status_bytes" "$report_bytes" "$claude_progress_bytes" "$diff_bytes"
+            printf ' FILES    : result=%sB  status=%sB  report=%sB  progress=%sB  diff=%sB  changes=%s\n' "$result_bytes" "$status_bytes" "$report_bytes" "$claude_progress_bytes" "$diff_bytes" "$worktree_changes"
+            printf ' PARTIAL  : %s\n' "$partial_summary"
+            printf ' RISK     : %s\n' "$risk_summary"
+            printf ' ACTION   : %s\n' "$action"
             if [ "$state" = "COMPLETE" ]; then
                 printf ' RESULT   : %s\n' "$reason"
             elif echo "$reason" | grep -q '^none:'; then

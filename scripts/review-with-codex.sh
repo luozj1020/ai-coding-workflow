@@ -22,6 +22,7 @@ if [ $# -lt 3 ]; then
     echo "" >&2
     echo "Optional extra evidence files (any combination):" >&2
     echo "  usage.txt           - Claude token/cost usage summary" >&2
+    echo "  checker-report.md   - Checker-only validation report" >&2
     echo "  source-status.txt   - Source repo state before dispatch" >&2
     echo "  worktree-status.txt - Worktree state after execution" >&2
     echo "  untracked.txt       - Untracked files listing" >&2
@@ -84,10 +85,18 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - Compare the implementation against the original task card requirements.
 - Use the Claude modification report if present, but verify it against the diff and evidence.
 - Evaluate whether the implementation matches the task card intent.
+- Review the task card Unknowns and Decision Gates. Decide whether known unknowns were resolved, new unknown-unknowns were surfaced, and any decision gate was crossed with appropriate authority.
+- Review any Deviations From Plan. Accept deviations only when the discovered constraint is real, the action taken is conservative or explicitly allowed, and the reviewer briefing makes the behavioral impact clear.
+- Check the Handoff Contract if present. Verify Must do, Must not do, May decide, Must report, and Stop condition against the diff and evidence.
+- Check Plan Match, Validation Confidence, and Reviewer Should Check fields when present. If confidence is low or the reviewer briefing is insufficient, normally choose REVISE.
 - Assess regression risk and design coherence.
 - Check for security implications.
 - Review token/cost usage for efficiency anomalies if usage data is present.
 - Check repository status evidence for baseline drift if status data is present.
+- Treat checker evidence as first-class validation evidence when present.
+- If checker evidence is missing, lossy, or contradicts Claude's success claim, call that out and normally choose REVISE unless the task explicitly allowed skipping checks.
+- If failed command, exit code, file:line, or key original output is missing from a failure report, require the next loop to preserve it.
+- If checker commands mutated the worktree, treat that as a validation failure.
 - Your decision drives the next loop iteration.
 
 ## Task Card
@@ -115,11 +124,30 @@ A concise explanation of why this decision was made.
 ### Requirements Comparison
 Map the task card acceptance criteria to the observed implementation and evidence.
 
+### Unknowns / Decision Gates
+State which unknowns were resolved, which remain open, whether new unknown-unknowns were discovered, and whether any decision gate was crossed appropriately.
+
+### Deviations From Plan
+List each deviation, whether it was justified, and whether it requires follow-up.
+
+### Reviewer Understanding
+Briefly state the behavior changed, critical paths affected, and the verification evidence that supports your understanding. If the evidence is insufficient to understand the change, choose REVISE.
+
 ### Next-Loop Instructions
 - For ACCEPT: state that the change is ready for human merge.
 - For REVISE: provide specific, actionable revision instructions for the next iteration.
 - For SPLIT: decompose into smaller task cards with goals and acceptance criteria.
 - For REJECT: explain why the approach is wrong and suggest an alternative.
+
+### Review-to-Next-Task Contract
+For REVISE, SPLIT, or REJECT, provide a task-card-ready handoff with:
+- Carry Forward Context
+- Keep
+- Change
+- Do Not Repeat
+- New Acceptance Criteria
+- New Unknowns / Decision Gates
+- New Handoff Contract
 
 ### Reusable Lessons
 Record any knowledge that could inform future planning."

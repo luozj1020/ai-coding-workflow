@@ -32,6 +32,12 @@ EXCLUDE_FILES = {"*.pyc", ".DS_Store", "Thumbs.db"}
 EXCLUDE_NAME_PATTERNS = ["tmp-*", "test-repo", "test_repo"]
 EXCLUDE_PATH_PATTERNS = [".cache"]
 SKILL_NAME = "ai-coding-workflow"
+LSP_TOOL_CHECKS = [
+    ("python", "pyright", "pyright"),
+    ("node", "typescript-language-server", "typescript-language-server"),
+    ("go", "gopls", "gopls"),
+    ("rust", "rust-analyzer", "rust-analyzer"),
+]
 
 
 def get_skill_dir():
@@ -71,6 +77,75 @@ def build_bootstrap_command(installed_skill_dir, repo_path):
         quote_cmd_arg(installer),
         quote_cmd_arg(repo_path),
     )
+
+
+def build_context_tools_command(installed_skill_dir):
+    """Return the read-only context-tools check command for an installed skill."""
+    helper = os.path.join(installed_skill_dir, "scripts", "install_context_tools.py")
+    python_cmd = sys.executable or "python"
+    return "{} {}".format(quote_cmd_arg(python_cmd), quote_cmd_arg(helper))
+
+
+def detect_context_tools(repo_path=None):
+    """Return read-only LSP/CodeGraph availability information."""
+    lsp = []
+    for profile, name, executable in LSP_TOOL_CHECKS:
+        lsp.append({
+            "profile": profile,
+            "name": name,
+            "available": shutil.which(executable) is not None,
+        })
+
+    codegraph_cli = shutil.which("codegraph") is not None
+    codegraph_initialized = None
+    if repo_path:
+        codegraph_initialized = os.path.isdir(os.path.join(os.path.abspath(repo_path), ".codegraph"))
+
+    return {
+        "lsp": lsp,
+        "codegraph_cli": codegraph_cli,
+        "codegraph_initialized": codegraph_initialized,
+    }
+
+
+def print_context_tool_guidance(installed_skill_dir, repo_path=None):
+    """Print read-only guidance for LSP and CodeGraph setup."""
+    status = detect_context_tools(repo_path)
+    missing_lsp = [item for item in status["lsp"] if not item["available"]]
+
+    print("\nContext intelligence check:")
+    print("  LSP tools:")
+    for item in status["lsp"]:
+        marker = "OK" if item["available"] else "MISSING"
+        print("    [{}] {} {}".format(item["profile"], item["name"], marker))
+
+    print("  Read-only check:")
+    print("    {}".format(build_context_tools_command(installed_skill_dir)))
+    if missing_lsp:
+        print("  Suggestion: install only the LSP profile(s) this machine needs.")
+        print("  Dry-run install example:")
+        print("    {} --apply python".format(build_context_tools_command(installed_skill_dir)))
+    else:
+        print("  LSP suggestion: all known LSP tools are available.")
+
+    print("  CodeGraph CLI: {}".format("OK" if status["codegraph_cli"] else "MISSING"))
+    if not status["codegraph_cli"]:
+        print("  Suggestion: install CodeGraph if this repository benefits from indexed code intelligence.")
+        print("    codegraph install")
+
+    if repo_path:
+        repo_abs = os.path.abspath(repo_path)
+        initialized = status["codegraph_initialized"]
+        print("  CodeGraph index for {}: {}".format(
+            repo_abs,
+            "initialized" if initialized else "not initialized",
+        ))
+        if status["codegraph_cli"] and not initialized:
+            print("  Initialize when you want CodeGraph for this repo:")
+            print("    cd {}".format(quote_cmd_arg(repo_abs)))
+            print("    codegraph init")
+    else:
+        print("  CodeGraph init: run `codegraph init` inside each target repository when you want it indexed.")
 
 
 def should_exclude(name, full_path):
@@ -149,10 +224,19 @@ def run_bootstrap(installed_skill_dir, repo_path):
 def print_next_steps(installed_skill_dir):
     """Print commands that connect skill installation to project bootstrap."""
     installed_installer = os.path.join(installed_skill_dir, "scripts", "install_for_codex.py")
+    installed_updater = os.path.join(installed_skill_dir, "scripts", "update_skill.py")
     installed_installer_cmd = "{} {}".format(
         quote_cmd_arg(sys.executable or "python"),
         quote_cmd_arg(installed_installer),
     )
+    installed_updater_cmd = "{} {}".format(
+        quote_cmd_arg(sys.executable or "python"),
+        quote_cmd_arg(installed_updater),
+    )
+    print("\nConvenient update command:")
+    print("  {}".format(installed_updater_cmd))
+    print("  {} --bootstrap-current".format(installed_updater_cmd))
+    print("")
     print("\nNext step for each target repository:")
     print("  cd <your-repository>")
     print("  {}".format(build_bootstrap_command(installed_skill_dir, ".")))
@@ -202,6 +286,9 @@ def main(argv=None):
         bootstrap_repo = args.bootstrap_repo
     if bootstrap_repo:
         run_bootstrap(dest, bootstrap_repo)
+        print_context_tool_guidance(dest, bootstrap_repo)
+    else:
+        print_context_tool_guidance(dest)
 
 
 if __name__ == "__main__":

@@ -28,8 +28,12 @@ WORKFLOW_REQUIRED_FILES = [
     "CLAUDE.md",
     "ai/task-card-template.md",
     "ai/evidence-packet-template.md",
+    "ai/plan-task-template.md",
+    "ai/plan-findings-template.md",
+    "ai/plan-progress-template.md",
     "ai/README.md",
     "ai/dispatch-to-claude.sh",
+    "ai/check-worktree.sh",
     "ai/review-with-codex.sh",
     "ai/run-loop.sh",
     "ai/status-claude.sh",
@@ -39,6 +43,9 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/doctor_workflow.py",
     "ai/clean_runtime.py",
     "ai/install_context_tools.py",
+    "ai/summarize-loop-run.py",
+    "ai/init-plan.py",
+    "ai/session-catchup.py",
     ".worktrees/.gitkeep",
 ]
 
