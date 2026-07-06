@@ -67,6 +67,8 @@ When validation fails, preserve:
 
 Stop and report when all required checks are green, max iterations are reached, the same failure repeats, a fix causes a regression, failure count stops decreasing, or the blocker is external/environmental.
 
+When repeated attempts fail, report the blocker clearly so Codex can decide whether to revise the task card or enter direct intervention mode.
+
 ### Evidence compression
 
 Return summaries and artifact paths, not large logs, full diffs, or multi-file dumps. Provide pass/fail counts and generated report paths. Record actual context budget used when requested.

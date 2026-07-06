@@ -82,6 +82,8 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 
 ## Your Role
 - You are reviewing, NOT implementing. Do NOT write code or suggest code edits.
+- Do not directly patch implementation files after a Claude run unless a direct-intervention threshold is reached: max iterations, repeated same failure, non-decreasing failures, repeated timeout/unavailability, or explicit human request.
+- If direct intervention is justified, state the failed attempts, why another Claude revision is unlikely to help, the allowed scope, and required validation.
 - Compare the implementation against the original task card requirements.
 - Use the Claude modification report if present, but verify it against the diff and evidence.
 - Evaluate whether the implementation matches the task card intent.
@@ -138,6 +140,9 @@ Briefly state the behavior changed, critical paths affected, and the verificatio
 - For REVISE: provide specific, actionable revision instructions for the next iteration.
 - For SPLIT: decompose into smaller task cards with goals and acceptance criteria.
 - For REJECT: explain why the approach is wrong and suggest an alternative.
+
+### Codex Direct Intervention
+State whether Codex direct intervention is allowed now. If yes, cite the threshold reached, files/modules in scope, and validation required. If no, say the next action is another Claude revision, split, reject, or human escalation.
 
 ### Review-to-Next-Task Contract
 For REVISE, SPLIT, or REJECT, provide a task-card-ready handoff with:

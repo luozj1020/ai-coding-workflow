@@ -20,6 +20,10 @@ Use the explicit loop: OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIE
 - REVIEW with `ai/review-with-codex.sh` or loop output.
 - Do not merge automatically; human review and merge remain separate.
 
+## Codex Intervention Policy
+
+After a Claude execution round, Codex normally reviews only. It may edit directly only when Claude has repeatedly missed the target, the loop hit a stop condition, or Claude is unavailable. Record the failed attempts, intervention reason, edit scope, and validation evidence.
+
 ## Context Lifecycle
 
 Keep default context small and file-backed:

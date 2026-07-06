@@ -46,7 +46,19 @@ Responsibilities:
   - Did the loop stop when failures repeated, regressed, or stopped improving?
 - Return a structured decision (see below)
 
-**Codex/GPT does NOT write code during review.** It evaluates and decides. Implementation is always delegated to Claude Code.
+**Codex/GPT does NOT write code during ordinary review.** It evaluates and decides. Implementation is delegated to Claude Code until an intervention threshold is reached.
+
+### Codex Direct Intervention
+
+Codex may directly edit implementation files only when at least one condition is true:
+
+- The loop reached its configured maximum Claude iterations without acceptance.
+- The same failure appears in two consecutive Claude iterations.
+- Failure count does not decrease for two consecutive Claude iterations.
+- Claude Code is unavailable, repeatedly times out, or the blocker is external to execution but fixable in the repository.
+- The human explicitly asks Codex to take over.
+
+Before editing, Codex must state the failed attempts, why another Claude revision is unlikely to help, the files/modules it will touch, and the validation it will run. The edit should be narrow and should not bypass safety approvals.
 
 ### Human  -  Final Authority
 
@@ -112,10 +124,11 @@ Record any knowledge gained during review that could inform future planning:
 2. The evidence packet is sent to Codex/GPT via `ai/review-with-codex.sh` or `ai/run-loop.sh`.
 3. Codex/GPT reviews and returns a structured decision.
 4. If **accept**: the change is ready for human merge.
-5. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes.
+5. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes unless an intervention threshold has been reached.
 6. If **split**: the original task card is decomposed into smaller child cards, each entering its own loop.
 7. If **reject**: the task returns to OBSERVE with the rejection reasoning as new context.
-8. Human performs final merge and any required high-risk approvals.
+8. If an intervention threshold is reached, Codex may perform a scoped direct fix and must produce validation evidence.
+9. Human performs final merge and any required high-risk approvals.
 
 ## Loop Integration
 

@@ -65,6 +65,8 @@ Core loop:
 ## Hot-Path Rules
 
 - Codex designs and reviews; Claude Code edits.
+- After a Claude execution round, Codex normally accepts, revises, splits, or rejects; it does not patch implementation files directly.
+- Codex may directly intervene only after repeated Claude failure or an external blocker, and must record the intervention reason, scope, and validation.
 - Use LSP/CodeGraph/MCP before broad reads.
 - Delegate whole-file scans, long logs, and multi-file implementation to Claude.
 - Preserve large outputs as artifact paths and short summaries.

@@ -147,7 +147,7 @@ Each handoff should be directly checkable:
 
 **Output:** One decision: `ACCEPT`, `REVISE`, `SPLIT`, or `REJECT`.
 
-**Constraint:** Codex does not implement fixes during review. It evaluates and decides.
+**Constraint:** Codex does not implement fixes during ordinary review. It evaluates and decides unless the loop has reached the direct-intervention threshold.
 
 ### 7. LEARN
 
@@ -236,6 +236,10 @@ A loop stops when any condition is met:
 11. The blocker is environmental or external rather than fixable in the repository.
 
 When a stop condition is reached without acceptance, the task is escalated to the human with the latest evidence and review output.
+
+## Codex Direct Intervention Threshold
+
+Codex may directly edit after Claude has made multiple unsuccessful attempts and another revision is unlikely to improve the result. Valid triggers are max iterations reached, the same failure in two consecutive iterations, failure count not decreasing for two consecutive iterations, repeated timeout/unavailability, or an explicit human request. Codex must record the attempts, takeover reason, touched scope, and validation evidence.
 
 ## Loop Metadata
 

@@ -46,6 +46,8 @@
 | Timed out? | yes/no |
 | Killed by dispatcher or helper? | yes/no |
 | Fallback report generated? | yes/no |
+| Claude attempt count for this task | |
+| Codex direct intervention requested? | yes/no + reason |
 
 ## Repository Status
 

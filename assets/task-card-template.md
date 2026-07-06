@@ -14,7 +14,7 @@
 
 ## Control-Plane Exception Rationale
 
-<!-- Fill only when Task Type is control-plane. Explain why normal Claude delegation is unsafe or unavailable, and what condition returns work to the normal Codex-plan / Claude-execute flow. -->
+<!-- Fill only when Task Type is control-plane. Explain why normal Claude delegation is unsafe, unavailable, or exhausted after repeated failed Claude attempts, and what condition returns work to the normal Codex-plan / Claude-execute flow. -->
 
 ## Goal
 
@@ -183,6 +183,8 @@ Checker expectations:
 - **Iteration:** <!-- 1 for first iteration, increment for each revision -->
 - **Prior decision:** <!-- The review decision from the previous iteration: accept/revise/split/reject -->
 - **Revision instructions:** <!-- Specific instructions from the reviewer for this iteration -->
+- **Claude attempts so far:** <!-- Count and short links to prior dispatch/review artifacts -->
+- **Codex direct intervention eligible?** <!-- yes/no; if yes, cite the threshold reached and allowed edit scope -->
 - **Budget / Stop conditions:** <!-- e.g., max 5 iterations, token budget, or "human stop only" -->
 - **Required evidence:** <!-- Types of evidence the reviewer expects: e.g., test output, LSP diagnostics, diffstat -->
 

@@ -11,7 +11,8 @@ Copies the ai-coding-workflow Skill folder into:
     Windows:  %USERPROFILE%\\.codex\\skills\\ai-coding-workflow
     Unix/macOS: $HOME/.codex/skills/ai-coding-workflow
 
-Excludes: .git, __pycache__, *.pyc, .worktrees, test repos, caches.
+Excludes: .git, __pycache__, *.pyc, .worktrees, .codegraph, local refs,
+bootstrap output, test repos, caches.
 
 Uses only the Python standard library.
 """
@@ -26,9 +27,10 @@ from fnmatch import fnmatch
 
 EXCLUDE_DIRS = {
     ".git", "__pycache__", ".worktrees", "node_modules", "task-cards",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".codegraph", "ref", "ai",
 }
 EXCLUDE_FILES = {"*.pyc", ".DS_Store", "Thumbs.db"}
+EXCLUDE_ROOT_FILES = {"AGENTS.md", "CLAUDE.md"}
 EXCLUDE_NAME_PATTERNS = ["tmp-*", "test-repo", "test_repo"]
 EXCLUDE_PATH_PATTERNS = [".cache"]
 SKILL_NAME = "ai-coding-workflow"
@@ -182,6 +184,8 @@ def copy_skill(src, dest):
 
         for f in files:
             src_file = os.path.join(root, f)
+            if rel_root == "." and f in EXCLUDE_ROOT_FILES:
+                continue
             if should_exclude(f, src_file):
                 continue
             dest_file = os.path.join(dest_root, f)
