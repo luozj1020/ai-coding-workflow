@@ -112,13 +112,24 @@ Checker expectations:
 
 ## Execution Phases
 
-<!-- Split non-trivial work into reviewable phases. Claude Code may decompose work inside a phase, but must not merge phases unless this section explicitly allows it. -->
+<!-- Split non-trivial work into reviewable phases. Claude Code may decompose work inside a phase, but must not merge phases unless this section explicitly allows it. If Codex dispatches only high-priority phases first, remaining implementation/test-writing phases stay Claude-owned and require follow-up task cards after review. -->
 
-| Phase | Scope | Exit Evidence | Stop Before Next Phase? |
-|-------|-------|---------------|-------------------------|
-| A | <!-- e.g., tests only / implementation only / docs only --> | <!-- exact files, test output, or report update expected --> | yes/no |
-| B | | | |
-| C | | | |
+| Phase | Owner | Scope | Exit Evidence | Stop Before Next Phase? | Continuation After Accept |
+|-------|-------|-------|---------------|-------------------------|---------------------------|
+| A | Claude/Codex/human | <!-- e.g., tests only / implementation only / docs only --> | <!-- exact files, test output, or report update expected --> | yes/no | next Claude task / done / human decision |
+| B | | | | | |
+| C | | | | | |
+
+## Delegation Continuity Gate
+
+<!-- Codex completes this after each accepted phase. A completed high-priority subset is not permission for Codex to implement the remaining subset. -->
+
+| Check | Value |
+|-------|-------|
+| Accepted phase(s) | |
+| Remaining implementation/test-writing phases | |
+| Next executor for remaining phases | Claude Code / Codex control-plane / human |
+| If not Claude, threshold or human override cited | |
 
 ## Wait Policy
 

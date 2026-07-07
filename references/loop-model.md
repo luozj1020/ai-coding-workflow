@@ -28,6 +28,8 @@ The loop repeats until Codex accepts the work, the task is split or rejected for
 
 When a first Claude round has a usable direction but lacks required evidence, the preferred next step is a narrow tests/evidence revision. If that tightened second round also exits without result/report and without useful progress, the loop may enter control-plane salvage: Codex cites both attempts, preserves the accepted direction, applies only the missing scoped changes, and produces validation evidence.
 
+For multi-phase or multi-part tasks, `ACCEPT` can mean "accepted this phase" rather than "all requested work is done." Codex must check the `Delegation Continuity Gate` after each accepted phase. If implementation or test-writing phases remain, the next action is PLAN -> DISPATCH to Claude with a follow-up task card, not Codex patching the remainder, unless a takeover threshold or explicit human override applies.
+
 ## States
 
 ## Unknowns Lifecycle

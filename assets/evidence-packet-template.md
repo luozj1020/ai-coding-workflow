@@ -134,6 +134,18 @@
 | Evidence reconstructed by Codex? | yes/no |
 | Re-dispatch needed only for tests/evidence? | yes/no + reason |
 
+## Delegation Continuity
+
+<!-- Fill for multi-phase or multi-part work. Accepted high-priority phases do not make remaining implementation Codex-owned. -->
+
+| Field | Value |
+|-------|-------|
+| Current phase accepted? | yes/no |
+| Whole task accepted? | yes/no |
+| Remaining implementation/test-writing phases | |
+| Next executor for remaining phases | Claude Code / Codex control-plane / human |
+| Next task-card artifact | |
+
 ## Control-Plane Salvage
 
 <!-- Fill only when Codex directly intervenes after repeated current-task Claude failure. -->

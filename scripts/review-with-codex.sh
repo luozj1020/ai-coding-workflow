@@ -89,6 +89,7 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - Do not require new tests merely because none were written. Treat missing tests as a revise reason only when the task card assigned Claude to write tests, the user requested tests, or you now explicitly mark tests acceptance-critical for the next iteration.
 - When revising only for missing task-card-required tests or evidence, preserve the accepted implementation direction and make the next Claude task narrow: tests/evidence only, no broad rewrite unless a concrete defect is found.
 - If that narrowed second Claude attempt also exits with no result/report and no useful progress, direct intervention may be allowed as control-plane salvage. Cite both attempts, preserve the reviewer-accepted first-round direction, and limit Codex edits to missing scoped implementation, acceptance tests, and evidence.
+- For multi-phase or multi-part tasks, accepting the current Claude result may accept only that phase. If implementation or test-writing phases remain, do not treat ACCEPT as permission for Codex to patch the remainder; produce a next Claude task-card handoff and fill the Delegation Continuity Gate.
 - If direct intervention is justified, state the failed attempts, why another Claude revision is unlikely to help, the allowed scope, and required validation.
 - Compare the implementation against the original task card requirements.
 - Use the Claude modification report if present, but verify it against the diff and evidence.
@@ -125,7 +126,7 @@ ${EXTRA_EVIDENCE}
 Respond with the following structured format:
 
 ### Decision
-One of: **ACCEPT**, **REVISE**, **SPLIT**, **REJECT**
+One of: **ACCEPT**, **REVISE**, **SPLIT**, **REJECT**. For multi-phase tasks, state whether ACCEPT means whole-task accepted or phase accepted with follow-up required.
 
 ### Reasoning
 A concise explanation of why this decision was made.
@@ -146,7 +147,7 @@ List each deviation, whether it was justified, and whether it requires follow-up
 Briefly state the behavior changed, critical paths affected, and the verification evidence that supports your understanding. If the evidence is insufficient to understand the change, choose REVISE.
 
 ### Next-Loop Instructions
-- For ACCEPT: state that the change is ready for human merge.
+- For ACCEPT: state either that the whole task is ready for human merge, or that only the current phase is accepted and provide the next Claude task-card handoff for remaining phases.
 - For REVISE: provide specific, actionable revision instructions for the next iteration.
 - For SPLIT: decompose into smaller task cards with goals and acceptance criteria.
 - For REJECT: explain why the approach is wrong and suggest an alternative.
@@ -163,6 +164,8 @@ For REVISE, SPLIT, or REJECT, provide a task-card-ready handoff with:
 - New Acceptance Criteria
 - New Unknowns / Decision Gates
 - New Handoff Contract
+
+For phase-only ACCEPT with remaining implementation/test-writing work, also provide this contract for the next Claude dispatch.
 
 ### Reusable Lessons
 Record any knowledge that could inform future planning."

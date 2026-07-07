@@ -110,7 +110,7 @@ A concise explanation of why this decision was made. Reference specific acceptan
 
 ### Next-Loop Instructions
 
-For **accept**: state that the change is ready for human merge.
+For **accept**: state whether this accepts the whole task or only the completed phase. If implementation or test-writing phases remain, do not mark the whole task ready for merge; create task-card-ready instructions for the next Claude dispatch and fill the Delegation Continuity Gate.
 
 For **revise**: provide specific, actionable revision instructions. These instructions become the "Revision instructions" field in the next iteration's task card. Be explicit about:
 - What needs to change and why
@@ -139,12 +139,13 @@ Record any knowledge gained during review that could inform future planning:
 1. Claude Code produces an evidence packet after executing a task card.
 2. The evidence packet is sent to Codex/GPT via `ai/review-with-codex.sh` or `ai/run-loop.sh`.
 3. Codex/GPT reviews and returns a structured decision.
-4. If **accept**: the change is ready for human merge.
-5. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes unless an intervention threshold has been reached. If Claude made no useful progress, the next task should be narrower, more diagnostic, and evidence-focused rather than replaced by Codex edits.
-6. If **split**: the original task card is decomposed into smaller child cards, each entering its own loop.
-7. If **reject**: the task returns to OBSERVE with the rejection reasoning as new context.
-8. If an intervention threshold is reached, Codex may perform a scoped direct fix and must produce validation evidence.
-9. Human performs final merge and any required high-risk approvals.
+4. If **accept** and no phases remain: the change is ready for human merge.
+5. If **accept** but unfinished phases remain: Codex plans the next phase and dispatches Claude again. A high-priority subset being accepted is not permission for Codex to implement lower-priority remaining work.
+6. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes unless an intervention threshold has been reached. If Claude made no useful progress, the next task should be narrower, more diagnostic, and evidence-focused rather than replaced by Codex edits.
+7. If **split**: the original task card is decomposed into smaller child cards, each entering its own loop.
+8. If **reject**: the task returns to OBSERVE with the rejection reasoning as new context.
+9. If an intervention threshold is reached, Codex may perform a scoped direct fix and must produce validation evidence.
+10. Human performs final merge and any required high-risk approvals.
 
 ## Loop Integration
 

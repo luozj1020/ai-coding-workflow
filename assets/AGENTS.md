@@ -32,6 +32,8 @@ Missing Claude `result.json`, `CLAUDE_REPORT.md`, or acceptance evidence is an e
 
 If a tightened second Claude task also exits without result/report and without useful progress, treat it as current-task repeated failure. A Codex takeover must cite both attempts, salvage any reviewer-accepted first-round direction, avoid broad rewrites, and add only the missing implementation, acceptance tests, and evidence needed to satisfy the task card.
 
+For multi-phase or multi-part tasks, accepting one Claude round closes only that phase. Codex may reprioritize or rewrite the next task card, but remaining implementation/test-writing phases stay Claude-owned unless a current-task takeover threshold is reached or the human explicitly asks Codex to take over.
+
 ## Context Lifecycle
 
 Keep default context small and file-backed:

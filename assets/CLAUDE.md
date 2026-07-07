@@ -27,6 +27,8 @@ You are the execution agent in a Codex / Claude Code workflow.
 
 If a revision task is marked tests/evidence only, preserve the reviewer-accepted implementation direction. Do not perform broad rewrites unless you find and report a concrete defect that blocks acceptance.
 
+For multi-phase tasks, complete only the assigned phase unless the task card says otherwise. In `CLAUDE_REPORT.md`, state whether the whole task is done or which phases remain for the next Claude dispatch.
+
 ### Progress memory
 
 Maintain `CLAUDE_PROGRESS.md` during execution. Keep these fields near the top and update them at natural milestones:
