@@ -25,6 +25,8 @@ You are the execution agent in a Codex / Claude Code workflow.
 12. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
 13. Do not merge changes.
 
+If a revision task is marked tests/evidence only, preserve the reviewer-accepted implementation direction. Do not perform broad rewrites unless you find and report a concrete defect that blocks acceptance.
+
 ### Progress memory
 
 Maintain `CLAUDE_PROGRESS.md` during execution. Keep these fields near the top and update them at natural milestones:

@@ -14,7 +14,7 @@
 
 ## Control-Plane Exception Rationale
 
-<!-- Fill only when Task Type is control-plane. Explain why normal Claude delegation is unsafe, unavailable, or exhausted after repeated failed Claude attempts, and what condition returns work to the normal Codex-plan / Claude-execute flow. -->
+<!-- Fill only when Task Type is control-plane. Explain why normal Claude delegation is unsafe, unavailable, or exhausted after repeated failed Claude attempts, cite attempt artifacts, identify any first-round direction Codex will salvage, define the narrow Codex edit scope, and state what condition returns work to the normal Codex-plan / Claude-execute flow. -->
 
 ## Goal
 
@@ -86,6 +86,8 @@
 | Claude must write or update tests? | yes/no |
 | Claude must run tests before finishing? | yes/no |
 | Codex/human will run verification after Claude? | yes/no |
+| Acceptance evidence owner | Claude / Codex / human |
+| Evidence-only redispatch allowed? | yes/no; only when task-card-required evidence cannot be reconstructed |
 | No-test rationale, if applicable | |
 
 ## Validation Contract
@@ -103,6 +105,7 @@
 
 Checker expectations:
 - Follow `Testing Responsibility`: do not add tests when test code is out of scope; do not skip required Claude-run tests unless blocked and reported.
+- Missing Claude report/result is evidence-gap handling: if assigned checks pass and acceptance evidence owner is not Claude, Codex may reconstruct minimal evidence instead of re-dispatching only for prose.
 - Run `bash ai/check-worktree.sh` when available.
 - Preserve failed command, exit code, key original output, and `file:line` locations.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.

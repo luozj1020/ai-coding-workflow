@@ -122,6 +122,32 @@
 | Codex/human verification still required? | yes/no |
 | No-test or no-run rationale | |
 
+## Evidence Gap Recovery
+
+<!-- Fill when Claude result/report/acceptance prose is missing or incomplete. Missing prose is not automatically implementation failure; record whether Codex could reconstruct enough evidence for review. -->
+
+| Field | Value |
+|-------|-------|
+| Missing evidence | result.json / CLAUDE_REPORT.md / acceptance evidence / none |
+| Implementation direction preserved? | yes/no/unknown |
+| Assigned validation green? | yes/no/not assigned |
+| Evidence reconstructed by Codex? | yes/no |
+| Re-dispatch needed only for tests/evidence? | yes/no + reason |
+
+## Control-Plane Salvage
+
+<!-- Fill only when Codex directly intervenes after repeated current-task Claude failure. -->
+
+| Field | Value |
+|-------|-------|
+| Takeover threshold reached? | yes/no |
+| Attempts cited | attempt IDs + artifact paths |
+| First-round direction salvaged | yes/no + files/approach |
+| Second-round failure mode | no result/report / no progress / repeated failure |
+| Codex edit scope | |
+| Acceptance tests/evidence added by Codex | |
+| Validation run by Codex | |
+
 ## Reviewer Briefing
 
 <!-- Short explanation for a reviewer who did not watch the execution. Include behavior changed, critical paths, risks, and how to verify. -->

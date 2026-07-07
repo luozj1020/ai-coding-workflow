@@ -28,6 +28,10 @@ Claude no-progress, early exit, invalid result, or one failed attempt is evidenc
 
 Prior-session Claude failures are carry-forward context, not automatic takeover permission. A fresh task or session should re-dispatch Claude unless current-task artifacts prove the same threshold or the human explicitly asks Codex to take over.
 
+Missing Claude `result.json`, `CLAUDE_REPORT.md`, or acceptance evidence is an evidence gap, not automatically an implementation failure. If the diff matches the task card and assigned checks pass, Codex should reconstruct a minimal evidence packet from artifacts, diff, and verification output instead of re-dispatching only to get prose. Re-dispatch Claude when the task card explicitly assigned test writing, test execution, or acceptance evidence to Claude and that evidence cannot be recovered.
+
+If a tightened second Claude task also exits without result/report and without useful progress, treat it as current-task repeated failure. A Codex takeover must cite both attempts, salvage any reviewer-accepted first-round direction, avoid broad rewrites, and add only the missing implementation, acceptance tests, and evidence needed to satisfy the task card.
+
 ## Context Lifecycle
 
 Keep default context small and file-backed:

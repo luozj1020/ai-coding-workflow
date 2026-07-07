@@ -64,6 +64,18 @@ No-progress evidence, an early Claude exit, invalid result JSON, missing report,
 
 Failure counts are scoped to the current task/loop. Prior-session Claude failures may justify a sharper task card, narrower scope, or stronger stop gates, but they do not by themselves authorize Codex to skip Claude in a new session. To count prior failures toward takeover, Codex must cite matching task IDs and artifact paths showing the same failure pattern.
 
+If Claude first produced a usable implementation direction but lacked required tests/evidence, and a tightened second Claude task exits with no result/report and no useful progress, Codex may mark the current task as repeated Claude failure. The direct intervention should be a control-plane salvage, not a rewrite: cite both attempts, reuse or mirror the reviewer-accepted first-round direction when possible, add only the missing implementation/tests/evidence, and run the validation named in the task card.
+
+### Evidence Gap Recovery
+
+Missing `result.json`, `CLAUDE_REPORT.md`, or acceptance prose is an evidence gap, not automatically an implementation failure. Codex should first classify the gap:
+
+- If the diff matches the task card, no stop gate was crossed, and the assigned validation is green, Codex may reconstruct a minimal evidence packet from the diff, worktree status, checker output, and its own verification.
+- If the task card did not assign Claude to write new tests, absence of new tests is not by itself a reason to revise. Codex may still mark residual test risk or add a follow-up task when coverage is materially weak.
+- If the task card assigned Claude to write tests, run checks, or produce specific acceptance evidence, and that evidence cannot be reconstructed, revise with a narrow "tests/evidence only" task. The revision should preserve the accepted implementation direction and should not invite broad rewrites.
+- If that narrow tests/evidence-only revision also produces no result/report and no useful progress, stop re-dispatching and move to the control-plane salvage rule above.
+- If Codex decides after seeing the diff that tests are acceptance-critical, it must say that explicitly in the next task card's Testing Responsibility instead of treating the original omission as Claude failure.
+
 ### Human  -  Final Authority
 
 Responsibilities:

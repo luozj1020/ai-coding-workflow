@@ -69,9 +69,11 @@ Core loop:
 - Claude no-progress, early exit, invalid result, or one failed attempt is not enough for Codex takeover; tighten the task card and re-dispatch Claude.
 - Codex may directly intervene only after repeated Claude failure or an external blocker, and must record the intervention reason, scope, and validation.
 - Prior-session Claude failures are context, not automatic takeover permission; re-dispatch Claude unless the current task cites matching loop artifacts or the user explicitly asks Codex to take over.
+- If a narrowed second Claude round also exits with no result/report and no useful progress, current-task repeated failure is enough for a control-plane takeover; Codex should salvage the best prior Claude direction, limit edits to the accepted scope, and add required tests/evidence.
 - Use LSP/CodeGraph/MCP before broad reads.
 - Delegate whole-file scans, long logs, and multi-file implementation to Claude.
 - Task cards must say whether Claude writes tests, runs tests, or leaves verification to Codex/humans; test-code tasks can be delegated to Claude when the user asks for tests or Codex makes them acceptance-critical.
+- Missing Claude result/report is an evidence gap, not automatically an implementation failure. If the diff matches the plan and assigned checks pass, Codex may reconstruct review evidence; re-dispatch Claude only for task-card-required tests or acceptance evidence that cannot be recovered.
 - Preserve large outputs as artifact paths and short summaries.
 - Do not merge automatically.
 - Destructive or high-risk actions require explicit human approval.
