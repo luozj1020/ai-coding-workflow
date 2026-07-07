@@ -74,6 +74,8 @@ REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
 CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
 PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
+SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
+SEEDED_PROGRESS_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"
 
 for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
          "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
@@ -155,13 +157,47 @@ echo "Source status saved to: $SOURCE_STATUS_FILE"
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD.md"
 echo "Task card copied to: ${WORKTREE_DIR}/TASK_CARD.md"
 
+{
+    echo "<!-- ${SEEDED_PROGRESS_MARKER} -->"
+    echo "# Claude Progress"
+    echo ""
+    echo "- Goal: Execute ${TASK_CARD}"
+    echo "- Current Phase: dispatch-started"
+    echo "- Next Check: read TASK_CARD.md and update this file before exploration or edits"
+    echo "- Blocker: none reported yet"
+    echo "- Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo ""
+    echo "## Milestones"
+    echo ""
+    echo "- [ ] Context gathered"
+    echo "- [ ] Plan chosen"
+    echo "- [ ] Files edited"
+    echo "- [ ] Validation run"
+    echo "- [ ] Final report updated"
+    echo ""
+    echo "Dispatcher created this starter progress file so observers have a baseline even if Claude exits before writing."
+} > "${WORKTREE_DIR}/CLAUDE_PROGRESS.md"
+
+{
+    echo "<!-- ${SEEDED_REPORT_MARKER} -->"
+    echo "# Claude Modification Report"
+    echo ""
+    echo "Dispatcher-created draft. Claude must remove the seeded-report marker above when it first updates this file."
+    echo ""
+    echo "## Task Card"
+    echo "${WORKTREE_DIR}/TASK_CARD.md"
+    echo ""
+    echo "## Current State"
+    echo "Claude has not yet reported implementation progress."
+} > "${WORKTREE_DIR}/CLAUDE_REPORT.md"
+
 cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
 You are the executor in a Codex/Claude Code workflow.
 
-Execute the task card below. While working, maintain `CLAUDE_PROGRESS.md` in the worktree so the dispatcher can show user-visible progress without interrupting you.
+Execute the task card below. The dispatcher has already created starter `CLAUDE_PROGRESS.md` and `CLAUDE_REPORT.md` files in the worktree. Update them while working so the dispatcher can show user-visible progress without interrupting you.
 
 `CLAUDE_PROGRESS.md` requirements:
-- Create it before doing substantial exploration or edits.
+- Update it before doing substantial exploration or edits.
 - Keep it short and append/update it at natural milestones: context gathered, plan chosen, files being edited, checks running, blocker encountered, finalizing.
 - Keep these stable fields near the top so the current goal stays in recent attention:
   - Goal
@@ -187,12 +223,20 @@ Unknowns and decision gates:
 - If the task card has `## Handoff Contract`, treat Must do / Must not do / May decide / Must report / Stop condition as the primary executor contract.
 - If implementation reality conflicts with the plan, choose a conservative path when safe, record the deviation under `Deviations From Plan`, and continue only when the task card permits it.
 
+Testing responsibility:
+- If the task card has `## Testing Responsibility`, follow it exactly.
+- Treat writing/updating test code and running test commands as separate responsibilities.
+- Add or modify tests when the task card says tests are user-requested, acceptance-critical, or otherwise in scope.
+- Do not add or modify tests when test code is out of scope.
+- If Claude is assigned to run tests, run the listed validation commands or report why they are blocked.
+- If Codex/human is assigned to run verification after Claude, finish with implementation evidence and clear commands for that reviewer to run.
+
 Wait policy requirements:
 - If the task card has an `## Wait Policy` table, treat it as the observer contract for how long Codex/humans should give you before reviewing or interrupting.
 - Keep `CLAUDE_PROGRESS.md` fresh enough that quiet time reflects real tool/model waiting, not missing progress notes.
 - When partial implementation exists but validation is still running or blocked, update `CLAUDE_REPORT.md` with enough file-level summary for Codex to compare the partial diff against the plan.
 
-In addition to making the requested edits, create `CLAUDE_REPORT.md` in the worktree before finishing.
+In addition to making the requested edits, update `CLAUDE_REPORT.md` in the worktree before finishing. Remove the dispatcher seeded-report marker when you first update the report.
 
 Checker expectations:
 - Run project validation before finishing. If `ai/check-worktree.sh` is available, use it.
@@ -672,7 +716,7 @@ fi
 
 echo "Claude progress saved to: $CLAUDE_PROGRESS_FILE"
 
-if [ -f "${WORKTREE_DIR}/CLAUDE_REPORT.md" ]; then
+if [ -f "${WORKTREE_DIR}/CLAUDE_REPORT.md" ] && ! grep -q "$SEEDED_REPORT_MARKER" "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null; then
     cp "${WORKTREE_DIR}/CLAUDE_REPORT.md" "$REPORT_FILE"
 else
     {
@@ -682,7 +726,7 @@ else
         echo "$TASK_CARD"
         echo ""
         echo "## Requirements Summary"
-        echo "Claude did not create CLAUDE_REPORT.md; this fallback report was generated from workflow artifacts."
+        echo "Claude did not produce a Claude-owned CLAUDE_REPORT.md; this fallback report was generated from workflow artifacts."
         echo ""
         echo "## Dispatch Outcome"
         echo ""

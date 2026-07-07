@@ -228,6 +228,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("claude exited with non-zero status 42", result.stderr)
         result_file = self._artifact_path(result.stdout, "Result")
         report_file = self._artifact_path(result.stdout, "Report")
+        progress_file = self._artifact_path(result.stdout, "Claude Progress")
         raw_result_file = self._artifact_path(result.stdout, "Raw Result")
         data = json.loads(result_file.read_text(encoding="utf-8"))
         self.assertTrue(data["fallback"])
@@ -236,6 +237,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         report = report_file.read_text(encoding="utf-8")
         self.assertIn("Claude exit status: 42", report)
         self.assertIn("Fallback result generated: yes", report)
+        progress = progress_file.read_text(encoding="utf-8")
+        self.assertIn("dispatch-started", progress)
+        self.assertIn("- [ ] Context gathered", progress)
 
     def test_staged_claude_changes_are_in_combined_diff(self):
         self._write_task_card()

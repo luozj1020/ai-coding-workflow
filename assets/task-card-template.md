@@ -75,6 +75,19 @@
 - [ ] Criterion 2
 - [ ] Criterion 3
 
+## Testing Responsibility
+
+<!-- Codex must decide this before dispatch. Writing test code and running tests are separate responsibilities. If the user requested tests or Codex marks tests acceptance-critical, test code can be part of Claude's implementation task. If tests are not required, say so explicitly and explain why. -->
+
+| Decision | Value |
+|----------|-------|
+| Test code changes are in scope? | yes/no |
+| Why tests are or are not in scope | user requested / acceptance-critical / regression coverage / not needed because ... |
+| Claude must write or update tests? | yes/no |
+| Claude must run tests before finishing? | yes/no |
+| Codex/human will run verification after Claude? | yes/no |
+| No-test rationale, if applicable | |
+
 ## Validation Contract
 
 <!-- List the exact checks expected for this task. If unknown, require Claude to discover project checks and record what it found. Prefer aggregate commands such as pnpm check when available. -->
@@ -89,6 +102,7 @@
 | Project aggregate check | | yes/no | |
 
 Checker expectations:
+- Follow `Testing Responsibility`: do not add tests when test code is out of scope; do not skip required Claude-run tests unless blocked and reported.
 - Run `bash ai/check-worktree.sh` when available.
 - Preserve failed command, exit code, key original output, and `file:line` locations.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.
@@ -114,6 +128,7 @@ Checker expectations:
 | Stale review seconds | |
 | Consider interrupt after seconds | |
 | Partial diff review rule | Continue waiting when partial work matches the plan; consider interrupting when it is off-plan, risky, or no longer making useful progress. |
+| Adaptive timeout | First loop may use a longer fixed timeout; later loops may estimate time from completed progress checklist items. |
 
 ## Files / Modules
 
@@ -184,6 +199,7 @@ Checker expectations:
 - **Prior decision:** <!-- The review decision from the previous iteration: accept/revise/split/reject -->
 - **Revision instructions:** <!-- Specific instructions from the reviewer for this iteration -->
 - **Claude attempts so far:** <!-- Count and short links to prior dispatch/review artifacts -->
+- **Prior-session failure evidence:** <!-- Optional artifact links. Context only unless it proves the same current task hit takeover threshold. -->
 - **Codex direct intervention eligible?** <!-- yes/no; if yes, cite the threshold reached and allowed edit scope -->
 - **Budget / Stop conditions:** <!-- e.g., max 5 iterations, token budget, or "human stop only" -->
 - **Required evidence:** <!-- Types of evidence the reviewer expects: e.g., test output, LSP diagnostics, diffstat -->

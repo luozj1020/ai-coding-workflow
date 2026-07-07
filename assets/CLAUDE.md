@@ -16,13 +16,14 @@ You are the execution agent in a Codex / Claude Code workflow.
 3. Check the Execution Readiness Gate; if the task is not implementation-ready, stop and report.
 4. Treat the Handoff Contract as the primary executor contract.
 5. Read Unknowns and Decision Gates; do not cross stop-and-report gates silently.
-6. Prefer LSP, CodeGraph, and MCP before broad reads.
-7. Work only in the current isolated worktree.
-8. Make scoped edits that match the task card.
-9. Run relevant checks after significant changes and before finishing.
-10. Run `bash ai/check-worktree.sh` when available.
-11. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
-12. Do not merge changes.
+6. Read Testing Responsibility; only write tests or run tests when the task card assigns that responsibility.
+7. Prefer LSP, CodeGraph, and MCP before broad reads.
+8. Work only in the current isolated worktree.
+9. Make scoped edits that match the task card.
+10. Run relevant checks after significant changes and before finishing when assigned.
+11. Run `bash ai/check-worktree.sh` when available and assigned.
+12. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
+13. Do not merge changes.
 
 ### Progress memory
 

@@ -63,6 +63,32 @@ elif command -v python &>/dev/null; then
     PYTHON_CMD="python"
 fi
 
+USER_TIMEOUT_SET=0
+if [ "${CLAUDE_CODE_TIMEOUT_SECONDS+x}" = "x" ]; then
+    USER_TIMEOUT_SET=1
+fi
+ADAPTIVE_WAIT="${CLAUDE_CODE_ADAPTIVE_WAIT:-1}"
+LOOP_FIRST_TIMEOUT_SECONDS="${CLAUDE_CODE_LOOP_FIRST_TIMEOUT_SECONDS:-600}"
+LOOP_MIN_TIMEOUT_SECONDS="${CLAUDE_CODE_LOOP_MIN_TIMEOUT_SECONDS:-300}"
+LOOP_MAX_TIMEOUT_SECONDS="${CLAUDE_CODE_LOOP_MAX_TIMEOUT_SECONDS:-1800}"
+LOOP_TIMEOUT_BUFFER_SECONDS="${CLAUDE_CODE_LOOP_TIMEOUT_BUFFER_SECONDS:-120}"
+NEXT_TIMEOUT_SECONDS="$LOOP_FIRST_TIMEOUT_SECONDS"
+
+case "$ADAPTIVE_WAIT" in
+    0|1) ;;
+    *) echo "Error: CLAUDE_CODE_ADAPTIVE_WAIT must be 0 or 1." >&2; exit 1 ;;
+esac
+for value_name in LOOP_FIRST_TIMEOUT_SECONDS LOOP_MIN_TIMEOUT_SECONDS LOOP_MAX_TIMEOUT_SECONDS LOOP_TIMEOUT_BUFFER_SECONDS; do
+    value="${!value_name}"
+    case "$value" in
+        ''|*[!0-9]*) echo "Error: ${value_name} must be a non-negative integer." >&2; exit 1 ;;
+    esac
+done
+if [ "$LOOP_MIN_TIMEOUT_SECONDS" -gt "$LOOP_MAX_TIMEOUT_SECONDS" ]; then
+    echo "Error: CLAUDE_CODE_LOOP_MIN_TIMEOUT_SECONDS cannot exceed CLAUDE_CODE_LOOP_MAX_TIMEOUT_SECONDS." >&2
+    exit 1
+fi
+
 if [ ! -f "$DISPATCH_SCRIPT" ]; then
     echo "Error: dispatch-to-claude.sh not found at $DISPATCH_SCRIPT" >&2
     exit 1
@@ -153,6 +179,73 @@ parse_path() {
     grep "^${label}:" "$log" | sed "s/^${label}: *//" | head -1 || true
 }
 
+progress_counts() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo "0 0"
+        return
+    fi
+    local total done
+    total="$(grep -cE '^- \[[ xX]\]' "$file" 2>/dev/null | tr -d '[:space:]' || true)"
+    done="$(grep -cE '^- \[[xX]\]' "$file" 2>/dev/null | tr -d '[:space:]' || true)"
+    echo "${total:-0} ${done:-0}"
+}
+
+elapsed_seconds_from_progress() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo 0
+        return
+    fi
+    local elapsed
+    elapsed="$(grep -Eo 'elapsed_seconds=[0-9]+' "$file" 2>/dev/null | tail -1 | sed 's/elapsed_seconds=//' || true)"
+    echo "${elapsed:-0}"
+}
+
+clamp_timeout() {
+    local value="$1"
+    if [ "$value" -lt "$LOOP_MIN_TIMEOUT_SECONDS" ]; then
+        echo "$LOOP_MIN_TIMEOUT_SECONDS"
+    elif [ "$value" -gt "$LOOP_MAX_TIMEOUT_SECONDS" ]; then
+        echo "$LOOP_MAX_TIMEOUT_SECONDS"
+    else
+        echo "$value"
+    fi
+}
+
+update_adaptive_timeout() {
+    local iteration="$1"
+    local progress_file="$2"
+    local dispatch_progress="$3"
+    local current_timeout="$4"
+    local counts total done elapsed remaining per_item proposed
+
+    counts="$(progress_counts "$progress_file")"
+    total="${counts%% *}"
+    done="${counts##* }"
+    elapsed="$(elapsed_seconds_from_progress "$dispatch_progress")"
+
+    if [ "$done" -gt 0 ] && [ "$elapsed" -gt 0 ]; then
+        per_item=$(( (elapsed + done - 1) / done ))
+        remaining=$(( total - done ))
+        if [ "$remaining" -lt 1 ]; then
+            remaining=1
+        fi
+        proposed=$(( per_item * remaining + LOOP_TIMEOUT_BUFFER_SECONDS ))
+    elif [ "$elapsed" -gt 0 ]; then
+        proposed=$(( current_timeout + LOOP_TIMEOUT_BUFFER_SECONDS ))
+        per_item=0
+        remaining="${total:-0}"
+    else
+        proposed="$current_timeout"
+        per_item=0
+        remaining="${total:-0}"
+    fi
+
+    NEXT_TIMEOUT_SECONDS="$(clamp_timeout "$proposed")"
+    write_loop_event "adaptive_timeout_observed" "$iteration" "" "elapsed_seconds=${elapsed};progress_done=${done};progress_total=${total};per_item_seconds=${per_item:-0};remaining_items=${remaining:-0};next_timeout_seconds=${NEXT_TIMEOUT_SECONDS}"
+}
+
 while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     echo "--- Iteration ${ITERATION} ---"
     write_loop_event "iteration_start" "$ITERATION" "" "task_card=${CURRENT_TASK}"
@@ -164,7 +257,15 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     cd "$REPO_ROOT"
 
     DISPATCH_LOG="${DISPATCH_OUTPUT}/dispatch.log"
-    bash "$DISPATCH_SCRIPT" "$CURRENT_TASK" 2>&1 | tee "$DISPATCH_LOG"
+    DISPATCH_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-$NEXT_TIMEOUT_SECONDS}"
+    if [ "$USER_TIMEOUT_SET" -eq 0 ] && [ "$ADAPTIVE_WAIT" -eq 1 ]; then
+        echo "Adaptive dispatch timeout: ${DISPATCH_TIMEOUT_SECONDS}s"
+        write_loop_event "adaptive_timeout_applied" "$ITERATION" "" "timeout_seconds=${DISPATCH_TIMEOUT_SECONDS};source=adaptive"
+        CLAUDE_CODE_TIMEOUT_SECONDS="$DISPATCH_TIMEOUT_SECONDS" bash "$DISPATCH_SCRIPT" "$CURRENT_TASK" 2>&1 | tee "$DISPATCH_LOG"
+    else
+        write_loop_event "adaptive_timeout_skipped" "$ITERATION" "" "user_timeout_set=${USER_TIMEOUT_SET};adaptive_wait=${ADAPTIVE_WAIT}"
+        bash "$DISPATCH_SCRIPT" "$CURRENT_TASK" 2>&1 | tee "$DISPATCH_LOG"
+    fi
 
     WORKTREE_DIR="$(parse_path "Worktree" "$DISPATCH_LOG")"
     RESULT_FILE="$(parse_path "Result" "$DISPATCH_LOG")"
@@ -189,6 +290,9 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
         exit 1
     fi
     write_loop_event "dispatch_complete" "$ITERATION" "" "worktree=${WORKTREE_DIR};checker=${CHECKER_REPORT_FILE}"
+    if [ "$USER_TIMEOUT_SET" -eq 0 ] && [ "$ADAPTIVE_WAIT" -eq 1 ]; then
+        update_adaptive_timeout "$ITERATION" "$CLAUDE_PROGRESS_FILE" "$PROGRESS_FILE" "$DISPATCH_TIMEOUT_SECONDS"
+    fi
 
     for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
              "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \

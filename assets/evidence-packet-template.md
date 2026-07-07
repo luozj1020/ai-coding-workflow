@@ -109,6 +109,19 @@
 |---------------|-----------------------|--------------|-------------------|
 | | | | |
 
+## Testing Responsibility Follow-up
+
+<!-- Record whether test-writing and test-running matched the task card assignment. -->
+
+| Field | Value |
+|-------|-------|
+| Test code changes were in scope? | yes/no |
+| Claude wrote/updated tests? | yes/no |
+| Claude was assigned to run tests? | yes/no |
+| Claude ran assigned tests? | yes/no/not assigned |
+| Codex/human verification still required? | yes/no |
+| No-test or no-run rationale | |
+
 ## Reviewer Briefing
 
 <!-- Short explanation for a reviewer who did not watch the execution. Include behavior changed, critical paths, risks, and how to verify. -->

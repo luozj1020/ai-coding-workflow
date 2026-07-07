@@ -84,6 +84,7 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - You are reviewing, NOT implementing. Do NOT write code or suggest code edits.
 - Do not directly patch implementation files after a Claude run unless a direct-intervention threshold is reached: max iterations, repeated same failure, non-decreasing failures, repeated timeout/unavailability, or explicit human request.
 - Claude no-progress, early exit, invalid result JSON, missing report, or one failed attempt is NOT enough for Codex takeover. Prefer a smaller, clearer Claude revision task with required diagnostics and stop-and-report gates.
+- Prior-session Claude failures are context only. Do not skip Claude in a fresh session unless the current task card cites matching task IDs and artifact paths proving the same threshold, or the human explicitly asks Codex to take over.
 - If direct intervention is justified, state the failed attempts, why another Claude revision is unlikely to help, the allowed scope, and required validation.
 - Compare the implementation against the original task card requirements.
 - Use the Claude modification report if present, but verify it against the diff and evidence.
@@ -91,6 +92,7 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - Review the task card Unknowns and Decision Gates. Decide whether known unknowns were resolved, new unknown-unknowns were surfaced, and any decision gate was crossed with appropriate authority.
 - Review any Deviations From Plan. Accept deviations only when the discovered constraint is real, the action taken is conservative or explicitly allowed, and the reviewer briefing makes the behavioral impact clear.
 - Check the Handoff Contract if present. Verify Must do, Must not do, May decide, Must report, and Stop condition against the diff and evidence.
+- Check Testing Responsibility if present. Verify whether test code changes were user-requested, acceptance-critical, or out of scope; whether Claude was assigned to write/update tests; and whether Claude or Codex/human was responsible for running tests.
 - Check Plan Match, Validation Confidence, and Reviewer Should Check fields when present. If confidence is low or the reviewer briefing is insufficient, normally choose REVISE.
 - Assess regression risk and design coherence.
 - Check for security implications.
@@ -126,6 +128,9 @@ A concise explanation of why this decision was made.
 
 ### Requirements Comparison
 Map the task card acceptance criteria to the observed implementation and evidence.
+
+### Testing Responsibility
+State whether the task card assigned test writing and test execution to Claude, Codex/human, or neither, and whether the evidence matches that assignment.
 
 ### Unknowns / Decision Gates
 State which unknowns were resolved, which remain open, whether new unknown-unknowns were discovered, and whether any decision gate was crossed appropriately.

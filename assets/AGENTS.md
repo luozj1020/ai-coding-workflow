@@ -26,6 +26,8 @@ After a Claude execution round, Codex normally reviews only. It may edit directl
 
 Claude no-progress, early exit, invalid result, or one failed attempt is evidence for a tighter next task card, not permission for Codex to patch. Prefer smaller Claude revisions with clearer acceptance criteria before takeover.
 
+Prior-session Claude failures are carry-forward context, not automatic takeover permission. A fresh task or session should re-dispatch Claude unless current-task artifacts prove the same threshold or the human explicitly asks Codex to take over.
+
 ## Context Lifecycle
 
 Keep default context small and file-backed:
@@ -54,6 +56,8 @@ Stop when work is accepted, max iterations are reached, the same failure repeats
 ## Token Budget and Delegation Contract
 
 Codex should stay on low-token evidence. Delegate broad reads, long logs, exhaustive scans, and multi-file implementation to Claude Code by default.
+
+Task cards must separate test-code scope from test-execution responsibility. Claude may write tests when the user asks for test coverage or Codex marks tests acceptance-critical; otherwise say whether Claude only changes implementation, runs tests, or leaves verification to Codex/humans.
 
 ### Evidence compression
 

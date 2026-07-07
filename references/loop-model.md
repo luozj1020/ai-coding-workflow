@@ -98,6 +98,8 @@ Each handoff should be directly checkable:
 
 **Partial-progress triage:** If Claude appears quiet during early waiting rounds but the worktree has implementation changes, treat that as progress evidence. Codex or the human should review the partial diff against the task card. Continue waiting when the change direction matches the plan; interrupt only when the partial implementation is off-plan, risky, or no longer making useful progress.
 
+**Adaptive timeout:** The first loop should have enough time for context gathering and first implementation, typically the fixed dispatch timeout. Later loops may estimate timeout from progress evidence: elapsed seconds divided by completed checklist items, multiplied by remaining checklist items plus buffer. If the human or environment sets an explicit timeout, scripts should respect it.
+
 ### 4. EXECUTE
 
 **Owner:** Claude Code
@@ -130,6 +132,8 @@ Each handoff should be directly checkable:
 - Preserve failed command, exit code, and `file:line` details without lossy summarization.
 
 **Output:** Evidence packet from `ai/evidence-packet-template.md`.
+
+**Testing responsibility:** Codex decides in the task card whether test code is part of the task, whether Claude must run tests, or whether Codex/human will run verification after Claude. If tests are not required, the task card must say so explicitly.
 
 ### 6. REVIEW
 
@@ -242,6 +246,8 @@ When a stop condition is reached without acceptance, the task is escalated to th
 Codex may directly edit after Claude has made multiple unsuccessful attempts and another revision is unlikely to improve the result. Valid triggers are max iterations reached, the same failure in two consecutive iterations, failure count not decreasing for two consecutive iterations, repeated timeout/unavailability, or an explicit human request. Codex must record the attempts, takeover reason, touched scope, and validation evidence.
 
 A no-progress or failed Claude iteration is not automatically a takeover trigger. The default next step is a sharper Claude task card: reduce scope, add diagnostics, require specific artifacts, and set stop-and-report gates. Takeover is reserved for threshold hits or explicit human direction.
+
+Threshold evidence is task-scoped. Prior-session failures are useful context, but a new session starts by re-establishing the loop unless the task card carries specific artifact links proving the same current task already hit the threshold.
 
 ## Loop Metadata
 
