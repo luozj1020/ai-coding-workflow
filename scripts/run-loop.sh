@@ -168,6 +168,7 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
 
     WORKTREE_DIR="$(parse_path "Worktree" "$DISPATCH_LOG")"
     RESULT_FILE="$(parse_path "Result" "$DISPATCH_LOG")"
+    RAW_RESULT_FILE="$(parse_path "Raw Result" "$DISPATCH_LOG")"
     STATUS_FILE="$(parse_path "Status" "$DISPATCH_LOG")"
     DIFFSTAT_FILE="$(parse_path "Diffstat" "$DISPATCH_LOG")"
     DIFF_FILE="$(parse_path "Diff" "$DISPATCH_LOG")"
@@ -189,7 +190,7 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     fi
     write_loop_event "dispatch_complete" "$ITERATION" "" "worktree=${WORKTREE_DIR};checker=${CHECKER_REPORT_FILE}"
 
-    for f in "$RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
+    for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
              "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
              "$CLAUDE_PROGRESS_FILE" "$CLAUDE_PID_FILE" "$PROGRESS_FILE"; do
         copy_if_present "$f" "$DISPATCH_OUTPUT"
@@ -234,7 +235,7 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     echo "Sending evidence to Codex/GPT for review..."
     set +e
     bash "$REVIEW_SCRIPT" "$CURRENT_TASK" "$RESULT_FILE" "$DIFF_FILE" \
-        "$CHECKER_REPORT_FILE" "$USAGE_FILE" "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$REPORT_FILE" \
+        "$CHECKER_REPORT_FILE" "$USAGE_FILE" "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$REPORT_FILE" "$RAW_RESULT_FILE" \
         "$CLAUDE_PROGRESS_FILE" "$PROGRESS_FILE" "$CLAUDE_PID_FILE" 2>&1 | tee "$REVIEW_OUTPUT"
     REVIEW_STATUS=${PIPESTATUS[0]}
     set -e

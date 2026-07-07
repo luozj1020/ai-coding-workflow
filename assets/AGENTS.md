@@ -24,6 +24,8 @@ Use the explicit loop: OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIE
 
 After a Claude execution round, Codex normally reviews only. It may edit directly only when Claude has repeatedly missed the target, the loop hit a stop condition, or Claude is unavailable. Record the failed attempts, intervention reason, edit scope, and validation evidence.
 
+Claude no-progress, early exit, invalid result, or one failed attempt is evidence for a tighter next task card, not permission for Codex to patch. Prefer smaller Claude revisions with clearer acceptance criteria before takeover.
+
 ## Context Lifecycle
 
 Keep default context small and file-backed:

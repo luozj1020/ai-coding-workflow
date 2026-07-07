@@ -66,6 +66,7 @@ Core loop:
 
 - Codex designs and reviews; Claude Code edits.
 - After a Claude execution round, Codex normally accepts, revises, splits, or rejects; it does not patch implementation files directly.
+- Claude no-progress, early exit, invalid result, or one failed attempt is not enough for Codex takeover; tighten the task card and re-dispatch Claude.
 - Codex may directly intervene only after repeated Claude failure or an external blocker, and must record the intervention reason, scope, and validation.
 - Use LSP/CodeGraph/MCP before broad reads.
 - Delegate whole-file scans, long logs, and multi-file implementation to Claude.
@@ -79,6 +80,7 @@ Core loop:
 Dispatch artifacts live under `.worktrees/`:
 
 - `*.result.json`, `*.status.txt`, `*.diff`, `*.diffstat.txt`
+- `*.result.raw.txt` when Claude exits without valid JSON output
 - `*.checker-report.md`, `*.checker-logs/`
 - `*.report.md`, `*.claude-progress.md`, `*.progress.log`, `*.pid`
 - `*.usage.txt`, `*.worktree-status.txt`, `*.untracked.txt`

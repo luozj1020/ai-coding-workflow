@@ -241,6 +241,8 @@ When a stop condition is reached without acceptance, the task is escalated to th
 
 Codex may directly edit after Claude has made multiple unsuccessful attempts and another revision is unlikely to improve the result. Valid triggers are max iterations reached, the same failure in two consecutive iterations, failure count not decreasing for two consecutive iterations, repeated timeout/unavailability, or an explicit human request. Codex must record the attempts, takeover reason, touched scope, and validation evidence.
 
+A no-progress or failed Claude iteration is not automatically a takeover trigger. The default next step is a sharper Claude task card: reduce scope, add diagnostics, require specific artifacts, and set stop-and-report gates. Takeover is reserved for threshold hits or explicit human direction.
+
 ## Loop Metadata
 
 Each task card can carry:

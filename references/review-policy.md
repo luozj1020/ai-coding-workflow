@@ -60,6 +60,8 @@ Codex may directly edit implementation files only when at least one condition is
 
 Before editing, Codex must state the failed attempts, why another Claude revision is unlikely to help, the files/modules it will touch, and the validation it will run. The edit should be narrow and should not bypass safety approvals.
 
+No-progress evidence, an early Claude exit, invalid result JSON, missing report, or a single failed implementation does not by itself satisfy the threshold. In those cases Codex should produce a smaller revision task with clearer acceptance criteria, stronger stop conditions, and required evidence for Claude.
+
 ### Human  -  Final Authority
 
 Responsibilities:
@@ -124,7 +126,7 @@ Record any knowledge gained during review that could inform future planning:
 2. The evidence packet is sent to Codex/GPT via `ai/review-with-codex.sh` or `ai/run-loop.sh`.
 3. Codex/GPT reviews and returns a structured decision.
 4. If **accept**: the change is ready for human merge.
-5. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes unless an intervention threshold has been reached.
+5. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes unless an intervention threshold has been reached. If Claude made no useful progress, the next task should be narrower, more diagnostic, and evidence-focused rather than replaced by Codex edits.
 6. If **split**: the original task card is decomposed into smaller child cards, each entering its own loop.
 7. If **reject**: the task returns to OBSERVE with the rejection reasoning as new context.
 8. If an intervention threshold is reached, Codex may perform a scoped direct fix and must produce validation evidence.

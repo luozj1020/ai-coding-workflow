@@ -60,6 +60,7 @@ WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 mkdir -p "$WORKTREE_ROOT"
 
 RESULT_FILE="${WORKTREE_ROOT}/${TASK_ID}.result.json"
+RAW_RESULT_FILE="${WORKTREE_ROOT}/${TASK_ID}.result.raw.txt"
 STATUS_FILE="${WORKTREE_ROOT}/${TASK_ID}.status.txt"
 DIFFSTAT_FILE="${WORKTREE_ROOT}/${TASK_ID}.diffstat.txt"
 DIFF_FILE="${WORKTREE_ROOT}/${TASK_ID}.diff"
@@ -74,7 +75,7 @@ CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
 PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 
-for f in "$RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
+for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
          "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
          "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$PROGRESS_FILE"; do
     mkdir -p "$(dirname "$f")"
@@ -222,6 +223,13 @@ CLAUDE_CODE_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-600}"
 CLAUDE_CODE_HEARTBEAT_SECONDS="${CLAUDE_CODE_HEARTBEAT_SECONDS:-30}"
 CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
 
+PYTHON_CMD=""
+if command -v python3 &>/dev/null; then
+    PYTHON_CMD="python3"
+elif command -v python &>/dev/null; then
+    PYTHON_CMD="python"
+fi
+
 case "$CLAUDE_CODE_TIMEOUT_SECONDS" in
     ''|*[!0-9]*)
         echo "Error: CLAUDE_CODE_TIMEOUT_SECONDS must be a non-negative integer." >&2
@@ -270,6 +278,7 @@ worktree_digest() {
         git status --porcelain --untracked-files=all 2>/dev/null \
             | grep -v -E '^(.. )?(TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true
         git diff --shortstat 2>/dev/null || true
+        git diff --cached --shortstat 2>/dev/null || true
     } | sha1sum 2>/dev/null | awk '{print $1}' || true
 }
 
@@ -410,6 +419,90 @@ else
     progress_log "Claude completed successfully: elapsed_seconds=${ELAPSED}"
 fi
 
+RESULT_FALLBACK_GENERATED=0
+ensure_result_json() {
+    local reason="$1"
+    local valid=0
+    if [ -s "$RESULT_FILE" ] && [ -n "$PYTHON_CMD" ]; then
+        if "$PYTHON_CMD" - "$RESULT_FILE" >/dev/null 2>&1 <<'PYEOF'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    json.load(f)
+PYEOF
+        then
+            valid=1
+        fi
+    elif [ -s "$RESULT_FILE" ] && [ -z "$PYTHON_CMD" ]; then
+        valid=1
+    fi
+
+    if [ "$valid" -eq 1 ]; then
+        return 0
+    fi
+
+    RESULT_FALLBACK_GENERATED=1
+    if [ -s "$RESULT_FILE" ]; then
+        cp "$RESULT_FILE" "$RAW_RESULT_FILE" 2>/dev/null || true
+    else
+        : > "$RAW_RESULT_FILE"
+    fi
+
+    if [ -n "$PYTHON_CMD" ]; then
+        "$PYTHON_CMD" - "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$PROGRESS_FILE" "$REPORT_FILE" \
+            "$CLAUDE_STATUS" "$CLAUDE_TIMED_OUT" "$CLAUDE_NO_OUTPUT_TIMED_OUT" "$ELAPSED" "$reason" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+(
+    result_file,
+    raw_result_file,
+    status_file,
+    progress_file,
+    report_file,
+    status,
+    timed_out,
+    no_output_timed_out,
+    elapsed,
+    reason,
+) = sys.argv[1:11]
+
+payload = {
+    "type": "claude_dispatch_fallback",
+    "fallback": True,
+    "reason": reason,
+    "claude_exit_status": int(status),
+    "timed_out": timed_out == "1",
+    "no_output_timed_out": no_output_timed_out == "1",
+    "elapsed_seconds": int(elapsed),
+    "raw_result_file": raw_result_file,
+    "status_file": status_file,
+    "progress_file": progress_file,
+    "report_file": report_file,
+    "message": "Claude exited without valid JSON result output; dispatcher generated this fallback result.",
+}
+Path(result_file).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PYEOF
+    else
+        {
+            echo "{"
+            echo '  "type": "claude_dispatch_fallback",'
+            echo '  "fallback": true,'
+            echo "  \"reason\": \"${reason}\","
+            echo "  \"claude_exit_status\": ${CLAUDE_STATUS},"
+            echo "  \"timed_out\": $([ "$CLAUDE_TIMED_OUT" -eq 1 ] && echo true || echo false),"
+            echo "  \"no_output_timed_out\": $([ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] && echo true || echo false),"
+            echo "  \"elapsed_seconds\": ${ELAPSED},"
+            echo '  "message": "Claude exited without valid JSON result output; dispatcher generated this fallback result."'
+            echo "}"
+        } > "$RESULT_FILE"
+    fi
+    progress_log "Generated fallback result JSON: reason=${reason}, raw_result=${RAW_RESULT_FILE}"
+}
+
+ensure_result_json "missing_or_invalid_result_json"
+
 cd "$WORKTREE_DIR"
 
 CHECK_SCRIPT="${SCRIPT_DIR}/check-worktree.sh"
@@ -436,11 +529,56 @@ else
     progress_log "Checker helper unavailable: ${CHECK_SCRIPT}"
 fi
 
-git diff --stat > "$DIFFSTAT_FILE" 2>/dev/null || true
-git diff > "$DIFF_FILE" 2>/dev/null || true
-
 FILTERED_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null \
     | grep -v -E '^(TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)' || true)"
+
+write_untracked_patches() {
+    echo "$FILTERED_UNTRACKED" | while IFS= read -r uf; do
+        [ -z "$uf" ] && continue
+        if [ -f "$uf" ] && [ -r "$uf" ]; then
+            echo ""
+            echo "### Untracked File: $uf"
+            ret=0; git diff --no-index -- /dev/null "$uf" 2>/dev/null || ret=$?
+            if [ "$ret" -ne 0 ] && [ "$ret" -ne 1 ]; then
+                echo "(diff unavailable for $uf)"
+            fi
+        fi
+    done
+}
+
+{
+    echo "# Diffstat - ${TIMESTAMP}"
+    echo ""
+    echo "## Unstaged Changes"
+    DIFF_OUT="$(git diff --stat 2>/dev/null || true)"
+    if [ -z "$DIFF_OUT" ]; then echo "(none)"; else echo "$DIFF_OUT"; fi
+    echo ""
+    echo "## Staged Changes"
+    CACHED_OUT="$(git diff --cached --stat 2>/dev/null || true)"
+    if [ -z "$CACHED_OUT" ]; then echo "(none)"; else echo "$CACHED_OUT"; fi
+    echo ""
+    echo "## Untracked Files"
+    if [ -z "$FILTERED_UNTRACKED" ]; then echo "(none)"; else echo "$FILTERED_UNTRACKED"; fi
+} > "$DIFFSTAT_FILE"
+
+{
+    echo "# Combined Diff - ${TIMESTAMP}"
+    echo ""
+    echo "## Unstaged Diff"
+    UNSTAGED_DIFF="$(git diff 2>/dev/null || true)"
+    if [ -z "$UNSTAGED_DIFF" ]; then echo "(none)"; else echo "$UNSTAGED_DIFF"; fi
+    echo ""
+    echo "## Staged Diff"
+    STAGED_DIFF="$(git diff --cached 2>/dev/null || true)"
+    if [ -z "$STAGED_DIFF" ]; then echo "(none)"; else echo "$STAGED_DIFF"; fi
+    echo ""
+    echo "## Untracked File Patches"
+    if [ -z "$FILTERED_UNTRACKED" ]; then
+        echo "(none)"
+    else
+        write_untracked_patches
+    fi
+} > "$DIFF_FILE"
 
 {
     echo "# Untracked Files in Worktree - ${TIMESTAMP}"
@@ -451,40 +589,9 @@ FILTERED_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null \
         echo "$FILTERED_UNTRACKED"
         echo ""
         echo "--- Patch Evidence (binary-safe) ---"
-        echo "$FILTERED_UNTRACKED" | while IFS= read -r uf; do
-            if [ -f "$uf" ] && [ -r "$uf" ]; then
-                echo ""
-                echo "=== $uf ==="
-                ret=0; git diff --no-index -- /dev/null "$uf" 2>/dev/null || ret=$?
-                if [ "$ret" -ne 0 ] && [ "$ret" -ne 1 ]; then
-                    echo "(diff unavailable for $uf)"
-                fi
-            fi
-        done
+        write_untracked_patches
     fi
 } > "$UNTRACKED_FILE"
-
-{
-    cat "$DIFF_FILE"
-    echo "$FILTERED_UNTRACKED" | while IFS= read -r uf; do
-        [ -z "$uf" ] && continue
-        if [ -f "$uf" ] && [ -r "$uf" ]; then
-            echo ""
-            ret=0; git diff --no-index -- /dev/null "$uf" 2>/dev/null || ret=$?
-            if [ "$ret" -ne 0 ] && [ "$ret" -ne 1 ]; then
-                echo "(diff unavailable for $uf)"
-            fi
-        fi
-    done
-} > "${DIFF_FILE}.combined"
-mv "${DIFF_FILE}.combined" "$DIFF_FILE"
-
-PYTHON_CMD=""
-if command -v python3 &>/dev/null; then
-    PYTHON_CMD="python3"
-elif command -v python &>/dev/null; then
-    PYTHON_CMD="python"
-fi
 
 if [ -n "$PYTHON_CMD" ]; then
     "$PYTHON_CMD" - "$RESULT_FILE" "$USAGE_FILE" <<'PYEOF'
@@ -577,6 +684,15 @@ else
         echo "## Requirements Summary"
         echo "Claude did not create CLAUDE_REPORT.md; this fallback report was generated from workflow artifacts."
         echo ""
+        echo "## Dispatch Outcome"
+        echo ""
+        echo "- Claude exit status: ${CLAUDE_STATUS}"
+        echo "- Elapsed seconds: ${ELAPSED}"
+        echo "- Runtime timed out: $([ "$CLAUDE_TIMED_OUT" -eq 1 ] && echo yes || echo no)"
+        echo "- No-output timed out: $([ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] && echo yes || echo no)"
+        echo "- Fallback result generated: $([ "$RESULT_FALLBACK_GENERATED" -eq 1 ] && echo yes || echo no)"
+        echo "- Raw result artifact: $RAW_RESULT_FILE"
+        echo ""
         echo "## Changed Files"
         cat "$DIFFSTAT_FILE"
         echo ""
@@ -606,6 +722,7 @@ echo ""
 echo "=== Dispatch Complete ==="
 echo "Worktree:        $WORKTREE_DIR"
 echo "Result:          $RESULT_FILE"
+echo "Raw Result:      $RAW_RESULT_FILE"
 echo "Status:          $STATUS_FILE"
 echo "Diffstat:        $DIFFSTAT_FILE"
 echo "Diff:            $DIFF_FILE"

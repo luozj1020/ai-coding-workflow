@@ -1,4 +1,5 @@
 import os
+import json
 import pathlib
 import shutil
 import stat
@@ -78,6 +79,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             f.write(
                 "#!/usr/bin/env bash\n"
                 "cat >/dev/null\n"
+                "case \"${FAKE_CLAUDE_MODE:-success}\" in\n"
+                "  fail-empty)\n"
+                "    exit 42\n"
+                "    ;;\n"
+                "  stage-change)\n"
+                "    printf '# staged by claude\\n' > README.md\n"
+                "    git add README.md\n"
+                "    ;;\n"
+                "esac\n"
                 "printf '%s\\n' '{\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}'\n"
             )
         os.chmod(fake, 0o755)
@@ -123,6 +133,13 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             capture_output=True,
             timeout=60,
         )
+
+    def _artifact_path(self, stdout, label):
+        prefix = label + ":"
+        for line in stdout.splitlines():
+            if line.startswith(prefix):
+                return pathlib.Path(line.split(":", 1)[1].strip())
+        self.fail(f"missing artifact label {label!r} in output:\n{stdout}")
 
     def test_clean_repo_with_tracked_task_card_succeeds(self):
         self._write_task_card()
@@ -201,6 +218,39 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Dispatch Complete", result.stdout)
         self.assertIn("Source status saved to:", result.stdout)
         self.assertTrue(list((self.repo / ".worktrees").glob("claude-*.source-status.txt")))
+
+    def test_claude_early_exit_without_result_gets_fallback_artifacts(self):
+        self._write_task_card()
+
+        result = self._dispatch(extra_env={"FAKE_CLAUDE_MODE": "fail-empty"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("claude exited with non-zero status 42", result.stderr)
+        result_file = self._artifact_path(result.stdout, "Result")
+        report_file = self._artifact_path(result.stdout, "Report")
+        raw_result_file = self._artifact_path(result.stdout, "Raw Result")
+        data = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertTrue(data["fallback"])
+        self.assertEqual(data["claude_exit_status"], 42)
+        self.assertTrue(raw_result_file.exists())
+        report = report_file.read_text(encoding="utf-8")
+        self.assertIn("Claude exit status: 42", report)
+        self.assertIn("Fallback result generated: yes", report)
+
+    def test_staged_claude_changes_are_in_combined_diff(self):
+        self._write_task_card()
+
+        result = self._dispatch(extra_env={"FAKE_CLAUDE_MODE": "stage-change"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        diff_file = self._artifact_path(result.stdout, "Diff")
+        diffstat_file = self._artifact_path(result.stdout, "Diffstat")
+        diff = diff_file.read_text(encoding="utf-8")
+        diffstat = diffstat_file.read_text(encoding="utf-8")
+        self.assertIn("## Staged Diff", diff)
+        self.assertIn("+# staged by claude", diff)
+        self.assertIn("## Staged Changes", diffstat)
+        self.assertIn("README.md", diffstat)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@
 | Artifact | Path | Notes |
 |----------|------|-------|
 | Claude PID | | |
+| Raw result | | |
 | Progress log | | |
 | Claude self-reported progress | | |
 | Status log | | |
