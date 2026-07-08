@@ -90,6 +90,11 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn("ai-coding-workflow", cmd)
             self.assertIn(".", cmd)
 
+            update_cmd = self.module.build_bootstrap_command(
+                str(skill), ".", update_workflow_files=True
+            )
+            self.assertIn("--update-workflow-files", update_cmd)
+
     def test_skill_entrypoint_keeps_routing_context(self):
         skill = ROOT / "SKILL.md"
         content = skill.read_text(encoding="utf-8")
@@ -118,6 +123,7 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn("Convenient update command", output)
             self.assertIn("update_skill.py", output)
             self.assertIn("ai/dispatch-to-claude.sh is missing", output)
+            self.assertIn("--update-workflow-files", output)
             self.assertIn("Context intelligence check", output)
             self.assertIn("CodeGraph CLI:", output)
             self.assertIn("CodeGraph init:", output)

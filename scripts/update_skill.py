@@ -10,8 +10,10 @@ Usage:
     python ~/.codex/skills/ai-coding-workflow/scripts/update_skill.py --source /path/to/ai-coding-workflow --bootstrap-current
 
 By default this updates the Codex skill from the local source tree that
-contains this script. Use --source when running the helper from an installed
-skill but updating from a separate cloned repository.
+contains this script. Bootstrap options also refresh existing project-local
+workflow files with install_workflow.py --update-workflow-files. Use --source
+when running the helper from an installed skill but updating from a separate
+cloned repository.
 """
 
 import argparse
@@ -42,12 +44,12 @@ def parse_args(argv=None):
     parser.add_argument(
         "--bootstrap-current",
         action="store_true",
-        help="After updating the skill, bootstrap the current working directory.",
+        help="After updating the skill, bootstrap and refresh workflow files in the current working directory.",
     )
     parser.add_argument(
         "--bootstrap-repo",
         metavar="PATH",
-        help="After updating the skill, bootstrap the given repository path.",
+        help="After updating the skill, bootstrap and refresh workflow files in the given repository path.",
     )
     args = parser.parse_args(argv)
     if args.bootstrap_current and args.bootstrap_repo:

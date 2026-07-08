@@ -30,6 +30,8 @@ For routine updates, use the convenience wrapper from a cloned `ai-coding-workfl
 python scripts/update_skill.py --bootstrap-current
 ```
 
+Updating the user-level Skill and updating this repository's local workflow files are separate operations. `update_skill.py --bootstrap-current` does both: it refreshes the Codex Skill and then runs the repository bootstrap with `--update-workflow-files` so existing `ai/*` workflow files receive new dispatcher, review prompt, template, and helper behavior. Running `install_workflow.py` without that flag reports outdated local files but does not overwrite them.
+
 If running from the installed Skill while using a separate clone as the update source:
 
 ```bash

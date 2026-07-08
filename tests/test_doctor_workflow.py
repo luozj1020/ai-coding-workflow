@@ -73,6 +73,29 @@ class DoctorWorkflowTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
             self.assertIn("Project workflow files are installed", result.stdout)
 
+    def test_doctor_warns_when_local_workflow_files_are_outdated(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            (repo / "ai" / "dispatch-to-claude.sh").write_text(
+                "# old local dispatch\n", encoding="utf-8"
+            )
+
+            old_roots = module._candidate_skill_roots
+            try:
+                module._candidate_skill_roots = lambda: [str(ROOT)]
+                findings, has_error = module.run_doctor(str(repo))
+            finally:
+                module._candidate_skill_roots = old_roots
+
+            self.assertFalse(has_error)
+            text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+            self.assertIn("workflow-version", text)
+            self.assertIn("ai/dispatch-to-claude.sh", text)
+            self.assertIn("--update-workflow-files", text)
+
     def test_doctor_exits_nonzero_without_git(self):
         """Doctor exits 1 when no .git is found."""
         with tempfile.TemporaryDirectory() as tmp:

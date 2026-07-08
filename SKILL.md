@@ -21,6 +21,8 @@ Convenient update wrapper:
 python scripts/update_skill.py --bootstrap-current
 ```
 
+`update_skill.py --bootstrap-current` updates both the user-level Codex skill and the current repository's local workflow files. Plain project files under `ai/` are refreshed through `install_workflow.py --update-workflow-files`; running `install_workflow.py` without that flag reports outdated files but does not overwrite them.
+
 Bootstrap a target repository:
 
 ```bash
@@ -43,7 +45,7 @@ Run `install_for_codex.py` once per machine so Codex can discover this skill. Th
 
 ### Update
 
-Run the same install command again. Repository bootstrap updates managed blocks in `AGENTS.md` and `CLAUDE.md`, preserves user-owned content outside managed markers, copies plain workflow files only when missing, and validates shell scripts with `bash -n`.
+Run the same install command again. Repository bootstrap updates managed blocks in `AGENTS.md` and `CLAUDE.md`, preserves user-owned content outside managed markers, reports outdated plain workflow files by default, and validates shell scripts with `bash -n`. Use `install_workflow.py --update-workflow-files` or `update_skill.py --bootstrap-current` to refresh existing local `ai/*` workflow files in already bootstrapped projects.
 
 ### Use
 
@@ -52,6 +54,8 @@ Before dispatching work, verify the target repository has `ai/dispatch-to-claude
 ```bash
 python ai/doctor_workflow.py
 ```
+
+If doctor reports `workflow-version` warnings, the repository is still using older local workflow copies. Refresh with the command doctor prints, or run the installed skill updater with `--bootstrap-current` from that repository.
 
 Core loop:
 

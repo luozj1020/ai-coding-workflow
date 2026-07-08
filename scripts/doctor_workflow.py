@@ -49,6 +49,30 @@ WORKFLOW_REQUIRED_FILES = [
     ".worktrees/.gitkeep",
 ]
 
+WORKFLOW_PLAIN_FILE_SOURCES = [
+    ("assets/task-card-template.md", "ai/task-card-template.md"),
+    ("assets/evidence-packet-template.md", "ai/evidence-packet-template.md"),
+    ("assets/plan-task-template.md", "ai/plan-task-template.md"),
+    ("assets/plan-findings-template.md", "ai/plan-findings-template.md"),
+    ("assets/plan-progress-template.md", "ai/plan-progress-template.md"),
+    ("assets/README.md", "ai/README.md"),
+    ("scripts/dispatch-to-claude.sh", "ai/dispatch-to-claude.sh"),
+    ("scripts/check-worktree.sh", "ai/check-worktree.sh"),
+    ("scripts/review-with-codex.sh", "ai/review-with-codex.sh"),
+    ("scripts/run-loop.sh", "ai/run-loop.sh"),
+    ("scripts/status-claude.sh", "ai/status-claude.sh"),
+    ("scripts/watch-claude.sh", "ai/watch-claude.sh"),
+    ("scripts/kill-claude.sh", "ai/kill-claude.sh"),
+    ("scripts/cleanup-worktree.sh", "ai/cleanup-worktree.sh"),
+    ("scripts/pwsh-utf8.ps1", "ai/pwsh-utf8.ps1"),
+    ("scripts/doctor_workflow.py", "ai/doctor_workflow.py"),
+    ("scripts/clean_runtime.py", "ai/clean_runtime.py"),
+    ("scripts/install_context_tools.py", "ai/install_context_tools.py"),
+    ("scripts/summarize-loop-run.py", "ai/summarize-loop-run.py"),
+    ("scripts/init-plan.py", "ai/init-plan.py"),
+    ("scripts/session-catchup.py", "ai/session-catchup.py"),
+]
+
 
 def _find_repo_root(start):
     """Walk upward from *start* until a directory containing .git is found."""
@@ -230,21 +254,27 @@ def _candidate_workflow_installers():
     ]
 
 
-def _workflow_bootstrap_command(repo_root):
+def _workflow_bootstrap_command(repo_root, update_workflow_files=False):
     """Return a concrete command to bootstrap this repository when possible."""
     python_cmd = sys.executable or "python"
     for installer in _candidate_workflow_installers():
         if os.path.isfile(installer):
-            return "{} {} {}".format(
+            cmd = "{} {} {}".format(
                 _quote_cmd_arg(python_cmd),
                 _quote_cmd_arg(installer),
                 _quote_cmd_arg(repo_root),
             )
+            if update_workflow_files:
+                cmd += " --update-workflow-files"
+            return cmd
     if sys.platform == "win32":
         installer = r"%USERPROFILE%\.codex\skills\ai-coding-workflow\scripts\install_workflow.py"
     else:
         installer = "~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py"
-    return "python {} {}".format(installer, _quote_cmd_arg(repo_root))
+    cmd = "python {} {}".format(installer, _quote_cmd_arg(repo_root))
+    if update_workflow_files:
+        cmd += " --update-workflow-files"
+    return cmd
 
 
 def _missing_project_workflow_files(repo_root):
@@ -255,6 +285,55 @@ def _missing_project_workflow_files(repo_root):
         if not os.path.exists(path):
             missing.append(rel)
     return missing
+
+
+def _candidate_skill_roots():
+    """Return installed skill roots that can be used as workflow references."""
+    home = os.path.expanduser("~")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return [
+        os.path.join(home, ".codex", "skills", "ai-coding-workflow"),
+        os.path.dirname(script_dir),
+    ]
+
+
+def _normalize_for_compare(text):
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    lines = [line.rstrip() for line in lines]
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _read_text(path):
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def _reference_skill_root():
+    """Return the first candidate skill root with expected assets/scripts."""
+    for root in _candidate_skill_roots():
+        if os.path.isfile(os.path.join(root, "assets", "task-card-template.md")) and os.path.isfile(
+            os.path.join(root, "scripts", "dispatch-to-claude.sh")
+        ):
+            return root
+    return None
+
+
+def _outdated_project_workflow_files(repo_root):
+    """Return local workflow files that differ from the installed skill copy."""
+    skill_root = _reference_skill_root()
+    if not skill_root:
+        return []
+    outdated = []
+    for src_rel, dest_rel in WORKFLOW_PLAIN_FILE_SOURCES:
+        src = os.path.join(skill_root, *src_rel.split("/"))
+        dest = os.path.join(repo_root, *dest_rel.split("/"))
+        if not os.path.isfile(src) or not os.path.isfile(dest):
+            continue
+        if _normalize_for_compare(_read_text(src)) != _normalize_for_compare(_read_text(dest)):
+            outdated.append(dest_rel)
+    return outdated
 
 
 # Context tools to check. Each entry: (name, check_command).
@@ -326,6 +405,15 @@ def run_doctor(repo_path=None):
         findings.append((INFO, "workflow", "Bootstrap command: {}".format(_workflow_bootstrap_command(root))))
     else:
         findings.append((INFO, "workflow", "Project workflow files are installed"))
+        outdated_workflow = _outdated_project_workflow_files(root)
+        if outdated_workflow:
+            shown = ", ".join(outdated_workflow[:6])
+            if len(outdated_workflow) > 6:
+                shown += ", ..."
+            findings.append((WARN, "workflow-version", "Local workflow files differ from installed skill: {}".format(shown)))
+            findings.append((INFO, "workflow-version", "Refresh command: {}".format(_workflow_bootstrap_command(root, update_workflow_files=True))))
+        else:
+            findings.append((INFO, "workflow-version", "Local workflow files match the installed skill"))
 
     git_path, git_version = _git_available()
     if git_path is None:

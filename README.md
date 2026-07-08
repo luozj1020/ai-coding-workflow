@@ -22,8 +22,9 @@ ai-coding-workflow bootstraps repositories with:
 | **Install Skill** | Once per computer | `python scripts/install_for_codex.py` |
 | **Update Skill** | After pulling a newer checkout | `python scripts/update_skill.py --bootstrap-current` |
 | **Bootstrap project** | Once per repository | `python scripts/install_workflow.py .` |
+| **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
 
-These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create the target repository's `ai/` directory. If dispatch reports that `ai/dispatch-to-claude.sh` is missing, bootstrap that repository first.
+These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create or refresh the target repository's `ai/` directory. Already bootstrapped projects keep local copies of `ai/dispatch-to-claude.sh`, `ai/task-card-template.md`, and other workflow files. Use `update_skill.py --bootstrap-current` or `install_workflow.py . --update-workflow-files` to refresh those local copies after updating the Skill.
 
 ## Repository layout
 
@@ -136,6 +137,8 @@ python scripts/update_skill.py --bootstrap-current
 python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
+`python scripts/update_skill.py` updates only the user-level Codex Skill. `--bootstrap-current` and `--bootstrap-repo` additionally refresh the target repository's local workflow files with `--update-workflow-files`, so existing projects receive new dispatcher, review prompt, template, and helper behavior.
+
 When running from an already installed skill but updating from a separate clone, point it at the clone:
 
 ```bash
@@ -226,6 +229,18 @@ python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflo
 ```bash
 # macOS / Linux
 python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
+```
+
+By default, existing plain workflow files under `ai/` are not overwritten. If they differ from the installed Skill, the installer reports them as `outdated`. To refresh an already bootstrapped project after a Skill update, run:
+
+```bash
+python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py . --update-workflow-files
+```
+
+or from a cloned Skill checkout:
+
+```bash
+python scripts/update_skill.py --bootstrap-current
 ```
 
 ---

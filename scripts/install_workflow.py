@@ -4,6 +4,7 @@ install_workflow.py  -  Install or update the AI coding workflow in a target rep
 
 Usage:
     python scripts/install_workflow.py /path/to/repo
+    python scripts/install_workflow.py /path/to/repo --update-workflow-files
 
 This script:
     1. Copies assets into the target repo.
@@ -11,7 +12,7 @@ This script:
     3. Ensures CLAUDE.md contains @AGENTS.md import.
     4. Makes shell scripts executable.
     5. Runs bash -n on installed shell scripts (if bash is available).
-    6. Prints a summary of created, updated, skipped, and validated files.
+    6. Prints a summary of created, updated, outdated, skipped, and validated files.
 
 Uses only the Python standard library.
 """
@@ -19,6 +20,7 @@ Uses only the Python standard library.
 import os
 import subprocess
 import sys
+import argparse
 
 
 def _to_bash_path(path):
@@ -334,11 +336,23 @@ def install_or_update_claude(src_content, dest_path):
     return "updated"
 
 
-def install_or_update_plain(src_content, dest_path):
-    """Install a plain file (no managed blocks). Returns status string."""
+def install_or_update_plain(src_content, dest_path, update_existing=False):
+    """Install or optionally update a plain workflow file.
+
+    Existing plain files are not overwritten by default because target
+    repositories may carry local edits. With update_existing=True, differing
+    files are refreshed from the current skill assets/scripts.
+    """
     if not os.path.exists(dest_path):
         write_file(dest_path, src_content)
         return "created"
+    existing = read_file(dest_path)
+    if normalize_for_compare(existing) == normalize_for_compare(src_content):
+        return "skipped"
+    if update_existing:
+        write_file(dest_path, src_content)
+        return "updated"
+    return "outdated"
     return "skipped"
 
 
@@ -404,12 +418,22 @@ def validate_shell_script(path):
         return "WARN_SKIPPED"
 
 
-def main():
-    if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} /path/to/repo")
-        sys.exit(1)
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Install or update ai-coding-workflow files in a target repository."
+    )
+    parser.add_argument("repo", help="Target repository path.")
+    parser.add_argument(
+        "--update-workflow-files",
+        action="store_true",
+        help="Refresh existing plain ai/* workflow files from the current skill copy.",
+    )
+    args = parser.parse_args(argv)
+    return os.path.abspath(args.repo), args.update_workflow_files
 
-    repo_path = os.path.abspath(sys.argv[1])
+
+def main(argv=None):
+    repo_path, update_workflow_files = parse_args(argv)
     assets_dir = get_assets_dir()
     scripts_dir = get_script_dir()
 
@@ -422,6 +446,7 @@ def main():
     results = {
         "created": [],
         "updated": [],
+        "outdated": [],
         "skipped": [],
         "validated": [],
         "warned": [],
@@ -446,7 +471,7 @@ def main():
     for src_name, dest_rel in DIRECT_COPY:
         src = os.path.join(assets_dir, src_name)
         dest = os.path.join(repo_path, dest_rel)
-        status = install_or_update_plain(read_file(src), dest)
+        status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
         print(f"  {status}: {dest_rel}")
 
@@ -454,7 +479,7 @@ def main():
     for src_name, dest_rel in SCRIPTS:
         src = os.path.join(scripts_dir, src_name)
         dest = os.path.join(repo_path, dest_rel)
-        status = install_or_update_plain(read_file(src), dest)
+        status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
         print(f"  {status}: {dest_rel}")
 
@@ -473,7 +498,7 @@ def main():
     for src_name, dest_rel in POWERSHELL_SCRIPTS:
         src = os.path.join(scripts_dir, src_name)
         dest = os.path.join(repo_path, dest_rel)
-        status = install_or_update_plain(read_file(src), dest)
+        status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
         print(f"  {status}: {dest_rel}")
 
@@ -481,7 +506,7 @@ def main():
     for src_name, dest_rel in PYTHON_SCRIPTS:
         src = os.path.join(scripts_dir, src_name)
         dest = os.path.join(repo_path, dest_rel)
-        status = install_or_update_plain(read_file(src), dest)
+        status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
         print(f"  {status}: {dest_rel}")
 
@@ -498,10 +523,13 @@ def main():
 
     # --- Print summary ---
     print("\n=== Installation Summary ===")
-    for label, key in [("Created", "created"), ("Updated", "updated"), ("Skipped", "skipped")]:
+    for label, key in [("Created", "created"), ("Updated", "updated"), ("Outdated", "outdated"), ("Skipped", "skipped")]:
         print(f"  {label}:   {len(results[key])} files")
         for f in results[key]:
             print(f"    + {f}")
+    if results["outdated"]:
+        print("  Note: outdated workflow files were not overwritten.")
+        print("        Re-run with --update-workflow-files to refresh local ai/* workflow copies.")
     print(f"  Validated: {len(results['validated'])} scripts")
     for f in results["validated"]:
         print(f"    OK {f}")

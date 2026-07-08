@@ -19,9 +19,9 @@ def load_module():
 
 
 class InstallWorkflowTests(unittest.TestCase):
-    def run_installer(self, repo):
+    def run_installer(self, repo, *extra_args):
         return subprocess.run(
-            [sys.executable, str(SCRIPT), str(repo)],
+            [sys.executable, str(SCRIPT), str(repo)] + list(extra_args),
             cwd=str(ROOT),
             text=True,
             encoding="utf-8",
@@ -58,6 +58,20 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "session-catchup.py").exists())
             self.assertTrue((repo / ".worktrees" / ".gitkeep").exists())
 
+    def test_help_does_not_create_repository_named_help(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
+            cwd=str(ROOT),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=True,
+        )
+
+        self.assertIn("--update-workflow-files", result.stdout)
+        self.assertFalse((ROOT / "--help").exists())
+
     def test_update_preserves_user_owned_content(self):
         module = load_module()
         old_managed = "\n".join(
@@ -86,6 +100,33 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("## Core Principle", content)
             self.assertIn("Keep this repository rule.", content)
             self.assertNotIn("old managed content", content)
+
+    def test_existing_plain_workflow_files_are_outdated_until_explicit_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            self.run_installer(repo)
+            dispatch = repo / "ai" / "dispatch-to-claude.sh"
+            dispatch.write_text("# local old dispatch\n", encoding="utf-8")
+
+            second = self.run_installer(repo)
+
+            self.assertIn("outdated: ai/dispatch-to-claude.sh", second.stdout)
+            self.assertIn("--update-workflow-files", second.stdout)
+            self.assertEqual(dispatch.read_text(encoding="utf-8"), "# local old dispatch\n")
+
+    def test_update_workflow_files_refreshes_existing_plain_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            self.run_installer(repo)
+            dispatch = repo / "ai" / "dispatch-to-claude.sh"
+            dispatch.write_text("# local old dispatch\n", encoding="utf-8")
+
+            second = self.run_installer(repo, "--update-workflow-files")
+
+            self.assertIn("updated: ai/dispatch-to-claude.sh", second.stdout)
+            self.assertIn("You are the executor in a Codex/Claude Code workflow.", dispatch.read_text(encoding="utf-8"))
 
     def test_installed_agent_rules_include_execution_contracts(self):
         with tempfile.TemporaryDirectory() as tmp:

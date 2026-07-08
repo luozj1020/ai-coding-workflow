@@ -70,15 +70,18 @@ def quote_cmd_arg(value):
     return shlex.quote(value)
 
 
-def build_bootstrap_command(installed_skill_dir, repo_path):
+def build_bootstrap_command(installed_skill_dir, repo_path, update_workflow_files=False):
     """Return the command that bootstraps *repo_path* using the installed skill."""
     installer = os.path.join(installed_skill_dir, "scripts", "install_workflow.py")
     python_cmd = sys.executable or "python"
-    return "{} {} {}".format(
+    cmd = "{} {} {}".format(
         quote_cmd_arg(python_cmd),
         quote_cmd_arg(installer),
         quote_cmd_arg(repo_path),
     )
+    if update_workflow_files:
+        cmd += " --update-workflow-files"
+    return cmd
 
 
 def build_context_tools_command(installed_skill_dir):
@@ -221,8 +224,8 @@ def run_bootstrap(installed_skill_dir, repo_path):
     repo_abs = os.path.abspath(repo_path)
     print("\nBootstrapping repository workflow:")
     print("  Repository: {}".format(repo_abs))
-    print("  Command:    {}".format(build_bootstrap_command(installed_skill_dir, repo_abs)))
-    subprocess.run([sys.executable, installer, repo_abs], check=True)
+    print("  Command:    {}".format(build_bootstrap_command(installed_skill_dir, repo_abs, update_workflow_files=True)))
+    subprocess.run([sys.executable, installer, repo_abs, "--update-workflow-files"], check=True)
 
 
 def print_next_steps(installed_skill_dir):
@@ -244,6 +247,8 @@ def print_next_steps(installed_skill_dir):
     print("\nNext step for each target repository:")
     print("  cd <your-repository>")
     print("  {}".format(build_bootstrap_command(installed_skill_dir, ".")))
+    print("  To refresh an already bootstrapped repository:")
+    print("  {} --update-workflow-files".format(build_bootstrap_command(installed_skill_dir, ".")))
     print("")
     print("Shortcut when your shell is already in the target repository:")
     print("  {} --bootstrap-current".format(installed_installer_cmd))
