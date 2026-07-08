@@ -64,10 +64,15 @@ PID_FILE="${PREFIX}.pid"
 PROGRESS_FILE="${PREFIX}.progress.log"
 RESULT_FILE="${PREFIX}.result.json"
 STATUS_FILE="${PREFIX}.status.txt"
+NETWORK_FILE="${PREFIX}.network.log"
 DIFF_FILE="${PREFIX}.diff"
 REPORT_FILE="${PREFIX}.report.md"
+LIVE_REPORT_FILE="${WORKTREE_DIR}/CLAUDE_REPORT.md"
 CLAUDE_PROGRESS_FILE="${PREFIX}.claude-progress.md"
+LIVE_CLAUDE_PROGRESS_FILE="${WORKTREE_DIR}/CLAUDE_PROGRESS.md"
 WORKTREE_STATUS_FILE="${PREFIX}.worktree-status.txt"
+SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
+FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
 
 file_size() {
     local file="$1"
@@ -84,10 +89,96 @@ field_from_line() {
     echo "$line" | sed -n "s/.*${key}=\([0-9][0-9]*\).*/\1/p"
 }
 
+file_contains() {
+    local file="$1"
+    local pattern="$2"
+    [ -f "$file" ] && grep -qE "$pattern" "$file" 2>/dev/null
+}
+
+select_report_file() {
+    if [ -f "$LIVE_REPORT_FILE" ]; then
+        echo "$LIVE_REPORT_FILE"
+    else
+        echo "$REPORT_FILE"
+    fi
+}
+
+select_claude_progress_file() {
+    if [ -f "$LIVE_CLAUDE_PROGRESS_FILE" ]; then
+        echo "$LIVE_CLAUDE_PROGRESS_FILE"
+    else
+        echo "$CLAUDE_PROGRESS_FILE"
+    fi
+}
+
+valid_report_file() {
+    local file="$1"
+    [ -s "$file" ] || return 1
+    if file_contains "$file" "$SEEDED_REPORT_MARKER|$FALLBACK_REPORT_MARKER"; then
+        return 1
+    fi
+    if file_contains "$file" "Dispatcher-created draft|fallback report was generated|did not produce a valid Claude-owned CLAUDE_REPORT.md|did not produce a Claude-owned CLAUDE_REPORT.md"; then
+        return 1
+    fi
+    return 0
+}
+
+acknowledgement_only_evidence() {
+    local progress_file="$1"
+    local report_file="$2"
+    local changes="$3"
+    local valid_report="$4"
+    [ "$changes" -eq 0 ] || return 1
+    [ "$valid_report" -eq 0 ] || return 1
+    {
+        [ -f "$progress_file" ] && cat "$progress_file"
+        [ -f "$report_file" ] && cat "$report_file"
+    } | grep -Eiq 'Direction / Boundary Acknowledgement|My understanding:|Planned scope:|Recommendation:[[:space:]]*(proceed|narrow|split|stop-and-report|stop)' 2>/dev/null
+}
+
+evidence_state() {
+    local changes="$1"
+    local progress_file="$2"
+    local report_file="$3"
+    local valid_report=0
+    if valid_report_file "$report_file"; then
+        valid_report=1
+    fi
+    if [ "$changes" -gt 0 ] && [ "$valid_report" -eq 1 ]; then
+        echo "diff + valid report"
+    elif [ "$changes" -gt 0 ]; then
+        echo "diff without report"
+    elif acknowledgement_only_evidence "$progress_file" "$report_file" "$changes" "$valid_report"; then
+        echo "acknowledgement only"
+    elif [ -f "$report_file" ] && file_contains "$report_file" "$SEEDED_REPORT_MARKER"; then
+        echo "seeded report only"
+    elif [ "$valid_report" -eq 1 ]; then
+        echo "valid report without diff"
+    else
+        echo "no valid report"
+    fi
+}
+
 last_dispatch_line() {
     if [ -f "$PROGRESS_FILE" ]; then
         grep -E 'Claude still running|Claude completed|Claude exited|Claude finished|Stopping Claude' "$PROGRESS_FILE" | tail -1 || true
     fi
+}
+
+latest_network_summary() {
+    if [ -f "$NETWORK_FILE" ]; then
+        local summary
+        summary="$(grep -E '^Summary: ' "$NETWORK_FILE" | tail -1 | sed 's/^Summary: //' || true)"
+        if [ -n "$summary" ]; then
+            echo "$summary"
+            return
+        fi
+        if grep -q 'Network monitoring is metadata-only' "$NETWORK_FILE" 2>/dev/null; then
+            echo "network_monitor=on no_snapshot"
+            return
+        fi
+    fi
+    echo "network_monitor=off_or_missing"
 }
 
 worktree_change_count() {
@@ -95,9 +186,10 @@ worktree_change_count() {
         echo 0
         return
     fi
-    git -c "safe.directory=$WORKTREE_DIR" -C "$WORKTREE_DIR" status --porcelain --untracked-files=all 2>/dev/null \
-        | grep -v -E '^(.. )?(TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' \
-        | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0
+    {
+        git -c "safe.directory=$WORKTREE_DIR" -C "$WORKTREE_DIR" status --porcelain --untracked-files=all 2>/dev/null \
+            | grep -v -E '^(.. )?(TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true
+    } | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0
 }
 
 partial_diffstat() {
@@ -146,10 +238,17 @@ recommended_action() {
     local status_bytes="$5"
     local claude_progress_bytes="$6"
     local worktree_changes="$7"
+    local evidence="$8"
 
     if [ "$running" = "no" ]; then
-        if [ "$result_bytes" -gt 0 ]; then
+        if [ "$evidence" = "diff + valid report" ] || [ "$evidence" = "valid report without diff" ]; then
             echo "COMPLETE"
+        elif [ "$evidence" = "diff without report" ]; then
+            echo "REVIEW_DIFF_WITH_EVIDENCE_GAP"
+        elif [ "$evidence" = "acknowledgement only" ]; then
+            echo "ACK_ONLY_RETRY_OR_TAKEOVER"
+        elif [ "$result_bytes" -gt 0 ]; then
+            echo "INSPECT_ARTIFACTS_NO_VALID_REPORT"
         else
             echo "INSPECT_ARTIFACTS"
         fi
@@ -170,6 +269,28 @@ recommended_action() {
         echo "LIKELY_STUCK"
     else
         echo "CONSIDER_INTERRUPT"
+    fi
+}
+
+monitor_policy() {
+    local running="$1"
+    local elapsed="$2"
+    local quiet="$3"
+    local worktree_changes="$4"
+    local action="$5"
+
+    if [ "$running" != "yes" ]; then
+        echo "L0 exited: inspect artifacts; no stop action applies."
+    elif [ "$elapsed" -lt "$STARTUP_GRACE" ]; then
+        echo "L0 startup: prefer watch heartbeat/progress; do not interrupt."
+    elif [ "$quiet" -lt "$STALE_AFTER" ]; then
+        echo "L0 active: compact watch is sufficient; do not run heavier diagnostics."
+    elif [ "$worktree_changes" -gt 0 ] && [ "$quiet" -lt "$INTERRUPT_AFTER" ]; then
+        echo "L1 partial diff: review direction; continue waiting if aligned with the task card."
+    elif [ "$action" = "LIKELY_STUCK" ]; then
+        echo "L3 suspected stuck: corroborate with progress, status, diff, and network evidence before considering kill."
+    else
+        echo "L2 diagnostic: status is advisory; prefer repeated watch confirmations before interrupting."
     fi
 }
 
@@ -209,9 +330,16 @@ echo "## Artifacts"
 print_file "Progress" "$PROGRESS_FILE"
 print_file "Result" "$RESULT_FILE"
 print_file "Status" "$STATUS_FILE"
+print_file "Network" "$NETWORK_FILE"
 print_file "Diff" "$DIFF_FILE"
 print_file "Report" "$REPORT_FILE"
+if [ -f "$LIVE_REPORT_FILE" ]; then
+    print_file "Live Report" "$LIVE_REPORT_FILE"
+fi
 print_file "Claude Progress" "$CLAUDE_PROGRESS_FILE"
+if [ -f "$LIVE_CLAUDE_PROGRESS_FILE" ]; then
+    print_file "Live Claude Progress" "$LIVE_CLAUDE_PROGRESS_FILE"
+fi
 print_file "Worktree Status" "$WORKTREE_STATUS_FILE"
 
 echo ""
@@ -223,11 +351,21 @@ if [ -d "$WORKTREE_DIR" ]; then
     QUIET="$(field_from_line "$LAST_LINE" "quiet_seconds")"; QUIET="${QUIET:-0}"
     RESULT_BYTES="$(file_size "$RESULT_FILE")"
     STATUS_BYTES="$(file_size "$STATUS_FILE")"
-    CLAUDE_PROGRESS_BYTES="$(file_size "$CLAUDE_PROGRESS_FILE")"
+    CLAUDE_PROGRESS_SOURCE="$(select_claude_progress_file)"
+    CLAUDE_PROGRESS_BYTES="$(file_size "$CLAUDE_PROGRESS_SOURCE")"
+    REPORT_SOURCE="$(select_report_file)"
+    EVIDENCE_STATE="$(evidence_state "$CHANGE_COUNT" "$CLAUDE_PROGRESS_SOURCE" "$REPORT_SOURCE")"
     if [ "$PROCESS_STATE" = "running" ]; then RUNNING="yes"; else RUNNING="no"; fi
-    ACTION="$(recommended_action "$RUNNING" "$ELAPSED" "$QUIET" "$RESULT_BYTES" "$STATUS_BYTES" "$CLAUDE_PROGRESS_BYTES" "$CHANGE_COUNT")"
+    ACTION="$(recommended_action "$RUNNING" "$ELAPSED" "$QUIET" "$RESULT_BYTES" "$STATUS_BYTES" "$CLAUDE_PROGRESS_BYTES" "$CHANGE_COUNT" "$EVIDENCE_STATE")"
     RISK_SUMMARY="$(partial_risk_summary)"
+    NETWORK_SUMMARY="$(latest_network_summary)"
+    MONITOR_POLICY="$(monitor_policy "$RUNNING" "$ELAPSED" "$QUIET" "$CHANGE_COUNT" "$ACTION")"
     echo "Action: $ACTION"
+    echo "Evidence: $EVIDENCE_STATE"
+    echo "Network: $NETWORK_SUMMARY"
+    echo "Monitor policy: $MONITOR_POLICY"
+    echo "Report source: $REPORT_SOURCE"
+    echo "Claude progress source: $CLAUDE_PROGRESS_SOURCE"
     echo "Elapsed: ${ELAPSED}s"
     echo "Quiet: ${QUIET}s"
     echo "Implementation change count: $CHANGE_COUNT"
@@ -239,7 +377,7 @@ if [ -d "$WORKTREE_DIR" ]; then
         echo "Recommendation: review the partial diff against the task card before interrupting Claude. Continue waiting if the changes match the plan; stop Claude only if the implementation is off-plan, risky, or no longer making useful progress."
     else
         echo ""
-        echo "Recommendation: no implementation changes are visible yet. If Claude is running and artifacts stay stale beyond the expected startup/auth window, inspect status/progress before deciding whether to stop it."
+        echo "Recommendation: no implementation changes are visible yet. Use repeated compact watch confirmations before escalating to details/network evidence; stop Claude only after progress, status, diff, and network/process evidence agree that useful progress is unlikely."
     fi
 else
     echo "(worktree unavailable)"
@@ -255,8 +393,10 @@ fi
 
 echo ""
 echo "## Claude Progress Tail"
-if [ -f "$CLAUDE_PROGRESS_FILE" ]; then
-    tail -40 "$CLAUDE_PROGRESS_FILE"
+TAIL_CLAUDE_PROGRESS_FILE="$(select_claude_progress_file)"
+if [ -f "$TAIL_CLAUDE_PROGRESS_FILE" ]; then
+    echo "Source: $TAIL_CLAUDE_PROGRESS_FILE"
+    tail -40 "$TAIL_CLAUDE_PROGRESS_FILE"
 else
     echo "(none)"
 fi
@@ -265,6 +405,14 @@ echo ""
 echo "## Status Tail"
 if [ -f "$STATUS_FILE" ]; then
     tail -20 "$STATUS_FILE"
+else
+    echo "(none)"
+fi
+
+echo ""
+echo "## Network Tail"
+if [ -f "$NETWORK_FILE" ] && [ "$(file_size "$NETWORK_FILE")" -gt 0 ]; then
+    tail -40 "$NETWORK_FILE"
 else
     echo "(none)"
 fi

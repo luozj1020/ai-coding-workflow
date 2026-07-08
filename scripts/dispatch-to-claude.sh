@@ -9,10 +9,11 @@
 #   3. Creates an isolated git worktree under .worktrees/claude-<timestamp>.
 #   4. Copies the full task card and renders a Claude execution projection.
 #   5. Invokes claude -p in non-interactive mode, without inherited proxy env by default.
-#   6. Saves result, status, diffstat, diff, untracked files, usage, and report.
-#   7. Records worktree status (tracked + untracked) after execution.
-#   8. Prints paths to generated result files.
-#   9. Does NOT merge automatically.
+#   6. Optionally records low-intrusion network diagnostics for the Claude process.
+#   7. Saves result, status, diffstat, diff, untracked files, usage, and report.
+#   8. Records worktree status (tracked + untracked) after execution.
+#   9. Prints paths to generated result files.
+#  10. Does NOT merge automatically.
 
 set -euo pipefail
 
@@ -48,6 +49,22 @@ if [ "$CLAUDE_CODE_PROXY_MODE" != "direct" ] && [ "$CLAUDE_CODE_PROXY_MODE" != "
     echo "Error: CLAUDE_CODE_PROXY_MODE must be 'direct' or 'inherit'." >&2
     exit 1
 fi
+CLAUDE_CODE_NETWORK_MONITOR="${CLAUDE_CODE_NETWORK_MONITOR:-0}"
+case "$CLAUDE_CODE_NETWORK_MONITOR" in
+    0|1) ;;
+    *)
+        echo "Error: CLAUDE_CODE_NETWORK_MONITOR must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
+CLAUDE_CODE_NETWORK_HEALTHCHECK_URL="${CLAUDE_CODE_NETWORK_HEALTHCHECK_URL:-}"
+CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS="${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS:-5}"
+case "$CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*)
+        echo "Error: CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS must be a non-negative integer." >&2
+        exit 1
+        ;;
+esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -74,12 +91,14 @@ REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
 CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
 PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
+NETWORK_FILE="${WORKTREE_ROOT}/${TASK_ID}.network.log"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
 SEEDED_PROGRESS_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"
+FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
 
 for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
          "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
-         "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$PROGRESS_FILE"; do
+         "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$PROGRESS_FILE" "$NETWORK_FILE"; do
     mkdir -p "$(dirname "$f")"
 done
 
@@ -241,6 +260,7 @@ Execute the Claude execution card below. The full Codex planning card is preserv
 
 `CLAUDE_PROGRESS.md` requirements:
 - Update it before doing substantial exploration or edits.
+- Remove the dispatcher seeded-progress marker when you first update this file.
 - Keep it short and append/update it at natural milestones: context gathered, plan chosen, files being edited, checks running, blocker encountered, finalizing.
 - Keep these stable fields near the top so the current goal stays in recent attention:
   - Goal
@@ -265,6 +285,7 @@ Unknowns and decision gates:
 - If the task card has `## Phase Responsibility Matrix`, read it before editing and obey the active phase owner/non-owner boundaries. If the matrix conflicts with Task Mode or Testing Responsibility, stop-and-report the conflict instead of guessing.
 - If the task card has `## Direction / Boundary Acknowledgement`, complete it before editing when requested. State your understanding, planned scope, explicitly out-of-scope boundaries, likely files/modules, acceptance criteria interpretation, testing responsibility interpretation, confusions/ambiguities, risks, and recommendation.
 - If Direction / Boundary Acknowledgement requires blocking Codex approval, write the acknowledgement to `CLAUDE_PROGRESS.md` or `CLAUDE_REPORT.md`, then stop until approval is recorded. Do not edit while waiting for approval.
+- If Direction / Boundary Acknowledgement is non-blocking and your recommendation is `proceed`, continue implementation in the same run. Do not stop after acknowledgement unless you record a concrete blocker, stop condition, or explicit need for Codex approval.
 - If target, boundaries, acceptance criteria, testing responsibility, public API impact, data model impact, security, migrations, permissions, production data, or destructive actions are unclear, stop-and-report instead of guessing.
 - Do not create an acknowledgement loop. Perform at most one blocking acknowledgement per task or phase unless Codex materially changes the goal, scope, boundaries, or risk profile. After Codex records `proceed`, continue execution without asking for the same confirmation again; if Codex records `narrow`, `split`, or `stop`, follow that decision.
 - If the task card has `## Unknowns`, perform the requested blindspot pass before implementation and record material findings in `CLAUDE_PROGRESS.md` or `CLAUDE_REPORT.md`.
@@ -303,6 +324,7 @@ Checker expectations:
 - Task card ID/path and a concise requirements summary.
 - Files changed with one-line purpose per file.
 - Acceptance criteria mapping: met / not met / partial.
+- Out-of-scope confirmation.
 - Plan Match: full / partial / off-plan.
 - Validation Confidence: high / medium / low.
 - Reviewer Should Check: concise list of areas Codex/human should inspect.
@@ -357,6 +379,168 @@ progress_log() {
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message" | tee -a "$PROGRESS_FILE"
 }
 
+redact_network_value() {
+    local value="$1"
+    if [ -z "$value" ]; then
+        echo "(unset)"
+    else
+        printf '%s\n' "$value" | sed -E 's#(https?://)[^/@]+@#\1***@#'
+    fi
+}
+
+network_log() {
+    if [ "$CLAUDE_CODE_NETWORK_MONITOR" != "1" ]; then
+        return
+    fi
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$NETWORK_FILE"
+}
+
+network_socket_output() {
+    local pid="$1"
+    local pids="$pid"
+    if command -v pgrep >/dev/null 2>&1; then
+        local parent children
+        for parent in $pids; do
+            children="$(pgrep -P "$parent" 2>/dev/null || true)"
+            if [ -n "$children" ]; then
+                pids="${pids} ${children}"
+            fi
+        done
+        for parent in $pids; do
+            children="$(pgrep -P "$parent" 2>/dev/null || true)"
+            if [ -n "$children" ]; then
+                pids="${pids} ${children}"
+            fi
+        done
+    fi
+    pids="$(printf '%s\n' $pids | sed '/^$/d' | sort -n | uniq | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -Pan -p "$(printf '%s' "$pids" | tr ' ' ',')" -iTCP -iUDP 2>/dev/null || true
+        return
+    fi
+    local pid_pattern
+    pid_pattern="$(printf '%s' "$pids" | sed 's/[[:space:]][[:space:]]*/|/g')"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tanp 2>/dev/null | grep -E "pid=(${pid_pattern})," || true
+        return
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -tanp 2>/dev/null | grep -E "(${pid_pattern})/" || true
+        return
+    fi
+}
+
+network_summary_from_output() {
+    local output="$1"
+    if [ -z "$output" ]; then
+        if command -v lsof >/dev/null 2>&1 || command -v ss >/dev/null 2>&1 || command -v netstat >/dev/null 2>&1; then
+            echo "sockets=0 established=0 syn_sent=0 close_wait=0"
+        else
+            echo "network_tools=unavailable"
+        fi
+        return
+    fi
+    local sockets established syn_sent close_wait
+    sockets="$(printf '%s\n' "$output" | sed '/^$/d' | wc -l 2>/dev/null | tr -d '[:space:]')"
+    established="$(printf '%s\n' "$output" | grep -Eic 'ESTAB|ESTABLISHED' || true)"
+    syn_sent="$(printf '%s\n' "$output" | grep -Eic 'SYN-SENT|SYN_SENT' || true)"
+    close_wait="$(printf '%s\n' "$output" | grep -Eic 'CLOSE-WAIT|CLOSE_WAIT' || true)"
+    echo "sockets=${sockets:-0} established=${established:-0} syn_sent=${syn_sent:-0} close_wait=${close_wait:-0}"
+}
+
+write_network_header() {
+    if [ "$CLAUDE_CODE_NETWORK_MONITOR" != "1" ]; then
+        : > "$NETWORK_FILE"
+        return
+    fi
+    {
+        echo "# Claude Network Diagnostics - ${TIMESTAMP}"
+        echo ""
+        echo "Network monitoring is metadata-only. It records process socket state and optional healthcheck status, not packet contents, request bodies, prompts, or tokens."
+        echo ""
+        echo "## Configuration"
+        echo ""
+        echo "- CLAUDE_CODE_NETWORK_MONITOR: ${CLAUDE_CODE_NETWORK_MONITOR}"
+        echo "- CLAUDE_CODE_NETWORK_HEALTHCHECK_URL: $(redact_network_value "$CLAUDE_CODE_NETWORK_HEALTHCHECK_URL")"
+        echo "- CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS: ${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS}"
+        echo "- CLAUDE_CODE_PROXY_MODE: ${CLAUDE_CODE_PROXY_MODE}"
+        echo "- HTTP_PROXY: $(redact_network_value "${HTTP_PROXY:-}")"
+        echo "- HTTPS_PROXY: $(redact_network_value "${HTTPS_PROXY:-}")"
+        echo "- ALL_PROXY: $(redact_network_value "${ALL_PROXY:-}")"
+        echo "- NO_PROXY: $(redact_network_value "${NO_PROXY:-}")"
+        echo "- http_proxy: $(redact_network_value "${http_proxy:-}")"
+        echo "- https_proxy: $(redact_network_value "${https_proxy:-}")"
+        echo "- all_proxy: $(redact_network_value "${all_proxy:-}")"
+        echo "- no_proxy: $(redact_network_value "${no_proxy:-}")"
+        if [ "$CLAUDE_CODE_PROXY_MODE" = "direct" ]; then
+            echo "- Effective Claude proxy environment: proxy variables unset inside Claude subprocess"
+        else
+            echo "- Effective Claude proxy environment: inherited from dispatcher environment"
+        fi
+        echo ""
+        echo "## Tool Availability"
+        echo ""
+        for tool in lsof ss netstat curl; do
+            if command -v "$tool" >/dev/null 2>&1; then
+                echo "- ${tool}: available"
+            else
+                echo "- ${tool}: missing"
+            fi
+        done
+        echo ""
+        echo "## Healthcheck"
+        echo ""
+    } > "$NETWORK_FILE"
+
+    if [ -n "$CLAUDE_CODE_NETWORK_HEALTHCHECK_URL" ]; then
+        if command -v curl >/dev/null 2>&1; then
+            {
+                echo "- Command: curl -I --max-time ${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS} <redacted-url>"
+                set +e
+                curl -I --max-time "$CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS" "$CLAUDE_CODE_NETWORK_HEALTHCHECK_URL" 2>&1 | tail -20
+                rc=$?
+                set -e
+                echo "- Exit code: ${rc}"
+            } >> "$NETWORK_FILE"
+        else
+            echo "- Skipped: curl is not available." >> "$NETWORK_FILE"
+        fi
+    else
+        echo "- Skipped: CLAUDE_CODE_NETWORK_HEALTHCHECK_URL is unset." >> "$NETWORK_FILE"
+    fi
+    {
+        echo ""
+        echo "## Socket Snapshots"
+        echo ""
+    } >> "$NETWORK_FILE"
+}
+
+capture_network_snapshot() {
+    local pid="$1"
+    local elapsed="$2"
+    local quiet="$3"
+    if [ "$CLAUDE_CODE_NETWORK_MONITOR" != "1" ]; then
+        echo "network_monitor=off"
+        return
+    fi
+    local output summary
+    output="$(network_socket_output "$pid")"
+    summary="$(network_summary_from_output "$output")"
+    {
+        echo "### $(date '+%Y-%m-%d %H:%M:%S') pid=${pid} elapsed_seconds=${elapsed} quiet_seconds=${quiet}"
+        echo ""
+        echo "Summary: ${summary}"
+        echo ""
+        if [ -z "$output" ]; then
+            echo "(no matching socket rows)"
+        else
+            printf '%s\n' "$output"
+        fi
+        echo ""
+    } >> "$NETWORK_FILE"
+    echo "$summary"
+}
+
 file_size() {
     local file="$1"
     if [ -f "$file" ]; then
@@ -366,10 +550,63 @@ file_size() {
     fi
 }
 
+file_contains() {
+    local file="$1"
+    local pattern="$2"
+    [ -f "$file" ] && grep -qE "$pattern" "$file" 2>/dev/null
+}
+
+valid_claude_report_file() {
+    local file="$1"
+    [ -s "$file" ] || return 1
+    if file_contains "$file" "$SEEDED_REPORT_MARKER|$FALLBACK_REPORT_MARKER"; then
+        return 1
+    fi
+    if file_contains "$file" "Dispatcher-created draft|fallback report was generated|did not produce a Claude-owned CLAUDE_REPORT.md"; then
+        return 1
+    fi
+    return 0
+}
+
+acknowledgement_only_evidence() {
+    local progress_file="$1"
+    local report_file="$2"
+    local changes="$3"
+    local valid_report="$4"
+    [ "$changes" -eq 0 ] || return 1
+    [ "$valid_report" -eq 0 ] || return 1
+    {
+        [ -f "$progress_file" ] && cat "$progress_file"
+        [ -f "$report_file" ] && cat "$report_file"
+    } | grep -Eiq 'Direction / Boundary Acknowledgement|My understanding:|Planned scope:|Recommendation:[[:space:]]*(proceed|narrow|split|stop-and-report|stop)' 2>/dev/null
+}
+
+classify_dispatch_evidence() {
+    local changes="$1"
+    local valid_report="$2"
+    local progress_file="$3"
+    local report_file="$4"
+
+    if [ "$changes" -gt 0 ] && [ "$valid_report" -eq 1 ]; then
+        echo "diff + valid report"
+    elif [ "$changes" -gt 0 ]; then
+        echo "diff without report"
+    elif acknowledgement_only_evidence "$progress_file" "$report_file" "$changes" "$valid_report"; then
+        echo "acknowledgement only"
+    elif [ -f "$report_file" ] && file_contains "$report_file" "$SEEDED_REPORT_MARKER"; then
+        echo "seeded report only"
+    elif [ "$valid_report" -eq 1 ]; then
+        echo "valid report without diff"
+    else
+        echo "no valid report"
+    fi
+}
+
 worktree_change_count() {
-    git status --porcelain --untracked-files=all 2>/dev/null \
-        | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' \
-        | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0
+    {
+        git status --porcelain --untracked-files=all 2>/dev/null \
+            | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true
+    } | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0
 }
 
 worktree_digest() {
@@ -432,7 +669,8 @@ echo "Watch Details:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"
 cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
-progress_log "Starting Claude Code: proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}"
+write_network_header
+progress_log "Starting Claude Code: proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}"
 
 set +e
 run_claude &
@@ -473,7 +711,8 @@ while claude_is_running; do
         LAST_ACTIVITY_EPOCH="$NOW_EPOCH"
     fi
     QUIET_SECONDS=$((NOW_EPOCH - LAST_ACTIVITY_EPOCH))
-    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}"
+    NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" "$QUIET_SECONDS")"
+    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, ${NETWORK_SUMMARY}"
 
     if [ "$CLAUDE_CODE_TIMEOUT_SECONDS" -gt 0 ] && [ "$ELAPSED" -ge "$CLAUDE_CODE_TIMEOUT_SECONDS" ]; then
         CLAUDE_TIMED_OUT=1
@@ -494,6 +733,9 @@ set -e
 
 END_EPOCH="$(date +%s)"
 ELAPSED=$((END_EPOCH - START_EPOCH))
+progress_log "Claude subprocess ended; dispatcher finalizing artifacts: pid=${CLAUDE_PID}, wait_status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
+FINAL_NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" 0)"
+progress_log "Final network snapshot: ${FINAL_NETWORK_SUMMARY}"
 if [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ]; then
     {
         echo ""
@@ -772,10 +1014,25 @@ fi
 
 echo "Claude progress saved to: $CLAUDE_PROGRESS_FILE"
 
-if [ -f "${WORKTREE_DIR}/CLAUDE_REPORT.md" ] && ! grep -q "$SEEDED_REPORT_MARKER" "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null; then
+IMPLEMENTATION_CHANGES="$(worktree_change_count)"
+VALID_CLAUDE_REPORT=0
+if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
+    VALID_CLAUDE_REPORT=1
+fi
+DISPATCH_EVIDENCE_STATE="$(classify_dispatch_evidence "$IMPLEMENTATION_CHANGES" "$VALID_CLAUDE_REPORT" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
+progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no)"
+{
+    echo ""
+    echo "[dispatch] Evidence classification: ${DISPATCH_EVIDENCE_STATE}"
+    echo "[dispatch] Implementation changes: ${IMPLEMENTATION_CHANGES}"
+    echo "[dispatch] Valid Claude-owned report: $([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no)"
+} >> "$STATUS_FILE"
+
+if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then
     cp "${WORKTREE_DIR}/CLAUDE_REPORT.md" "$REPORT_FILE"
 else
     {
+        echo "<!-- ${FALLBACK_REPORT_MARKER} -->"
         echo "# Claude Modification Report"
         echo ""
         echo "## Task Card"
@@ -785,10 +1042,15 @@ else
         echo "- Claude execution card artifact: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
         echo ""
         echo "## Requirements Summary"
-        echo "Claude did not produce a Claude-owned CLAUDE_REPORT.md; this fallback report was generated from workflow artifacts."
+        echo "Claude did not produce a valid Claude-owned CLAUDE_REPORT.md; this fallback report was generated from workflow artifacts."
+        echo ""
+        echo "This fallback report is not a valid Claude report."
         echo ""
         echo "## Dispatch Outcome"
         echo ""
+        echo "- Evidence classification: ${DISPATCH_EVIDENCE_STATE}"
+        echo "- Implementation changes: ${IMPLEMENTATION_CHANGES}"
+        echo "- Valid Claude-owned report: no"
         echo "- Claude exit status: ${CLAUDE_STATUS}"
         echo "- Elapsed seconds: ${ELAPSED}"
         echo "- Runtime timed out: $([ "$CLAUDE_TIMED_OUT" -eq 1 ] && echo yes || echo no)"
@@ -804,6 +1066,7 @@ else
         echo "- Full task card: ${WORKTREE_DIR}/TASK_CARD_FULL.md"
         echo "- Claude execution card: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
         echo "- Status log: $STATUS_FILE"
+        echo "- Network log: $NETWORK_FILE"
         echo "- Diffstat: $DIFFSTAT_FILE"
         echo "- Diff: $DIFF_FILE"
         echo "- Checker report: $CHECKER_REPORT_FILE"
@@ -831,6 +1094,7 @@ echo "Claude Task:     ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
 echo "Result:          $RESULT_FILE"
 echo "Raw Result:      $RAW_RESULT_FILE"
 echo "Status:          $STATUS_FILE"
+echo "Network Log:     $NETWORK_FILE"
 echo "Diffstat:        $DIFFSTAT_FILE"
 echo "Diff:            $DIFF_FILE"
 echo "Checker Report:  $CHECKER_REPORT_FILE"

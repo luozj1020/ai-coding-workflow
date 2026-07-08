@@ -329,11 +329,32 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(data["claude_exit_status"], 42)
         self.assertTrue(raw_result_file.exists())
         report = report_file.read_text(encoding="utf-8")
+        self.assertIn("AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT", report)
+        self.assertIn("This fallback report is not a valid Claude report.", report)
+        self.assertIn("Evidence classification: seeded report only", report)
+        self.assertIn("Implementation changes: 0", report)
         self.assertIn("Claude exit status: 42", report)
         self.assertIn("Fallback result generated: yes", report)
         progress = progress_file.read_text(encoding="utf-8")
         self.assertIn("dispatch-started", progress)
         self.assertIn("- [ ] Context gathered", progress)
+
+    def test_network_monitor_writes_metadata_log_when_enabled(self):
+        self._write_task_card()
+
+        result = self._dispatch(extra_env={"CLAUDE_CODE_NETWORK_MONITOR": "1"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        network_file = self._artifact_path(result.stdout, "Network Log")
+        progress_file = self._artifact_path(result.stdout, "Progress Log")
+        network = network_file.read_text(encoding="utf-8")
+        progress = progress_file.read_text(encoding="utf-8")
+        self.assertIn("Claude Network Diagnostics", network)
+        self.assertIn("Network monitoring is metadata-only", network)
+        self.assertIn("CLAUDE_CODE_NETWORK_MONITOR: 1", network)
+        self.assertIn("CLAUDE_CODE_PROXY_MODE:", network)
+        self.assertIn("Socket Snapshots", network)
+        self.assertIn("Final network snapshot:", progress)
 
     def test_staged_claude_changes_are_in_combined_diff(self):
         self._write_task_card()

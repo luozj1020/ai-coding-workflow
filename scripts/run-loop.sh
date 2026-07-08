@@ -271,6 +271,7 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     RESULT_FILE="$(parse_path "Result" "$DISPATCH_LOG")"
     RAW_RESULT_FILE="$(parse_path "Raw Result" "$DISPATCH_LOG")"
     STATUS_FILE="$(parse_path "Status" "$DISPATCH_LOG")"
+    NETWORK_FILE="$(parse_path "Network Log" "$DISPATCH_LOG")"
     DIFFSTAT_FILE="$(parse_path "Diffstat" "$DISPATCH_LOG")"
     DIFF_FILE="$(parse_path "Diff" "$DISPATCH_LOG")"
     CHECKER_REPORT_FILE="$(parse_path "Checker Report" "$DISPATCH_LOG")"
@@ -296,7 +297,7 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
 
     for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
              "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
-             "$CLAUDE_PROGRESS_FILE" "$CLAUDE_PID_FILE" "$PROGRESS_FILE"; do
+             "$CLAUDE_PROGRESS_FILE" "$CLAUDE_PID_FILE" "$PROGRESS_FILE" "$NETWORK_FILE"; do
         copy_if_present "$f" "$DISPATCH_OUTPUT"
     done
 
@@ -308,6 +309,13 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
             cat "$PROGRESS_FILE"
         else
             echo "Claude progress unavailable."
+        fi
+        echo ""
+        echo "### Claude Network Diagnostics"
+        if [ -n "$NETWORK_FILE" ] && [ -f "$NETWORK_FILE" ]; then
+            cat "$NETWORK_FILE"
+        else
+            echo "Claude network diagnostics unavailable or disabled."
         fi
         echo ""
         echo "### Claude Self-Reported Progress"
@@ -340,7 +348,7 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     set +e
     bash "$REVIEW_SCRIPT" "$CURRENT_TASK" "$RESULT_FILE" "$DIFF_FILE" \
         "$CHECKER_REPORT_FILE" "$USAGE_FILE" "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$REPORT_FILE" "$RAW_RESULT_FILE" \
-        "$CLAUDE_PROGRESS_FILE" "$PROGRESS_FILE" "$CLAUDE_PID_FILE" 2>&1 | tee "$REVIEW_OUTPUT"
+        "$CLAUDE_PROGRESS_FILE" "$PROGRESS_FILE" "$NETWORK_FILE" "$CLAUDE_PID_FILE" 2>&1 | tee "$REVIEW_OUTPUT"
     REVIEW_STATUS=${PIPESTATUS[0]}
     set -e
 

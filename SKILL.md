@@ -76,12 +76,16 @@ Core loop:
 - Builder Claude should not add tests or run broad acceptance suites unless the task card explicitly allows a narrow sanity check; Checker/Test Claude should not perform broad implementation rewrites unless tests expose a concrete allowed fix.
 - Before editing, Claude should perform Direction / Boundary Acknowledgement when requested: restate understanding, scope, out-of-scope boundaries, likely files, acceptance interpretation, testing responsibility, confusion, risks, and proceed/narrow/split/stop recommendation.
 - Use blocking Codex approval for ambiguous, multi-file, high-risk, public API, data model, security, migration, permission, or production-impacting tasks; if Claude has material confusion, it must stop-and-report instead of guessing.
+- If acknowledgement is non-blocking and Claude recommends `proceed`, Claude must continue implementation in the same run. It must not stop after acknowledgement unless it records a concrete blocker, stop condition, or explicit approval need.
 - Prevent acknowledgement loops: at most one blocking acknowledgement per task or phase unless Codex materially changes goal, scope, boundaries, or risk. Codex must answer with proceed, narrow-once/re-dispatch, split, or stop; Claude must not ask for the same confirmation again after approval.
+- Treat `acknowledgement only` as no implementation progress: no code diff, no valid Claude-owned report, and only acknowledgement/proceed text.
 - Claude no-progress, early exit, invalid result, or one failed attempt is not enough for Codex takeover; tighten the task card and re-dispatch Claude.
 - Dirty source or stale HEAD is a delegation blocker, not a takeover trigger. Restore a reliable Claude base first: commit the accepted phase, stash/patch source changes, refresh local workflow files, re-dispatch from updated HEAD, request explicit dirty-source override, or stop for human input.
 - Codex may directly intervene only after repeated Claude failure or an external blocker, and must record the intervention reason, scope, and validation.
 - Prior-session Claude failures are context, not automatic takeover permission; re-dispatch Claude unless the current task cites matching loop artifacts or the user explicitly asks Codex to take over.
 - If a narrowed second Claude round also exits with no result/report and no useful progress, current-task repeated failure is enough for a control-plane takeover; Codex should salvage the best prior Claude direction, limit edits to the accepted scope, and add required tests/evidence.
+- If one Builder attempt exits after acknowledgement with no code diff and no valid report, tighten and re-dispatch once. If the tightened Builder attempt again exits after acknowledgement with no code diff and no valid report, Codex may perform scoped takeover after recording both attempt artifacts.
+- If the first attempt produced a useful scoped diff but no valid report/evidence, Codex may accept that direction only after running the assigned narrow checks. If a tightened retry produces no useful progress, Codex may salvage the accepted direction in scoped takeover.
 - Use LSP/CodeGraph/MCP before broad reads.
 - Delegate whole-file scans, long logs, and multi-file implementation to Claude.
 - Codex owns the full planning task card; dispatch renders a smaller Claude execution card and omits Codex-only budget, planning, and control-plane sections from Claude's prompt.
@@ -89,10 +93,14 @@ Core loop:
 - Task cards must say whether Claude writes tests, runs tests, or leaves verification to Codex/humans; test-code tasks can be delegated to Claude when the user asks for tests or Codex makes them acceptance-critical.
 - Claude must update `CLAUDE_PROGRESS.md` and, when present, the progress/checklist in `CLAUDE_TASK_CARD.md` after completing each assigned item so Codex can distinguish active progress from stalls.
 - Missing Claude result/report is an evidence gap, not automatically an implementation failure. If the diff matches the plan and assigned checks pass, Codex may reconstruct review evidence; re-dispatch Claude only for task-card-required tests or acceptance evidence that cannot be recovered.
+- A `CLAUDE_REPORT.md` containing `AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT` or `AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT` is not a valid Claude-owned report. Watch/status tools should classify it as `seeded report only` or `no valid report`, not completion.
+- A valid Claude report must include touched files, acceptance criteria mapping, checks run or blocked, out-of-scope confirmation, and remaining risks. Missing required report fields are an evidence gap for review.
+- For repeated dispatches, commit or otherwise restore prior task-card artifacts before re-dispatch. Only the current task card may be exempt from dirty-source checks; previous untracked task cards are delegation blockers unless explicitly treated as approved control-plane artifacts.
 - Preserve large outputs as artifact paths and short summaries.
 - Do not merge automatically.
 - Destructive or high-risk actions require explicit human approval.
-- If Claude appears quiet, inspect `ai/watch-claude.sh` or `ai/status-claude.sh`; continue waiting when partial work matches the plan, and interrupt only when it is off-plan, risky, or no longer useful.
+- If Claude appears quiet, follow the monitoring escalation ladder: L0 compact `ai/watch-claude.sh` heartbeat/progress first; L1 partial diff review when worktree changes exist; L2 `ai/status-claude.sh` or watch details only after repeated suspect snapshots; L3 network/status/diff corroboration when quiet time exceeds the interrupt window; L4 `ai/kill-claude.sh` only after multiple evidence sources agree useful progress is unlikely.
+- Optional network diagnostics are available with `CLAUDE_CODE_NETWORK_MONITOR=1`. They record metadata-only process socket snapshots in `*.network.log`; optional `CLAUDE_CODE_NETWORK_HEALTHCHECK_URL` records healthcheck status. Do not treat network metadata as request-content evidence or implementation evidence.
 - When Claude appears stuck, diagnose orchestration causes before blaming execution: mixed-role task card, unclear testing responsibility, blocking acknowledgement loop, dirty source/stale HEAD, permission/tool approval blocker, long-running command, missing progress artifact, or external environment. Only call it Claude no-progress after progress, status, and worktree evidence are all quiet past the grace period.
 - If dirty source/stale HEAD blocks dispatch, Codex must record the Delegation Restoration Gate and explain why restoration was attempted or impossible before any direct intervention.
 
@@ -134,6 +142,7 @@ Dispatch artifacts live under `.worktrees/`:
 - `*.result.raw.txt` when Claude exits without valid JSON output
 - `*.checker-report.md`, `*.checker-logs/`
 - `*.report.md`, `*.claude-progress.md`, `*.progress.log`, `*.pid`
+- `*.network.log` when `CLAUDE_CODE_NETWORK_MONITOR=1`
 - `*.usage.txt`, `*.worktree-status.txt`, `*.untracked.txt`
 
 ## When To Load More

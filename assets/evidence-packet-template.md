@@ -40,6 +40,7 @@
 | Progress log | | |
 | Claude self-reported progress | | |
 | Status log | | |
+| Network log | | Optional metadata-only socket/proxy diagnostics; no request contents |
 
 | State | Value |
 |-------|-------|
@@ -47,6 +48,8 @@
 | Timed out? | yes/no |
 | Killed by dispatcher or helper? | yes/no |
 | Fallback report generated? | yes/no |
+| Network monitor enabled? | yes/no |
+| Network summary | sockets / established / syn_sent / close_wait / healthcheck status |
 | Claude attempt count for this task | |
 | Codex direct intervention requested? | yes/no + reason |
 

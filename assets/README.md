@@ -146,11 +146,19 @@ If Claude Code is not installed, the rest of the workflow files remain useful fo
 CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
+**Network diagnostics:** by default the dispatcher does not inspect network state. To record metadata-only socket snapshots for the Claude process and its child processes, run:
+
+```bash
+CLAUDE_CODE_NETWORK_MONITOR=1 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+This creates `*.network.log` with proxy mode, redacted proxy settings, tool availability, and per-heartbeat socket summaries such as `established`, `syn_sent`, and `close_wait`. It does not capture packet contents, prompts, request bodies, or tokens. To add an explicit connectivity probe, set `CLAUDE_CODE_NETWORK_HEALTHCHECK_URL`; the dispatcher will run a bounded `curl -I` healthcheck and store only its status/output in the network log.
 
 | Artifact | Description |
 |----------|-------------|
 | `*.result.json` | Raw Claude JSON output |
 | `*.status.txt` | Claude stderr / execution log |
+| `*.network.log` | Optional metadata-only network diagnostics when `CLAUDE_CODE_NETWORK_MONITOR=1` |
 | `*.diffstat.txt` | `git diff --stat` for tracked files |
 | `*.diff` | Full diff, including untracked implementation files |
 | `*.checker-report.md` | Checker-only validation report from `ai/check-worktree.sh` |
@@ -335,7 +343,15 @@ Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones.
 
 `dispatch-to-claude.sh` prints copy-paste `Watch Progress` and `Watch Details` commands immediately after it starts Claude and again in the completion summary, so users can check progress directly from Codex CLI without opening docs or artifact files.
 
-`watch-claude.sh` defaults to an obvious status panel: running state, elapsed/quiet seconds, a checklist-derived progress bar, the latest milestone, artifact sizes, and a short stuck-run analysis. It does not print the whole progress document unless `--details` is provided or the run exceeds the stale threshold. Use `--plain` for a lower-noise compact text format.
+`watch-claude.sh` defaults to a low-cost status panel: running state, elapsed/quiet seconds, a checklist-derived progress bar, the latest milestone, artifact sizes, and a short stuck-run analysis. It does not print full progress/status/network tails unless `--details` is provided or the run has produced repeated suspect snapshots. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
+
+Monitoring priority is intentionally conservative to avoid false kills:
+
+1. L0: compact `watch-claude.sh` heartbeat/progress only.
+2. L1: partial diff review when the worktree is changing; continue waiting if aligned with the task card.
+3. L2: `status-claude.sh` or watch details after repeated suspect snapshots.
+4. L3: corroborate progress, status, diff, process, and optional network diagnostics after the interrupt window.
+5. L4: use `kill-claude.sh` only after multiple evidence sources agree useful progress is unlikely.
 
 On timeout or non-zero Claude exit, the dispatcher still collects diffstat, diff, untracked files, usage fallback, worktree status, and a fallback report when possible.
 
@@ -371,6 +387,9 @@ bash ai/watch-claude.sh claude-20260701-093934 --details
 
 # Treat unchanged artifacts as suspicious after 180 seconds
 bash ai/watch-claude.sh claude-20260701-093934 --stale-after 180
+
+# Require five repeated suspect snapshots before auto-expanding details
+bash ai/watch-claude.sh claude-20260701-093934 --escalation-confirmations 5
 
 # Stop only the Claude process recorded for that dispatch
 bash ai/kill-claude.sh claude-20260701-093934

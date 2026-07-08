@@ -148,6 +148,7 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
         "checker": sorted(root.rglob("*.checker-report.md")),
         "review": sorted(root.rglob("*.review.txt")) + sorted(root.glob("review-*.txt")),
         "status": sorted(root.rglob("*.status.txt")),
+        "network": sorted(root.rglob("*.network.log")),
         "report": sorted(root.rglob("*.report.md")),
         "diff": sorted(root.rglob("*.diff")),
         "events": sorted(root.rglob("loop-events.jsonl")),

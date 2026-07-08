@@ -52,6 +52,7 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | Required progress artifacts | CLAUDE_PROGRESS.md / CLAUDE_TASK_CARD.md checklist / CLAUDE_REPORT.md |
 | Long-running command expected? | yes/no + command |
 | Permission/tool approval risk? | yes/no + sandbox/write/network/auth/forbidden-file details |
+| Network diagnostics needed? | no / yes, set `CLAUDE_CODE_NETWORK_MONITOR=1`; optional healthcheck URL: |
 | Ambiguity likely to cause stop-and-report? | yes/no + field |
 | If Claude is quiet, first diagnosis step | inspect progress artifacts and partial diff before declaring failure |
 | Conditions that prove real Claude no-progress | no artifact growth, no worktree change, no status output, no permission blocker, and no reported blocker after grace period |
@@ -116,6 +117,8 @@ Acknowledgement format Claude should write:
 - Recommendation: proceed / narrow / split / stop-and-report
 
 Anti-loop rule: acknowledgement is a gate, not a discussion loop. Codex should answer with one final decision: proceed, narrow once and re-dispatch, split, or stop. Claude should not request repeated confirmation after approval unless the task goal, scope, boundaries, or risk profile materially changes.
+
+Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude recommends `proceed`, Claude must continue implementation in the same run. Stopping after acknowledgement without a concrete blocker or approval requirement is `acknowledgement only` and counts as no implementation progress.
 
 ## Task Card Views
 
@@ -217,6 +220,8 @@ Anti-loop rule: acknowledgement is a gate, not a discussion loop. Codex should a
 Checker expectations:
 - Follow `Task Mode` and `Testing Responsibility`: Builder tasks do not add tests or run broad suites; Checker/Test tasks do not skip assigned test writing or validation unless blocked and reported.
 - Missing Claude report/result is evidence-gap handling: if assigned checks pass and acceptance evidence owner is not Claude, Codex may reconstruct minimal evidence instead of re-dispatching only for prose.
+- Seeded or fallback reports are not valid Claude-owned reports. Reports containing `AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT` or `AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT` count as missing report evidence.
+- A valid Claude report must include touched files, acceptance criteria mapping, checks run or blocked, out-of-scope confirmation, and remaining risks.
 - Run `bash ai/check-worktree.sh` when available.
 - Preserve failed command, exit code, key original output, and `file:line` locations.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.
@@ -260,6 +265,8 @@ Checker expectations:
 | Startup grace seconds | |
 | Stale review seconds | |
 | Consider interrupt after seconds | |
+| Escalation confirmations before details | default 3 |
+| Monitor escalation ladder | L0 compact watch heartbeat/progress -> L1 partial diff review -> L2 status/details after repeated suspect snapshots -> L3 network/status/diff corroboration after interrupt window -> L4 kill only after corroborated no-progress |
 | Partial diff review rule | Continue waiting when partial work matches the plan; consider interrupting when it is off-plan, risky, or no longer making useful progress. |
 | Adaptive timeout | First loop may use a longer fixed timeout; later loops may estimate time from completed progress checklist items. |
 

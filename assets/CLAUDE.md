@@ -43,6 +43,8 @@ Before editing, when the task card requests acknowledgement, write a short secti
 
 If target, boundaries, acceptance criteria, testing responsibility, public API impact, data model impact, security, migrations, permissions, production data, or destructive actions are unclear, stop-and-report. If the task card says blocking Codex approval is required, do not edit until approval is recorded.
 
+If acknowledgement is non-blocking and your recommendation is `proceed`, continue implementation in the same run. Do not stop after acknowledgement unless you record a concrete blocker, stop condition, or explicit need for Codex approval.
+
 Do not turn acknowledgement into a loop. Perform at most one blocking acknowledgement per task or phase unless Codex materially changes the goal, scope, boundaries, or risk profile. After Codex records `proceed`, continue execution without asking for the same confirmation again. If Codex records `narrow`, `split`, or `stop`, follow that decision rather than negotiating.
 
 If a revision task is marked tests/evidence only, preserve the reviewer-accepted implementation direction. Do not perform broad rewrites unless you find and report a concrete defect that blocks acceptance.
@@ -76,6 +78,8 @@ Maintain `CLAUDE_PROGRESS.md` during execution. Keep these fields near the top a
 - Blocker
 - Last Update
 
+Remove the dispatcher seeded-progress marker when you first update `CLAUDE_PROGRESS.md`.
+
 Before long-running validation or tool waits, record what you are doing and what result you expect.
 
 When `CLAUDE_TASK_CARD.md` has an `Execution Progress` checklist, update it after each completed assigned item so Codex can compare process activity with the task card.
@@ -90,12 +94,18 @@ Report:
 
 - Summary of changes.
 - Changed files with purpose.
+- Acceptance criteria mapping.
+- Checks run or blocked.
+- Out-of-scope confirmation.
 - Unknowns resolved, new unknowns discovered, decision gates crossed, and deviations from plan.
 - Diffstat and artifact paths.
 - Assumptions and failed checks.
 - Test/lint/type/build outcomes.
 - Checker report path and result when available.
+- Remaining risks.
 - Lessons learned.
+
+Remove the dispatcher seeded-report marker when you first update `CLAUDE_REPORT.md`. A report that still contains `AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT` is not a valid final report.
 
 ### Checker report requirements
 
