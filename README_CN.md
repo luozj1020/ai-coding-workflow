@@ -256,6 +256,8 @@ python scripts/update_skill.py --bootstrap-current
 
 权限或审批拦截包括 sandbox 写入被拒、禁止修改的文件、CLI 未认证、网络受限命令、需要人工批准的命令，以及任务卡明确写出的“不要读取或修改”路径。这类情况应写入 progress/report 产物，并按环境或编排 blocker 处理；只有在 Claude 忽略了可用的合规路径时，才应归因为 Claude 执行问题。
 
+dirty source 或 stale HEAD 也应按同类逻辑处理：它会阻止可靠委托，但本身不是 Codex 接管实现的理由。应先恢复委托路径，例如提交已接受阶段、stash/patch 未提交改动、刷新 workflow 文件、从更新后的 HEAD 重新派发、请求明确的 dirty-source 派发批准，或停止等待人工处理。
+
 **步骤 1：初始化项目**（一次性）
 
 ```powershell

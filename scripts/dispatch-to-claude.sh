@@ -105,7 +105,9 @@ if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" 
         echo "Warning: Source worktree is dirty; proceeding because CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1." >&2
     else
         echo "Error: Source worktree is dirty. Claude would run from stale HEAD." >&2
-        echo "Commit or stash source changes first, or set CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1 to override." >&2
+        echo "This is a delegation blocker, not a Codex takeover trigger." >&2
+        echo "Restore delegation first: commit accepted changes, stash/patch source changes, or re-dispatch from an updated clean HEAD." >&2
+        echo "Set CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1 only with explicit approval when stale-HEAD risk is understood." >&2
         echo "The current task card may be untracked and is exempt from the untracked-file check." >&2
         if [ -n "$DIRTY_TRACKED" ]; then
             echo "" >&2

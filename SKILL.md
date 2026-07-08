@@ -78,6 +78,7 @@ Core loop:
 - Use blocking Codex approval for ambiguous, multi-file, high-risk, public API, data model, security, migration, permission, or production-impacting tasks; if Claude has material confusion, it must stop-and-report instead of guessing.
 - Prevent acknowledgement loops: at most one blocking acknowledgement per task or phase unless Codex materially changes goal, scope, boundaries, or risk. Codex must answer with proceed, narrow-once/re-dispatch, split, or stop; Claude must not ask for the same confirmation again after approval.
 - Claude no-progress, early exit, invalid result, or one failed attempt is not enough for Codex takeover; tighten the task card and re-dispatch Claude.
+- Dirty source or stale HEAD is a delegation blocker, not a takeover trigger. Restore a reliable Claude base first: commit the accepted phase, stash/patch source changes, refresh local workflow files, re-dispatch from updated HEAD, request explicit dirty-source override, or stop for human input.
 - Codex may directly intervene only after repeated Claude failure or an external blocker, and must record the intervention reason, scope, and validation.
 - Prior-session Claude failures are context, not automatic takeover permission; re-dispatch Claude unless the current task cites matching loop artifacts or the user explicitly asks Codex to take over.
 - If a narrowed second Claude round also exits with no result/report and no useful progress, current-task repeated failure is enough for a control-plane takeover; Codex should salvage the best prior Claude direction, limit edits to the accepted scope, and add required tests/evidence.
@@ -93,6 +94,7 @@ Core loop:
 - Destructive or high-risk actions require explicit human approval.
 - If Claude appears quiet, inspect `ai/watch-claude.sh` or `ai/status-claude.sh`; continue waiting when partial work matches the plan, and interrupt only when it is off-plan, risky, or no longer useful.
 - When Claude appears stuck, diagnose orchestration causes before blaming execution: mixed-role task card, unclear testing responsibility, blocking acknowledgement loop, dirty source/stale HEAD, permission/tool approval blocker, long-running command, missing progress artifact, or external environment. Only call it Claude no-progress after progress, status, and worktree evidence are all quiet past the grace period.
+- If dirty source/stale HEAD blocks dispatch, Codex must record the Delegation Restoration Gate and explain why restoration was attempted or impossible before any direct intervention.
 
 ## Builder / Checker Workflow
 

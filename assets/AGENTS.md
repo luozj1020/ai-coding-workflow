@@ -28,6 +28,8 @@ After a Claude execution round, Codex normally reviews only. It may edit directl
 
 Claude no-progress, early exit, invalid result, or one failed attempt is evidence for a tighter next task card, not permission for Codex to patch. Prefer smaller Claude revisions with clearer acceptance criteria before takeover.
 
+Dirty source or stale HEAD is a delegation blocker, not a Codex takeover trigger. Codex should first restore a reliable Claude base by committing an accepted phase, stashing/patching uncommitted source changes, refreshing workflow files, re-dispatching from updated HEAD, requesting an explicit dirty-source override, or stopping for human input. Codex may take over only when restoration is impossible/unsafe and a current-task threshold or explicit human override is recorded.
+
 Prior-session Claude failures are carry-forward context, not automatic takeover permission. A fresh task or session should re-dispatch Claude unless current-task artifacts prove the same threshold or the human explicitly asks Codex to take over.
 
 Missing Claude `result.json`, `CLAUDE_REPORT.md`, or acceptance evidence is an evidence gap, not automatically an implementation failure. If the diff matches the task card and assigned checks pass, Codex should reconstruct a minimal evidence packet from artifacts, diff, and verification output instead of re-dispatching only to get prose. Re-dispatch Claude when the task card explicitly assigned test writing, test execution, or acceptance evidence to Claude and that evidence cannot be recovered.
@@ -62,6 +64,7 @@ Builder and checker responsibilities must remain separate:
 - Avoid acknowledgement loops: one blocking acknowledgement per task or phase unless Codex materially changes goal, scope, boundaries, or risk. Codex must decide proceed, narrow-once/re-dispatch, split, or stop; Claude must not ask for the same approval again after proceed.
 - Codex reviews builder direction before validation work: wait when the partial diff matches the plan, interrupt and narrow when it runs off-plan, and take over only after the current-task threshold is met.
 - When Claude appears stuck, first attribute the stall: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress updates, external environment, or true Claude no-progress. Inspect progress artifacts and partial diff before interrupting.
+- When dirty source or stale HEAD is the attribution, fill the Delegation Restoration Gate and try to restore a clean updated dispatch base before considering takeover.
 - Checker/Test Claude writes or updates assigned tests, runs assigned validation, and reports results. Checker/Test tasks should not perform broad implementation rewrites; only concrete small fixes allowed by the task card are permitted.
 - Use `ai/check-worktree.sh` when available.
 - Forward checker failures with command, exit code, key output, and `file:line` details.

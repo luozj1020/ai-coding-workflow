@@ -103,6 +103,7 @@ class InstallForCodexTests(unittest.TestCase):
         self.assertIn("Checker/Test", content)
         self.assertIn("mixed-exception", content)
         self.assertIn("permission/tool approval blocker", content)
+        self.assertIn("Dirty source or stale HEAD is a delegation blocker", content)
 
     def test_main_prints_bootstrap_next_steps(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -39,6 +39,8 @@ For tasks with meaningful validation risk, split Claude work by role:
 
 Do not treat every quiet or incomplete Claude run as a Claude execution failure. First classify the stall: task-card ambiguity, mixed Builder/Checker responsibilities, dirty source or stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress. A task that mixes implementation, test writing, broad validation, and phase stop gates should normally be split before dispatch unless it is explicitly marked `mixed-exception`.
 
+Dirty source or stale HEAD is a delegation blocker, not a takeover trigger. The loop should first restore a reliable Claude base by committing an accepted phase, stashing or patching source changes, refreshing local workflow files, re-dispatching from updated HEAD, requesting explicit dirty-source approval, or stopping for human input. Codex direct edits require an independent threshold or explicit human override.
+
 ## States
 
 ## Unknowns Lifecycle
@@ -281,9 +283,11 @@ When a stop condition is reached without acceptance, the task is escalated to th
 
 ## Codex Direct Intervention Threshold
 
-Codex may directly edit after Claude has made multiple unsuccessful attempts and another revision is unlikely to improve the result. Valid triggers are max iterations reached, the same failure in two consecutive iterations, failure count not decreasing for two consecutive iterations, repeated timeout/unavailability, or an explicit human request. Codex must record the attempts, takeover reason, touched scope, and validation evidence.
+Codex may directly edit after Claude has made multiple unsuccessful attempts and another revision is unlikely to improve the result. Valid triggers are max iterations reached, the same failure in two consecutive iterations, failure count not decreasing for two consecutive iterations, repeated timeout/unavailability after delegation restoration, or an explicit human request. Codex must record the attempts, takeover reason, touched scope, and validation evidence.
 
 A no-progress or failed Claude iteration is not automatically a takeover trigger. The default next step is a sharper Claude task card: reduce scope, add diagnostics, require specific artifacts, and set stop-and-report gates. Takeover is reserved for threshold hits or explicit human direction.
+
+A dirty source or stale HEAD dispatch blocker is handled before this threshold audit. Record the Delegation Restoration Gate, restore the base when possible, then re-dispatch Claude.
 
 Threshold evidence is task-scoped. Prior-session failures are useful context, but a new session starts by re-establishing the loop unless the task card carries specific artifact links proving the same current task already hit the threshold.
 

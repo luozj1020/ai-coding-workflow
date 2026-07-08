@@ -72,6 +72,19 @@ Responsibilities:
 | FINAL REVIEW | Accept/revise/split/reject and optionally run second verification | N/A unless re-dispatched | N/A | Merge automatically or edit directly without threshold |
 | TAKEOVER | Edit only after explicit human request or current-task threshold, record scope and validation | N/A | N/A | Use prior-session failures alone as takeover permission |
 
+## Delegation Restoration Before Takeover
+
+Dirty source or stale HEAD means Claude may not see the required context. Treat this as a delegation blocker, not a Claude failure and not a takeover trigger. Before Codex edits implementation files, it must try or explicitly rule out a restoration path:
+
+- commit an accepted phase so HEAD contains the required context
+- stash or patch uncommitted source changes
+- refresh outdated local workflow files
+- re-dispatch Claude from updated clean HEAD
+- request explicit dirty-source dispatch approval
+- stop for human input when the base cannot be made reliable
+
+Codex takeover after a delegation blocker requires either an independent current-task threshold, an explicit human override, or a recorded reason restoration is impossible or unsafe.
+
 ### Direction Review Before Testing
 
 After a Builder Claude task, Codex reviews the partial or final diff before assigning Checker/Test work:
@@ -81,7 +94,7 @@ After a Builder Claude task, Codex reviews the partial or final diff before assi
 - If Builder Claude repeatedly runs off-plan, stalls, or exits without useful progress, Codex may enter direct intervention only after citing current-task threshold evidence.
 - Codex should not dispatch Checker/Test Claude to validate an implementation direction it has not accepted.
 
-Before calling a Builder stalled, Codex classifies the likely cause: task-card ambiguity, mixed builder/checker responsibilities, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifact, external environment, or true Claude no-progress. Permission denials, sandbox write failures, forbidden-file rules, missing CLI/auth, network restrictions, and human-approval requirements are not Claude execution failures unless Claude ignored an available allowed path.
+Before calling a Builder stalled, Codex classifies the likely cause: task-card ambiguity, mixed builder/checker responsibilities, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifact, external environment, or true Claude no-progress. Permission denials, sandbox write failures, forbidden-file rules, missing CLI/auth, network restrictions, human-approval requirements, dirty source, and stale HEAD are not Claude execution failures unless Claude ignored an available allowed path after restoration.
 
 ### Codex Direct Intervention
 
@@ -90,7 +103,7 @@ Codex may directly edit implementation files only when at least one condition is
 - The loop reached its configured maximum Claude iterations without acceptance.
 - The same failure appears in two consecutive Claude iterations.
 - Failure count does not decrease for two consecutive Claude iterations.
-- Claude Code is unavailable, repeatedly times out, or the blocker is external to execution but fixable in the repository.
+- Claude Code is unavailable, repeatedly times out, or the blocker is external to execution but fixable in the repository after delegation restoration was attempted or ruled out.
 - The human explicitly asks Codex to take over.
 
 Before editing, Codex must state the failed attempts, why another Claude revision is unlikely to help, the files/modules it will touch, and the validation it will run. The edit should be narrow and should not bypass safety approvals.

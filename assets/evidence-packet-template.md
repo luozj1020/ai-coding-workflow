@@ -148,11 +148,27 @@
 | Builder/checker responsibilities were mixed? | yes/no |
 | Task mode made testing responsibility explicit? | yes/no |
 | Dirty source or stale HEAD evidence | |
+| HEAD contained required prior context? | yes/no/unknown |
+| Dirty source blocked reliable Claude dispatch? | yes/no |
 | Progress artifacts checked | progress log / CLAUDE_PROGRESS.md / CLAUDE_TASK_CARD.md / report / status |
 | Partial diff checked against plan? | yes/no/not available |
 | Long-running command identified? | yes/no + command |
 | Permission/tool approval blocker? | yes/no + command/file/tool |
 | Next action | continue waiting / narrow and re-dispatch / split builder-checker / stop for human / Codex takeover threshold reached |
+
+## Delegation Restoration Follow-up
+
+<!-- Fill when the normal Codex-plan / Claude-execute path was blocked before or during dispatch. Record restoration attempts before any Codex takeover. -->
+
+| Field | Value |
+|-------|-------|
+| Delegation blocker | none / dirty source / stale HEAD / outdated workflow files / permission-tool approval / external environment |
+| Restoration path attempted | commit accepted phase / stash or patch source changes / refresh workflow files / re-dispatch from updated HEAD / requested dirty-source override / stopped for human |
+| Restoration evidence | |
+| Claude re-dispatch possible after restoration? | yes/no |
+| Codex takeover requested instead? | yes/no |
+| If takeover requested, threshold or human override cited | |
+| Return-to-delegation condition | |
 
 ## Direction / Boundary Acknowledgement Follow-up
 

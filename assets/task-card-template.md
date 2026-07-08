@@ -47,12 +47,28 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | Task mixes builder and checker/test responsibilities? | yes/no |
 | If mixed, split before dispatch? | yes/no + reason |
 | Dirty source or stale HEAD risk acknowledged? | yes/no/not applicable |
+| HEAD contains required prior context for Claude? | yes/no/not applicable |
+| Dirty source blocks reliable Claude dispatch? | yes/no |
 | Required progress artifacts | CLAUDE_PROGRESS.md / CLAUDE_TASK_CARD.md checklist / CLAUDE_REPORT.md |
 | Long-running command expected? | yes/no + command |
 | Permission/tool approval risk? | yes/no + sandbox/write/network/auth/forbidden-file details |
 | Ambiguity likely to cause stop-and-report? | yes/no + field |
 | If Claude is quiet, first diagnosis step | inspect progress artifacts and partial diff before declaring failure |
 | Conditions that prove real Claude no-progress | no artifact growth, no worktree change, no status output, no permission blocker, and no reported blocker after grace period |
+
+## Delegation Restoration Gate
+
+<!-- Codex completes this when dirty source, stale HEAD, missing local workflow files, permissions, or environment state blocks reliable Claude dispatch. These are delegation blockers, not automatic Codex takeover triggers. -->
+
+| Check | Value |
+|-------|-------|
+| Delegation blocker present? | no / dirty source / stale HEAD / outdated workflow files / permission-tool approval / external environment |
+| Why Claude would not see required context | |
+| Restoration path selected | commit accepted phase / stash or patch source changes / refresh workflow files / re-dispatch from updated HEAD / request explicit dirty-source override / stop for human |
+| Restoration attempted before Codex takeover? | yes/no + evidence |
+| If not restored, why impossible or unsafe? | |
+| Codex takeover justified instead of restoration? | no / yes + threshold or explicit human override |
+| Return-to-delegation condition | next task from clean updated HEAD / after human approval / after tool permission fixed |
 
 ## Direction Review Gate
 
