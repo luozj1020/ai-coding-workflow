@@ -12,6 +12,68 @@
 
 <!-- Claude Code | Codex control-plane hotfix | human -->
 
+## Task Mode
+
+<!-- builder | checker-test | mixed-exception | control-plane. Prefer builder followed by checker-test for non-trivial work. -->
+
+| Field | Value |
+|-------|-------|
+| Mode | builder / checker-test / mixed-exception / control-plane |
+| Builder scope | implementation only; no acceptance test writing or broad test execution unless narrow sanity check is explicitly listed |
+| Checker/Test scope | write/update tests, run assigned validation, produce report; no broad implementation rewrite unless a concrete small fix is explicitly allowed |
+| Codex direction review required before checker/test? | yes/no |
+
+## Direction Review Gate
+
+<!-- Codex completes this after a Builder task before dispatching Checker/Test work. If the builder direction is wrong, revise or interrupt instead of testing the wrong approach. -->
+
+| Check | Value |
+|-------|-------|
+| Builder diff matches planned direction? | yes/no/partial |
+| Continue waiting for Builder? | yes/no + reason |
+| Interrupt and narrow task? | yes/no + reason |
+| Dispatch Checker/Test task next? | yes/no + task-card path |
+| Codex takeover threshold reached? | yes/no + cited artifacts |
+
+## Direction / Boundary Acknowledgement
+
+<!-- Claude completes this before editing. Use blocking approval for ambiguous, multi-file, high-risk, public API, data model, security, migration, permission, or production-impacting work. If Claude has material confusion, it must stop-and-report instead of guessing. -->
+
+| Field | Value |
+|-------|-------|
+| Required before editing? | yes/no |
+| Blocking Codex approval required? | yes/no |
+| Maximum acknowledgement rounds | 0 / 1 |
+| Re-acknowledgement allowed only if Codex changes goal/scope/boundaries? | yes/no |
+| Claude must state task in own words? | yes/no |
+| Claude must list in-scope files/modules? | yes/no |
+| Claude must list explicitly out-of-scope boundaries? | yes/no |
+| Claude must report confusion before editing? | yes/no |
+| Stop if acceptance criteria unclear? | yes/no |
+| Stop if testing responsibility unclear? | yes/no |
+| Stop if implementation boundary unclear? | yes/no |
+| Expected acknowledgement artifact | CLAUDE_PROGRESS.md / CLAUDE_REPORT.md |
+| Codex approval artifact, if blocking | |
+| Final acknowledgement decision | proceed / narrow-once / split / stop |
+
+Acknowledgement format Claude should write:
+
+- My understanding:
+- Planned scope:
+- Explicitly out of scope:
+- Files/modules likely touched:
+- Acceptance criteria interpretation:
+- Testing responsibility interpretation:
+- Confusions or ambiguities:
+- New risks / unknowns:
+- Recommendation: proceed / narrow / split / stop-and-report
+
+Anti-loop rule: acknowledgement is a gate, not a discussion loop. Codex should answer with one final decision: proceed, narrow once and re-dispatch, split, or stop. Claude should not request repeated confirmation after approval unless the task goal, scope, boundaries, or risk profile materially changes.
+
+## Task Card Views
+
+<!-- Codex owns this full planning card. Dispatch scripts derive `CLAUDE_TASK_CARD.md` from it and omit Codex-only budget/planning/control sections before prompting Claude. Do not maintain a second hand-written Claude card. -->
+
 ## Control-Plane Exception Rationale
 
 <!-- Fill only when Task Type is control-plane. Explain why normal Claude delegation is unsafe, unavailable, or exhausted after repeated failed Claude attempts, cite attempt artifacts, identify any first-round direction Codex will salvage, define the narrow Codex edit scope, and state what condition returns work to the normal Codex-plan / Claude-execute flow. -->
@@ -77,7 +139,7 @@
 
 ## Testing Responsibility
 
-<!-- Codex must decide this before dispatch. Writing test code and running tests are separate responsibilities. If the user requested tests or Codex marks tests acceptance-critical, test code can be part of Claude's implementation task. If tests are not required, say so explicitly and explain why. -->
+<!-- Codex must decide this before dispatch. Writing test code and running tests are separate responsibilities. Prefer: Builder Claude implements without acceptance testing; after Codex accepts direction, Checker/Test Claude writes/runs tests and reports validation. If the user requested tests or Codex marks tests acceptance-critical, create a checker-test task unless a mixed exception is justified. -->
 
 | Decision | Value |
 |----------|-------|
@@ -85,6 +147,8 @@
 | Why tests are or are not in scope | user requested / acceptance-critical / regression coverage / not needed because ... |
 | Claude must write or update tests? | yes/no |
 | Claude must run tests before finishing? | yes/no |
+| Builder may run narrow sanity checks? | yes/no + commands |
+| Broad acceptance test execution owner | Checker/Test Claude / Codex / human / not required |
 | Codex/human will run verification after Claude? | yes/no |
 | Acceptance evidence owner | Claude / Codex / human |
 | Evidence-only redispatch allowed? | yes/no; only when task-card-required evidence cannot be reconstructed |
@@ -104,11 +168,19 @@
 | Project aggregate check | | yes/no | |
 
 Checker expectations:
-- Follow `Testing Responsibility`: do not add tests when test code is out of scope; do not skip required Claude-run tests unless blocked and reported.
+- Follow `Task Mode` and `Testing Responsibility`: Builder tasks do not add tests or run broad suites; Checker/Test tasks do not skip assigned test writing or validation unless blocked and reported.
 - Missing Claude report/result is evidence-gap handling: if assigned checks pass and acceptance evidence owner is not Claude, Codex may reconstruct minimal evidence instead of re-dispatching only for prose.
 - Run `bash ai/check-worktree.sh` when available.
 - Preserve failed command, exit code, key original output, and `file:line` locations.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.
+
+## Execution Progress
+
+<!-- Claude updates this checklist in `CLAUDE_TASK_CARD.md` after each completed assigned item. Do not rely on it as the only evidence; it complements `CLAUDE_PROGRESS.md`, report artifacts, and diff review. -->
+
+- [ ] Item 1
+- [ ] Item 2
+- [ ] Item 3
 
 ## Execution Phases
 

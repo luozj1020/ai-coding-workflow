@@ -109,6 +109,42 @@
 |---------------|-----------------------|--------------|-------------------|
 | | | | |
 
+## Task Mode / Direction Review Follow-up
+
+<!-- Record whether this was a Builder or Checker/Test task and what Codex should do next. -->
+
+| Field | Value |
+|-------|-------|
+| Task mode executed | builder / checker-test / mixed-exception / control-plane |
+| Builder direction matches plan? | yes/no/partial/not builder |
+| Builder should continue waiting? | yes/no + reason |
+| Builder should be interrupted/narrowed? | yes/no + reason |
+| Checker/Test should be dispatched next? | yes/no + task-card path |
+| Checker/Test completed assigned tests? | yes/no/not checker |
+| Checker/Test completed assigned validation? | yes/no/not checker |
+| Broad implementation rewrite avoided? | yes/no |
+
+## Direction / Boundary Acknowledgement Follow-up
+
+<!-- Record whether Claude completed the pre-edit acknowledgement and whether Codex approval was required. -->
+
+| Field | Value |
+|-------|-------|
+| Acknowledgement required? | yes/no |
+| Blocking Codex approval required? | yes/no |
+| Maximum acknowledgement rounds | |
+| Acknowledgement rounds used | |
+| Acknowledgement artifact | |
+| Claude stated task in own words? | yes/no |
+| Claude listed in-scope files/modules? | yes/no |
+| Claude listed out-of-scope boundaries? | yes/no |
+| Claude reported confusion/ambiguity? | yes/no |
+| Material confusion required stop? | yes/no |
+| Codex approval artifact, if blocking | |
+| Proceeded before required approval? | yes/no |
+| Repeated same approval request after proceed? | yes/no |
+| Final acknowledgement decision | proceed / narrow-once / split / stop |
+
 ## Testing Responsibility Follow-up
 
 <!-- Record whether test-writing and test-running matched the task card assignment. -->

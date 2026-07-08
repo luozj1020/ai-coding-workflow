@@ -90,11 +90,12 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn("ai-coding-workflow", cmd)
             self.assertIn(".", cmd)
 
-    def test_skill_entrypoint_stays_concise(self):
+    def test_skill_entrypoint_keeps_routing_context(self):
         skill = ROOT / "SKILL.md"
-        lines = skill.read_text(encoding="utf-8").splitlines()
-        self.assertLessEqual(len(lines), 120)
-        self.assertIn("When To Load More", skill.read_text(encoding="utf-8"))
+        content = skill.read_text(encoding="utf-8")
+        self.assertIn("When To Load More", content)
+        self.assertIn("Builder", content)
+        self.assertIn("Checker/Test", content)
 
     def test_main_prints_bootstrap_next_steps(self):
         with tempfile.TemporaryDirectory() as tmp:

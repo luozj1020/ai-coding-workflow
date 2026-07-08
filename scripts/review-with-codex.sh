@@ -90,6 +90,10 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - When revising only for missing task-card-required tests or evidence, preserve the accepted implementation direction and make the next Claude task narrow: tests/evidence only, no broad rewrite unless a concrete defect is found.
 - If that narrowed second Claude attempt also exits with no result/report and no useful progress, direct intervention may be allowed as control-plane salvage. Cite both attempts, preserve the reviewer-accepted first-round direction, and limit Codex edits to missing scoped implementation, acceptance tests, and evidence.
 - For multi-phase or multi-part tasks, accepting the current Claude result may accept only that phase. If implementation or test-writing phases remain, do not treat ACCEPT as permission for Codex to patch the remainder; produce a next Claude task-card handoff and fill the Delegation Continuity Gate.
+- Respect Task Mode. For builder results, first decide whether the implementation direction matches the plan; if yes and tests are needed, dispatch a checker-test Claude task instead of asking Builder Claude to test or letting Codex patch. For checker-test results, review validation evidence and avoid broad implementation changes.
+- Builder tasks should not be marked failed only because they did not write or run acceptance tests. Checker-test tasks should be marked incomplete when assigned tests, validation commands, or reports are missing.
+- Check Direction / Boundary Acknowledgement when present. If blocking Codex approval was required and Claude edited before approval, treat that as a process failure. If Claude had material confusion about target, boundaries, acceptance criteria, testing responsibility, or high-risk areas and guessed instead of stopping, normally choose REVISE or REJECT.
+- Also check for acknowledgement loops. If Claude already received a proceed decision and asks for the same approval again without a material goal/scope/boundary/risk change, treat it as no-progress and give a concrete next action. Codex review should return one final acknowledgement decision: proceed, narrow-once/re-dispatch, split, or stop.
 - If direct intervention is justified, state the failed attempts, why another Claude revision is unlikely to help, the allowed scope, and required validation.
 - Compare the implementation against the original task card requirements.
 - Use the Claude modification report if present, but verify it against the diff and evidence.
@@ -134,6 +138,12 @@ A concise explanation of why this decision was made.
 ### Requirements Comparison
 Map the task card acceptance criteria to the observed implementation and evidence.
 
+### Task Mode / Direction Review
+State whether this was a builder, checker-test, mixed-exception, or control-plane task. For builder tasks, state whether the implementation direction matches the plan, whether Codex should continue waiting, interrupt/narrow, dispatch checker-test next, or consider takeover. For checker-test tasks, state whether test writing, validation, and reporting were completed.
+
+### Direction / Boundary Acknowledgement
+State whether acknowledgement was required, whether it was blocking, whether Claude stated understanding/scope/out-of-scope boundaries/acceptance interpretation/testing responsibility/confusions, whether any confusion should have stopped execution, whether Claude waited for required Codex approval, and whether the acknowledgement stayed within the maximum allowed rounds. If deciding the acknowledgement, choose exactly one: proceed, narrow-once/re-dispatch, split, or stop.
+
 ### Testing Responsibility
 State whether the task card assigned test writing and test execution to Claude, Codex/human, or neither, and whether the evidence matches that assignment.
 
@@ -158,6 +168,7 @@ State whether Codex direct intervention is allowed now. If yes, cite the exact t
 ### Review-to-Next-Task Contract
 For REVISE, SPLIT, or REJECT, provide a task-card-ready handoff with:
 - Carry Forward Context
+- Next Task Mode: builder / checker-test / mixed-exception / control-plane
 - Keep
 - Change
 - Do Not Repeat

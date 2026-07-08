@@ -2,19 +2,29 @@
 
 ## Division of Labor
 
-### Claude Code  -  Mechanical Checks
+### Builder Claude  -  Implementation Direction
 
 Responsibilities:
 
-- Run tests and verify pass/fail status
-- Run linters and fix obvious violations
-- Run type checks and resolve type errors
-- Verify build succeeds
-- Fix obvious bugs (typos, off-by-one errors, missing imports)
-- Produce evidence packets with diffstat, diff, and test results
-- Record assumptions, attempted commands, failed checks, and lessons learned
+- Implement the scoped task card change
+- Keep edits within the Handoff Contract
+- Update `CLAUDE_PROGRESS.md` and `CLAUDE_TASK_CARD.md` progress after each assigned item
+- Report changed files, plan match, deviations, assumptions, and risks
+- Run only narrow sanity checks explicitly allowed by the task card
 
-Claude Code handles the mechanical, verifiable aspects of code quality. It does not make architectural judgments.
+Builder Claude does not own acceptance testing. It should not write acceptance tests or run broad suites unless the task card explicitly defines a mixed exception.
+
+### Checker/Test Claude  -  Validation and Tests
+
+Responsibilities:
+
+- Write or update assigned tests
+- Run assigned test, lint, type, build, or aggregate validation commands
+- Preserve command, exit code, key original output, and `file:line` locations
+- Produce evidence packets with diffstat, test results, and report paths
+- Make only concrete small fixes explicitly allowed by the task card when validation exposes a clear defect
+
+Checker/Test Claude owns mechanical validation evidence. It does not make architectural judgments and should not perform broad implementation rewrites.
 
 ### MiMo / DeepSeek  -  Exhaustive Scan
 
@@ -32,6 +42,7 @@ MiMo/DeepSeek is invoked when the diff is large or the task is complex enough to
 Responsibilities:
 
 - Evaluate whether the implementation matches the task card intent
+- Perform Builder direction review before validation work is dispatched
 - Assess regression risk  -  what could break, what depends on this
 - Review design decisions  -  is this the right abstraction, the right boundary
 - Check for security implications
@@ -47,6 +58,15 @@ Responsibilities:
 - Return a structured decision (see below)
 
 **Codex/GPT does NOT write code during ordinary review.** It evaluates and decides. Implementation is delegated to Claude Code until an intervention threshold is reached.
+
+### Direction Review Before Testing
+
+After a Builder Claude task, Codex reviews the partial or final diff before assigning Checker/Test work:
+
+- If the implementation direction matches the plan, Codex waits for Builder completion when still in progress, then dispatches a Checker/Test task when validation is needed.
+- If the implementation direction is off-plan, scope-expanding, risky, or violates a stop condition, Codex interrupts or revises with a narrower Builder task.
+- If Builder Claude repeatedly runs off-plan, stalls, or exits without useful progress, Codex may enter direct intervention only after citing current-task threshold evidence.
+- Codex should not dispatch Checker/Test Claude to validate an implementation direction it has not accepted.
 
 ### Codex Direct Intervention
 
@@ -136,16 +156,18 @@ Record any knowledge gained during review that could inform future planning:
 
 ## Review Workflow
 
-1. Claude Code produces an evidence packet after executing a task card.
-2. The evidence packet is sent to Codex/GPT via `ai/review-with-codex.sh` or `ai/run-loop.sh`.
-3. Codex/GPT reviews and returns a structured decision.
-4. If **accept** and no phases remain: the change is ready for human merge.
-5. If **accept** but unfinished phases remain: Codex plans the next phase and dispatches Claude again. A high-priority subset being accepted is not permission for Codex to implement lower-priority remaining work.
-6. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes unless an intervention threshold has been reached. If Claude made no useful progress, the next task should be narrower, more diagnostic, and evidence-focused rather than replaced by Codex edits.
-7. If **split**: the original task card is decomposed into smaller child cards, each entering its own loop.
-8. If **reject**: the task returns to OBSERVE with the rejection reasoning as new context.
-9. If an intervention threshold is reached, Codex may perform a scoped direct fix and must produce validation evidence.
-10. Human performs final merge and any required high-risk approvals.
+1. Builder Claude produces implementation evidence after executing a builder task card.
+2. Codex/GPT reviews direction: plan match, scope, risks, deviations, and progress evidence.
+3. If direction is acceptable and Builder is complete, Codex dispatches Checker/Test Claude when tests or validation are required.
+4. Checker/Test Claude writes/runs assigned tests and produces validation evidence.
+5. Codex/GPT reviews validation evidence and returns a structured decision.
+6. If **accept** and no phases remain: the change is ready for human merge.
+7. If **accept** but unfinished phases remain: Codex plans the next phase and dispatches Claude again. A high-priority subset being accepted is not permission for Codex to implement lower-priority remaining work.
+8. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes unless an intervention threshold has been reached. If Claude made no useful progress, the next task should be narrower, more diagnostic, and evidence-focused rather than replaced by Codex edits.
+9. If **split**: the original task card is decomposed into smaller child cards, each entering its own loop.
+10. If **reject**: the task returns to OBSERVE with the rejection reasoning as new context.
+11. If an intervention threshold is reached, Codex may perform a scoped direct fix and must produce validation evidence.
+12. Human performs final merge and any required high-risk approvals.
 
 ## Loop Integration
 

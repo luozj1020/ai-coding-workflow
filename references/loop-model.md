@@ -30,6 +30,13 @@ When a first Claude round has a usable direction but lacks required evidence, th
 
 For multi-phase or multi-part tasks, `ACCEPT` can mean "accepted this phase" rather than "all requested work is done." Codex must check the `Delegation Continuity Gate` after each accepted phase. If implementation or test-writing phases remain, the next action is PLAN -> DISPATCH to Claude with a follow-up task card, not Codex patching the remainder, unless a takeover threshold or explicit human override applies.
 
+For tasks with meaningful validation risk, split Claude work by role:
+
+- **Builder Claude** executes implementation tasks and produces direction evidence, not acceptance validation.
+- **Codex direction review** decides whether the Builder direction matches the plan, whether to keep waiting, interrupt and narrow, re-dispatch, or enter takeover after repeated current-task failure.
+- **Checker/Test Claude** executes test-writing and validation tasks after Codex accepts the Builder direction.
+- **Codex final review** checks validation artifacts and may run a second verification pass before acceptance.
+
 ## States
 
 ## Unknowns Lifecycle
@@ -106,7 +113,7 @@ Each handoff should be directly checkable:
 
 ### 4. EXECUTE
 
-**Owner:** Claude Code
+**Owner:** Builder Claude
 
 **Purpose:** Make the concrete file edits required by the task card.
 
@@ -115,31 +122,50 @@ Each handoff should be directly checkable:
 - Read the task card fully before editing.
 - Prefer LSP/codegraph/MCP evidence before broad file reads.
 - Make scoped file changes.
-- Run relevant checks after significant changes.
+- Run only narrow sanity checks explicitly assigned to the Builder task.
 - Record assumptions, attempted commands, and failed checks.
-- Keep builder and checker responsibilities separate: edits happen in the builder phase, validation and failure reporting happen in the checker phase.
+- Update `CLAUDE_PROGRESS.md` and the `CLAUDE_TASK_CARD.md` progress checklist after completing assigned items.
+- Keep builder and checker responsibilities separate: implementation happens in the Builder phase, validation and test evidence happen in the Checker/Test phase.
 
 **Output:** Modified files in the isolated worktree.
 
-### 5. VERIFY
+### 5. DIRECTION REVIEW
 
-**Owner:** Claude Code
+**Owner:** Codex / GPT
 
-**Purpose:** Confirm that the implementation meets the task card's acceptance criteria.
+**Purpose:** Decide whether the Builder implementation direction should proceed to testing.
 
 **Actions:**
 
-- Run tests, lint, type checks, and build checks where applicable.
+- Compare the partial or final diff against Goal, Handoff Contract, Acceptance Criteria, Unknowns, and Decision Gates.
+- Continue waiting when worktree changes and progress updates match the plan.
+- Interrupt and narrow the task when the implementation is off-plan, risky, or scope-expanding.
+- Dispatch a Checker/Test task only after the Builder direction is accepted.
+- Enter direct intervention only after repeated current-task failure or explicit human takeover.
+
+**Output:** Accept direction, revise Builder task, split, reject, or dispatch Checker/Test task.
+
+### 6. CHECKER / TEST
+
+**Owner:** Checker/Test Claude
+
+**Purpose:** Write assigned tests, run validation, and report mechanical evidence.
+
+**Actions:**
+
+- Write or update tests when assigned.
+- Run tests, lint, type checks, and build checks listed in the task card.
 - Run `ai/check-worktree.sh` when available to produce checker-only validation evidence.
 - Compare results against the acceptance criteria.
 - Capture verification output, checker report paths, key original failure lines, and known gaps.
 - Preserve failed command, exit code, and `file:line` details without lossy summarization.
+- Avoid broad implementation rewrites; make only small fixes explicitly allowed by the task card when validation exposes a concrete defect.
 
 **Output:** Evidence packet from `ai/evidence-packet-template.md`.
 
-**Testing responsibility:** Codex decides in the task card whether test code is part of the task, whether Claude must run tests, or whether Codex/human will run verification after Claude. If tests are not required, the task card must say so explicitly.
+**Testing responsibility:** Codex decides in the task card whether test code is part of the task, whether Checker/Test Claude must run tests, or whether Codex/human will run verification after Claude. If tests are not required, the task card must say so explicitly.
 
-### 6. REVIEW
+### 7. REVIEW
 
 **Owner:** Codex / GPT
 
@@ -157,7 +183,7 @@ Each handoff should be directly checkable:
 
 **Constraint:** Codex does not implement fixes during ordinary review. It evaluates and decides unless the loop has reached the direct-intervention threshold.
 
-### 7. LEARN
+### 8. LEARN
 
 **Owner:** Codex and Claude Code
 
@@ -172,7 +198,7 @@ Each handoff should be directly checkable:
 
 **Output:** Lessons in the evidence packet or project-level workflow notes.
 
-### 8. DONE
+### 9. DONE
 
 **Owner:** Human
 
@@ -191,8 +217,9 @@ Each handoff should be directly checkable:
 | OBSERVE | Gather low-token context | N/A | Provide context |
 | PLAN | Create or revise task cards | N/A | Approve plan if needed |
 | DISPATCH | N/A | N/A | Trigger dispatch or runner |
-| EXECUTE | N/A | Edit files | N/A |
-| VERIFY | N/A | Run checks and produce evidence | N/A |
+| EXECUTE | Direction review during progress | Builder edits files | N/A |
+| DIRECTION REVIEW | Accept direction, wait, interrupt, revise, or take over | Update progress/report | N/A |
+| CHECKER / TEST | Dispatch validation task and review risk | Write/run assigned tests and report evidence | N/A |
 | REVIEW | Decide accept/revise/split/reject | N/A | Override if needed |
 | LEARN | Capture planning lessons | Capture execution lessons | N/A |
 | DONE | N/A | N/A | Merge and close |

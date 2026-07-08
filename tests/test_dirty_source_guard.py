@@ -78,7 +78,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         with open(fake, "w", encoding="utf-8", newline="\n") as f:
             f.write(
                 "#!/usr/bin/env bash\n"
-                "cat >/dev/null\n"
+                "if [ -n \"${FAKE_CLAUDE_PROMPT_CAPTURE:-}\" ]; then\n"
+                "  cat > \"${FAKE_CLAUDE_PROMPT_CAPTURE}\"\n"
+                "else\n"
+                "  cat >/dev/null\n"
+                "fi\n"
                 "case \"${FAKE_CLAUDE_MODE:-success}\" in\n"
                 "  fail-empty)\n"
                 "    exit 42\n"
@@ -168,6 +172,96 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Dispatch Complete", result.stdout)
+
+    def test_dispatch_prompts_claude_with_execution_card_projection(self):
+        task = self._write_task_card()
+        task.write_text(
+            "\n".join(
+                [
+                    "# Task Card",
+                    "",
+                    "## Goal",
+                    "",
+                    "Implement visible work.",
+                    "",
+                    "## Task Mode",
+                    "",
+                    "| Field | Value |",
+                    "|-------|-------|",
+                    "| Mode | builder |",
+                    "",
+                    "## Direction / Boundary Acknowledgement",
+                    "",
+                    "| Field | Value |",
+                    "|-------|-------|",
+                    "| Required before editing? | yes |",
+                    "| Blocking Codex approval required? | yes |",
+                    "| Maximum acknowledgement rounds | 1 |",
+                    "",
+                    "## Handoff Contract",
+                    "",
+                    "| Field | Items |",
+                    "|-------|-------|",
+                    "| Must do | Edit README |",
+                    "",
+                    "## Codex Context Budget",
+                    "",
+                    "| Metric | Target |",
+                    "|--------|--------|",
+                    "| Max Codex context tokens | 1000 |",
+                    "",
+                    "## High-Token Delegation Gate",
+                    "",
+                    "- [ ] Full repository scan",
+                    "",
+                    "## Delegation Continuity Gate",
+                    "",
+                    "| Check | Value |",
+                    "|-------|-------|",
+                    "| Remaining implementation/test-writing phases | phase B |",
+                    "",
+                    "## Direction Review Gate",
+                    "",
+                    "| Check | Value |",
+                    "|-------|-------|",
+                    "| Builder diff matches planned direction? | yes/no/partial |",
+                    "",
+                    "## Acceptance Criteria",
+                    "",
+                    "- [ ] README changed",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        capture = self.case_root / "captured-prompt.md"
+
+        result = self._dispatch(extra_env={"FAKE_CLAUDE_PROMPT_CAPTURE": str(capture)})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prompt = capture.read_text(encoding="utf-8")
+        self.assertIn("--- CLAUDE EXECUTION CARD ---", prompt)
+        self.assertIn("Implement visible work.", prompt)
+        self.assertIn("## Task Mode", prompt)
+        self.assertIn("## Direction / Boundary Acknowledgement", prompt)
+        self.assertIn("Maximum acknowledgement rounds", prompt)
+        self.assertIn("## Handoff Contract", prompt)
+        self.assertIn("## Acceptance Criteria", prompt)
+        self.assertNotIn("## Codex Context Budget", prompt)
+        self.assertNotIn("Max Codex context tokens", prompt)
+        self.assertNotIn("## High-Token Delegation Gate", prompt)
+        self.assertNotIn("## Delegation Continuity Gate", prompt)
+        self.assertNotIn("## Direction Review Gate", prompt)
+
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        full_card = (worktree / "TASK_CARD_FULL.md").read_text(encoding="utf-8")
+        claude_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
+        self.assertIn("## Codex Context Budget", full_card)
+        self.assertNotIn("## Codex Context Budget", claude_card)
+        self.assertNotIn("## Direction Review Gate", claude_card)
+        self.assertIn("## Task Mode", claude_card)
+        self.assertIn("## Direction / Boundary Acknowledgement", claude_card)
+        self.assertIn("## Acceptance Criteria", claude_card)
 
     def test_unrelated_untracked_file_blocks(self):
         self._write_task_card()
