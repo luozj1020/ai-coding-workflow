@@ -11,6 +11,8 @@ ai-coding-workflow 可以为仓库自动配置：
 - `CLAUDE.md` - Claude Code 执行规则
 - 任务卡和证据包模板
 - Codex + Claude Code 工作流的安全调度/审查/循环脚本
+- Builder / Checker-Test 任务模式，用于分离实现和验证职责
+- Direction / Boundary Acknowledgement 方向/边界确认门，以及防反复确认规则
 - 幂等更新的托管块（managed blocks）
 
 ## 常用动作
@@ -218,6 +220,13 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 
 **核心原则：** Codex 负责设计和审查。Claude 负责编辑。工具优先收集低 token 证据。Codex 保持在低 token 上下文预算内；宽泛读取和多文件工作委托给 Claude。Claude 返回压缩证据（摘要 + 产物路径），而非粘贴大段日志。
 
+对于非平凡修改，优先把 Claude 工作拆成两个角色：
+
+- **Builder Claude** 负责按任务卡完成限定范围内的实现，并报告实现方向。除非任务卡明确允许窄范围 sanity check，否则不写 acceptance tests，也不运行大型测试套件。
+- **Checker/Test Claude** 在 Codex 接受 Builder 方向后运行。它负责编写或更新被指派的测试、执行验证命令并报告证据，不做大范围实现重写。
+
+任务卡可以要求 Claude 在编辑前执行 **Direction / Boundary Acknowledgement**。Claude 需要复述目标、范围、明确不做的边界、可能触碰的文件、验收标准理解、测试职责、困惑和风险。这是一个门禁，不是反复讨论循环：除非 Codex 实质性改变目标、范围、边界或风险，每个任务或阶段最多允许一次阻塞确认。Codex 必须给出唯一最终决策：proceed、narrow-once/re-dispatch、split 或 stop。
+
 **步骤 1：初始化项目**（一次性）
 
 ```powershell
@@ -242,11 +251,13 @@ python ai/init-plan.py PROJ-123
 python ai/session-catchup.py --plan PROJ-123
 ```
 
-**步骤 3：Claude Code 执行**（调度 + 执行 + 验证）
+**步骤 3：调度 Builder Claude**（调度 + 执行）
 
 ```
 Use the coding executor workflow. Execute this task card and return an evidence packet.
 ```
+
+对于实现任务，将任务卡模式设为 `builder`。Builder Claude 负责限定范围内的代码修改和进度汇报。如果需要测试，应在任务卡中说明 Builder Claude 完成实现证据后停止，后续由 Codex 单独派发 `checker-test` 任务。
 
 这会在 `.worktrees/` 下生成以下产物：
 
@@ -275,7 +286,9 @@ CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-
 
 Claude 运行期间，`*.progress.log` 会同时记录产物增长和实现工作树变化。`ai/watch-claude.sh` 与 `ai/status-claude.sh` 会展示部分工作树的 diffstat/status。最初几个等待回合里，如果工作树仍在变化，应先对照任务卡审查部分 diff；若修改方向符合 plan，就继续等待 Claude 完成。只有当部分实现已经偏离 plan、风险过高，或不再产生有效进展时，才考虑中断 Claude。
 
-**步骤 4：Codex 审查**（审查）
+如果任务卡要求 Direction / Boundary Acknowledgement，Claude 应先写出确认内容再编辑。若该确认是阻塞式审批，Codex 需要给出一次最终决策后 Claude 才继续。Codex 给出 `proceed` 后，Claude 应继续执行任务，不应围绕同一事项反复请求确认。
+
+**步骤 4：Codex 审查实现方向**（审查）
 
 ```
 Use ai-coding-workflow to review this execution evidence packet and diff. Decide accept / revise / split / reject.
@@ -293,6 +306,8 @@ bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
   .worktrees/claude-<id>.worktree-status.txt \
   .worktrees/claude-<id>.untracked.txt
 ```
+
+如果 Builder 结果符合计划且需要验证，Codex 应再派发一个 `checker-test` 模式任务卡。Checker/Test Claude 编写或更新被指派的测试、运行指定验证命令并报告结果。随后 Codex 执行最终审查；风险较高时，Codex 可以再运行一次二次验证。
 
 **步骤 5：循环或合并**
 

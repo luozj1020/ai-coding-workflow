@@ -11,6 +11,8 @@ ai-coding-workflow bootstraps repositories with:
 - `CLAUDE.md` - Claude Code execution rules
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
+- Builder / Checker-Test task modes for separating implementation from validation
+- Direction / boundary acknowledgement gates with anti-loop rules
 - Managed blocks for idempotent updates
 
 ## Common actions
@@ -234,6 +236,13 @@ The workflow is an explicit loop: **OBSERVE  ->  PLAN  ->  DISPATCH  ->  EXECUTE
 
 **Core principle:** Codex designs and reviews. Claude edits. Tools gather low-token evidence first. Codex stays within a low-token context budget; broad reads and multi-file work are delegated to Claude. Claude returns compressed evidence (summaries + artifact paths) instead of pasted logs.
 
+For non-trivial changes, split the work into two Claude roles:
+
+- **Builder Claude** implements the scoped change and reports direction. It does not write acceptance tests or run broad suites unless the task card explicitly allows a narrow sanity check.
+- **Checker/Test Claude** runs after Codex accepts the builder direction. It writes or updates assigned tests, runs validation commands, and reports evidence without broad implementation rewrites.
+
+Task cards can require **Direction / Boundary Acknowledgement** before editing. Claude restates the goal, scope, out-of-scope boundaries, likely files, acceptance criteria, testing responsibility, confusions, and risks. This is a gate, not a discussion loop: at most one blocking acknowledgement is allowed per task or phase unless Codex materially changes the goal, scope, boundaries, or risk. Codex must answer with exactly one decision: proceed, narrow-once/re-dispatch, split, or stop.
+
 **Step 1: Initialize project** (once)
 
 ```powershell
@@ -258,11 +267,13 @@ This creates `ai/plans/PROJ-123/task_plan.md`, `findings.md`, and `progress.md`.
 python ai/session-catchup.py --plan PROJ-123
 ```
 
-**Step 3: Execute with Claude Code** (DISPATCH + EXECUTE + VERIFY)
+**Step 3: Dispatch Builder Claude** (DISPATCH + EXECUTE)
 
 ```
 Use the coding executor workflow. Execute this task card and return an evidence packet.
 ```
+
+For implementation work, set the task card mode to `builder`. Builder Claude owns the scoped edit and progress reporting. If testing is required, state that Builder Claude should stop after implementation evidence and that Codex will dispatch a separate `checker-test` task.
 
 This generates these artifacts under `.worktrees/`:
 
@@ -295,7 +306,9 @@ CLAUDE_CODE_PROXY_MODE=inherit bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-
 
 While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
 
-**Step 4: Review with Codex** (REVIEW)
+If Direction / Boundary Acknowledgement is required, Claude should write the acknowledgement before editing. When blocking approval is required, Codex gives one final decision before Claude proceeds. After `proceed`, Claude must continue the assigned task instead of repeatedly asking for the same confirmation.
+
+**Step 4: Review direction with Codex** (REVIEW)
 
 ```
 Use ai-coding-workflow to review this execution evidence packet and diff. Decide accept / revise / split / reject.
@@ -313,6 +326,8 @@ bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
   .worktrees/claude-<id>.worktree-status.txt \
   .worktrees/claude-<id>.untracked.txt
 ```
+
+If the Builder result matches the plan and validation is needed, dispatch a second task card in `checker-test` mode. Checker/Test Claude writes or updates assigned tests, runs the specified commands, and reports the result. Codex then performs the final review and may run a second verification pass when risk warrants it.
 
 **Step 5: Loop or Merge**
 

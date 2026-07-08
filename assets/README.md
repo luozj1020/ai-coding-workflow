@@ -43,11 +43,18 @@ python ~/.codex/skills/ai-coding-workflow/scripts/update_skill.py \
 This repository has been set up with a multi-agent AI coding workflow. The workflow splits software work between planning, execution, and review agents in an explicit loop:
 
 - **Codex / GPT**  -  plans and reviews (top-level design, not concrete edits)
-- **Claude Code**  -  implements and verifies (concrete file modifications)
+- **Claude Code**  -  implements in Builder tasks and validates in Checker/Test tasks
 - **MiMo / DeepSeek**  -  optional exhaustive review helper
 - **LSP / Codegraph / MCP**  -  low-token code intelligence (used first, before broad reads)
 
 **Core principle:** Codex designs and reviews. Claude edits. Tools gather low-token evidence first.
+
+For non-trivial changes, split Claude work into two roles:
+
+- **Builder Claude** implements the scoped change and reports the implementation direction. It does not write acceptance tests or run broad suites unless the task card explicitly allows a narrow sanity check.
+- **Checker/Test Claude** runs after Codex accepts the builder direction. It writes or updates assigned tests, runs validation commands, and reports evidence without broad implementation rewrites.
+
+Task cards can require **Direction / Boundary Acknowledgement** before editing. Claude restates the goal, scope, out-of-scope boundaries, likely files, acceptance criteria, testing responsibility, confusions, and risks. This is a gate, not a discussion loop: at most one blocking acknowledgement is allowed per task or phase unless Codex materially changes the goal, scope, boundaries, or risk. Codex answers with exactly one decision: proceed, narrow-once/re-dispatch, split, or stop.
 
 ## Directory Structure
 
@@ -103,11 +110,13 @@ To recover after context loss or `/clear`:
 python ai/session-catchup.py --plan PROJ-123
 ```
 
-### 2. Dispatch to Claude Code
+### 2. Dispatch Builder Claude
 
 ```bash
 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
+
+For implementation work, set the task card mode to `builder`. Builder Claude owns the scoped edit and progress reporting. If testing is required, state that Builder Claude should stop after implementation evidence and that Codex will dispatch a separate `checker-test` task.
 
 This creates an isolated worktree under `.worktrees/`, runs Claude Code, and saves these artifacts:
 
@@ -144,7 +153,9 @@ It does **not** merge automatically.
 
 While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
 
-### 3. Review with Codex
+If Direction / Boundary Acknowledgement is required, Claude should write the acknowledgement before editing. When blocking approval is required, Codex gives one final decision before Claude proceeds. After `proceed`, Claude must continue the assigned task instead of repeatedly asking for the same confirmation.
+
+### 3. Review Direction with Codex
 
 ```bash
 bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timestamp>.result.json .worktrees/claude-<timestamp>.diff
@@ -165,6 +176,8 @@ bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
 ```
 
 Codex reviews the work and returns a structured decision: accept, revise, split, or reject, with explicit next-loop instructions.
+
+If the Builder result matches the plan and validation is needed, dispatch a second task card in `checker-test` mode. Checker/Test Claude writes or updates assigned tests, runs the specified commands, and reports the result. Codex then performs the final review and may run a second verification pass when risk warrants it.
 
 ### Checker-Only Validation
 
