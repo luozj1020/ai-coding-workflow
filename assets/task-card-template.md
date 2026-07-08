@@ -22,6 +22,37 @@
 | Builder scope | implementation only; no acceptance test writing or broad test execution unless narrow sanity check is explicitly listed |
 | Checker/Test scope | write/update tests, run assigned validation, produce report; no broad implementation rewrite unless a concrete small fix is explicitly allowed |
 | Codex direction review required before checker/test? | yes/no |
+| Mixed implementation + test-writing allowed in one Claude dispatch? | no / yes, mixed-exception rationale: |
+
+Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, run validation, and stop at phase gates, prefer splitting it into a Builder task followed by a Checker/Test task. Use `mixed-exception` only when the task is intentionally tiny or the human explicitly asks for a single combined pass; record the rationale so a later stall is not misattributed to Claude execution quality.
+
+## Phase Responsibility Matrix
+
+<!-- Codex completes this before dispatch. Keep the active phase explicit so Claude does not infer testing or confirmation duties. -->
+
+| Phase | Codex owns | Claude owns | Explicitly not Claude-owned | Explicitly not Codex-owned |
+|-------|------------|-------------|-----------------------------|----------------------------|
+| OBSERVE / PLAN | Evidence gathering, unknowns, task card, scope, acceptance criteria | N/A unless this is an exploration task | Product edits | Broad implementation without dispatch |
+| BUILDER EXECUTE | Progress observation, partial diff direction review | Scoped implementation, progress updates, direction report | Acceptance tests and broad validation unless explicitly allowed | Direct implementation edits while Builder has not hit threshold |
+| DIRECTION REVIEW | Decide wait / revise / split / dispatch checker-test / takeover threshold | Provide report/progress/blockers | Repeated confirmation after proceed | Validating an unaccepted direction |
+| CHECKER / TEST | Dispatch validation task and review evidence quality | Assigned test writing, assigned validation, failure evidence | Broad implementation rewrite unless allowed small fix | Treating unassigned tests as Claude failure |
+| FINAL REVIEW / MERGE | Accept/revise/split/reject; human merge remains separate | N/A unless re-dispatched | N/A | Automatic merge or direct edit without threshold |
+
+## Stall / Ambiguity Triage
+
+<!-- Codex completes this before dispatch and reviews it when Claude appears stuck. Use it to distinguish Claude execution failure from orchestration ambiguity. -->
+
+| Check | Value |
+|-------|-------|
+| Task mixes builder and checker/test responsibilities? | yes/no |
+| If mixed, split before dispatch? | yes/no + reason |
+| Dirty source or stale HEAD risk acknowledged? | yes/no/not applicable |
+| Required progress artifacts | CLAUDE_PROGRESS.md / CLAUDE_TASK_CARD.md checklist / CLAUDE_REPORT.md |
+| Long-running command expected? | yes/no + command |
+| Permission/tool approval risk? | yes/no + sandbox/write/network/auth/forbidden-file details |
+| Ambiguity likely to cause stop-and-report? | yes/no + field |
+| If Claude is quiet, first diagnosis step | inspect progress artifacts and partial diff before declaring failure |
+| Conditions that prove real Claude no-progress | no artifact growth, no worktree change, no status output, no permission blocker, and no reported blocker after grace period |
 
 ## Direction Review Gate
 

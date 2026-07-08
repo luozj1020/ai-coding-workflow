@@ -96,6 +96,8 @@ class InstallForCodexTests(unittest.TestCase):
         self.assertIn("When To Load More", content)
         self.assertIn("Builder", content)
         self.assertIn("Checker/Test", content)
+        self.assertIn("mixed-exception", content)
+        self.assertIn("permission/tool approval blocker", content)
 
     def test_main_prints_bootstrap_next_steps(self):
         with tempfile.TemporaryDirectory() as tmp:

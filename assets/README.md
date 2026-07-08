@@ -56,6 +56,20 @@ For non-trivial changes, split Claude work into two roles:
 
 Task cards can require **Direction / Boundary Acknowledgement** before editing. Claude restates the goal, scope, out-of-scope boundaries, likely files, acceptance criteria, testing responsibility, confusions, and risks. This is a gate, not a discussion loop: at most one blocking acknowledgement is allowed per task or phase unless Codex materially changes the goal, scope, boundaries, or risk. Codex answers with exactly one decision: proceed, narrow-once/re-dispatch, split, or stop.
 
+Phase ownership is explicit:
+
+| Phase | Codex owns | Claude owns |
+|-------|------------|-------------|
+| Observe / Plan | Evidence, scope, task card, acceptance criteria, responsibility gates | N/A unless dispatched for exploration |
+| Builder Execute | Progress observation and direction review | Scoped implementation, progress updates, direction report |
+| Direction Review | Wait, revise, split, dispatch checker-test, or threshold-based takeover decision | Report blockers and avoid repeated confirmation loops |
+| Checker/Test | Validation task dispatch and evidence review | Assigned tests, assigned validation, failure evidence |
+| Final Review | Accept / revise / split / reject; human merge stays separate | N/A unless re-dispatched |
+
+When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
+
+Permission or approval blockers include sandbox write denial, forbidden files, missing CLI authentication, network-restricted commands, commands that need human approval, and configured "do not read or modify" paths. These should be recorded in progress/report artifacts and handled as environment or orchestration blockers unless Claude ignored an available allowed path.
+
 ## Directory Structure
 
 ```

@@ -124,6 +124,36 @@
 | Checker/Test completed assigned validation? | yes/no/not checker |
 | Broad implementation rewrite avoided? | yes/no |
 
+## Phase Responsibility Follow-up
+
+<!-- Record whether Codex and Claude stayed within the active phase ownership boundaries. -->
+
+| Field | Value |
+|-------|-------|
+| Active phase | observe-plan / builder-execute / direction-review / checker-test / final-review / takeover |
+| Codex-owned duties for this phase | |
+| Claude-owned duties for this phase | |
+| Claude crossed non-owner boundary? | yes/no + details |
+| Codex crossed non-owner boundary? | yes/no + details |
+| Missing work belongs to next owner | Claude Builder / Claude Checker-Test / Codex review / human |
+
+## Stall / Ambiguity Triage Follow-up
+
+<!-- Fill when Claude appears stuck, exits early, or returns incomplete evidence. Do not assume this is a Claude execution problem until orchestration ambiguity is ruled out. -->
+
+| Field | Value |
+|-------|-------|
+| Apparent stall observed? | yes/no |
+| Primary attribution | Claude execution / task-card ambiguity / mixed-role task / dirty source / long-running validation / missing progress artifact / permission/tool approval / external environment |
+| Builder/checker responsibilities were mixed? | yes/no |
+| Task mode made testing responsibility explicit? | yes/no |
+| Dirty source or stale HEAD evidence | |
+| Progress artifacts checked | progress log / CLAUDE_PROGRESS.md / CLAUDE_TASK_CARD.md / report / status |
+| Partial diff checked against plan? | yes/no/not available |
+| Long-running command identified? | yes/no + command |
+| Permission/tool approval blocker? | yes/no + command/file/tool |
+| Next action | continue waiting / narrow and re-dispatch / split builder-checker / stop for human / Codex takeover threshold reached |
+
 ## Direction / Boundary Acknowledgement Follow-up
 
 <!-- Record whether Claude completed the pre-edit acknowledgement and whether Codex approval was required. -->

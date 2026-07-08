@@ -18,6 +18,7 @@ Use the explicit loop: OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIE
 - PLAN with `ai/task-card-template.md`.
 - DISPATCH with `ai/dispatch-to-claude.sh` or `ai/run-loop.sh`; dispatch preserves the full Codex task card and renders a smaller Claude execution card.
 - Split risky work into Builder Claude (implementation only) followed by Checker/Test Claude (tests, validation, report) after Codex accepts the implementation direction.
+- Before dispatch, check for mixed builder/checker responsibilities, dirty-source risk, permission/tool approval risk, long-running validation, and missing progress-artifact requirements so a later stall is not misdiagnosed as Claude execution failure.
 - REVIEW with `ai/review-with-codex.sh` or loop output.
 - Do not merge automatically; human review and merge remain separate.
 
@@ -41,6 +42,7 @@ Keep default context small and file-backed:
 
 - Codex task cards should expose material unknowns and decision gates before dispatch.
 - Codex should complete the Execution Readiness Gate and Handoff Contract before implementation dispatch.
+- Codex should fill the Phase Responsibility Matrix so each phase has a clear owner and explicit non-owner duties.
 - Store long-lived state in `.worktrees/` artifacts or `ai/plans/<task-id>/`.
 - Preserve failures, checker reports, progress logs, and review decisions as artifact paths.
 - Use `CLAUDE_PROGRESS.md` for Goal, Current Phase, Next Check, Blocker, and Last Update.
@@ -54,10 +56,12 @@ Keep default context small and file-backed:
 Builder and checker responsibilities must remain separate:
 
 - Builder Claude implements scoped changes and reports direction. Builder tasks do not write acceptance tests or run broad suites unless the task card explicitly allows narrow sanity checks.
+- A single Claude task that mixes implementation, test writing, broad validation, and phase stop gates must be split unless the task card explicitly marks `mixed-exception` and explains why one combined pass is intentional.
 - Before editing, Claude performs Direction / Boundary Acknowledgement when requested. It must state understanding, scope, out-of-scope boundaries, likely files, acceptance interpretation, testing responsibility, confusion, risks, and proceed/narrow/split/stop recommendation.
 - Use blocking Codex approval for ambiguous, multi-file, high-risk, public API, data model, security, migration, permission, or production-impacting work. If Claude has material confusion, it must stop-and-report instead of guessing.
 - Avoid acknowledgement loops: one blocking acknowledgement per task or phase unless Codex materially changes goal, scope, boundaries, or risk. Codex must decide proceed, narrow-once/re-dispatch, split, or stop; Claude must not ask for the same approval again after proceed.
 - Codex reviews builder direction before validation work: wait when the partial diff matches the plan, interrupt and narrow when it runs off-plan, and take over only after the current-task threshold is met.
+- When Claude appears stuck, first attribute the stall: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress updates, external environment, or true Claude no-progress. Inspect progress artifacts and partial diff before interrupting.
 - Checker/Test Claude writes or updates assigned tests, runs assigned validation, and reports results. Checker/Test tasks should not perform broad implementation rewrites; only concrete small fixes allowed by the task card are permitted.
 - Use `ai/check-worktree.sh` when available.
 - Forward checker failures with command, exit code, key output, and `file:line` details.

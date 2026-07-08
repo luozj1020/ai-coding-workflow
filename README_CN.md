@@ -227,6 +227,20 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 
 任务卡可以要求 Claude 在编辑前执行 **Direction / Boundary Acknowledgement**。Claude 需要复述目标、范围、明确不做的边界、可能触碰的文件、验收标准理解、测试职责、困惑和风险。这是一个门禁，不是反复讨论循环：除非 Codex 实质性改变目标、范围、边界或风险，每个任务或阶段最多允许一次阻塞确认。Codex 必须给出唯一最终决策：proceed、narrow-once/re-dispatch、split 或 stop。
 
+阶段权责必须显式写清楚：
+
+| 阶段 | Codex 负责 | Claude 负责 |
+|------|------------|-------------|
+| Observe / Plan | 证据、范围、任务卡、验收标准、职责门禁 | 除非被派发探索任务，否则不参与 |
+| Builder Execute | 观察进度和审查实现方向 | 限定范围实现、更新进度、报告方向 |
+| Direction Review | 决定等待、修订、拆分、派发 checker-test，或在阈值满足时接管 | 报告 blocker，避免反复确认 |
+| Checker/Test | 派发验证任务并审查证据质量 | 被指派的测试、验证命令和失败证据 |
+| Final Review | accept / revise / split / reject；人工合并保持独立 | 除非再次派发，否则不参与 |
+
+当 Claude 看起来卡住时，先归因再判断：任务卡歧义、混合角色任务、dirty source/stale HEAD、权限或审批拦截、长时间验证、缺少进度产物、外部环境，还是确实无进展。
+
+权限或审批拦截包括 sandbox 写入被拒、禁止修改的文件、CLI 未认证、网络受限命令、需要人工批准的命令，以及任务卡明确写出的“不要读取或修改”路径。这类情况应写入 progress/report 产物，并按环境或编排 blocker 处理；只有在 Claude 忽略了可用的合规路径时，才应归因为 Claude 执行问题。
+
 **步骤 1：初始化项目**（一次性）
 
 ```powershell

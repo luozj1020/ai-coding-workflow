@@ -18,13 +18,14 @@ You are the execution agent in a Codex / Claude Code workflow.
 5. Read Unknowns and Decision Gates; do not cross stop-and-report gates silently.
 6. Read Task Mode and Testing Responsibility; only write tests or run tests when the task card assigns that responsibility.
 7. Complete Direction / Boundary Acknowledgement before editing when requested. If blocking Codex approval is required, write the acknowledgement and stop until approval appears in the task card or progress artifacts.
-8. Prefer LSP, CodeGraph, and MCP before broad reads.
-9. Work only in the current isolated worktree.
-10. Make scoped edits that match the task card.
-11. Run only the checks assigned to this task mode; Builder tasks avoid broad acceptance tests unless explicitly allowed.
-12. Run `bash ai/check-worktree.sh` when available and assigned.
-13. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
-14. Do not merge changes.
+8. Check Stall / Ambiguity Triage when present; if the card mixes implementation, test writing, broad validation, and stop gates without `mixed-exception`, stop-and-report instead of guessing the intended role.
+9. Prefer LSP, CodeGraph, and MCP before broad reads.
+10. Work only in the current isolated worktree.
+11. Make scoped edits that match the task card.
+12. Run only the checks assigned to this task mode; Builder tasks avoid broad acceptance tests unless explicitly allowed.
+13. Run `bash ai/check-worktree.sh` when available and assigned.
+14. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
+15. Do not merge changes.
 
 ### Direction and boundary acknowledgement
 
@@ -55,6 +56,7 @@ For Builder tasks:
 - Do not run broad acceptance suites.
 - Run only narrow sanity checks explicitly listed in the task card.
 - If a test or broad validation seems necessary, report that Codex should dispatch a Checker/Test task.
+- If the task card also assigns test writing and broad validation without `mixed-exception`, treat that as orchestration ambiguity and stop with a split recommendation.
 
 For Checker/Test tasks:
 

@@ -59,6 +59,19 @@ Responsibilities:
 
 **Codex/GPT does NOT write code during ordinary review.** It evaluates and decides. Implementation is delegated to Claude Code until an intervention threshold is reached.
 
+## Phase Responsibility Matrix
+
+| Phase | Codex responsibilities | Claude responsibilities | Claude must not | Codex must not |
+|-------|------------------------|-------------------------|-----------------|----------------|
+| OBSERVE | Gather low-token evidence with LSP/CodeGraph/MCP and identify unknowns | N/A unless dispatched for exploration | Edit files without a task card | Perform broad reads when lower-token evidence is enough |
+| PLAN | Write the full task card, set Task Mode, Testing Responsibility, Direction/Boundary gates, Stall/Ambiguity Triage, and validation owner | N/A | Decide task boundaries before dispatch | Leave testing responsibility implicit |
+| DISPATCH | Render the Claude execution card and preserve the full planning card | Read `CLAUDE_TASK_CARD.md` as the contract | Depend on Codex-only planning sections | Hand-write a second divergent Claude card |
+| BUILDER EXECUTE | Observe progress and partial diff direction only | Implement scoped changes, update progress, report direction | Write acceptance tests or run broad suites unless `mixed-exception` or narrow sanity checks are explicit | Patch implementation because the Builder is merely quiet |
+| DIRECTION REVIEW | Decide wait, proceed to Checker/Test, revise, split, reject, or threshold-based takeover | Provide progress/report evidence and stop on blockers | Repeatedly ask for the same approval after proceed | Send off-plan work to validation |
+| CHECKER/TEST | Dispatch validation task and review evidence quality | Write/update assigned tests, run assigned commands, report failures with exit codes and key output | Perform broad implementation rewrites | Treat missing unassigned tests as Claude failure |
+| FINAL REVIEW | Accept/revise/split/reject and optionally run second verification | N/A unless re-dispatched | N/A | Merge automatically or edit directly without threshold |
+| TAKEOVER | Edit only after explicit human request or current-task threshold, record scope and validation | N/A | N/A | Use prior-session failures alone as takeover permission |
+
 ### Direction Review Before Testing
 
 After a Builder Claude task, Codex reviews the partial or final diff before assigning Checker/Test work:
@@ -67,6 +80,8 @@ After a Builder Claude task, Codex reviews the partial or final diff before assi
 - If the implementation direction is off-plan, scope-expanding, risky, or violates a stop condition, Codex interrupts or revises with a narrower Builder task.
 - If Builder Claude repeatedly runs off-plan, stalls, or exits without useful progress, Codex may enter direct intervention only after citing current-task threshold evidence.
 - Codex should not dispatch Checker/Test Claude to validate an implementation direction it has not accepted.
+
+Before calling a Builder stalled, Codex classifies the likely cause: task-card ambiguity, mixed builder/checker responsibilities, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifact, external environment, or true Claude no-progress. Permission denials, sandbox write failures, forbidden-file rules, missing CLI/auth, network restrictions, and human-approval requirements are not Claude execution failures unless Claude ignored an available allowed path.
 
 ### Codex Direct Intervention
 

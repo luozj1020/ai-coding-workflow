@@ -65,8 +65,10 @@ Core loop:
 ## Hot-Path Rules
 
 - Codex designs and reviews; Claude Code edits.
+- Codex must make phase ownership explicit in the task card: OBSERVE/PLAN and direction review belong to Codex, Builder execution belongs to Claude, Checker/Test belongs to Claude only after Codex accepts direction, and final merge belongs to humans.
 - After a Claude execution round, Codex normally accepts, revises, splits, or rejects; it does not patch implementation files directly.
 - Split execution into Builder and Checker/Test Claude tasks when validation risk matters: Builder Claude implements and reports direction without acceptance testing; Codex reviews direction; Checker/Test Claude writes/runs tests and reports validation.
+- Do not dispatch one mixed implementation + test-writing + broad-validation task unless it is explicitly marked `mixed-exception` with a rationale; otherwise split into Builder then Checker/Test.
 - Builder Claude should not add tests or run broad acceptance suites unless the task card explicitly allows a narrow sanity check; Checker/Test Claude should not perform broad implementation rewrites unless tests expose a concrete allowed fix.
 - Before editing, Claude should perform Direction / Boundary Acknowledgement when requested: restate understanding, scope, out-of-scope boundaries, likely files, acceptance interpretation, testing responsibility, confusion, risks, and proceed/narrow/split/stop recommendation.
 - Use blocking Codex approval for ambiguous, multi-file, high-risk, public API, data model, security, migration, permission, or production-impacting tasks; if Claude has material confusion, it must stop-and-report instead of guessing.
@@ -86,6 +88,7 @@ Core loop:
 - Do not merge automatically.
 - Destructive or high-risk actions require explicit human approval.
 - If Claude appears quiet, inspect `ai/watch-claude.sh` or `ai/status-claude.sh`; continue waiting when partial work matches the plan, and interrupt only when it is off-plan, risky, or no longer useful.
+- When Claude appears stuck, diagnose orchestration causes before blaming execution: mixed-role task card, unclear testing responsibility, blocking acknowledgement loop, dirty source/stale HEAD, permission/tool approval blocker, long-running command, missing progress artifact, or external environment. Only call it Claude no-progress after progress, status, and worktree evidence are all quiet past the grace period.
 
 ## Builder / Checker Workflow
 

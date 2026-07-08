@@ -37,6 +37,8 @@ For tasks with meaningful validation risk, split Claude work by role:
 - **Checker/Test Claude** executes test-writing and validation tasks after Codex accepts the Builder direction.
 - **Codex final review** checks validation artifacts and may run a second verification pass before acceptance.
 
+Do not treat every quiet or incomplete Claude run as a Claude execution failure. First classify the stall: task-card ambiguity, mixed Builder/Checker responsibilities, dirty source or stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress. A task that mixes implementation, test writing, broad validation, and phase stop gates should normally be split before dispatch unless it is explicitly marked `mixed-exception`.
+
 ## States
 
 ## Unknowns Lifecycle
@@ -109,6 +111,8 @@ Each handoff should be directly checkable:
 
 **Partial-progress triage:** If Claude appears quiet during early waiting rounds but the worktree has implementation changes, treat that as progress evidence. Codex or the human should review the partial diff against the task card. Continue waiting when the change direction matches the plan; interrupt only when the partial implementation is off-plan, risky, or no longer making useful progress.
 
+**Stall attribution:** Before interrupting or taking over, inspect `*.progress.log`, `*.status.txt`, `*.claude-progress.md`, `CLAUDE_TASK_CARD.md` checklist changes, `CLAUDE_REPORT.md`, and partial diff/status. Permission denials, sandbox write failures, forbidden-file rules, missing CLI/auth, network restrictions, and human-approval requirements are orchestration or environment blockers, not proof that Claude cannot execute the task.
+
 **Adaptive timeout:** The first loop should have enough time for context gathering and first implementation, typically the fixed dispatch timeout. Later loops may estimate timeout from progress evidence: elapsed seconds divided by completed checklist items, multiplied by remaining checklist items plus buffer. If the human or environment sets an explicit timeout, scripts should respect it.
 
 ### 4. EXECUTE
@@ -121,6 +125,9 @@ Each handoff should be directly checkable:
 
 - Read the task card fully before editing.
 - Prefer LSP/codegraph/MCP evidence before broad file reads.
+- Check Task Mode, Testing Responsibility, and Stall / Ambiguity Triage before editing.
+- If one task card mixes Builder and Checker/Test responsibilities without `mixed-exception`, stop-and-report with a split recommendation.
+- Record permission/tool approval blockers explicitly instead of waiting silently.
 - Make scoped file changes.
 - Run only narrow sanity checks explicitly assigned to the Builder task.
 - Record assumptions, attempted commands, and failed checks.

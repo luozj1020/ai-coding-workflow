@@ -91,7 +91,10 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - If that narrowed second Claude attempt also exits with no result/report and no useful progress, direct intervention may be allowed as control-plane salvage. Cite both attempts, preserve the reviewer-accepted first-round direction, and limit Codex edits to missing scoped implementation, acceptance tests, and evidence.
 - For multi-phase or multi-part tasks, accepting the current Claude result may accept only that phase. If implementation or test-writing phases remain, do not treat ACCEPT as permission for Codex to patch the remainder; produce a next Claude task-card handoff and fill the Delegation Continuity Gate.
 - Respect Task Mode. For builder results, first decide whether the implementation direction matches the plan; if yes and tests are needed, dispatch a checker-test Claude task instead of asking Builder Claude to test or letting Codex patch. For checker-test results, review validation evidence and avoid broad implementation changes.
+- If a task mixes implementation, test writing, broad validation, and phase stop gates without an explicit mixed-exception rationale, treat apparent stalls as likely orchestration ambiguity. Prefer SPLIT into Builder and Checker/Test task cards before blaming Claude execution.
 - Builder tasks should not be marked failed only because they did not write or run acceptance tests. Checker-test tasks should be marked incomplete when assigned tests, validation commands, or reports are missing.
+- When Claude appears stuck, classify the primary attribution before deciding: Claude execution, task-card ambiguity, mixed-role task, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifact, or external environment. Check progress log, Claude progress, task-card checklist, report, status output, and partial diff before interrupting or allowing takeover.
+- Treat permission, sandbox, forbidden-file, network, authentication, missing CLI, or approval blockers as environment/orchestration blockers unless repeated current-task evidence shows Claude ignored an available path forward.
 - Check Direction / Boundary Acknowledgement when present. If blocking Codex approval was required and Claude edited before approval, treat that as a process failure. If Claude had material confusion about target, boundaries, acceptance criteria, testing responsibility, or high-risk areas and guessed instead of stopping, normally choose REVISE or REJECT.
 - Also check for acknowledgement loops. If Claude already received a proceed decision and asks for the same approval again without a material goal/scope/boundary/risk change, treat it as no-progress and give a concrete next action. Codex review should return one final acknowledgement decision: proceed, narrow-once/re-dispatch, split, or stop.
 - If direct intervention is justified, state the failed attempts, why another Claude revision is unlikely to help, the allowed scope, and required validation.
@@ -99,6 +102,7 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - Use the Claude modification report if present, but verify it against the diff and evidence.
 - Evaluate whether the implementation matches the task card intent.
 - Review the task card Unknowns and Decision Gates. Decide whether known unknowns were resolved, new unknown-unknowns were surfaced, and any decision gate was crossed with appropriate authority.
+- Review the Phase Responsibility Matrix when present. Verify that Codex and Claude stayed inside the active phase ownership boundaries, and do not treat work outside Claude's assigned phase as Claude failure.
 - Review any Deviations From Plan. Accept deviations only when the discovered constraint is real, the action taken is conservative or explicitly allowed, and the reviewer briefing makes the behavioral impact clear.
 - Check the Handoff Contract if present. Verify Must do, Must not do, May decide, Must report, and Stop condition against the diff and evidence.
 - Check Testing Responsibility if present. Verify whether test code changes were user-requested, acceptance-critical, or out of scope; whether Claude was assigned to write/update tests; and whether Claude or Codex/human was responsible for running tests.
@@ -140,6 +144,12 @@ Map the task card acceptance criteria to the observed implementation and evidenc
 
 ### Task Mode / Direction Review
 State whether this was a builder, checker-test, mixed-exception, or control-plane task. For builder tasks, state whether the implementation direction matches the plan, whether Codex should continue waiting, interrupt/narrow, dispatch checker-test next, or consider takeover. For checker-test tasks, state whether test writing, validation, and reporting were completed.
+
+### Phase Responsibility
+State the active phase, what Codex owned, what Claude owned, and whether either side crossed a non-owner boundary. If a missing artifact or test was outside Claude's assigned phase, do not count it as Claude failure; produce the correct next task owner instead.
+
+### Stall / Ambiguity Triage
+State whether any apparent stall or incomplete evidence is better explained by Claude execution, task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifacts, or external environment. State which artifacts were checked and whether the next action is continue waiting, narrow and re-dispatch, split builder/checker, stop for human, or allow Codex takeover.
 
 ### Direction / Boundary Acknowledgement
 State whether acknowledgement was required, whether it was blocking, whether Claude stated understanding/scope/out-of-scope boundaries/acceptance interpretation/testing responsibility/confusions, whether any confusion should have stopped execution, whether Claude waited for required Codex approval, and whether the acknowledgement stayed within the maximum allowed rounds. If deciding the acknowledgement, choose exactly one: proceed, narrow-once/re-dispatch, split, or stop.
