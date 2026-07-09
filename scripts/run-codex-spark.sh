@@ -2,9 +2,9 @@
 # run-codex-spark.sh  -  Optional Codex Spark auxiliary execution for the workflow.
 #
 # Usage:
-#   bash ai/run-codex-spark.sh <task-card> [--mode review-only|evidence-checker|micro-builder]
+#   bash ai/run-codex-spark.sh <task-card> [--mode review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder]
 #       [--model gpt-5.3-codex-spark] [--sandbox read-only|workspace-write]
-#       [--output .worktrees/codex-spark-...]
+#       [--artifact .worktrees/claude-....report.md] [--output .worktrees/codex-spark-...]
 #
 # Defaults are intentionally conservative: review-only, read-only, optional Spark,
 # and no strong-model fallback.
@@ -19,9 +19,13 @@ usage() {
 Usage: run-codex-spark.sh <task-card> [options]
 
 Options:
-  --mode MODE       review-only, evidence-checker, or micro-builder
+  --mode MODE       review-only, task-card-audit, plan-splitter,
+                    validation-planner, failure-triage, evidence-checker,
+                    or micro-builder
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
   --sandbox MODE    read-only or workspace-write (default: read-only)
+  --artifact PATH   Add a bounded artifact excerpt to the Spark prompt.
+                    May be passed more than once.
   --output DIR      Artifact directory (default: .worktrees/codex-spark-<timestamp>)
   --allow-dirty-source
                     Allow micro-builder dispatch from a dirty source repo
@@ -34,6 +38,7 @@ Environment:
   CODEX_SPARK_MODE
   CODEX_SPARK_SANDBOX
   CODEX_SPARK_OUTPUT_DIR
+  CODEX_SPARK_ARTIFACT_LINES=160
   CODEX_SPARK_ALLOW_DIRTY_SOURCE=1
   CODEX_SPARK_REQUIRED=1
 EOF
@@ -45,6 +50,7 @@ MODE="${CODEX_SPARK_MODE:-review-only}"
 MODEL="${CODEX_SPARK_MODEL:-gpt-5.3-codex-spark}"
 SANDBOX="${CODEX_SPARK_SANDBOX:-read-only}"
 OUTPUT_DIR="${CODEX_SPARK_OUTPUT_DIR:-}"
+ARTIFACT_LINES="${CODEX_SPARK_ARTIFACT_LINES:-160}"
 ALLOW_DIRTY_SOURCE="${CODEX_SPARK_ALLOW_DIRTY_SOURCE:-0}"
 REQUIRE_SPARK="${CODEX_SPARK_REQUIRED:-0}"
 SPARK_INVOKED="yes"
@@ -52,6 +58,7 @@ SPARK_AUTO_DISABLED="no"
 SPARK_DISABLE_REASON="not applicable"
 SPARK_CHECKS_RUN="codex exec"
 HELPER_EXIT_STATUS=0
+ARTIFACTS=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -68,6 +75,11 @@ while [ $# -gt 0 ]; do
         --sandbox)
             [ $# -ge 2 ] || { echo "Error: --sandbox requires a value." >&2; exit 1; }
             SANDBOX="$2"
+            shift 2
+            ;;
+        --artifact)
+            [ $# -ge 2 ] || { echo "Error: --artifact requires a value." >&2; exit 1; }
+            ARTIFACTS+=("$2")
             shift 2
             ;;
         --output)
@@ -110,9 +122,16 @@ if [ -z "$TASK_CARD" ]; then
 fi
 
 case "$MODE" in
-    review-only|evidence-checker|micro-builder) ;;
+    review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder) ;;
     *)
         echo "Error: invalid --mode: $MODE" >&2
+        exit 1
+        ;;
+esac
+
+case "$ARTIFACT_LINES" in
+    ''|*[!0-9]*)
+        echo "Error: CODEX_SPARK_ARTIFACT_LINES must be a non-negative integer." >&2
         exit 1
         ;;
 esac
@@ -134,6 +153,13 @@ if [ ! -f "$TASK_CARD" ]; then
     echo "Error: task card not found: $TASK_CARD" >&2
     exit 1
 fi
+
+for artifact in "${ARTIFACTS[@]}"; do
+    if [ ! -e "$artifact" ]; then
+        echo "Error: artifact not found: $artifact" >&2
+        exit 1
+    fi
+done
 
 if ! command -v git >/dev/null 2>&1; then
     echo "Error: git is not installed or not in PATH." >&2
@@ -157,11 +183,16 @@ DIFF_FILE="${OUTPUT_DIR}/codex-spark.diff"
 DIFFSTAT_FILE="${OUTPUT_DIR}/codex-spark.diffstat.txt"
 STATUS_FILE="${OUTPUT_DIR}/codex-spark.worktree-status.txt"
 TASK_CARD_COPY="${OUTPUT_DIR}/TASK_CARD.md"
+ARTIFACT_MANIFEST="${OUTPUT_DIR}/codex-spark.artifacts.txt"
 WORKTREE_DIR=""
 RUN_DIR="$REPO_ROOT"
 CODEX_STATUS=0
 
 cp "$TASK_CARD" "$TASK_CARD_COPY"
+: > "$ARTIFACT_MANIFEST"
+for artifact in "${ARTIFACTS[@]}"; do
+    printf '%s\n' "$artifact" >> "$ARTIFACT_MANIFEST"
+done
 
 write_report_header() {
     local exit_value="${1:-pending}"
@@ -192,6 +223,7 @@ write_report_header() {
         echo "| Remaining Spark-related risk | pending review |"
         echo "| Artifact directory | ${OUTPUT_DIR} |"
         echo "| Task card copy | ${TASK_CARD_COPY} |"
+        echo "| Artifact inputs | $([ "${#ARTIFACTS[@]}" -gt 0 ] && echo "${ARTIFACT_MANIFEST}" || echo none) |"
         if [ -n "$WORKTREE_DIR" ]; then
             echo "| Worktree | ${WORKTREE_DIR} |"
         fi
@@ -273,6 +305,34 @@ run_codex() {
     esac
 }
 
+append_artifact_excerpts() {
+    if [ "${#ARTIFACTS[@]}" -eq 0 ]; then
+        return
+    fi
+    {
+        echo ""
+        echo "## Bounded Artifact Excerpts"
+        echo ""
+        echo "Only the first ${ARTIFACT_LINES} line(s) of each artifact are included to control prompt size. Ask Codex/human to inspect the full artifact when needed."
+    } >> "$PROMPT_FILE"
+    for artifact in "${ARTIFACTS[@]}"; do
+        {
+            echo ""
+            echo "### Artifact: ${artifact}"
+            echo ""
+            echo '```'
+            if [ "$ARTIFACT_LINES" -eq 0 ]; then
+                echo "(excerpt disabled: CODEX_SPARK_ARTIFACT_LINES=0)"
+            elif [ -f "$artifact" ]; then
+                sed -n "1,${ARTIFACT_LINES}p" "$artifact"
+            else
+                echo "(artifact is not a regular file; path exists but excerpt is unavailable)"
+            fi
+            echo '```'
+        } >> "$PROMPT_FILE"
+    done
+}
+
 if [ "$MODE" = "micro-builder" ]; then
     SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
     if [ -n "$SOURCE_STATUS" ] && [ "$ALLOW_DIRTY_SOURCE" != "1" ]; then
@@ -315,6 +375,10 @@ Operating rules:
 
 Mode contract:
 - review-only: inspect the task card and available repository context, do not edit files.
+- task-card-audit: inspect the task card for missing gates, mixed responsibilities, unclear acceptance criteria, unsafe scope, and likely Claude stall risks; do not edit files.
+- plan-splitter: propose smaller Builder/Checker task cards or independent parallelizable slices; do not edit files.
+- validation-planner: propose exact low-noise validation commands and state whether local validation should be skipped; do not run commands unless the task card explicitly allows it.
+- failure-triage: inspect provided artifacts for likely stall/failure attribution and recommend wait/re-dispatch/narrow/takeover; do not edit files.
 - evidence-checker: inspect evidence artifacts and run only narrow, task-card-allowed checks; do not edit files.
 - micro-builder: make only the explicitly scoped source edits in this isolated worktree, keep the diff minimal, and report validation evidence.
 
@@ -322,6 +386,7 @@ Mode contract:
 
 $(cat "$TASK_CARD_COPY")
 EOF
+append_artifact_excerpts
 
 set +e
 (

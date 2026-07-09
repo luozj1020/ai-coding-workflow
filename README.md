@@ -11,7 +11,8 @@ ai-coding-workflow bootstraps repositories with:
 - `CLAUDE.md` - Claude Code execution rules
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
-- Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` review/evidence checks and tiny isolated micro-builder work
+- Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` task-card audits, plan splitting, validation planning, failure triage, review/evidence checks, and tiny isolated micro-builder work
+- Execution profiles for token-saving balanced dispatch, safe full-context dispatch, and explicit fast large-repository dispatch
 - Large-repository dispatch options for managed worktree reuse and reduced expensive untracked-file scans
 - Local-validation gates and task-card validation command extraction
 - Builder / Checker-Test task modes for separating implementation from validation
@@ -315,20 +316,33 @@ Use ai-coding-workflow to create a task card for implementing <feature>.
 
 For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 
-For long task cards, keep the full Codex planning card as the audit source but dispatch a compact Claude execution view after the current phase is fully specified:
+Dispatch defaults to the `balanced` execution profile: compact Claude task card, brief prompt, fresh worktree, and full diff evidence. This reduces prompt/task-card tokens while preserving the review evidence path. The full Codex planning card is still copied to `TASK_CARD_FULL.md`.
+
+Use `safe` when a task is ambiguous, high-risk, or needs the full standard prompt and non-compact execution card:
 
 ```bash
-CLAUDE_CODE_TASK_CARD_VIEW=compact \
+CLAUDE_CODE_EXECUTION_PROFILE=safe \
 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
-Compact view omits optional planning gates from `CLAUDE_TASK_CARD.md`; `TASK_CARD_FULL.md` remains in the worktree for audit.
+Use `fast-large-repo` only after filling the large-repo gate and accepting the evidence tradeoff:
+
+```bash
+CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+`fast-large-repo` uses the managed reuse worktree, skips unrelated untracked scans, and writes summary diff evidence instead of full patch text. It never resets the source repository. If `.worktrees/reuse/claude-managed` already exists, preserve or review its evidence first, then explicitly add `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` to reset only that managed worktree.
 
 **Default-on optional: use Codex Spark during execution planning**
 
 If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave `Codex Spark Gate` at `auto` for eligible tasks. Spark is auxiliary, not a default Claude replacement; if the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue:
 
 - `review-only`: quick read-only critique of the task card or likely direction.
+- `task-card-audit`: check missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
+- `plan-splitter`: propose smaller Builder/Checker task cards or independent parallelizable slices.
+- `validation-planner`: propose exact low-noise validation commands without running broad suites.
+- `failure-triage`: inspect bounded artifacts after a stalled/failed run and recommend wait/re-dispatch/narrow/takeover.
 - `evidence-checker`: quick evidence sanity check after artifacts exist.
 - `micro-builder`: tiny scoped edits only, in the helper-created isolated worktree.
 
@@ -341,7 +355,24 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
 Run an evidence check:
 
 ```bash
-bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode evidence-checker
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode evidence-checker \
+  --artifact .worktrees/claude-<id>.report.md \
+  --artifact .worktrees/claude-<id>.checker-report.md
+```
+
+Run a pre-dispatch task-card audit or validation plan:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode task-card-audit
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode validation-planner
+```
+
+Run failure triage on bounded artifacts:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode failure-triage \
+  --artifact .worktrees/claude-<id>.status.txt \
+  --artifact .worktrees/claude-<id>.progress.log
 ```
 
 Run a tiny isolated Spark edit only when the task card explicitly allows it:
@@ -350,11 +381,18 @@ Run a tiny isolated Spark edit only when the task card explicitly allows it:
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
 ```
 
-Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model. If read-only sandbox initialization fails, for example due to a local app-server write requirement, the helper marks Spark auto-disabled and exits 0 unless `--require-spark` was used.
+Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.prompt.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.artifacts.txt`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model. If read-only sandbox initialization fails, for example due to a local app-server write requirement, the helper marks Spark auto-disabled and exits 0 unless `--require-spark` was used.
 
 **Large repositories / slow filesystems**
 
-For large repositories, fill `Worktree / Large Repo Strategy Gate` before dispatch. Defaults stay safest: fresh isolated worktree and complete diff/untracked evidence. When `git worktree add` or dispatcher filesystem reads are the bottleneck, opt in explicitly:
+For large repositories, fill `Worktree / Large Repo Strategy Gate` before dispatch. Defaults keep complete evidence. When `git worktree add`, dispatcher filesystem reads, or full patch generation are the bottleneck, prefer the explicit fast profile:
+
+```bash
+CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+For narrower manual control, opt in to managed reuse:
 
 ```bash
 CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed \
@@ -378,6 +416,13 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
 Large-repo mode keeps tracked/staged diff evidence but skips expensive unrelated untracked scans and untracked patch evidence. Record that evidence tradeoff in the task card before relying on it.
+
+To skip full patch text but keep the worktree for review:
+
+```bash
+CLAUDE_CODE_EVIDENCE_MODE=summary \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
 
 **Experimental: parallel dispatch**
 
@@ -654,9 +699,16 @@ bash ai/kill-claude.sh claude-20260701-093934
 
 # Remove the stopped worktree while preserving .worktrees/claude-<id>.* evidence artifacts
 bash ai/cleanup-worktree.sh claude-20260701-093934
+
+# Preview only one stopped dispatch and its adjacent runtime artifacts
+python ai/clean_runtime.py --task-id claude-20260701-093934
+
+# Remove only one stopped dispatch's runtime artifacts
+python ai/clean_runtime.py --task-id claude-20260701-093934 --apply
 ```
 
 `cleanup-worktree.sh` refuses to run while the recorded Claude PID is still alive. Use `--force` only when `git worktree remove` needs it for a broken or dirty worktree.
+`clean_runtime.py --task-id ...` is useful for large repositories because it avoids broad root artifact cleanup and preserves unrelated dispatches.
 
 ---
 
@@ -724,6 +776,12 @@ python ai/clean_runtime.py
 
 # Actually remove artifacts
 python ai/clean_runtime.py --apply
+
+# Large repos: preview only one stopped dispatch and its adjacent artifacts
+python ai/clean_runtime.py --task-id claude-20260709-120000
+
+# Large repos: remove only that stopped dispatch's runtime artifacts
+python ai/clean_runtime.py --task-id claude-20260709-120000 --apply
 ```
 
 **Check context tools:**

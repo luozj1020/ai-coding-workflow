@@ -11,7 +11,8 @@ ai-coding-workflow 可以为仓库自动配置：
 - `CLAUDE.md` - Claude Code 执行规则
 - 任务卡和证据包模板
 - Codex + Claude Code 工作流的安全调度/审查/循环脚本
-- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做快速审查、证据检查或极小范围隔离 micro-builder 工作
+- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做任务卡审查、计划拆分、验证规划、失败归因、证据检查或极小范围隔离 micro-builder 工作
+- Execution profiles：默认省 token 的 balanced、完整上下文的 safe，以及显式大仓加速的 fast-large-repo
 - 大型仓库调度选项：受管 worktree 复用，以及减少昂贵的未跟踪文件扫描
 - 本地验证 gate，以及从任务卡 validation fenced block 自动抽取命令
 - Builder / Checker-Test 任务模式，用于分离实现和验证职责
@@ -296,20 +297,33 @@ Use ai-coding-workflow to create a task card for implementing <功能>.
 
 对于有明确完成标准的循环任务，请填写任务卡中的 `Goal Loop Contract`。优先写清楚 success signal、最大尝试次数、重复失败停止阈值、无改进停止阈值、回归停止规则、必须提供的证据和 benchmark tags。宽泛或有歧义的工作先填 `Spec Gate`，bugfix/regression 修复先填 `Root Cause Gate`，需要 red-green 证据时填 `Test-First / TDD Contract`，声明 ready for merge 前填 `Finish Branch Gate`。需要更强模型、Codex reviewer 或人工专家在高风险工作前给建议时，填写 `Advisor Gate`，记录咨询时机、调用上限、输出预算、结果可见性、冲突调和和 fallback 行为。`Unknowns` 则用于记录 blindspot scan、会改变架构的问题、参考样例，以及 Claude 偏离原计划时应记录到哪里。
 
-任务卡很长时，可以保留完整 Codex planning card 作为审计来源，但给 Claude 派发 compact execution view：
+dispatch 默认使用 `balanced` execution profile：compact Claude task card、brief prompt、fresh worktree、完整 diff evidence。这会减少 prompt/task-card token，同时保留审查证据链。完整 Codex planning card 仍会复制为 `TASK_CARD_FULL.md`。
+
+对于有歧义或高风险的任务，使用 `safe` 恢复 standard prompt 和非 compact execution card：
 
 ```bash
-CLAUDE_CODE_TASK_CARD_VIEW=compact \
+CLAUDE_CODE_EXECUTION_PROFILE=safe \
 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
-compact view 会从 `CLAUDE_TASK_CARD.md` 里省略可选规划 gate；完整内容仍保存在 worktree 的 `TASK_CARD_FULL.md`。只有当前 phase、handoff、测试责任、验证契约和验收标准已经写清楚时才使用。
+只有在填写 large-repo gate 并接受证据取舍后，才使用 `fast-large-repo`：
+
+```bash
+CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+`fast-large-repo` 会使用 managed reuse worktree、跳过无关 untracked 扫描，并写入 summary diff evidence 而不是完整 patch 文本。它不会 reset 源仓库。如果 `.worktrees/reuse/claude-managed` 已存在，请先保留或审查其中证据，再显式加入 `CLAUDE_CODE_REUSE_WORKTREE_RESET=1`，只 reset 这个受管 worktree。
 
 **默认可选开启：在执行规划中使用 Codex Spark**
 
 如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；如果 CLI、模型权限、auth、网络、Spark 额度不可用，或 read-only sandbox 因本地 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
 
 - `review-only`：快速只读审查任务卡或实现方向。
+- `task-card-audit`：派发前检查缺失 gate、职责混合、验收不清和可能导致 Claude 卡住的风险。
+- `plan-splitter`：建议更小的 Builder/Checker 任务卡，或可并行的独立切片。
+- `validation-planner`：给出精确、低噪音验证命令，不运行广域测试。
+- `failure-triage`：在 Claude 卡住/失败后读取有界 artifact 摘要，建议 wait / re-dispatch / narrow / takeover。
 - `evidence-checker`：已有 artifacts 后快速检查证据质量。
 - `micro-builder`：仅用于任务卡明确允许的极小范围修改，并在 helper 创建的隔离 worktree 中执行。
 
@@ -322,7 +336,24 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
 运行证据检查：
 
 ```bash
-bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode evidence-checker
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode evidence-checker \
+  --artifact .worktrees/claude-<id>.report.md \
+  --artifact .worktrees/claude-<id>.checker-report.md
+```
+
+派发前运行任务卡审查或验证规划：
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode task-card-audit
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode validation-planner
+```
+
+对失败/卡住运行做归因：
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode failure-triage \
+  --artifact .worktrees/claude-<id>.status.txt \
+  --artifact .worktrees/claude-<id>.progress.log
 ```
 
 只有任务卡明确允许时，才运行极小范围隔离修改：
@@ -331,11 +362,18 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode evidence-checker
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
 ```
 
-Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型。只有当 Spark 不可用也应该成为硬失败时，才使用 `--require-spark`。
+Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.prompt.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.artifacts.txt`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型。只有当 Spark 不可用也应该成为硬失败时，才使用 `--require-spark`。
 
 **大型仓库 / 慢文件系统**
 
-如果大型项目里 `git worktree add`、文件系统读取、dispatcher status/diff 收集很慢，先在任务卡里填写 `Worktree / Large Repo Strategy Gate`。默认仍然最安全：fresh 隔离 worktree + 完整 diff/untracked 证据。确实需要优化时再显式 opt in：
+如果大型项目里 `git worktree add`、文件系统读取、dispatcher status/diff 收集很慢，先在任务卡里填写 `Worktree / Large Repo Strategy Gate`。默认保留完整证据。当 gate 接受 managed reuse 和 summary evidence 取舍时，优先使用显式 fast profile：
+
+```bash
+CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+如果只想手动开启 managed reuse：
 
 ```bash
 CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed \
@@ -359,6 +397,13 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
 large-repo mode 会保留 tracked/staged diff 证据，但跳过昂贵的无关 untracked 扫描和 untracked patch 证据。使用前应在任务卡中记录这个证据取舍。
+
+如果只想跳过完整 patch 文本、保留 worktree 供审查：
+
+```bash
+CLAUDE_CODE_EVIDENCE_MODE=summary \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
 
 **实验性：并行派发**
 
@@ -617,9 +662,16 @@ bash ai/kill-claude.sh claude-20260701-093934
 
 # 移除已停止的 worktree，同时保留 .worktrees/claude-<id>.* 证据 artifact
 bash ai/cleanup-worktree.sh claude-20260701-093934
+
+# 只预览某一次已停止 dispatch 及其相邻运行时产物
+python ai/clean_runtime.py --task-id claude-20260701-093934
+
+# 只删除这一次 dispatch 的运行时产物
+python ai/clean_runtime.py --task-id claude-20260701-093934 --apply
 ```
 
 `cleanup-worktree.sh` 会在记录的 Claude PID 仍存活时拒绝运行。仅当 `git worktree remove` 因损坏或 dirty worktree 需要时才使用 `--force`。
+`clean_runtime.py --task-id ...` 适合大仓库恢复场景，因为它避免广域 root artifact 清理，并保留其他 dispatch。
 
 ---
 
@@ -687,6 +739,12 @@ python ai/clean_runtime.py
 
 # 实际删除产物
 python ai/clean_runtime.py --apply
+
+# 大仓库：只预览某一次已停止 dispatch 及其相邻产物
+python ai/clean_runtime.py --task-id claude-20260709-120000
+
+# 大仓库：只删除这一次 dispatch 的运行时产物
+python ai/clean_runtime.py --task-id claude-20260709-120000 --apply
 ```
 
 **检查上下文工具：**

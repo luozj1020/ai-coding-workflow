@@ -140,9 +140,13 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 
 | Field | Value |
 |-------|-------|
-| Claude execution card view | execution / compact |
-| Compact view allowed? | no / yes, only after current-phase Goal, Handoff Contract, Testing Responsibility, Validation Contract, and Acceptance Criteria are complete |
-| Compact dispatch env | none / `CLAUDE_CODE_TASK_CARD_VIEW=compact` |
+| Execution profile | balanced / safe / fast-large-repo |
+| Claude execution card view | compact default / execution for high-risk tasks |
+| Prompt profile | brief default / standard for high-risk or ambiguous tasks |
+| Evidence mode | full default / summary only with accepted patch-evidence tradeoff |
+| Compact view allowed? | yes/no; yes only after current-phase Goal, Handoff Contract, Testing Responsibility, Validation Contract, and Acceptance Criteria are complete |
+| Fast large-repo profile allowed? | no / yes, accepts managed worktree reuse, skipped unrelated untracked scans, and summary diff evidence |
+| Dispatch env override | none / `CLAUDE_CODE_EXECUTION_PROFILE=safe` / `CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo` |
 | Full audit card retained? | yes, `TASK_CARD_FULL.md` |
 
 ## Control-Plane Exception Rationale
@@ -203,12 +207,12 @@ Advisor timing rules:
 
 ## Codex Spark Gate
 
-<!-- Optional execution-stage auxiliary using OpenAI gpt-5.3-codex-spark. Default to auto so eligible review/evidence work can use separate Spark quota. Spark is auxiliary: if unavailable, unauthenticated, network-blocked, or quota-exhausted, auto-disable it for this run and continue the main workflow. It is not a default Claude replacement and must not silently fall back to a stronger model. -->
+<!-- Optional execution-stage auxiliary using OpenAI gpt-5.3-codex-spark. Default to auto so eligible planning, task-card audit, validation planning, failure triage, review, and evidence work can use separate Spark quota. Spark is auxiliary: if unavailable, unauthenticated, network-blocked, or quota-exhausted, auto-disable it for this run and continue the main workflow. It is not a default Claude replacement and must not silently fall back to a stronger model. -->
 
 | Field | Value |
 |-------|-------|
 | Spark enabled? | auto / no / yes |
-| Spark purpose | review-only / evidence-checker / micro-builder / none |
+| Spark purpose | review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
 | Spark model | gpt-5.3-codex-spark |
 | Quota rationale | separate Spark quota / latency / cost / not applicable |
 | Invocation helper | ai/run-codex-spark.sh |
@@ -221,11 +225,16 @@ Advisor timing rules:
 | Auto-disable conditions | missing CLI / model access denied / auth or network blocker / Spark quota exhausted |
 | Strong-model fallback allowed? | no / yes, explicit human approval required |
 | Required Spark artifact | .worktrees/.../codex-spark.report.md |
+| Spark artifact inputs | none / specific `.worktrees/...` files via `--artifact` |
 | Spark result can satisfy acceptance? | no / yes, only for: |
 | Stop conditions | unclear scope / non-availability helper failure / explicit require-spark failure |
 
 Spark rules:
-- Prefer `review-only` or `evidence-checker` before `micro-builder`.
+- Prefer `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, or `evidence-checker` before `micro-builder`.
+- Use `task-card-audit` to catch missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
+- Use `plan-splitter` to propose Builder/Checker slices or independent parallelizable task cards.
+- Use `validation-planner` to propose exact low-noise checks without running broad suites.
+- Use `failure-triage` with explicit `--artifact` inputs after a stalled/failed run to attribute the failure before spending stronger-model context.
 - Run `micro-builder` only for tiny, explicitly scoped edits and only with `--sandbox workspace-write` in the helper-created isolated worktree.
 - Spark evidence can inform Codex review, but it does not override Claude reports, task-card ownership, or required validation.
 - Treat Spark as default-on optional support. If Spark is unavailable or quota-exhausted, record the auto-disable report and continue the main Claude/Codex workflow.

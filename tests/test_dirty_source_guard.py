@@ -184,6 +184,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                     "",
                     "Implement visible work.",
                     "",
+                    "## Goal Loop Contract",
+                    "",
+                    "| Field | Value |",
+                    "|-------|-------|",
+                    "| Success signal | README changed |",
+                    "",
                     "## Task Mode",
                     "",
                     "| Field | Value |",
@@ -241,6 +247,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         prompt = capture.read_text(encoding="utf-8")
         self.assertIn("--- CLAUDE EXECUTION CARD ---", prompt)
+        self.assertIn("Core rules:", prompt)
         self.assertIn("Implement visible work.", prompt)
         self.assertIn("## Task Mode", prompt)
         self.assertIn("## Direction / Boundary Acknowledgement", prompt)
@@ -252,16 +259,95 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotIn("## High-Token Delegation Gate", prompt)
         self.assertNotIn("## Delegation Continuity Gate", prompt)
         self.assertNotIn("## Direction Review Gate", prompt)
+        self.assertNotIn("## Goal Loop Contract", prompt)
+        self.assertNotIn("Phase-gate requirements:", prompt)
 
         worktree = self._artifact_path(result.stdout, "Worktree")
         full_card = (worktree / "TASK_CARD_FULL.md").read_text(encoding="utf-8")
         claude_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
         self.assertIn("## Codex Context Budget", full_card)
+        self.assertIn("## Goal Loop Contract", full_card)
         self.assertNotIn("## Codex Context Budget", claude_card)
         self.assertNotIn("## Direction Review Gate", claude_card)
+        self.assertNotIn("## Goal Loop Contract", claude_card)
         self.assertIn("## Task Mode", claude_card)
         self.assertIn("## Direction / Boundary Acknowledgement", claude_card)
         self.assertIn("## Acceptance Criteria", claude_card)
+
+    def test_safe_execution_profile_restores_standard_prompt_and_execution_view(self):
+        task = self._write_task_card()
+        task.write_text(
+            "\n".join(
+                [
+                    "# Task Card",
+                    "",
+                    "## Goal",
+                    "",
+                    "Implement visible work.",
+                    "",
+                    "## Goal Loop Contract",
+                    "",
+                    "| Field | Value |",
+                    "|-------|-------|",
+                    "| Success signal | README changed |",
+                    "",
+                    "## Task Mode",
+                    "",
+                    "| Field | Value |",
+                    "|-------|-------|",
+                    "| Mode | builder |",
+                    "",
+                    "## Acceptance Criteria",
+                    "",
+                    "- [ ] README changed",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        capture = self.case_root / "safe-profile-prompt.md"
+
+        result = self._dispatch(
+            extra_env={
+                "CLAUDE_CODE_EXECUTION_PROFILE": "safe",
+                "FAKE_CLAUDE_PROMPT_CAPTURE": str(capture),
+            }
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prompt = capture.read_text(encoding="utf-8")
+        self.assertIn("Phase-gate requirements:", prompt)
+        self.assertIn("## Goal Loop Contract", prompt)
+        self.assertIn("Execution Profile: safe", result.stdout)
+        self.assertIn("Prompt Profile:  standard", result.stdout)
+
+    def test_fast_large_repo_profile_uses_summary_evidence(self):
+        self._write_task_card()
+
+        result = self._dispatch(
+            extra_env={
+                "CLAUDE_CODE_EXECUTION_PROFILE": "fast-large-repo",
+                "FAKE_CLAUDE_MODE": "stage-change",
+            }
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Execution Profile: fast-large-repo", result.stdout)
+        self.assertIn("Worktree Strategy: reuse-managed", result.stdout)
+        self.assertIn("Large Repo Mode: 1", result.stdout)
+        self.assertIn("Evidence Mode:   summary", result.stdout)
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        self.assertEqual(worktree, self.repo / ".worktrees" / "reuse" / "claude-managed")
+        diff = self._artifact_path(result.stdout, "Diff").read_text(encoding="utf-8")
+        self.assertIn("Evidence mode: summary", diff)
+        self.assertIn("Full patch generation was skipped", diff)
+        self.assertIn("README.md", diff)
+        self.assertNotIn("# staged by claude", diff)
+
+        second = self._dispatch(extra_env={"CLAUDE_CODE_EXECUTION_PROFILE": "fast-large-repo"})
+        self.assertNotEqual(second.returncode, 0)
+        self.assertIn("reusable managed worktree already exists", second.stderr)
+        self.assertIn("CLAUDE_CODE_REUSE_WORKTREE_RESET=1", second.stderr)
 
     def test_unrelated_untracked_file_blocks(self):
         self._write_task_card()

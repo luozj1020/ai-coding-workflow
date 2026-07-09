@@ -5,6 +5,7 @@ clean_runtime.py  -  Preview and remove ignored runtime artifacts from a reposit
 Usage:
     python scripts/clean_runtime.py [repo-path]           # dry-run: list candidates
     python scripts/clean_runtime.py [repo-path] --apply    # delete candidates
+    python scripts/clean_runtime.py [repo-path] --task-id claude-20260709-120000
 
 Targets only runtime artifacts that are ignored by git:
     - .worktrees/* except .gitkeep
@@ -142,15 +143,20 @@ def _is_registered_worktree(path, registered_paths):
     return os.path.isfile(os.path.join(path, ".git"))
 
 
-def collect_candidates(repo_root):
+def collect_candidates(repo_root, task_id=None):
     """Collect runtime artifact candidates for cleanup.
 
     Returns list of (path, description, is_worktree) tuples.
     Only includes paths that are git-ignored and not tracked.
     *is_worktree* is True for directories that are registered git worktrees.
+
+    When *task_id* is provided, only .worktrees/<task_id> and adjacent
+    .worktrees/<task_id>.* artifacts are considered. Root tmp-* and legacy
+    task-cards/ cleanup are intentionally skipped in that focused mode.
     """
     candidates = []
     wt_paths = _registered_worktree_paths(repo_root)
+    task_id = os.path.basename(task_id) if task_id else None
 
     # 1. .worktrees/* except .gitkeep
     worktrees_dir = os.path.join(repo_root, ".worktrees")
@@ -159,12 +165,17 @@ def collect_candidates(repo_root):
         for entry in sorted(os.listdir(worktrees_dir)):
             if entry == ".gitkeep":
                 continue
+            if task_id and entry != task_id and not entry.startswith(task_id + "."):
+                continue
             if any(entry == prefix or entry.startswith(prefix + ".") for prefix in active_prefixes):
                 continue
             full = os.path.join(worktrees_dir, entry)
             if _is_git_ignored(repo_root, full) and not _is_tracked(repo_root, full):
                 is_wt = os.path.isdir(full) and _is_registered_worktree(full, wt_paths)
                 candidates.append((full, ".worktrees/{}".format(entry), is_wt))
+
+    if task_id:
+        return candidates
 
     # 2. root tmp-*
     for entry in sorted(os.listdir(repo_root)):
@@ -254,6 +265,13 @@ def main():
         action="store_true",
         help="Actually delete candidates (default is dry-run)",
     )
+    parser.add_argument(
+        "--task-id",
+        help=(
+            "Limit cleanup to .worktrees/<task-id> and adjacent "
+            ".worktrees/<task-id>.* artifacts"
+        ),
+    )
     args = parser.parse_args()
 
     repo_root = _find_repo_root(args.repo)
@@ -261,14 +279,25 @@ def main():
         print("ERROR: No .git found from {}".format(os.path.abspath(args.repo)))
         sys.exit(1)
 
-    candidates = collect_candidates(repo_root)
+    candidates = collect_candidates(repo_root, task_id=args.task_id)
 
     if not candidates:
-        print("No runtime artifacts found.")
+        if args.task_id:
+            print("No runtime artifacts found for task id: {}".format(os.path.basename(args.task_id)))
+        else:
+            print("No runtime artifacts found.")
         sys.exit(0)
 
     if args.apply:
-        print("Removing {} runtime artifact(s):".format(len(candidates)))
+        if args.task_id:
+            print(
+                "Removing {} runtime artifact(s) for task id {}:".format(
+                    len(candidates),
+                    os.path.basename(args.task_id),
+                )
+            )
+        else:
+            print("Removing {} runtime artifact(s):".format(len(candidates)))
         for path, desc, is_wt in candidates:
             if is_wt:
                 if _remove_worktree(repo_root, path):
@@ -285,7 +314,15 @@ def main():
                 except OSError as e:
                     print("  FAILED: {} ({})".format(desc, e))
     else:
-        print("Dry-run: {} runtime artifact(s) would be removed:".format(len(candidates)))
+        if args.task_id:
+            print(
+                "Dry-run: {} runtime artifact(s) for task id {} would be removed:".format(
+                    len(candidates),
+                    os.path.basename(args.task_id),
+                )
+            )
+        else:
+            print("Dry-run: {} runtime artifact(s) would be removed:".format(len(candidates)))
         for _, desc, is_wt in candidates:
             label = "{} (worktree)".format(desc) if is_wt else desc
             print("  {}".format(label))

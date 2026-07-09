@@ -116,6 +116,27 @@ class CleanRuntimeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("No runtime artifacts", result.stdout)
 
+    def test_task_id_dry_run_limits_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            (repo / ".worktrees" / ".gitkeep").write_text("", encoding="utf-8")
+            (repo / ".worktrees" / "claude-one.result.json").write_text("{}", encoding="utf-8")
+            (repo / ".worktrees" / "claude-one.diff").write_text("diff", encoding="utf-8")
+            (repo / ".worktrees" / "claude-two.result.json").write_text("{}", encoding="utf-8")
+            (repo / "tmp-something").mkdir()
+
+            result = self.run_clean(repo, ["--task-id", "claude-one"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("for task id claude-one", result.stdout)
+            self.assertIn(".worktrees/claude-one.result.json", result.stdout)
+            self.assertIn(".worktrees/claude-one.diff", result.stdout)
+            self.assertNotIn("claude-two", result.stdout)
+            self.assertNotIn("tmp-something", result.stdout)
+
     # --- Apply behavior ---
 
     def test_apply_deletes_candidates(self):
@@ -138,6 +159,28 @@ class CleanRuntimeTests(unittest.TestCase):
             self.assertFalse((repo / ".worktrees" / "claude-1234.result.json").exists())
             self.assertFalse((repo / "tmp-something").exists())
             # .gitkeep should survive
+            self.assertTrue((repo / ".worktrees" / ".gitkeep").exists())
+
+    def test_task_id_apply_deletes_only_matching_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            (repo / ".worktrees" / ".gitkeep").write_text("", encoding="utf-8")
+            (repo / ".worktrees" / "claude-one.result.json").write_text("{}", encoding="utf-8")
+            (repo / ".worktrees" / "claude-one.diff").write_text("diff", encoding="utf-8")
+            (repo / ".worktrees" / "claude-two.result.json").write_text("{}", encoding="utf-8")
+            (repo / "tmp-something").mkdir()
+
+            result = self.run_clean(repo, ["--task-id", "claude-one", "--apply"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("removed: .worktrees/claude-one.result.json", result.stdout)
+            self.assertFalse((repo / ".worktrees" / "claude-one.result.json").exists())
+            self.assertFalse((repo / ".worktrees" / "claude-one.diff").exists())
+            self.assertTrue((repo / ".worktrees" / "claude-two.result.json").exists())
+            self.assertTrue((repo / "tmp-something").exists())
             self.assertTrue((repo / ".worktrees" / ".gitkeep").exists())
 
     def test_apply_preserves_gitkeep(self):

@@ -59,11 +59,47 @@ case "$CLAUDE_CODE_NETWORK_MONITOR" in
 esac
 CLAUDE_CODE_NETWORK_HEALTHCHECK_URL="${CLAUDE_CODE_NETWORK_HEALTHCHECK_URL:-}"
 CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS="${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS:-5}"
-CLAUDE_CODE_WORKTREE_STRATEGY="${CLAUDE_CODE_WORKTREE_STRATEGY:-fresh}"
-CLAUDE_CODE_REUSE_WORKTREE_RESET="${CLAUDE_CODE_REUSE_WORKTREE_RESET:-0}"
-CLAUDE_CODE_LARGE_REPO_MODE="${CLAUDE_CODE_LARGE_REPO_MODE:-0}"
-CLAUDE_CODE_TASK_CARD_VIEW="${CLAUDE_CODE_TASK_CARD_VIEW:-execution}"
-CLAUDE_CODE_CHECKER_DISCOVER="${CLAUDE_CODE_CHECKER_DISCOVER:-0}"
+CLAUDE_CODE_EXECUTION_PROFILE="${CLAUDE_CODE_EXECUTION_PROFILE:-balanced}"
+case "$CLAUDE_CODE_EXECUTION_PROFILE" in
+    safe)
+        DEFAULT_WORKTREE_STRATEGY="fresh"
+        DEFAULT_REUSE_WORKTREE_RESET="0"
+        DEFAULT_LARGE_REPO_MODE="0"
+        DEFAULT_TASK_CARD_VIEW="execution"
+        DEFAULT_PROMPT_PROFILE="standard"
+        DEFAULT_EVIDENCE_MODE="full"
+        DEFAULT_CHECKER_DISCOVER="0"
+        ;;
+    balanced)
+        DEFAULT_WORKTREE_STRATEGY="fresh"
+        DEFAULT_REUSE_WORKTREE_RESET="0"
+        DEFAULT_LARGE_REPO_MODE="0"
+        DEFAULT_TASK_CARD_VIEW="compact"
+        DEFAULT_PROMPT_PROFILE="brief"
+        DEFAULT_EVIDENCE_MODE="full"
+        DEFAULT_CHECKER_DISCOVER="0"
+        ;;
+    fast-large-repo)
+        DEFAULT_WORKTREE_STRATEGY="reuse-managed"
+        DEFAULT_REUSE_WORKTREE_RESET="0"
+        DEFAULT_LARGE_REPO_MODE="1"
+        DEFAULT_TASK_CARD_VIEW="compact"
+        DEFAULT_PROMPT_PROFILE="brief"
+        DEFAULT_EVIDENCE_MODE="summary"
+        DEFAULT_CHECKER_DISCOVER="0"
+        ;;
+    *)
+        echo "Error: CLAUDE_CODE_EXECUTION_PROFILE must be 'safe', 'balanced', or 'fast-large-repo'." >&2
+        exit 1
+        ;;
+esac
+CLAUDE_CODE_WORKTREE_STRATEGY="${CLAUDE_CODE_WORKTREE_STRATEGY:-$DEFAULT_WORKTREE_STRATEGY}"
+CLAUDE_CODE_REUSE_WORKTREE_RESET="${CLAUDE_CODE_REUSE_WORKTREE_RESET:-$DEFAULT_REUSE_WORKTREE_RESET}"
+CLAUDE_CODE_LARGE_REPO_MODE="${CLAUDE_CODE_LARGE_REPO_MODE:-$DEFAULT_LARGE_REPO_MODE}"
+CLAUDE_CODE_TASK_CARD_VIEW="${CLAUDE_CODE_TASK_CARD_VIEW:-$DEFAULT_TASK_CARD_VIEW}"
+CLAUDE_CODE_PROMPT_PROFILE="${CLAUDE_CODE_PROMPT_PROFILE:-$DEFAULT_PROMPT_PROFILE}"
+CLAUDE_CODE_EVIDENCE_MODE="${CLAUDE_CODE_EVIDENCE_MODE:-$DEFAULT_EVIDENCE_MODE}"
+CLAUDE_CODE_CHECKER_DISCOVER="${CLAUDE_CODE_CHECKER_DISCOVER:-$DEFAULT_CHECKER_DISCOVER}"
 CLAUDE_CODE_CHECKER_COMMANDS="${CLAUDE_CODE_CHECKER_COMMANDS:-}"
 case "$CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS" in
     ''|*[!0-9]*)
@@ -96,6 +132,20 @@ case "$CLAUDE_CODE_TASK_CARD_VIEW" in
     execution|compact) ;;
     *)
         echo "Error: CLAUDE_CODE_TASK_CARD_VIEW must be 'execution' or 'compact'." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_PROMPT_PROFILE" in
+    brief|standard) ;;
+    *)
+        echo "Error: CLAUDE_CODE_PROMPT_PROFILE must be 'brief' or 'standard'." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_EVIDENCE_MODE" in
+    full|summary) ;;
+    *)
+        echo "Error: CLAUDE_CODE_EVIDENCE_MODE must be 'full' or 'summary'." >&2
         exit 1
         ;;
 esac
@@ -268,12 +318,15 @@ echo "Branch: $BRANCH_NAME"
     echo ""
     echo "## Worktree Strategy"
     echo ""
+    echo "- Execution profile: ${CLAUDE_CODE_EXECUTION_PROFILE}"
     echo "- Strategy: ${CLAUDE_CODE_WORKTREE_STRATEGY}"
     echo "- Worktree: ${WORKTREE_DIR}"
     echo "- Base commit: ${BASE_COMMIT}"
     echo "- Reuse reset allowed: ${CLAUDE_CODE_REUSE_WORKTREE_RESET}"
     echo "- Large repo mode: ${CLAUDE_CODE_LARGE_REPO_MODE}"
     echo "- Claude task card view: ${CLAUDE_CODE_TASK_CARD_VIEW}"
+    echo "- Claude prompt profile: ${CLAUDE_CODE_PROMPT_PROFILE}"
+    echo "- Evidence mode: ${CLAUDE_CODE_EVIDENCE_MODE}"
     echo "- Checker broad discovery: ${CLAUDE_CODE_CHECKER_DISCOVER}"
     echo ""
     echo "## Tracked Changes (git diff --stat)"
@@ -389,6 +442,29 @@ echo "Claude execution card rendered to: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
     echo "Claude has not yet reported implementation progress."
 } > "${WORKTREE_DIR}/CLAUDE_REPORT.md"
 
+if [ "$CLAUDE_CODE_PROMPT_PROFILE" = "brief" ]; then
+cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
+You are the executor in a Codex/Claude Code workflow.
+
+Execute `CLAUDE_TASK_CARD.md`. `TASK_CARD_FULL.md` is retained for audit and may be consulted when the execution card is insufficient, but do not broaden scope beyond the execution card.
+
+Core rules:
+- Codex plans/reviews; Claude edits only the assigned scope.
+- Update `CLAUDE_PROGRESS.md` before exploration or edits, at phase boundaries, before long commands, and when blocked.
+- Remove dispatcher seeded markers when you first update `CLAUDE_PROGRESS.md` or `CLAUDE_REPORT.md`.
+- If Direction / Boundary Acknowledgement is blocking, write it and stop for approval. If it is non-blocking and recommendation is `proceed`, continue implementation in the same run.
+- Builder tasks implement and report direction. Do not add acceptance tests or broad validation unless explicitly assigned.
+- Checker/Test tasks write/update assigned tests, run assigned validation when local validation is allowed, and avoid broad implementation rewrites.
+- If one dispatch mixes implementation, test writing, broad validation, and phase stop gates without explicit `mixed-exception`, stop and recommend a split.
+- If `Local validation allowed?` is `no`, do not run local validation; report exact commands only.
+- If target, scope, testing responsibility, public API/data/security/migration impact, destructive actions, permissions, or production data are unclear, stop-and-report instead of guessing.
+- Preserve failures, blockers, exact commands, exit codes, and key output. Do not include secrets, large logs, or full diffs in progress/report files.
+
+`CLAUDE_REPORT.md` before finishing must include: requirements summary, files changed, acceptance criteria mapping, out-of-scope confirmation, plan match, validation confidence, reviewer should check, checks run/blocked, deviations, risks, open questions, and human review checklist.
+
+--- CLAUDE EXECUTION CARD ---
+EOF
+else
 cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
 You are the executor in a Codex/Claude Code workflow.
 
@@ -476,6 +552,7 @@ Checker expectations:
 
 --- CLAUDE EXECUTION CARD ---
 EOF
+fi
 cat "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md" >> "${WORKTREE_DIR}/CLAUDE_PROMPT.md"
 
 CLAUDE_CODE_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-600}"
@@ -820,7 +897,7 @@ cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
 write_network_header
-progress_log "Starting Claude Code: proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}"
 
 set +e
 run_claude &
@@ -1078,21 +1155,46 @@ write_untracked_patches() {
 {
     echo "# Combined Diff - ${TIMESTAMP}"
     echo ""
-    echo "## Unstaged Diff"
-    UNSTAGED_DIFF="$(git diff 2>/dev/null || true)"
-    if [ -z "$UNSTAGED_DIFF" ]; then echo "(none)"; else echo "$UNSTAGED_DIFF"; fi
-    echo ""
-    echo "## Staged Diff"
-    STAGED_DIFF="$(git diff --cached 2>/dev/null || true)"
-    if [ -z "$STAGED_DIFF" ]; then echo "(none)"; else echo "$STAGED_DIFF"; fi
-    echo ""
-    echo "## Untracked File Patches"
-    if [ "$FILTERED_UNTRACKED_SKIPPED" -eq 1 ]; then
-        echo "(skipped: CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file patch generation)"
-    elif [ -z "$FILTERED_UNTRACKED" ]; then
-        echo "(none)"
+    if [ "$CLAUDE_CODE_EVIDENCE_MODE" = "summary" ]; then
+        echo "Evidence mode: summary"
+        echo ""
+        echo "Full patch generation was skipped to reduce large-repository I/O and review-token cost."
+        echo "Review the implementation in the preserved worktree when patch-level evidence is needed:"
+        echo "$WORKTREE_DIR"
+        echo ""
+        echo "## Unstaged Name Status"
+        NAME_STATUS="$(git diff --name-status 2>/dev/null || true)"
+        if [ -z "$NAME_STATUS" ]; then echo "(none)"; else echo "$NAME_STATUS"; fi
+        echo ""
+        echo "## Staged Name Status"
+        CACHED_NAME_STATUS="$(git diff --cached --name-status 2>/dev/null || true)"
+        if [ -z "$CACHED_NAME_STATUS" ]; then echo "(none)"; else echo "$CACHED_NAME_STATUS"; fi
+        echo ""
+        echo "## Untracked Files"
+        if [ "$FILTERED_UNTRACKED_SKIPPED" -eq 1 ]; then
+            echo "(skipped: CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file scans)"
+        elif [ -z "$FILTERED_UNTRACKED" ]; then
+            echo "(none)"
+        else
+            echo "$FILTERED_UNTRACKED"
+        fi
     else
-        write_untracked_patches
+        echo "## Unstaged Diff"
+        UNSTAGED_DIFF="$(git diff 2>/dev/null || true)"
+        if [ -z "$UNSTAGED_DIFF" ]; then echo "(none)"; else echo "$UNSTAGED_DIFF"; fi
+        echo ""
+        echo "## Staged Diff"
+        STAGED_DIFF="$(git diff --cached 2>/dev/null || true)"
+        if [ -z "$STAGED_DIFF" ]; then echo "(none)"; else echo "$STAGED_DIFF"; fi
+        echo ""
+        echo "## Untracked File Patches"
+        if [ "$FILTERED_UNTRACKED_SKIPPED" -eq 1 ]; then
+            echo "(skipped: CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file patch generation)"
+        elif [ -z "$FILTERED_UNTRACKED" ]; then
+            echo "(none)"
+        else
+            write_untracked_patches
+        fi
     fi
 } > "$DIFF_FILE"
 
@@ -1103,6 +1205,11 @@ write_untracked_patches() {
         echo "(skipped: CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file scans)"
     elif [ -z "$FILTERED_UNTRACKED" ]; then
         echo "(none)"
+    elif [ "$CLAUDE_CODE_EVIDENCE_MODE" = "summary" ]; then
+        echo "$FILTERED_UNTRACKED"
+        echo ""
+        echo "--- Patch Evidence ---"
+        echo "(skipped: CLAUDE_CODE_EVIDENCE_MODE=summary avoids untracked-file patch generation)"
     else
         echo "$FILTERED_UNTRACKED"
         echo ""
@@ -1267,8 +1374,11 @@ echo "Report saved to: $REPORT_FILE"
 echo ""
 echo "=== Dispatch Complete ==="
 echo "Worktree:        $WORKTREE_DIR"
+echo "Execution Profile: $CLAUDE_CODE_EXECUTION_PROFILE"
 echo "Worktree Strategy: $CLAUDE_CODE_WORKTREE_STRATEGY"
 echo "Large Repo Mode: $CLAUDE_CODE_LARGE_REPO_MODE"
+echo "Prompt Profile:  $CLAUDE_CODE_PROMPT_PROFILE"
+echo "Evidence Mode:   $CLAUDE_CODE_EVIDENCE_MODE"
 echo "Task Card Full:  ${WORKTREE_DIR}/TASK_CARD_FULL.md"
 echo "Claude Task:     ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
 echo "Result:          $RESULT_FILE"

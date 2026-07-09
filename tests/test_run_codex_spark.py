@@ -44,7 +44,12 @@ class RunCodexSparkTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("gpt-5.3-codex-spark", result.stderr)
         self.assertIn("review-only", result.stderr)
+        self.assertIn("task-card-audit", result.stderr)
+        self.assertIn("plan-splitter", result.stderr)
+        self.assertIn("validation-planner", result.stderr)
+        self.assertIn("failure-triage", result.stderr)
         self.assertIn("micro-builder", result.stderr)
+        self.assertIn("--artifact", result.stderr)
 
     def test_review_only_invokes_codex_and_writes_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -110,6 +115,81 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn("| Spark model used | gpt-5.3-codex-spark |", report.read_text(encoding="utf-8"))
             self.assertIn("spark review ok", result_file.read_text(encoding="utf-8"))
             self.assertIn("Codex Spark Execution Request", prompt.read_text(encoding="utf-8"))
+            self.assertEqual(
+                (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
+                ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "read-only", "-"],
+            )
+
+    def test_failure_triage_accepts_bounded_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            task_card = repo / "task-card.md"
+            task_card.write_text(
+                "# Task\n\n## Codex Spark Gate\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark enabled? | yes |\n"
+                "| Spark purpose | failure-triage |\n",
+                encoding="utf-8",
+            )
+            artifact = repo / ".worktrees" / "claude-1.status.txt"
+            artifact.parent.mkdir()
+            artifact.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"$@\" > \"$CODEX_FAKE_ARGS\"\n"
+                "cat > \"$CODEX_FAKE_STDIN\"\n"
+                "echo 'triage ok'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            output_dir = repo / ".worktrees" / "spark-test"
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_SPARK_ARTIFACT_LINES"] = "2"
+            env["CODEX_FAKE_ARGS"] = bash_path(tmp_path / "args.txt")
+            env["CODEX_FAKE_STDIN"] = bash_path(tmp_path / "stdin.md")
+
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--mode",
+                    "failure-triage",
+                    "--artifact",
+                    bash_path(artifact),
+                    "--output",
+                    bash_path(output_dir),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            prompt = (output_dir / "codex-spark.prompt.md").read_text(encoding="utf-8")
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            manifest = (output_dir / "codex-spark.artifacts.txt").read_text(encoding="utf-8")
+            self.assertIn("failure-triage", prompt)
+            self.assertIn("Bounded Artifact Excerpts", prompt)
+            self.assertIn("line 1", prompt)
+            self.assertIn("line 2", prompt)
+            self.assertNotIn("line 3", prompt)
+            self.assertIn("Artifact inputs", report)
+            self.assertIn("claude-1.status.txt", manifest)
             self.assertEqual(
                 (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
                 ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "read-only", "-"],
