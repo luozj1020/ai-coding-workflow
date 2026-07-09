@@ -96,6 +96,7 @@ Core loop:
 - Before claiming work ready for human merge, Codex should fill `Finish Branch Gate`: accepted phase links, fresh verification, dirty/untracked artifact classification, out-of-scope check, remaining risks, and review/merge instructions.
 - For strategic or risky work, Codex should fill `Advisor Gate`: advisor role/model, consult timing, read-only orientation requirement, state-changing edit checkpoint, call cap, output budget, result visibility, conflict reconciliation, fallback behavior, and evidence artifact.
 - For execution-stage quota savings, Codex may fill `Codex Spark Gate` and run `ai/run-codex-spark.sh` with `gpt-5.3-codex-spark`. Default to review-only/read-only or evidence-checker; use micro-builder only for tiny scoped edits in an isolated worktree. Do not silently fall back to GPT-5.5 or another stronger model.
+- For experimental wall-clock reduction, Codex may fill `Parallel Execution Gate` and run `ai/run-parallel-loop.sh` only for independent task cards with explicit non-overlapping file/module scopes. It parallelizes dispatch only; review and merge remain serial.
 - Use the task card `Unknowns` section to reduce the information gap before execution: known unknowns, assumed knowns, blindspot scan request, architecture-changing questions, reference examples, and where deviations must be recorded.
 - For multi-phase or multi-part tasks, accepting one Claude round only closes that phase; remaining implementation/test phases stay Claude-owned and must be dispatched as next task cards unless a takeover threshold or explicit human override applies.
 - Task cards must say whether Claude writes tests, runs tests, or leaves verification to Codex/humans; test-code tasks can be delegated to Claude when the user asks for tests or Codex makes them acceptance-critical.
@@ -111,7 +112,7 @@ Core loop:
 - Prefer machine-readable monitor fields from `watch-claude.sh`/`status-claude.sh` (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count) before reading full progress, status, or network tails.
 - Optional network diagnostics are available with `CLAUDE_CODE_NETWORK_MONITOR=1`. They record metadata-only process socket snapshots in `*.network.log`; optional `CLAUDE_CODE_NETWORK_HEALTHCHECK_URL` records healthcheck status. Do not treat network metadata as request-content evidence or implementation evidence.
 - Use `ai/benchmark-loop-runs.py` to aggregate multiple loop runs into a lightweight living benchmark with quality, speed, cost, stability, loop type, and benchmark tags.
-- Benchmark and evidence reports should include advisor and Spark usage when available: calls, model/person or model slug, visibility, advice followed, conflicts reconciled, stop reason/truncation, Spark mode, Spark exit code, strong-model fallback status, and token/cost fields when known. They should also preserve spec adherence, root-cause evidence, TDD mode, and red/green evidence when present.
+- Benchmark and evidence reports should include advisor, Spark, and parallel-dispatch usage when available: calls, model/person or model slug, visibility, advice followed, conflicts reconciled, stop reason/truncation, Spark mode, Spark exit code, strong-model fallback status, parallel group/concurrency/failure count, and token/cost fields when known. They should also preserve spec adherence, root-cause evidence, TDD mode, and red/green evidence when present.
 - When Claude appears stuck, diagnose orchestration causes before blaming execution: mixed-role task card, unclear testing responsibility, blocking acknowledgement loop, dirty source/stale HEAD, permission/tool approval blocker, long-running command, missing progress artifact, or external environment. Only call it Claude no-progress after progress, status, and worktree evidence are all quiet past the grace period.
 - If dirty source/stale HEAD blocks dispatch, Codex must record the Delegation Restoration Gate and explain why restoration was attempted or impossible before any direct intervention.
 
@@ -156,6 +157,7 @@ Dispatch artifacts live under `.worktrees/`:
 - `*.network.log` when `CLAUDE_CODE_NETWORK_MONITOR=1`
 - `*.usage.txt`, `*.worktree-status.txt`, `*.untracked.txt`
 - `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, and optional `codex-spark.diff` from `ai/run-codex-spark.sh`
+- `parallel-summary.md`, `parallel-events.jsonl`, and per-task dispatch logs from `ai/run-parallel-loop.sh`
 
 ## When To Load More
 

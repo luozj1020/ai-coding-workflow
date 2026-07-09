@@ -165,6 +165,25 @@
 | Conflict with Claude or local evidence? | yes/no + reconciliation |
 | Remaining Spark-related risk | |
 
+## Parallel Execution Follow-up
+
+<!-- Fill when this task was part of an experimental parallel dispatch group. -->
+
+| Field | Value |
+|-------|-------|
+| Parallel enabled in task card? | yes/no |
+| Parallel helper invoked? | yes/no/not required |
+| Parallel group id | |
+| Aggregate artifact | .worktrees/parallel-.../parallel-summary.md |
+| Max concurrency used | |
+| Dispatches succeeded | count / task IDs |
+| Dispatches failed | count / task IDs |
+| Scope overlap detected? | yes/no |
+| Overlap allowed by task card? | yes/no/not applicable |
+| Merge/review strategy followed? | serial review / aggregate first / manual reconcile / no |
+| Automatic merge performed? | no |
+| Follow-up reconcile task needed? | yes/no + artifact |
+
 ## Spec Follow-up
 
 <!-- Compare the run against the task card's Spec Gate. -->

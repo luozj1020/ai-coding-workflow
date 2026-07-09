@@ -62,6 +62,15 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "| Spark exit code | 0 |\n"
                 "| Strong-model fallback used? | no |\n"
                 "\n"
+                "## Parallel Execution Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Parallel helper invoked? | yes |\n"
+                "| Parallel group id | fixture-group |\n"
+                "| Max concurrency used | 2 |\n"
+                "| Dispatches succeeded | 2 |\n"
+                "| Dispatches failed | 0 |\n"
+                "\n"
                 "## Spec Follow-up\n\n"
                 "| Field | Value |\n"
                 "|-------|-------|\n"
@@ -116,6 +125,13 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "| Spark purpose | review-only |\n"
                 "| Spark model | gpt-5.3-codex-spark |\n"
                 "\n"
+                "## Parallel Execution Gate\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Parallel allowed? | yes |\n"
+                "| Parallel group id | fixture-group |\n"
+                "| Max concurrency | 2 |\n"
+                "\n"
                 "## Spec Gate\n\n"
                 "| Field | Value |\n"
                 "|-------|-------|\n"
@@ -152,6 +168,9 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["codex_spark_gate"]["spark_enabled"], "yes")
             self.assertEqual(summary["codex_spark_followup"]["spark_invoked"], "yes")
             self.assertEqual(summary["codex_spark_followup"]["spark_model_used"], "gpt-5.3-codex-spark")
+            self.assertEqual(summary["parallel_execution_gate"]["parallel_allowed"], "yes")
+            self.assertEqual(summary["parallel_execution_followup"]["parallel_helper_invoked"], "yes")
+            self.assertEqual(summary["parallel_execution_followup"]["max_concurrency_used"], "2")
             self.assertEqual(summary["spec_gate"]["spec_required"], "yes")
             self.assertEqual(summary["spec_followup"]["implementation_matched_spec"], "yes")
             self.assertEqual(summary["root_cause_gate"]["root_cause_required_before_fix"], "yes")

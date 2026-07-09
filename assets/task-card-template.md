@@ -207,6 +207,33 @@ Spark rules:
 - Spark evidence can inform Codex review, but it does not override Claude reports, task-card ownership, or required validation.
 - Do not consume GPT-5.5/strong-model quota as an implicit fallback. If Spark is unavailable or insufficient, report the gap and let Codex or the human decide the next model.
 
+## Parallel Execution Gate
+
+<!-- Experimental. Use only after Codex has split work into independent task cards with explicit file/module boundaries. Parallel dispatch can improve wall-clock time, but final review and merge remain serial. -->
+
+| Field | Value |
+|-------|-------|
+| Parallel allowed? | no / yes |
+| Parallel group id | |
+| Parallel helper | ai/run-parallel-loop.sh |
+| Max concurrency | 2 / exact cap |
+| Dependency order | independent / after task ID / blocks task ID |
+| Allowed files/modules | |
+| Conflict files/modules | |
+| Shared API/data model touched? | yes/no |
+| Shared validation resource touched? | yes/no |
+| Merge strategy | serial review / accept one / merge all after review / choose best / manual reconcile |
+| Review order | per-task / aggregate summary first / checker after merge |
+| Stop if scope overlap detected? | yes/no |
+| Stop if any dispatch fails? | yes/no |
+| Required aggregate artifact | .worktrees/parallel-.../parallel-summary.md |
+
+Parallel rules:
+- Keep this gate `no` unless the task card is one member of a reviewed parallel group.
+- Do not parallelize shared API, data model, migration, security, permission, or global config changes without explicit human approval and manual reconcile plan.
+- Default merge strategy is serial review: inspect each diff and evidence packet independently before merging anything.
+- If the helper detects overlapping `Allowed files/modules`, stop unless the experiment explicitly allows overlap and names the manual reconcile owner.
+
 ## Context
 
 <!-- Background, related work, constraints, links to design docs or discussions. -->

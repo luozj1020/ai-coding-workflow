@@ -93,6 +93,7 @@ ai/
   check-worktree.sh           # Runs checker-only validation and writes a report
   review-with-codex.sh        # Sends evidence to Codex/GPT for review
   run-codex-spark.sh          # Optional gpt-5.3-codex-spark auxiliary runner
+  run-parallel-loop.sh        # Experimental parallel dispatch helper
   run-loop.sh                 # Optional loop runner (dispatch + review)
   status-claude.sh            # Inspect Claude dispatch progress/artifacts
   watch-claude.sh             # Stream Claude progress in a terminal
@@ -210,6 +211,18 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 ```
 
 Spark artifacts include `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. Spark does not silently fall back to GPT-5.5 or another stronger model.
+
+### Experimental Parallel Dispatch
+
+When task cards have `Parallel Execution Gate` filled and independent file/module scopes, run:
+
+```bash
+bash ai/run-parallel-loop.sh --max-concurrency 2 \
+  ai/task-cards/PROJ-123-a.md \
+  ai/task-cards/PROJ-123-b.md
+```
+
+The helper dispatches tasks concurrently, writes `.worktrees/parallel-*/parallel-summary.md`, and never merges automatically. It refuses ungated task cards and overlapping `Allowed files/modules` by default. Use `--allow-overlap` only for explicit manual-reconcile experiments.
 
 While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
 

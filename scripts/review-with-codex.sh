@@ -111,6 +111,7 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - Review any Deviations From Plan. Accept deviations only when the discovered constraint is real, the action taken is conservative or explicitly allowed, and the reviewer briefing makes the behavioral impact clear.
 - Check the Handoff Contract if present. Verify Must do, Must not do, May decide, Must report, and Stop condition against the diff and evidence.
 - Check Codex Spark Gate if present. If Spark was enabled, verify its purpose, model, sandbox, artifact, source-edit permission, isolated worktree use for micro-builder, and whether strong-model fallback was explicitly prohibited or approved. Treat Spark as auxiliary evidence unless the task card explicitly says it can satisfy acceptance.
+- Check Parallel Execution Gate if present. If parallel dispatch was enabled, verify that each task card explicitly allowed it, file/module scopes did not overlap unless intentionally waived, no automatic merge occurred, and review/merge remains serial or manually reconciled.
 - Check Spec Gate if present. If a spec was required, verify the spec artifact was reviewed, implementation matched the spec, non-goals were respected, and Claude did not invent product/API/UX decisions outside the spec.
 - Check Root Cause Gate for bugfixes, regressions, failing tests, flaky behavior, performance issues, and repeated failed attempts. Verify symptom reproduction or cited evidence, likely root cause, similar-pattern scan, and whether the fix targets the cause rather than the symptom.
 - Check Testing Responsibility if present. Verify whether test code changes were user-requested, acceptance-critical, or out of scope; whether Claude was assigned to write/update tests; and whether Claude or Codex/human was responsible for running tests.
@@ -173,6 +174,9 @@ State whether the task card assigned test writing and test execution to Claude, 
 ### Codex Spark Gate
 State whether Spark was enabled, which mode/model/sandbox/artifact was used, whether source edits were allowed, whether micro-builder work used an isolated worktree, whether strong-model fallback was avoided or explicitly approved, and whether Spark evidence can satisfy any acceptance criterion.
 
+### Parallel Execution Gate
+State whether experimental parallel execution was enabled, which aggregate artifact was reviewed, whether task scopes overlapped, whether all dispatches completed, whether any automatic merge occurred, and whether the next action is serial review, aggregate review, checker after merge, manual reconcile, or stop.
+
 ### Spec Gate
 State whether a spec was required, which spec artifact or task-card section was reviewed, whether implementation matched the spec, whether non-goals were respected, and whether any product/API/UX decision was invented outside the spec.
 
@@ -212,7 +216,7 @@ For REVISE, SPLIT, or REJECT, provide a task-card-ready handoff with:
 - Do Not Repeat
 - New Acceptance Criteria
 - New Unknowns / Decision Gates
-- New Spec / Spark / Root Cause / TDD / Finish Branch requirements
+- New Spec / Spark / Parallel / Root Cause / TDD / Finish Branch requirements
 - New Handoff Contract
 
 For phase-only ACCEPT with remaining implementation/test-writing work, also provide this contract for the next Claude dispatch.

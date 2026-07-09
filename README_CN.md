@@ -61,6 +61,7 @@ ai-coding-workflow/
     check-worktree.sh   ← 运行只检查不修改的验证并写入 checker report
     review-with-codex.sh← 向 Codex/GPT 发送证据审查
     run-codex-spark.sh  ← 可选 gpt-5.3-codex-spark 辅助运行器
+    run-parallel-loop.sh← 实验性并行派发辅助脚本
     run-loop.sh         ← 可选循环运行器（调度 + 审查）
     doctor_workflow.py  ← 调度/审查循环就绪检查（只读）
     clean_runtime.py    ← 预览/清理已忽略的运行时产物
@@ -192,6 +193,7 @@ ai/dispatch-to-claude.sh
 ai/check-worktree.sh
 ai/review-with-codex.sh
 ai/run-codex-spark.sh
+ai/run-parallel-loop.sh
 ai/run-loop.sh
 ai/doctor_workflow.py
 ai/clean_runtime.py
@@ -319,6 +321,20 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 ```
 
 Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型；如果 Spark 不可用，它会记录 blocker 并以非零状态退出。
+
+**实验性：并行派发**
+
+对于文件/模块范围互不重叠的独立任务卡，在每张任务卡中填写 `Parallel Execution Gate`，然后运行：
+
+```bash
+bash ai/run-parallel-loop.sh --max-concurrency 2 \
+  ai/task-cards/PROJ-123-a.md \
+  ai/task-cards/PROJ-123-b.md
+```
+
+helper 会并发运行多个 `dispatch-to-claude.sh`，并写入 `.worktrees/parallel-*/parallel-summary.md`、`parallel-events.jsonl`、`parallel-manifest.tsv` 和每个任务的 dispatch 日志。默认情况下，任务卡必须写明 `Parallel allowed? | yes`，否则拒绝派发；多个任务的 `Allowed files/modules` 有重叠时也会拒绝，除非显式传入 `--allow-overlap`。
+
+这只是派发层并行，不会自动合并 worktree，不替代 Codex review，也不会让冲突实现变安全。每个 diff 仍需串行审查；共享 API、数据模型、全局配置等改动应走普通单任务流程，或单独创建人工 reconcile 任务卡。
 
 **可选：为长任务创建持久计划文件**
 

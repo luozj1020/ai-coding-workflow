@@ -53,6 +53,8 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         advisor_followup = summary.get("advisor_followup", {})
         codex_spark_gate = summary.get("codex_spark_gate", {})
         codex_spark_followup = summary.get("codex_spark_followup", {})
+        parallel_gate = summary.get("parallel_execution_gate", {})
+        parallel_followup = summary.get("parallel_execution_followup", {})
         spec_gate = summary.get("spec_gate", {})
         spec_followup = summary.get("spec_followup", {})
         root_cause_followup = summary.get("root_cause_followup", {})
@@ -81,6 +83,10 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "spark_model": codex_spark_followup.get("spark_model_used", ""),
                 "spark_exit_code": field_number(codex_spark_followup, "spark_exit_code"),
                 "spark_strong_fallback_used": codex_spark_followup.get("strong_model_fallback_used", ""),
+                "parallel_allowed": parallel_gate.get("parallel_allowed", ""),
+                "parallel_group_id": parallel_gate.get("parallel_group_id", ""),
+                "parallel_helper_invoked": parallel_followup.get("parallel_helper_invoked", ""),
+                "parallel_max_concurrency": field_number(parallel_followup, "max_concurrency_used"),
                 "spec_required": spec_gate.get("spec_required", ""),
                 "spec_matched": spec_followup.get("implementation_matched_spec", ""),
                 "root_cause_identified": root_cause_followup.get("root_cause_identified", ""),
@@ -109,6 +115,8 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         "spark_enabled_count": sum(1 for run in runs if str(run["spark_enabled"]).startswith("yes")),
         "spark_invoked_count": sum(1 for run in runs if str(run["spark_invoked"]).startswith("yes")),
         "spark_strong_fallback_count": sum(1 for run in runs if str(run["spark_strong_fallback_used"]).startswith("yes")),
+        "parallel_allowed_count": sum(1 for run in runs if str(run["parallel_allowed"]).startswith("yes")),
+        "parallel_invoked_count": sum(1 for run in runs if str(run["parallel_helper_invoked"]).startswith("yes")),
         "spec_required_count": sum(1 for run in runs if str(run["spec_required"]).startswith("yes")),
         "tdd_required_count": sum(1 for run in runs if str(run["tdd_mode"]).startswith("required")),
         "runs": runs,
@@ -146,25 +154,27 @@ def render_markdown(report: dict) -> str:
         f"| Spark-enabled runs | {format_value(report['spark_enabled_count'])} |",
         f"| Spark-invoked runs | {format_value(report['spark_invoked_count'])} |",
         f"| Spark strong-fallback runs | {format_value(report['spark_strong_fallback_count'])} |",
+        f"| Parallel-allowed runs | {format_value(report['parallel_allowed_count'])} |",
+        f"| Parallel-invoked runs | {format_value(report['parallel_invoked_count'])} |",
         f"| Spec-required runs | {format_value(report['spec_required_count'])} |",
         f"| TDD-required runs | {format_value(report['tdd_required_count'])} |",
         "",
         "## Runs",
         "",
-        "| Run | Decision | Quality | Seconds | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Model | Spec | TDD | Stability |",
-        "|-----|----------|---------|---------|-------|--------|------|------|------|---------|---------------|-------|-------------|------|-----|-----------|",
+        "| Run | Decision | Quality | Seconds | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Model | Parallel | Spec | TDD | Stability |",
+        "|-----|----------|---------|---------|-------|--------|------|------|------|---------|---------------|-------|-------------|----------|------|-----|-----------|",
     ]
     if report["runs"]:
         for run in report["runs"]:
             lines.append(
                 "| {run_path} | {decision} | {quality_score} | {elapsed_seconds} | {input_tokens} | "
                 "{output_tokens} | {total_cost_usd} | {loop_type} | {benchmark_tags} | {advisor_model} | "
-                "{advisor_calls} | {spark_invoked} | {spark_model} | {spec_matched} | {tdd_mode} | {stability_findings} |".format(
+                "{advisor_calls} | {spark_invoked} | {spark_model} | {parallel_helper_invoked} | {spec_matched} | {tdd_mode} | {stability_findings} |".format(
                     **{key: format_value(value) for key, value in run.items()}
                 )
             )
     else:
-        lines.append("| no runs | UNKNOWN | 0 | unavailable | 0 | 0 | 0 | | | | 0 | | | | | 0 |")
+        lines.append("| no runs | UNKNOWN | 0 | unavailable | 0 | 0 | 0 | | | | 0 | | | | | | 0 |")
     return "\n".join(lines) + "\n"
 
 

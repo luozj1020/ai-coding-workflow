@@ -194,6 +194,7 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
         "report": sorted(root.rglob("*.report.md")),
         "diff": sorted(root.rglob("*.diff")),
         "events": sorted(root.rglob("loop-events.jsonl")),
+        "parallel": sorted(root.rglob("parallel-summary.md")),
         "task_card": sorted(root.rglob("task-card-*.md")) + sorted(root.rglob("CLAUDE_TASK_CARD.md")),
     }
 
@@ -219,6 +220,11 @@ def summarize(path: Path) -> dict:
     advisor_followup = parse_first_table(artifacts["report"], ["Advisor Follow-up", "Advisor Result"])
     codex_spark_gate = parse_first_table(artifacts["task_card"], ["Codex Spark Gate"])
     codex_spark_followup = parse_first_table(artifacts["report"], ["Codex Spark Follow-up"])
+    parallel_execution_gate = parse_first_table(artifacts["task_card"], ["Parallel Execution Gate"])
+    parallel_execution_followup = parse_first_table(
+        artifacts["report"] + artifacts["parallel"],
+        ["Parallel Execution Follow-up"],
+    )
     spec_gate = parse_first_table(artifacts["task_card"], ["Spec Gate"])
     spec_followup = parse_first_table(artifacts["report"], ["Spec Follow-up"])
     root_cause_gate = parse_first_table(artifacts["task_card"], ["Root Cause Gate"])
@@ -246,6 +252,8 @@ def summarize(path: Path) -> dict:
         "advisor_followup": advisor_followup,
         "codex_spark_gate": codex_spark_gate,
         "codex_spark_followup": codex_spark_followup,
+        "parallel_execution_gate": parallel_execution_gate,
+        "parallel_execution_followup": parallel_execution_followup,
         "spec_gate": spec_gate,
         "spec_followup": spec_followup,
         "root_cause_gate": root_cause_gate,
@@ -322,6 +330,8 @@ def render_markdown(summary: dict) -> str:
         ("Spec Follow-up", "spec_followup"),
         ("Codex Spark Gate", "codex_spark_gate"),
         ("Codex Spark Follow-up", "codex_spark_followup"),
+        ("Parallel Execution Gate", "parallel_execution_gate"),
+        ("Parallel Execution Follow-up", "parallel_execution_followup"),
         ("Root Cause Gate", "root_cause_gate"),
         ("Root Cause Follow-up", "root_cause_followup"),
         ("Test-First / TDD Contract", "tdd_contract"),

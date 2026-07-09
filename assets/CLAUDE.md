@@ -18,18 +18,19 @@ You are the execution agent in a Codex / Claude Code workflow.
 5. Read Goal Loop Contract; use its success signal, max attempts, stop rules, required evidence, and benchmark tags as the outer loop contract.
 6. Read Advisor Gate; if advisor consultation is required, complete read-only orientation before consulting and before state-changing edits.
 7. Read Codex Spark Gate when present. Codex Spark evidence may be available as auxiliary Codex evidence, but it does not change your assignment unless the task card explicitly says so.
-8. Treat the Handoff Contract as the primary executor contract.
-9. Read Unknowns and Decision Gates, plus Root Cause Gate; do not cross stop-and-report gates silently.
-10. Read Task Mode, Testing Responsibility, and Test-First / TDD Contract; only write tests or run tests when the task card assigns that responsibility.
-11. Complete Direction / Boundary Acknowledgement before editing when requested. If blocking Codex approval is required, write the acknowledgement and stop until approval appears in the task card or progress artifacts.
-12. Check Stall / Ambiguity Triage when present; if the card mixes implementation, test writing, broad validation, and stop gates without `mixed-exception`, stop-and-report instead of guessing the intended role.
-13. Prefer LSP, CodeGraph, and MCP before broad reads.
-14. Work only in the current isolated worktree.
-15. Make scoped edits that match the task card.
-16. Run only the checks assigned to this task mode; Builder tasks avoid broad acceptance tests unless explicitly allowed.
-17. Run `bash ai/check-worktree.sh` when available and assigned.
-18. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
-19. Do not merge changes.
+8. Read Parallel Execution Gate when present. It may explain that sibling task cards are running elsewhere, but you still own only this task card and current isolated worktree.
+9. Treat the Handoff Contract as the primary executor contract.
+10. Read Unknowns and Decision Gates, plus Root Cause Gate; do not cross stop-and-report gates silently.
+11. Read Task Mode, Testing Responsibility, and Test-First / TDD Contract; only write tests or run tests when the task card assigns that responsibility.
+12. Complete Direction / Boundary Acknowledgement before editing when requested. If blocking Codex approval is required, write the acknowledgement and stop until approval appears in the task card or progress artifacts.
+13. Check Stall / Ambiguity Triage when present; if the card mixes implementation, test writing, broad validation, and stop gates without `mixed-exception`, stop-and-report instead of guessing the intended role.
+14. Prefer LSP, CodeGraph, and MCP before broad reads.
+15. Work only in the current isolated worktree.
+16. Make scoped edits that match the task card.
+17. Run only the checks assigned to this task mode; Builder tasks avoid broad acceptance tests unless explicitly allowed.
+18. Run `bash ai/check-worktree.sh` when available and assigned.
+19. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
+20. Do not merge changes.
 
 ### Direction and boundary acknowledgement
 
@@ -113,6 +114,7 @@ Report:
 - Goal loop result: success signal met or unmet, stop rule reached if any, and benchmark tags when present.
 - Advisor follow-up: whether advisor was required and consulted, role/model, call count, advice summary or artifact, result visibility, stop reason/truncation, whether advice was followed, local-evidence conflicts, reconcile action, fallback used, and advisor token/cost fields when available.
 - Codex Spark follow-up when assigned or present: Spark mode/model/artifact, sandbox, isolated worktree, exit code, source diff if any, whether strong-model fallback was avoided, and any conflict with Claude or local evidence.
+- Parallel execution follow-up when assigned or present: group id, aggregate artifact, whether scope overlap was detected, whether automatic merge was avoided, and any reconcile risk discovered.
 - Spec follow-up: spec reviewed, implementation matched spec, non-goals respected, and any invented product/API/UX decisions.
 - Root cause follow-up: reproduction or cited symptom, root cause evidence, similar patterns checked, and whether the fix targets the cause.
 - Test-first/TDD follow-up: red evidence before production edit, green evidence after implementation, and owner-boundary compliance.

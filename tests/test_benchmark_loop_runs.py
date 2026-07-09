@@ -53,6 +53,12 @@ def write_loop_run(run: pathlib.Path, decision: str, cost: str = "0.10"):
         "|-------|-------|\n"
         "| Root cause identified? | yes |\n"
         "\n"
+        "## Parallel Execution Follow-up\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Parallel helper invoked? | yes |\n"
+        "| Max concurrency used | 2 |\n"
+        "\n"
         "## Test-First / TDD Follow-up\n\n"
         "| Field | Value |\n"
         "|-------|-------|\n"
@@ -78,7 +84,13 @@ def write_loop_run(run: pathlib.Path, decision: str, cost: str = "0.10"):
         "## Spec Gate\n\n"
         "| Field | Value |\n"
         "|-------|-------|\n"
-        "| Spec required? | yes |\n",
+        "| Spec required? | yes |\n"
+        "\n"
+        "## Parallel Execution Gate\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Parallel allowed? | yes |\n"
+        "| Parallel group id | fixture-group |\n",
         encoding="utf-8",
     )
 
@@ -106,6 +118,8 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertEqual(report["advisor_input_tokens_total"], 40)
             self.assertEqual(report["advisor_output_tokens_total"], 16)
             self.assertEqual(report["advisor_cost_usd_total"], 0.06)
+            self.assertEqual(report["parallel_allowed_count"], 2)
+            self.assertEqual(report["parallel_invoked_count"], 2)
             self.assertEqual(report["spec_required_count"], 2)
             self.assertEqual(report["tdd_required_count"], 2)
             self.assertEqual(report["runs"][0]["loop_type"], "goal-based")
@@ -114,6 +128,8 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertEqual(report["runs"][0]["advisor_model"], "claude-fable-5")
             self.assertEqual(report["runs"][0]["spec_matched"], "yes")
             self.assertEqual(report["runs"][0]["root_cause_identified"], "yes")
+            self.assertEqual(report["runs"][0]["parallel_allowed"], "yes")
+            self.assertEqual(report["runs"][0]["parallel_helper_invoked"], "yes")
             self.assertEqual(report["runs"][0]["tdd_mode"], "required")
             self.assertEqual(report["runs"][0]["tdd_red_captured"], "yes")
 

@@ -61,6 +61,7 @@ ai-coding-workflow/
     check-worktree.sh    -> Run checker-only validation and write a checker report
     review-with-codex.sh -> Send evidence to Codex/GPT for review
     run-codex-spark.sh   -> Optional gpt-5.3-codex-spark auxiliary runner
+    run-parallel-loop.sh -> Experimental parallel dispatch helper
     run-loop.sh          -> Optional loop runner (dispatch + review)
     status-claude.sh     -> Inspect Claude dispatch status and artifacts
     watch-claude.sh      -> Show CLI progress panel for running dispatches
@@ -206,6 +207,7 @@ ai/dispatch-to-claude.sh
 ai/check-worktree.sh
 ai/review-with-codex.sh
 ai/run-codex-spark.sh
+ai/run-parallel-loop.sh
 ai/run-loop.sh
 ai/status-claude.sh
 ai/watch-claude.sh
@@ -338,6 +340,20 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 ```
 
 Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model; if Spark is unavailable, it records the blocker and exits non-zero.
+
+**Experimental: parallel dispatch**
+
+For independent task cards with non-overlapping file/module scopes, fill `Parallel Execution Gate` in each task card and run:
+
+```bash
+bash ai/run-parallel-loop.sh --max-concurrency 2 \
+  ai/task-cards/PROJ-123-a.md \
+  ai/task-cards/PROJ-123-b.md
+```
+
+The helper runs multiple `dispatch-to-claude.sh` jobs concurrently and writes `.worktrees/parallel-*/parallel-summary.md`, `parallel-events.jsonl`, `parallel-manifest.tsv`, and per-task dispatch logs. It refuses task cards that do not say `Parallel allowed? | yes` unless `--allow-ungated` is passed, and it refuses overlapping `Allowed files/modules` unless `--allow-overlap` is passed.
+
+This is dispatch parallelism only. It does not merge worktrees, does not replace Codex review, and does not make conflicting implementation safe. Review each diff serially; shared API/data model/config changes should use a normal single-task flow or a manual reconcile task.
 
 **Optional: create persistent planning files** for long-running work:
 

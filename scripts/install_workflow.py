@@ -53,6 +53,7 @@ SCRIPTS = [
     ("check-worktree.sh", "ai/check-worktree.sh"),
     ("review-with-codex.sh", "ai/review-with-codex.sh"),
     ("run-codex-spark.sh", "ai/run-codex-spark.sh"),
+    ("run-parallel-loop.sh", "ai/run-parallel-loop.sh"),
     ("run-loop.sh", "ai/run-loop.sh"),
     ("status-claude.sh", "ai/status-claude.sh"),
     ("watch-claude.sh", "ai/watch-claude.sh"),
