@@ -10,6 +10,7 @@ This file defines shared rules for AI agents working in this repository.
 - Codex/GPT plans, gathers low-token evidence, writes task cards, and reviews results.
 - Claude Code implements scoped edits in isolated worktrees and returns compressed evidence.
 - LSP, CodeGraph, and MCP are preferred before broad reads or repository scans.
+- For local repository work, do not use web search unless the user explicitly asks for internet lookup, remote repository state, external documentation, or current third-party facts. Spark, Claude, CodeGraph, or filesystem failures are not reasons to search the web by default.
 
 ## Workflow
 
@@ -21,6 +22,7 @@ Use the explicit loop: OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIE
 - For bounded loops, fill `Goal Loop Contract` with success signal, max attempts, stop rules, required evidence, budget, and benchmark tags.
 - For tasks needing stronger strategic judgment, fill `Advisor Gate`: advisor role/model, timing, call cap, output budget, result visibility, conflict reconciliation, fallback behavior, and evidence artifact.
 - Leave `Codex Spark Gate` at `auto` by default for eligible low-latency `gpt-5.3-codex-spark` auxiliary review-only, evidence-checker, or tiny isolated micro-builder work; if Spark is unavailable or quota-exhausted, auto-disable it for that run and continue the main workflow. Do not use Spark as an implicit Claude replacement or strong-model fallback.
+- For large repositories or slow filesystems, fill `Worktree / Large Repo Strategy Gate` before dispatch. Default to fresh isolated worktrees and full evidence; use `reuse-managed` or `CLAUDE_CODE_LARGE_REPO_MODE=1` only as explicit performance tradeoffs.
 - Experimental: fill `Parallel Execution Gate` and use `ai/run-parallel-loop.sh` only for independent task cards with non-overlapping file/module scopes. Parallel dispatch does not change serial review and human merge requirements.
 - DISPATCH with `ai/dispatch-to-claude.sh` or `ai/run-loop.sh`; dispatch preserves the full Codex task card and renders a smaller Claude execution card.
 - Split risky work into Builder Claude (implementation only) followed by Checker/Test Claude (tests, validation, report) after Codex accepts the implementation direction.
@@ -58,7 +60,7 @@ Keep default context small and file-backed:
 - Specs should make desired behavior, non-goals, acceptance surface, constraints, alternatives, and risks explicit before broad execution. A waived spec needs a short rationale.
 - Use task-card unknowns to reduce information gaps: known unknowns, assumed knowns, blindspot scan requests, architecture-changing questions, reference examples, and deviation recording paths.
 - Do not request advisor guidance with no task context. Prefer read-only orientation first, then advisor consultation before state-changing edits when the task card requires it.
-- Treat Codex Spark evidence as auxiliary: store `codex-spark.report.md` artifacts, record auto-disable reasons when Spark is unavailable, reconcile conflicts with Claude/local evidence, and require explicit human approval before any strong-model fallback.
+- Treat Codex Spark evidence as auxiliary: store `codex-spark.report.md` artifacts, record auto-disable reasons when Spark is unavailable, including read-only sandbox helper initialization failures, reconcile conflicts with Claude/local evidence, and require explicit human approval before any strong-model fallback.
 - Treat parallel dispatch summaries as orchestration evidence only. Review each diff and evidence packet serially before merging; overlap or shared API changes require a manual reconcile task.
 - Codex should complete the Execution Readiness Gate and Handoff Contract before implementation dispatch.
 - Codex should fill the Phase Responsibility Matrix so each phase has a clear owner and explicit non-owner duties.
@@ -90,11 +92,12 @@ Builder and checker responsibilities must remain separate:
 - Prefer machine-readable monitor fields from `ai/watch-claude.sh` and `ai/status-claude.sh` (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count) before reading full progress, status, or network tails.
 - When network diagnostics are enabled, inspect socket summary and healthcheck status before attributing a quiet run to Claude no-progress.
 - Treat advisor guidance as high-value input, not a command. If advisor guidance conflicts with local evidence, record the conflict and reconcile before changing direction. If advisor output is redacted or unavailable to Codex, report advice category, whether it was followed, stop reason/truncation signals, and any fallback used.
-- Use `Codex Spark Gate` as default-on optional support only when it reduces strong-model quota or latency without weakening ownership. Prefer `review-only` or `evidence-checker`; use `micro-builder` only for tiny scoped edits in a helper-created isolated worktree with `--sandbox workspace-write`. Missing CLI, model access, auth/network issues, or Spark quota exhaustion should auto-disable Spark for the run unless `--require-spark` was explicitly used. Spark must not silently fall back to GPT-5.5 or another stronger model.
+- Use `Codex Spark Gate` as default-on optional support only when it reduces strong-model quota or latency without weakening ownership. Prefer `review-only` or `evidence-checker`; use `micro-builder` only for tiny scoped edits in a helper-created isolated worktree with `--sandbox workspace-write`. Missing CLI, model access, auth/network issues, read-only sandbox helper initialization failures, or Spark quota exhaustion should auto-disable Spark for the run unless `--require-spark` was explicitly used. Spark must not silently fall back to GPT-5.5 or another stronger model.
+- Use `Worktree / Large Repo Strategy Gate` when `git worktree add`, filesystem reads, dispatcher status collection, or Claude-side read operations are materially slow. `CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed` may reuse only `.worktrees/reuse/claude-managed`; `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` resets and cleans only that managed worktree, never the source repository. `CLAUDE_CODE_LARGE_REPO_MODE=1` reduces expensive untracked scans and untracked patch evidence, so record the evidence tradeoff before relying on it.
 - Use `Parallel Execution Gate` only for experimental wall-clock reduction after Codex has split the work into independent task cards. Do not parallelize shared API, data model, migration, security, permission, or global config work unless human-approved with a manual reconcile plan.
 - When dirty source or stale HEAD is the attribution, fill the Delegation Restoration Gate and try to restore a clean updated dispatch base before considering takeover.
 - Checker/Test Claude writes or updates assigned tests, runs assigned validation, and reports results. Checker/Test tasks should not perform broad implementation rewrites; only concrete small fixes allowed by the task card are permitted.
-- Use `ai/check-worktree.sh` when available.
+- Use exact task-card validation commands before broad discovery. Prefer `ai/check-worktree.sh --no-discover --command 'label=command'`; enable broad checker discovery only when the task card or human explicitly asks for it. If Claude cannot run a Python/Node/test command due to approval or sandbox policy, record the blocker and let Codex/human rerun the exact command rather than marking the implementation failed.
 - Forward checker failures with command, exit code, key output, and `file:line` details.
 - Before claiming work ready for merge, fill `Finish Branch Gate`: link accepted phases, rerun required verification fresh, classify dirty/untracked artifacts, document remaining risks, and prepare human review/merge instructions.
 

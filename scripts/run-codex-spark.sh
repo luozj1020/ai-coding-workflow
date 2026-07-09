@@ -229,7 +229,19 @@ spark_unavailable_failure() {
         text="$(tr '[:upper:]' '[:lower:]' < "$STDERR_FILE")"
     fi
     printf '%s\n' "$text" | grep -Eiq \
-        'quota|rate limit|rate-limit|insufficient|exceeded|billing|credit|model.*(not|unavailable|unsupported|unknown)|not.*model|access|permission|unauthori[sz]ed|forbidden|login|auth|network|connection|timeout|timed out|proxy|dns'
+        'quota|rate limit|rate-limit|insufficient|exceeded|billing|credit|model.*(not|unavailable|unsupported|unknown)|not.*model|access|permission|unauthori[sz]ed|forbidden|login|auth|network|connection|timeout|timed out|proxy|dns|read-only file system|os error 30|app-server|failed to initialize'
+}
+
+spark_failure_auto_disable_reason() {
+    local text=""
+    if [ -s "$STDERR_FILE" ]; then
+        text="$(tr '[:upper:]' '[:lower:]' < "$STDERR_FILE")"
+    fi
+    if printf '%s\n' "$text" | grep -Eiq 'read-only file system|os error 30|app-server|failed to initialize'; then
+        echo "codex exec failed during read-only sandbox helper initialization"
+    else
+        echo "codex exec reported model, quota, auth, network, or access unavailability"
+    fi
 }
 
 if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
@@ -336,7 +348,7 @@ if [ "$MODE" = "micro-builder" ] && [ -s "$DIFF_FILE" ]; then
 fi
 if [ "$CODEX_STATUS" -ne 0 ] && [ "$REQUIRE_SPARK" != "1" ] && spark_unavailable_failure; then
     SPARK_AUTO_DISABLED="yes"
-    SPARK_DISABLE_REASON="codex exec reported model, quota, auth, network, or access unavailability"
+    SPARK_DISABLE_REASON="$(spark_failure_auto_disable_reason)"
     HELPER_EXIT_STATUS=0
 fi
 write_report_header "$CODEX_STATUS" "$DIFF_VALUE"

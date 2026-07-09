@@ -12,6 +12,7 @@ ai-coding-workflow bootstraps repositories with:
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
 - Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` review/evidence checks and tiny isolated micro-builder work
+- Large-repository dispatch options for managed worktree reuse and reduced expensive untracked-file scans
 - Builder / Checker-Test task modes for separating implementation from validation
 - Direction / boundary acknowledgement gates with anti-loop rules
 - Managed blocks for idempotent updates
@@ -313,6 +314,15 @@ Use ai-coding-workflow to create a task card for implementing <feature>.
 
 For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 
+For long task cards, keep the full Codex planning card as the audit source but dispatch a compact Claude execution view after the current phase is fully specified:
+
+```bash
+CLAUDE_CODE_TASK_CARD_VIEW=compact \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+Compact view omits optional planning gates from `CLAUDE_TASK_CARD.md`; `TASK_CARD_FULL.md` remains in the worktree for audit.
+
 **Default-on optional: use Codex Spark during execution planning**
 
 If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave `Codex Spark Gate` at `auto` for eligible tasks. Spark is auxiliary, not a default Claude replacement; if the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue:
@@ -339,7 +349,28 @@ Run a tiny isolated Spark edit only when the task card explicitly allows it:
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
 ```
 
-Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model. Use `--require-spark` only when Spark availability should become a hard failure instead of optional auto-disable.
+Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model. If read-only sandbox initialization fails, for example due to a local app-server write requirement, the helper marks Spark auto-disabled and exits 0 unless `--require-spark` was used.
+
+**Large repositories / slow filesystems**
+
+For large repositories, fill `Worktree / Large Repo Strategy Gate` before dispatch. Defaults stay safest: fresh isolated worktree and complete diff/untracked evidence. When `git worktree add` or dispatcher filesystem reads are the bottleneck, opt in explicitly:
+
+```bash
+CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed \
+CLAUDE_CODE_REUSE_WORKTREE_RESET=1 \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+This reuses only `.worktrees/reuse/claude-managed` and resets/cleans only that managed worktree, never the source repository.
+
+When untracked scans or untracked patch generation are too expensive, use:
+
+```bash
+CLAUDE_CODE_LARGE_REPO_MODE=1 \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+Large-repo mode keeps tracked/staged diff evidence but skips expensive unrelated untracked scans and untracked patch evidence. Record that evidence tradeoff in the task card before relying on it.
 
 **Experimental: parallel dispatch**
 
@@ -452,7 +483,32 @@ bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
 
 The loop runner automates Steps 3-5, stopping on accept, max iterations, or human intervention. It also writes `.worktrees/loop-<timestamp>/loop-usage-summary.md` with available Claude and Codex usage summaries. It does NOT merge automatically.
 
-**Checker-only validation:** Installed projects include `ai/check-worktree.sh`. The dispatcher runs it after Claude finishes and records a checker report. The checker discovers common validation commands, runs them without editing files, preserves failed command output, and marks the report `ALL GREEN` or `FAILED`.
+**Checker-only validation:** Installed projects include `ai/check-worktree.sh`. Prefer exact task-card checks:
+
+```bash
+bash ai/check-worktree.sh --no-discover --command 'tests=pytest tests/test_target.py'
+```
+
+The dispatcher records a checker report after Claude finishes, but broad discovery is disabled by default to avoid unrelated pytest/ruff/mypy noise. Pass `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'` for exact dispatcher-run checks, or `CLAUDE_CODE_CHECKER_DISCOVER=1` when the task card explicitly allows broad project discovery.
+
+**Project test tiers:** The workflow test suite has fast checks and slower integration coverage. Use the smallest tier that matches the edit:
+
+```bash
+# Smoke: shell syntax and whitespace
+bash -n scripts/*.sh
+git diff --check
+
+# Fast default while editing
+python -m pytest -m "not slow"
+
+# Related tests for touched areas
+python -m pytest tests/test_run_codex_spark.py tests/test_check_worktree.py
+
+# Full release or pre-commit confidence
+python -m pytest tests
+```
+
+Tests marked `slow` create repeated temporary repositories, worktrees, or installer runs. They should run before release or when touching dispatcher/worktree/install behavior, not after every small documentation or helper edit.
 
 **Workflow quality summary:** `ai/run-loop.sh` also writes `.worktrees/loop-<timestamp>/loop-quality-summary.md` and `.json`. To summarize an existing run manually:
 

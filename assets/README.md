@@ -47,6 +47,7 @@ This repository has been set up with a multi-agent AI coding workflow. The workf
 - **Codex / GPT**  -  plans and reviews (top-level design, not concrete edits)
 - **Claude Code**  -  implements in Builder tasks and validates in Checker/Test tasks
 - **Codex Spark**  -  default-on optional `gpt-5.3-codex-spark` auxiliary for quick review, evidence checks, or tiny isolated micro-builder work
+- **Large-repo mode**  -  optional managed worktree reuse and reduced untracked-file scans for slow filesystems
 - **MiMo / DeepSeek**  -  optional exhaustive review helper
 - **LSP / Codegraph / MCP**  -  low-token code intelligence (used first, before broad reads)
 
@@ -192,7 +193,7 @@ It does **not** merge automatically.
 
 ### Default-On Optional Codex Spark Auxiliary
 
-When the task card leaves `Codex Spark Gate` at `auto`, run Spark as a low-cost auxiliary for eligible tasks. Spark is optional support: if the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue.
+When the task card leaves `Codex Spark Gate` at `auto`, run Spark as a low-cost auxiliary for eligible tasks. Spark is optional support: if the CLI, model access, auth, network, Spark quota, or read-only sandbox helper initialization is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue.
 
 ```bash
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
@@ -211,6 +212,27 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 ```
 
 Spark artifacts include `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. Spark does not silently fall back to GPT-5.5 or another stronger model. Use `--require-spark` only when Spark availability should become a hard failure.
+
+### Large Repositories / Slow Filesystems
+
+Fill `Worktree / Large Repo Strategy Gate` before dispatch when `git worktree add`, filesystem reads, or dispatcher status/diff collection are materially slow. Defaults stay safest: fresh isolated worktree and complete evidence.
+
+To reuse the managed Claude worktree:
+
+```bash
+CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed \
+CLAUDE_CODE_REUSE_WORKTREE_RESET=1 \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+To reduce expensive untracked scans and untracked patch evidence:
+
+```bash
+CLAUDE_CODE_LARGE_REPO_MODE=1 \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+The managed reuse path is limited to `.worktrees/reuse/claude-managed`. Large-repo mode preserves tracked/staged diff evidence but intentionally reduces untracked-file evidence.
 
 ### Experimental Parallel Dispatch
 
@@ -252,9 +274,45 @@ Codex reviews the work and returns a structured decision: accept, revise, split,
 
 If the Builder result matches the plan and validation is needed, dispatch a second task card in `checker-test` mode. Checker/Test Claude writes or updates assigned tests, runs the specified commands, and reports the result. Codex then performs the final review and may run a second verification pass when risk warrants it.
 
+For long task cards, Codex can keep the full planning card as `TASK_CARD_FULL.md` while sending Claude a compact execution view:
+
+```bash
+CLAUDE_CODE_TASK_CARD_VIEW=compact \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+Use compact view only after the current phase, handoff, testing responsibility, validation contract, and acceptance criteria are complete.
+
 ### Checker-Only Validation
 
-Installed projects include `ai/check-worktree.sh`. The dispatcher runs it after Claude finishes and records a checker report. The checker discovers common validation commands, runs them without editing files, preserves failed command output, and marks the report `ALL GREEN` or `FAILED`.
+Installed projects include `ai/check-worktree.sh`. Prefer exact task-card validation commands:
+
+```bash
+bash ai/check-worktree.sh --no-discover --command 'tests=pytest tests/test_target.py'
+```
+
+The dispatcher records a checker report after Claude finishes, but broad discovery is disabled by default to avoid unrelated validation noise. Pass `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'` for exact dispatcher-run checks, or `CLAUDE_CODE_CHECKER_DISCOVER=1` when the task card explicitly allows broad project discovery.
+
+### Project Test Tiers
+
+Use the smallest verification tier that matches the edit:
+
+```bash
+# Smoke: shell syntax and whitespace
+bash -n scripts/*.sh
+git diff --check
+
+# Fast default while editing
+python -m pytest -m "not slow"
+
+# Related tests for touched areas
+python -m pytest tests/test_run_codex_spark.py tests/test_check_worktree.py
+
+# Full release or pre-commit confidence
+python -m pytest tests
+```
+
+Tests marked `slow` create repeated temporary repositories, worktrees, or installer runs. Run them before release or when touching dispatcher/worktree/install behavior, not after every small documentation or helper edit.
 
 ### 4. Merge
 

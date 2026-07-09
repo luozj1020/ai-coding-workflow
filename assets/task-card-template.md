@@ -57,6 +57,20 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | If Claude is quiet, first diagnosis step | inspect progress artifacts and partial diff before declaring failure |
 | Conditions that prove real Claude no-progress | no artifact growth, no worktree change, no status output, no permission blocker, and no reported blocker after grace period |
 
+## Worktree / Large Repo Strategy Gate
+
+<!-- Codex completes this before dispatch for large repositories or slow filesystems. Default remains fresh isolated worktree with complete evidence. Use large-repo shortcuts only when startup/read cost is a material blocker and the evidence tradeoff is acceptable. -->
+
+| Field | Value |
+|-------|-------|
+| Repository size concern? | no / yes, reason |
+| Worktree strategy | fresh / reuse-managed |
+| Reuse command env | none / `CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed CLAUDE_CODE_REUSE_WORKTREE_RESET=1` |
+| Large repo read mode | off / `CLAUDE_CODE_LARGE_REPO_MODE=1` |
+| Evidence tradeoff accepted? | no / yes, untracked scans and untracked patch evidence may be skipped |
+| Safety boundary | never reset or clean source repo; reuse only `.worktrees/reuse/claude-managed` |
+| Cleanup expectation | remove fresh worktree after review / keep managed reuse worktree / human decides |
+
 ## Delegation Restoration Gate
 
 <!-- Codex completes this when dirty source, stale HEAD, missing local workflow files, permissions, or environment state blocks reliable Claude dispatch. These are delegation blockers, not automatic Codex takeover triggers. -->
@@ -123,6 +137,13 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 ## Task Card Views
 
 <!-- Codex owns this full planning card. Dispatch scripts derive `CLAUDE_TASK_CARD.md` from it and omit Codex-only budget/planning/control sections before prompting Claude. Do not maintain a second hand-written Claude card. -->
+
+| Field | Value |
+|-------|-------|
+| Claude execution card view | execution / compact |
+| Compact view allowed? | no / yes, only after current-phase Goal, Handoff Contract, Testing Responsibility, Validation Contract, and Acceptance Criteria are complete |
+| Compact dispatch env | none / `CLAUDE_CODE_TASK_CARD_VIEW=compact` |
+| Full audit card retained? | yes, `TASK_CARD_FULL.md` |
 
 ## Control-Plane Exception Rationale
 
@@ -366,7 +387,7 @@ TDD rule: when TDD mode is required, do not accept production edits without a fa
 
 ## Validation Contract
 
-<!-- List the exact checks expected for this task. If unknown, require Claude to discover project checks and record what it found. Prefer aggregate commands such as pnpm check when available. -->
+<!-- List the exact checks expected for this task. Prefer exact task-card commands and aggregate commands such as pnpm check when available. Broad project discovery is optional because it can create unrelated noise in large or already-failing projects. -->
 
 | Check | Command | Required? | Notes |
 |-------|---------|-----------|-------|
@@ -382,7 +403,9 @@ Checker expectations:
 - Missing Claude report/result is evidence-gap handling: if assigned checks pass and acceptance evidence owner is not Claude, Codex may reconstruct minimal evidence instead of re-dispatching only for prose.
 - Seeded or fallback reports are not valid Claude-owned reports. Reports containing `AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT` or `AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT` count as missing report evidence.
 - A valid Claude report must include touched files, acceptance criteria mapping, checks run or blocked, out-of-scope confirmation, and remaining risks.
-- Run `bash ai/check-worktree.sh` when available.
+- Prefer exact assigned checks with `bash ai/check-worktree.sh --no-discover --command 'label=command'` when available.
+- Use broad discovery only when the task card explicitly allows it: `bash ai/check-worktree.sh --discover` or dispatcher env `CLAUDE_CODE_CHECKER_DISCOVER=1`.
+- If Claude cannot run Python/Node/test commands because of approval or sandbox policy, record the exact blocked command and leave it for Codex/human rerun instead of treating the implementation itself as failed.
 - Preserve failed command, exit code, key original output, and `file:line` locations.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.
 

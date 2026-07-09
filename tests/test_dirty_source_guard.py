@@ -313,6 +313,51 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Source status saved to:", result.stdout)
         self.assertTrue(list((self.repo / ".worktrees").glob("claude-*.source-status.txt")))
 
+    def test_reuse_managed_worktree_requires_explicit_reset_when_existing(self):
+        self._write_task_card()
+
+        first = self._dispatch(extra_env={"CLAUDE_CODE_WORKTREE_STRATEGY": "reuse-managed"})
+
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        worktree = self._artifact_path(first.stdout, "Worktree")
+        self.assertEqual(worktree, self.repo / ".worktrees" / "reuse" / "claude-managed")
+        self.assertIn("Worktree Strategy: reuse-managed", first.stdout)
+
+        second = self._dispatch(extra_env={"CLAUDE_CODE_WORKTREE_STRATEGY": "reuse-managed"})
+
+        self.assertNotEqual(second.returncode, 0)
+        self.assertIn("reusable managed worktree already exists", second.stderr)
+        self.assertIn("CLAUDE_CODE_REUSE_WORKTREE_RESET=1", second.stderr)
+
+        third = self._dispatch(
+            extra_env={
+                "CLAUDE_CODE_WORKTREE_STRATEGY": "reuse-managed",
+                "CLAUDE_CODE_REUSE_WORKTREE_RESET": "1",
+            }
+        )
+
+        self.assertEqual(third.returncode, 0, third.stderr + third.stdout)
+        self.assertEqual(self._artifact_path(third.stdout, "Worktree"), worktree)
+        source_status = self._artifact_path(third.stdout, "Source Status").read_text(encoding="utf-8")
+        self.assertIn("- Strategy: reuse-managed", source_status)
+        self.assertIn("- Reuse reset allowed: 1", source_status)
+
+    def test_large_repo_mode_skips_expensive_untracked_evidence(self):
+        self._write_task_card()
+        (self.repo / "scratch.txt").write_text("dirty but intentionally skipped in large mode\n", encoding="utf-8")
+
+        result = self._dispatch(extra_env={"CLAUDE_CODE_LARGE_REPO_MODE": "1"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Large Repo Mode: 1", result.stdout)
+        source_status = self._artifact_path(result.stdout, "Source Status").read_text(encoding="utf-8")
+        diffstat = self._artifact_path(result.stdout, "Diffstat").read_text(encoding="utf-8")
+        untracked = self._artifact_path(result.stdout, "Untracked Files").read_text(encoding="utf-8")
+        self.assertIn("- Large repo mode: 1", source_status)
+        self.assertIn("skipped: CLAUDE_CODE_LARGE_REPO_MODE=1", source_status)
+        self.assertIn("skipped: CLAUDE_CODE_LARGE_REPO_MODE=1", diffstat)
+        self.assertIn("skipped: CLAUDE_CODE_LARGE_REPO_MODE=1", untracked)
+
     def test_claude_early_exit_without_result_gets_fallback_artifacts(self):
         self._write_task_card()
 

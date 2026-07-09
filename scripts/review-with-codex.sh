@@ -111,6 +111,7 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - Review any Deviations From Plan. Accept deviations only when the discovered constraint is real, the action taken is conservative or explicitly allowed, and the reviewer briefing makes the behavioral impact clear.
 - Check the Handoff Contract if present. Verify Must do, Must not do, May decide, Must report, and Stop condition against the diff and evidence.
 - Check Codex Spark Gate if present. If Spark was enabled, verify its purpose, model, sandbox, artifact, source-edit permission, isolated worktree use for micro-builder, and whether strong-model fallback was explicitly prohibited or approved. Treat Spark as auxiliary evidence unless the task card explicitly says it can satisfy acceptance.
+- Check Worktree / Large Repo Strategy Gate if present. If worktree reuse or large-repo mode was used, verify it was explicitly allowed, resets/cleans were limited to `.worktrees/reuse/claude-managed`, the source repo was not reset or cleaned, and skipped untracked evidence is called out as a review risk.
 - Check Parallel Execution Gate if present. If parallel dispatch was enabled, verify that each task card explicitly allowed it, file/module scopes did not overlap unless intentionally waived, no automatic merge occurred, and review/merge remains serial or manually reconciled.
 - Check Spec Gate if present. If a spec was required, verify the spec artifact was reviewed, implementation matched the spec, non-goals were respected, and Claude did not invent product/API/UX decisions outside the spec.
 - Check Root Cause Gate for bugfixes, regressions, failing tests, flaky behavior, performance issues, and repeated failed attempts. Verify symptom reproduction or cited evidence, likely root cause, similar-pattern scan, and whether the fix targets the cause rather than the symptom.
@@ -173,6 +174,9 @@ State whether the task card assigned test writing and test execution to Claude, 
 
 ### Codex Spark Gate
 State whether Spark was enabled, which mode/model/sandbox/artifact was used, whether source edits were allowed, whether micro-builder work used an isolated worktree, whether strong-model fallback was avoided or explicitly approved, and whether Spark evidence can satisfy any acceptance criterion.
+
+### Worktree / Large Repo Strategy
+State whether fresh or reuse-managed worktree strategy was used, whether `CLAUDE_CODE_LARGE_REPO_MODE=1` skipped untracked scans or untracked patch evidence, whether the task card accepted that evidence tradeoff, and whether any reset/clean touched only `.worktrees/reuse/claude-managed`.
 
 ### Parallel Execution Gate
 State whether experimental parallel execution was enabled, which aggregate artifact was reviewed, whether task scopes overlapped, whether all dispatches completed, whether any automatic merge occurred, and whether the next action is serial review, aggregate review, checker after merge, manual reconcile, or stop.

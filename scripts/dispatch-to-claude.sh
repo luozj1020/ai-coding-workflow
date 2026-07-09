@@ -59,9 +59,50 @@ case "$CLAUDE_CODE_NETWORK_MONITOR" in
 esac
 CLAUDE_CODE_NETWORK_HEALTHCHECK_URL="${CLAUDE_CODE_NETWORK_HEALTHCHECK_URL:-}"
 CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS="${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS:-5}"
+CLAUDE_CODE_WORKTREE_STRATEGY="${CLAUDE_CODE_WORKTREE_STRATEGY:-fresh}"
+CLAUDE_CODE_REUSE_WORKTREE_RESET="${CLAUDE_CODE_REUSE_WORKTREE_RESET:-0}"
+CLAUDE_CODE_LARGE_REPO_MODE="${CLAUDE_CODE_LARGE_REPO_MODE:-0}"
+CLAUDE_CODE_TASK_CARD_VIEW="${CLAUDE_CODE_TASK_CARD_VIEW:-execution}"
+CLAUDE_CODE_CHECKER_DISCOVER="${CLAUDE_CODE_CHECKER_DISCOVER:-0}"
+CLAUDE_CODE_CHECKER_COMMANDS="${CLAUDE_CODE_CHECKER_COMMANDS:-}"
 case "$CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS" in
     ''|*[!0-9]*)
         echo "Error: CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS must be a non-negative integer." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_WORKTREE_STRATEGY" in
+    fresh|reuse-managed) ;;
+    *)
+        echo "Error: CLAUDE_CODE_WORKTREE_STRATEGY must be 'fresh' or 'reuse-managed'." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_REUSE_WORKTREE_RESET" in
+    0|1) ;;
+    *)
+        echo "Error: CLAUDE_CODE_REUSE_WORKTREE_RESET must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_LARGE_REPO_MODE" in
+    0|1) ;;
+    *)
+        echo "Error: CLAUDE_CODE_LARGE_REPO_MODE must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_TASK_CARD_VIEW" in
+    execution|compact) ;;
+    *)
+        echo "Error: CLAUDE_CODE_TASK_CARD_VIEW must be 'execution' or 'compact'." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_CHECKER_DISCOVER" in
+    0|1) ;;
+    *)
+        echo "Error: CLAUDE_CODE_CHECKER_DISCOVER must be 0 or 1." >&2
         exit 1
         ;;
 esac
@@ -71,8 +112,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 TASK_ID="claude-${TIMESTAMP}"
-WORKTREE_DIR="${REPO_ROOT}/.worktrees/${TASK_ID}"
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
+REUSE_WORKTREE_DIR="${WORKTREE_ROOT}/reuse/claude-managed"
+if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
+    WORKTREE_DIR="$REUSE_WORKTREE_DIR"
+else
+    WORKTREE_DIR="${WORKTREE_ROOT}/${TASK_ID}"
+fi
 
 mkdir -p "$WORKTREE_ROOT"
 
@@ -117,7 +163,13 @@ fi
 
 DIRTY_TRACKED="$(git diff --name-only 2>/dev/null || true)"
 DIRTY_STAGED="$(git diff --cached --name-only 2>/dev/null || true)"
-DIRTY_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null | grep -v -E "^\.worktrees/${TASK_ID}\." | grep -vxF "$TASK_CARD_REL" || true)"
+if [ "$CLAUDE_CODE_LARGE_REPO_MODE" = "1" ]; then
+    DIRTY_UNTRACKED=""
+    DIRTY_UNTRACKED_SKIPPED=1
+else
+    DIRTY_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null | grep -v -E "^\.worktrees/" | grep -vxF "$TASK_CARD_REL" || true)"
+    DIRTY_UNTRACKED_SKIPPED=0
+fi
 
 if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" ]; then
     if [ "${CLAUDE_CODE_ALLOW_DIRTY_SOURCE:-0}" = "1" ]; then
@@ -128,6 +180,9 @@ if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" 
         echo "Restore delegation first: commit accepted changes, stash/patch source changes, or re-dispatch from an updated clean HEAD." >&2
         echo "Set CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1 only with explicit approval when stale-HEAD risk is understood." >&2
         echo "The current task card may be untracked and is exempt from the untracked-file check." >&2
+        if [ "$DIRTY_UNTRACKED_SKIPPED" -eq 1 ]; then
+            echo "Large-repo mode skipped unrelated untracked-file scanning; tracked/staged dirty checks still ran." >&2
+        fi
         if [ -n "$DIRTY_TRACKED" ]; then
             echo "" >&2
             echo "Tracked changes:" >&2
@@ -147,18 +202,79 @@ if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" 
     fi
 fi
 
-BRANCH_NAME="claude-task-${TIMESTAMP}"
-git worktree add -b "$BRANCH_NAME" "$WORKTREE_DIR" HEAD || {
-    echo "Error: Failed to create git worktree at $WORKTREE_DIR" >&2
-    exit 1
+BASE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
+create_dispatch_worktree() {
+    local branch_name="$1"
+    if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "fresh" ]; then
+        git worktree add -b "$branch_name" "$WORKTREE_DIR" "$BASE_COMMIT" || {
+            echo "Error: Failed to create git worktree at $WORKTREE_DIR" >&2
+            exit 1
+        }
+        echo "Created worktree: $WORKTREE_DIR"
+        return
+    fi
+
+    case "$WORKTREE_DIR" in
+        "$WORKTREE_ROOT"/reuse/claude-managed) ;;
+        *)
+            echo "Error: refusing to reuse unmanaged worktree path: $WORKTREE_DIR" >&2
+            exit 1
+            ;;
+    esac
+
+    mkdir -p "$(dirname "$WORKTREE_DIR")"
+    if [ -d "$WORKTREE_DIR" ]; then
+        if [ "$CLAUDE_CODE_REUSE_WORKTREE_RESET" != "1" ]; then
+            echo "Error: reusable managed worktree already exists: $WORKTREE_DIR" >&2
+            echo "Set CLAUDE_CODE_REUSE_WORKTREE_RESET=1 to reset and clean only this managed worktree before reuse." >&2
+            echo "This never resets or cleans the source repository." >&2
+            exit 1
+        fi
+        if ! git -C "$WORKTREE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "Error: reusable path exists but is not a git worktree: $WORKTREE_DIR" >&2
+            exit 1
+        fi
+        echo "Reusing managed worktree: $WORKTREE_DIR"
+        git -C "$WORKTREE_DIR" reset --hard >/dev/null
+        git -C "$WORKTREE_DIR" clean -ffdx >/dev/null
+        git -C "$WORKTREE_DIR" checkout -B "$branch_name" "$BASE_COMMIT" >/dev/null
+        git -C "$WORKTREE_DIR" reset --hard "$BASE_COMMIT" >/dev/null
+        git -C "$WORKTREE_DIR" clean -ffdx >/dev/null
+        return
+    fi
+
+    git branch -D "$branch_name" >/dev/null 2>&1 || true
+    git worktree add -b "$branch_name" "$WORKTREE_DIR" "$BASE_COMMIT" || {
+        echo "Error: Failed to create reusable managed git worktree at $WORKTREE_DIR" >&2
+        exit 1
+    }
+    echo "Created reusable managed worktree: $WORKTREE_DIR"
 }
 
-echo "Created worktree: $WORKTREE_DIR"
+if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
+    BRANCH_NAME="claude-managed-reuse"
+else
+    BRANCH_NAME="claude-task-${TIMESTAMP}"
+fi
+create_dispatch_worktree "$BRANCH_NAME"
+
+echo "Worktree strategy: $CLAUDE_CODE_WORKTREE_STRATEGY"
 echo "Branch: $BRANCH_NAME"
 
 {
     echo "# Source Repository Status - ${TIMESTAMP}"
     echo "# Recorded after preflight checks and worktree creation"
+    echo ""
+    echo "## Worktree Strategy"
+    echo ""
+    echo "- Strategy: ${CLAUDE_CODE_WORKTREE_STRATEGY}"
+    echo "- Worktree: ${WORKTREE_DIR}"
+    echo "- Base commit: ${BASE_COMMIT}"
+    echo "- Reuse reset allowed: ${CLAUDE_CODE_REUSE_WORKTREE_RESET}"
+    echo "- Large repo mode: ${CLAUDE_CODE_LARGE_REPO_MODE}"
+    echo "- Claude task card view: ${CLAUDE_CODE_TASK_CARD_VIEW}"
+    echo "- Checker broad discovery: ${CLAUDE_CODE_CHECKER_DISCOVER}"
     echo ""
     echo "## Tracked Changes (git diff --stat)"
     DIFF_OUT="$(git diff --stat 2>/dev/null || true)"
@@ -169,8 +285,12 @@ echo "Branch: $BRANCH_NAME"
     if [ -z "$CACHED_OUT" ]; then echo "(none)"; else echo "$CACHED_OUT"; fi
     echo ""
     echo "## Untracked Files"
-    UNTRACKED_SRC="$(git ls-files --others --exclude-standard 2>/dev/null || true)"
-    if [ -z "$UNTRACKED_SRC" ]; then echo "(none)"; else echo "$UNTRACKED_SRC"; fi
+    if [ "$CLAUDE_CODE_LARGE_REPO_MODE" = "1" ]; then
+        echo "(skipped: CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file scans)"
+    else
+        UNTRACKED_SRC="$(git ls-files --others --exclude-standard 2>/dev/null || true)"
+        if [ -z "$UNTRACKED_SRC" ]; then echo "(none)"; else echo "$UNTRACKED_SRC"; fi
+    fi
 } > "$SOURCE_STATUS_FILE"
 
 echo "Source status saved to: $SOURCE_STATUS_FILE"
@@ -179,7 +299,7 @@ cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD.md"
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD_FULL.md"
 
 render_claude_task_card() {
-    awk '
+    awk -v view="$CLAUDE_CODE_TASK_CARD_VIEW" '
     function section_name(line, s) {
         s = line
         sub(/^##[ \t]+/, "", s)
@@ -195,13 +315,29 @@ render_claude_task_card() {
             || name == "High-Token Delegation Gate" \
             || name == "Delegation Continuity Gate"
     }
+    function compact_skip_section(name) {
+        return name == "Goal Loop Contract" \
+            || name == "Advisor Gate" \
+            || name == "Codex Spark Gate" \
+            || name == "Parallel Execution Gate" \
+            || name == "Worktree / Large Repo Strategy Gate" \
+            || name == "Delegation Restoration Gate" \
+            || name == "Spec Gate" \
+            || name == "Root Cause Gate" \
+            || name == "Test-First / TDD Contract" \
+            || name == "Finish Branch Gate"
+    }
     BEGIN {
         skip = 0
         print "<!-- Generated by dispatch-to-claude.sh from TASK_CARD_FULL.md. Codex-only planning and control-plane sections are omitted. -->"
+        if (view == "compact") {
+            print "<!-- Compact view: optional planning gates are omitted. TASK_CARD_FULL.md remains the audit source. -->"
+        }
         print ""
     }
     /^##[ \t]+/ {
-        if (codex_only_section(section_name($0))) {
+        name = section_name($0)
+        if (codex_only_section(name) || (view == "compact" && compact_skip_section(name))) {
             skip = 1
             next
         }
@@ -315,7 +451,7 @@ Wait policy requirements:
 In addition to making the requested edits, update `CLAUDE_REPORT.md` in the worktree before finishing. Remove the dispatcher seeded-report marker when you first update the report.
 
 Checker expectations:
-- Run project validation before finishing only when this task mode assigns validation. If `ai/check-worktree.sh` is available and assigned, use it.
+- Run project validation before finishing only when this task mode assigns validation. If `ai/check-worktree.sh` is available and assigned exact commands, prefer `bash ai/check-worktree.sh --no-discover --command 'label=command'` so broad unrelated checks do not create noise.
 - Preserve failed command, exit code, key original output, and file:line details.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.
 - If a validation blocker is environmental or external, stop and record the blocker instead of guessing.
@@ -603,6 +739,10 @@ classify_dispatch_evidence() {
 }
 
 worktree_change_count() {
+    if [ "${CLAUDE_CODE_LARGE_REPO_MODE:-0}" = "1" ]; then
+        git status --porcelain --untracked-files=no 2>/dev/null | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0
+        return
+    fi
     {
         git status --porcelain --untracked-files=all 2>/dev/null \
             | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true
@@ -610,6 +750,14 @@ worktree_change_count() {
 }
 
 worktree_digest() {
+    if [ "${CLAUDE_CODE_LARGE_REPO_MODE:-0}" = "1" ]; then
+        {
+            git status --porcelain --untracked-files=no 2>/dev/null || true
+            git diff --shortstat 2>/dev/null || true
+            git diff --cached --shortstat 2>/dev/null || true
+        } | sha1sum 2>/dev/null | awk '{print $1}' || true
+        return
+    fi
     {
         git status --porcelain --untracked-files=all 2>/dev/null \
             | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true
@@ -670,7 +818,7 @@ cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
 write_network_header
-progress_log "Starting Claude Code: proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}"
+progress_log "Starting Claude Code: proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}"
 
 set +e
 run_claude &
@@ -850,8 +998,22 @@ cd "$WORKTREE_DIR"
 CHECK_SCRIPT="${SCRIPT_DIR}/check-worktree.sh"
 if [ -f "$CHECK_SCRIPT" ]; then
     progress_log "Starting checker helper: ${CHECK_SCRIPT}"
+    CHECK_ARGS=(--report "$CHECKER_REPORT_FILE" --logs-dir "$CHECKER_LOGS_DIR")
+    if [ "$CLAUDE_CODE_CHECKER_DISCOVER" = "1" ]; then
+        CHECK_ARGS+=(--discover)
+    else
+        CHECK_ARGS+=(--no-discover)
+    fi
+    if [ -n "$CLAUDE_CODE_CHECKER_COMMANDS" ]; then
+        while IFS= read -r checker_command; do
+            [ -z "$checker_command" ] && continue
+            CHECK_ARGS+=(--command "$checker_command")
+        done <<EOF_CHECKER_COMMANDS
+$CLAUDE_CODE_CHECKER_COMMANDS
+EOF_CHECKER_COMMANDS
+    fi
     set +e
-    bash "$CHECK_SCRIPT" --report "$CHECKER_REPORT_FILE" --logs-dir "$CHECKER_LOGS_DIR" >> "$STATUS_FILE" 2>&1
+    bash "$CHECK_SCRIPT" "${CHECK_ARGS[@]}" >> "$STATUS_FILE" 2>&1
     CHECKER_STATUS=$?
     set -e
     if [ "$CHECKER_STATUS" -eq 0 ]; then
@@ -871,8 +1033,14 @@ else
     progress_log "Checker helper unavailable: ${CHECK_SCRIPT}"
 fi
 
-FILTERED_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null \
-    | grep -v -E '^(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)' || true)"
+if [ "$CLAUDE_CODE_LARGE_REPO_MODE" = "1" ]; then
+    FILTERED_UNTRACKED=""
+    FILTERED_UNTRACKED_SKIPPED=1
+else
+    FILTERED_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null \
+        | grep -v -E '^(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)' || true)"
+    FILTERED_UNTRACKED_SKIPPED=0
+fi
 
 write_untracked_patches() {
     echo "$FILTERED_UNTRACKED" | while IFS= read -r uf; do
@@ -900,7 +1068,9 @@ write_untracked_patches() {
     if [ -z "$CACHED_OUT" ]; then echo "(none)"; else echo "$CACHED_OUT"; fi
     echo ""
     echo "## Untracked Files"
-    if [ -z "$FILTERED_UNTRACKED" ]; then echo "(none)"; else echo "$FILTERED_UNTRACKED"; fi
+    if [ "$FILTERED_UNTRACKED_SKIPPED" -eq 1 ]; then
+        echo "(skipped: CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file scans)"
+    elif [ -z "$FILTERED_UNTRACKED" ]; then echo "(none)"; else echo "$FILTERED_UNTRACKED"; fi
 } > "$DIFFSTAT_FILE"
 
 {
@@ -915,7 +1085,9 @@ write_untracked_patches() {
     if [ -z "$STAGED_DIFF" ]; then echo "(none)"; else echo "$STAGED_DIFF"; fi
     echo ""
     echo "## Untracked File Patches"
-    if [ -z "$FILTERED_UNTRACKED" ]; then
+    if [ "$FILTERED_UNTRACKED_SKIPPED" -eq 1 ]; then
+        echo "(skipped: CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file patch generation)"
+    elif [ -z "$FILTERED_UNTRACKED" ]; then
         echo "(none)"
     else
         write_untracked_patches
@@ -925,7 +1097,9 @@ write_untracked_patches() {
 {
     echo "# Untracked Files in Worktree - ${TIMESTAMP}"
     echo ""
-    if [ -z "$FILTERED_UNTRACKED" ]; then
+    if [ "$FILTERED_UNTRACKED_SKIPPED" -eq 1 ]; then
+        echo "(skipped: CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file scans)"
+    elif [ -z "$FILTERED_UNTRACKED" ]; then
         echo "(none)"
     else
         echo "$FILTERED_UNTRACKED"
@@ -997,7 +1171,9 @@ echo "Usage summary saved to: $USAGE_FILE"
     if [ -z "$CACHED_OUT" ]; then echo "(none)"; else echo "$CACHED_OUT"; fi
     echo ""
     echo "## Untracked Files (excluding dispatch scaffolding)"
-    if [ -z "$FILTERED_UNTRACKED" ]; then echo "(none)"; else echo "$FILTERED_UNTRACKED"; fi
+    if [ "$FILTERED_UNTRACKED_SKIPPED" -eq 1 ]; then
+        echo "(skipped: CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file scans)"
+    elif [ -z "$FILTERED_UNTRACKED" ]; then echo "(none)"; else echo "$FILTERED_UNTRACKED"; fi
 } > "$WORKTREE_STATUS_FILE"
 
 echo "Worktree status saved to: $WORKTREE_STATUS_FILE"
@@ -1089,6 +1265,8 @@ echo "Report saved to: $REPORT_FILE"
 echo ""
 echo "=== Dispatch Complete ==="
 echo "Worktree:        $WORKTREE_DIR"
+echo "Worktree Strategy: $CLAUDE_CODE_WORKTREE_STRATEGY"
+echo "Large Repo Mode: $CLAUDE_CODE_LARGE_REPO_MODE"
 echo "Task Card Full:  ${WORKTREE_DIR}/TASK_CARD_FULL.md"
 echo "Claude Task:     ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
 echo "Result:          $RESULT_FILE"
@@ -1110,4 +1288,9 @@ echo "Watch Progress:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\""
 echo "Watch Details:   bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"
 echo ""
 echo "Changes have NOT been merged. Review the diff and merge manually."
-echo "To remove the worktree: git worktree remove $WORKTREE_DIR"
+if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
+    echo "Reusable managed worktree kept for future dispatches: $WORKTREE_DIR"
+    echo "To discard it: git worktree remove $WORKTREE_DIR"
+else
+    echo "To remove the worktree: git worktree remove $WORKTREE_DIR"
+fi

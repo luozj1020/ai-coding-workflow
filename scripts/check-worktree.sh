@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # check-worktree.sh  -  Run project validation checks without editing files.
 #
-# Usage: bash ai/check-worktree.sh [--report <path>] [--logs-dir <dir>] [--no-discover]
+# Usage: bash ai/check-worktree.sh [--report <path>] [--logs-dir <dir>]
+#       [--command <label=command>] [--discover|--no-discover]
 #
-# The checker discovers common validation commands, runs them, writes a concise
-# report, and treats checker-induced worktree mutations as failures.
+# The checker runs explicitly assigned validation commands and, when discovery
+# is enabled, common project validation commands. It writes a concise report and
+# treats checker-induced worktree mutations as failures.
 
 set -euo pipefail
 
@@ -13,7 +15,37 @@ export PATH
 
 REPORT_FILE=""
 LOGS_DIR=""
-DISCOVER=1
+DISCOVER="${AI_CHECK_WORKTREE_DISCOVER:-1}"
+COMMANDS=()
+COMMAND_LABELS=()
+
+add_command() {
+    local label="$1"
+    local command="$2"
+    COMMAND_LABELS+=("$label")
+    COMMANDS+=("$command")
+}
+
+add_command_arg() {
+    local value="$1"
+    local label=""
+    local command=""
+    case "$value" in
+        *=*)
+            label="${value%%=*}"
+            command="${value#*=}"
+            ;;
+        *)
+            label="custom-${#COMMANDS[@]}"
+            command="$value"
+            ;;
+    esac
+    if [ -z "$label" ] || [ -z "$command" ]; then
+        echo "Error: --command requires label=command or a non-empty command." >&2
+        exit 1
+    fi
+    add_command "$label" "$command"
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -33,6 +65,18 @@ while [ $# -gt 0 ]; do
             LOGS_DIR="$2"
             shift 2
             ;;
+        --command)
+            if [ $# -lt 2 ]; then
+                echo "Error: --command requires label=command" >&2
+                exit 1
+            fi
+            add_command_arg "$2"
+            shift 2
+            ;;
+        --discover)
+            DISCOVER=1
+            shift
+            ;;
         --no-discover)
             DISCOVER=0
             shift
@@ -47,6 +91,14 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+case "$DISCOVER" in
+    0|1) ;;
+    *)
+        echo "Error: AI_CHECK_WORKTREE_DISCOVER must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
 
 if ! command -v git >/dev/null 2>&1; then
     echo "Error: git is not installed or not in PATH." >&2
@@ -65,16 +117,6 @@ if [ -z "$REPORT_FILE" ]; then
     REPORT_FILE="${LOGS_DIR}/checker-report.md"
 fi
 mkdir -p "$(dirname "$REPORT_FILE")"
-
-COMMANDS=()
-COMMAND_LABELS=()
-
-add_command() {
-    local label="$1"
-    local command="$2"
-    COMMAND_LABELS+=("$label")
-    COMMANDS+=("$command")
-}
 
 has_script() {
     local script="$1"
@@ -174,6 +216,18 @@ BEFORE_STATUS="$(status_snapshot)"
 FAILED=0
 
 if [ "${#COMMANDS[@]}" -eq 0 ]; then
+    if [ "$DISCOVER" -eq 0 ]; then
+        {
+            echo "## Result"
+            echo ""
+            echo "SKIPPED"
+            echo ""
+            echo "No explicit validation commands were provided and broad discovery is disabled."
+            echo "Pass --command 'label=command' for task-card-assigned checks, or pass --discover to run broad project discovery."
+        } >> "$REPORT_FILE"
+        cat "$REPORT_FILE"
+        exit 0
+    fi
     FAILED=1
     {
         echo "## Result"
@@ -258,4 +312,3 @@ fi
 
 cat "$REPORT_FILE"
 exit "$FAILED"
-

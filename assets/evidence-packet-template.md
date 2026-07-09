@@ -299,6 +299,20 @@
 | If takeover requested, threshold or human override cited | |
 | Return-to-delegation condition | |
 
+## Worktree / Large Repo Follow-up
+
+<!-- Fill when worktree reuse or large-repo mode was used. These are performance optimizations with evidence tradeoffs, not default behavior. -->
+
+| Field | Value |
+|-------|-------|
+| Worktree strategy used | fresh / reuse-managed |
+| Reused managed worktree path | none / .worktrees/reuse/claude-managed |
+| Large repo mode used? | yes/no |
+| Untracked scans skipped? | yes/no |
+| Untracked patch evidence skipped? | yes/no |
+| Evidence tradeoff accepted in task card? | yes/no |
+| Source repository reset or cleaned? | no |
+
 ## Direction / Boundary Acknowledgement Follow-up
 
 <!-- Record whether Claude completed the pre-edit acknowledgement and whether Codex approval was required. -->
@@ -330,6 +344,10 @@
 | Claude wrote/updated tests? | yes/no |
 | Claude was assigned to run tests? | yes/no |
 | Claude ran assigned tests? | yes/no/not assigned |
+| Validation command source | exact task-card commands / broad discovery / skipped / blocked |
+| Broad discovery used? | yes/no + reason |
+| Approval or sandbox blocked validation? | yes/no + exact command |
+| Codex rerun required for blocked validation? | yes/no + command |
 | Codex/human verification still required? | yes/no |
 | No-test or no-run rationale | |
 

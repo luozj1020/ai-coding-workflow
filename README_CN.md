@@ -11,7 +11,8 @@ ai-coding-workflow 可以为仓库自动配置：
 - `CLAUDE.md` - Claude Code 执行规则
 - 任务卡和证据包模板
 - Codex + Claude Code 工作流的安全调度/审查/循环脚本
-- 可选 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做快速审查、证据检查或极小范围隔离 micro-builder 工作
+- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做快速审查、证据检查或极小范围隔离 micro-builder 工作
+- 大型仓库调度选项：受管 worktree 复用，以及减少昂贵的未跟踪文件扫描
 - Builder / Checker-Test 任务模式，用于分离实现和验证职责
 - Direction / Boundary Acknowledgement 方向/边界确认门，以及防反复确认规则
 - 幂等更新的托管块（managed blocks）
@@ -294,9 +295,18 @@ Use ai-coding-workflow to create a task card for implementing <功能>.
 
 对于有明确完成标准的循环任务，请填写任务卡中的 `Goal Loop Contract`。优先写清楚 success signal、最大尝试次数、重复失败停止阈值、无改进停止阈值、回归停止规则、必须提供的证据和 benchmark tags。宽泛或有歧义的工作先填 `Spec Gate`，bugfix/regression 修复先填 `Root Cause Gate`，需要 red-green 证据时填 `Test-First / TDD Contract`，声明 ready for merge 前填 `Finish Branch Gate`。需要更强模型、Codex reviewer 或人工专家在高风险工作前给建议时，填写 `Advisor Gate`，记录咨询时机、调用上限、输出预算、结果可见性、冲突调和和 fallback 行为。`Unknowns` 则用于记录 blindspot scan、会改变架构的问题、参考样例，以及 Claude 偏离原计划时应记录到哪里。
 
-**可选：在执行规划中使用 Codex Spark**
+任务卡很长时，可以保留完整 Codex planning card 作为审计来源，但给 Claude 派发 compact execution view：
 
-如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，可以先在任务卡中填写 `Codex Spark Gate`，再运行 Spark。Spark 是辅助层，不是默认替代 Claude：
+```bash
+CLAUDE_CODE_TASK_CARD_VIEW=compact \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+compact view 会从 `CLAUDE_TASK_CARD.md` 里省略可选规划 gate；完整内容仍保存在 worktree 的 `TASK_CARD_FULL.md`。只有当前 phase、handoff、测试责任、验证契约和验收标准已经写清楚时才使用。
+
+**默认可选开启：在执行规划中使用 Codex Spark**
+
+如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；如果 CLI、模型权限、auth、网络、Spark 额度不可用，或 read-only sandbox 因本地 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
 
 - `review-only`：快速只读审查任务卡或实现方向。
 - `evidence-checker`：已有 artifacts 后快速检查证据质量。
@@ -320,7 +330,28 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode evidence-checker
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
 ```
 
-Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型；如果 Spark 不可用，它会记录 blocker 并以非零状态退出。
+Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型。只有当 Spark 不可用也应该成为硬失败时，才使用 `--require-spark`。
+
+**大型仓库 / 慢文件系统**
+
+如果大型项目里 `git worktree add`、文件系统读取、dispatcher status/diff 收集很慢，先在任务卡里填写 `Worktree / Large Repo Strategy Gate`。默认仍然最安全：fresh 隔离 worktree + 完整 diff/untracked 证据。确实需要优化时再显式 opt in：
+
+```bash
+CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed \
+CLAUDE_CODE_REUSE_WORKTREE_RESET=1 \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+这只会复用 `.worktrees/reuse/claude-managed`，并且只 reset/clean 这个受管 worktree，绝不会 reset/clean 源仓库。
+
+如果未跟踪文件扫描或未跟踪文件 patch 生成太慢，可以使用：
+
+```bash
+CLAUDE_CODE_LARGE_REPO_MODE=1 \
+bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
+```
+
+large-repo mode 会保留 tracked/staged diff 证据，但跳过昂贵的无关 untracked 扫描和 untracked patch 证据。使用前应在任务卡中记录这个证据取舍。
 
 **实验性：并行派发**
 
@@ -433,7 +464,32 @@ bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
 
 循环运行器自动执行步骤 3-5，在接受、达到最大迭代次数或人工干预时停止。它还会写入 `.worktrees/loop-<timestamp>/loop-usage-summary.md`，汇总可用的 Claude 和 Codex 使用量。它不会自动合并。
 
-**只检查验证：** 安装后的项目包含 `ai/check-worktree.sh`。dispatcher 会在 Claude 结束后运行它并记录 checker report。checker 会发现常见项目检查命令，只运行验证、不修改文件，保留失败命令输出，并将结果标记为 `ALL GREEN` 或 `FAILED`。
+**只检查验证：** 安装后的项目包含 `ai/check-worktree.sh`。优先运行任务卡里的精确验证命令：
+
+```bash
+bash ai/check-worktree.sh --no-discover --command 'tests=pytest tests/test_target.py'
+```
+
+dispatcher 会在 Claude 结束后记录 checker report，但默认关闭广域 discover，避免与当前任务无关的 pytest/ruff/mypy 噪音。需要 dispatcher 复跑精确命令时，传入 `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'`；只有任务卡明确允许广域项目检查时，才设置 `CLAUDE_CODE_CHECKER_DISCOVER=1`。
+
+**项目测试分层：** 这个 workflow 项目的测试分为快速检查和较慢的集成覆盖。按改动范围选择最小验证层级：
+
+```bash
+# Smoke：shell 语法和 whitespace
+bash -n scripts/*.sh
+git diff --check
+
+# 日常编辑默认
+python -m pytest -m "not slow"
+
+# 按改动区域运行相关测试
+python -m pytest tests/test_run_codex_spark.py tests/test_check_worktree.py
+
+# 发布前或提交前完整信心
+python -m pytest tests
+```
+
+标记为 `slow` 的测试会反复创建临时仓库、worktree 或运行 installer。它们应该在发布前、或修改 dispatcher/worktree/install 行为时运行，不适合每次小文档或 helper 改动后都跑。
 
 **Workflow 质量汇总：** `ai/run-loop.sh` 还会写入 `.worktrees/loop-<timestamp>/loop-quality-summary.md` 和 `.json`。也可以手动汇总已有运行：
 
