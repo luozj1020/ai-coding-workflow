@@ -30,9 +30,9 @@ class DoctorWorkflowTests(unittest.TestCase):
             capture_output=True,
         )
 
-    def run_installer(self, repo):
+    def run_installer(self, repo, *extra_args):
         return subprocess.run(
-            [sys.executable, str(INSTALLER), str(repo)],
+            [sys.executable, str(INSTALLER), str(repo)] + list(extra_args),
             cwd=str(ROOT),
             text=True,
             encoding="utf-8",
@@ -272,6 +272,20 @@ class DoctorWorkflowTests(unittest.TestCase):
             self.assertIn("[worktrees-ignore]", result.stdout)
             self.assertIn("runtime artifacts are ignored", result.stdout)
 
+    def test_doctor_accepts_local_only_info_exclude(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), capture_output=True, check=True)
+            self.run_installer(repo, "--local-only")
+
+            result = self.run_doctor(repo)
+
+            self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+            self.assertIn("[worktrees-ignore]", result.stdout)
+            self.assertIn("local-only control-plane ignore active", result.stdout)
+            self.assertFalse((repo / ".gitignore").exists())
+
     def test_doctor_warns_for_large_repositories(self):
         module = load_module()
         old_count = module._tracked_file_count
@@ -289,7 +303,10 @@ class DoctorWorkflowTests(unittest.TestCase):
         self.assertTrue(has_error)
         text = "\n".join("{} [{}] {}".format(*f) for f in findings)
         self.assertIn("large-repo", text)
+        self.assertIn("Worktree / Large Repo Strategy Gate", text)
+        self.assertIn("CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo", text)
         self.assertIn("CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed", text)
+        self.assertIn("CodeGraph queries to concrete files/symbols", text)
 
     # --- Proxy masking ---
 

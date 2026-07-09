@@ -144,6 +144,21 @@
 | Advisor output tokens | |
 | Advisor cost USD | |
 
+## Small Change Fast Path Follow-up
+
+<!-- Fill when Codex skipped Claude dispatch because the task met the fast-path gate. -->
+
+| Field | Value |
+|-------|-------|
+| Fast path used? | yes/no |
+| Claude dispatch skipped? | yes/no |
+| Files touched | |
+| Reason fast path was safe | |
+| Scope stayed within gate? | yes/no |
+| Spark used? | no / yes + artifact |
+| Validation run | command / skipped + reason |
+| Escalation needed after edit? | no / yes + reason |
+
 ## Codex Spark Follow-up
 
 <!-- Compare the run against the task card's Codex Spark Gate. Fill only when Spark was enabled or considered. -->
@@ -152,7 +167,8 @@
 |-------|-------|
 | Spark enabled in task card? | auto/yes/no |
 | Spark invoked? | yes/no/not required |
-| Spark purpose used | review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
+| Spark purpose used | auto-selected / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
+| Spark requested mode | auto / explicit mode / not recorded |
 | Spark model used | gpt-5.3-codex-spark / other |
 | Invocation command or artifact | |
 | Artifact inputs manifest | none / codex-spark.artifacts.txt |
@@ -166,6 +182,8 @@
 | Helper exit behavior | optional-spark / require-spark |
 | Strong-model fallback used? | no / yes + explicit approval artifact |
 | Spark result accepted by Codex? | yes/no/partial |
+| Spark suggestions accepted | none / concise list |
+| Spark suggestions ignored | none / concise list + reason |
 | Conflict with Claude or local evidence? | yes/no + reconciliation |
 | Remaining Spark-related risk | |
 

@@ -175,18 +175,64 @@ def _count_runtime_artifacts(repo_root):
 def _worktrees_ignore_status(repo_root):
     """Return (ok, message) for .worktrees runtime ignore configuration."""
     gitignore = os.path.join(repo_root, ".gitignore")
+    required = {"/.worktrees/*", "!/.worktrees/.gitkeep"}
+    if os.path.isfile(gitignore):
+        try:
+            text = _read_text(gitignore)
+        except OSError as exc:
+            return False, "could not read .gitignore: {}".format(exc)
+        lines = {line.strip() for line in text.splitlines()}
+        missing = sorted(required - lines)
+        if not missing:
+            return True, ".worktrees runtime artifacts are ignored"
+
+    local_ok, local_message = _local_only_exclude_status(repo_root)
+    if local_ok:
+        return True, local_message
+
     if not os.path.isfile(gitignore):
         return False, ".gitignore is missing .worktrees runtime rules"
+    return False, ".gitignore missing: {}".format(", ".join(missing))
+
+
+def _git_info_exclude_path(repo_root):
+    """Return the repo-local git info/exclude path, or None when unavailable."""
     try:
-        text = _read_text(gitignore)
+        result = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "--git-path", "info/exclude"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            path = result.stdout.strip()
+            if not os.path.isabs(path):
+                path = os.path.join(repo_root, path)
+            return path
+    except (FileNotFoundError, OSError):
+        pass
+    fallback = os.path.join(repo_root, ".git", "info", "exclude")
+    if os.path.isdir(os.path.join(repo_root, ".git")):
+        return fallback
+    return None
+
+
+def _local_only_exclude_status(repo_root):
+    """Return whether local-only control-plane ignores are active."""
+    exclude_path = _git_info_exclude_path(repo_root)
+    if not exclude_path or not os.path.isfile(exclude_path):
+        return False, ".git/info/exclude missing local-only control-plane rules"
+    try:
+        text = _read_text(exclude_path)
     except OSError as exc:
-        return False, "could not read .gitignore: {}".format(exc)
+        return False, "could not read .git/info/exclude: {}".format(exc)
     lines = {line.strip() for line in text.splitlines()}
-    required = {"/.worktrees/*", "!/.worktrees/.gitkeep"}
+    required = {"/AGENTS.md", "/CLAUDE.md", "/ai/", "/.worktrees/"}
     missing = sorted(required - lines)
     if missing:
-        return False, ".gitignore missing: {}".format(", ".join(missing))
-    return True, ".worktrees runtime artifacts are ignored"
+        return False, ".git/info/exclude missing local-only rules: {}".format(", ".join(missing))
+    return True, "local-only control-plane ignore active via .git/info/exclude"
 
 
 def _tracked_file_count(repo_root):
@@ -495,7 +541,10 @@ def run_doctor(repo_path=None):
     tracked_count = _tracked_file_count(root)
     if tracked_count is not None:
         if tracked_count >= 10000:
-            findings.append((WARN, "large-repo", "{} tracked files; dispatch worktree creation may be slow. Consider CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed and CLAUDE_CODE_LARGE_REPO_MODE=1 when the evidence tradeoff is acceptable.".format(tracked_count)))
+            findings.append((WARN, "large-repo", "{} tracked files; dispatch worktree creation may be slow. Fill Worktree / Large Repo Strategy Gate before dispatch.".format(tracked_count)))
+            findings.append((INFO, "large-repo", "Recommended fast dispatch when the evidence tradeoff is acceptable: CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo bash ai/dispatch-to-claude.sh <task-card>"))
+            findings.append((INFO, "large-repo", "Manual knobs: CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed and CLAUDE_CODE_LARGE_REPO_MODE=1; reset only .worktrees/reuse/claude-managed with CLAUDE_CODE_REUSE_WORKTREE_RESET=1 after preserving evidence."))
+            findings.append((INFO, "codegraph", "For large repositories, keep CodeGraph queries to concrete files/symbols. If a broad query times out, record the timeout, narrow once, then fall back to rg --files plus targeted line reads."))
         else:
             findings.append((INFO, "large-repo", "{} tracked files".format(tracked_count)))
 

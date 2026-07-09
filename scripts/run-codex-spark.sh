@@ -2,12 +2,12 @@
 # run-codex-spark.sh  -  Optional Codex Spark auxiliary execution for the workflow.
 #
 # Usage:
-#   bash ai/run-codex-spark.sh <task-card> [--mode review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder]
+#   bash ai/run-codex-spark.sh <task-card> [--mode auto|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder]
 #       [--model gpt-5.3-codex-spark] [--sandbox read-only|workspace-write]
 #       [--artifact .worktrees/claude-....report.md] [--output .worktrees/codex-spark-...]
 #
-# Defaults are intentionally conservative: review-only, read-only, optional Spark,
-# and no strong-model fallback.
+# Defaults are intentionally conservative: auto-selected auxiliary role,
+# read-only, optional Spark, and no strong-model fallback.
 
 set -euo pipefail
 
@@ -19,7 +19,7 @@ usage() {
 Usage: run-codex-spark.sh <task-card> [options]
 
 Options:
-  --mode MODE       review-only, task-card-audit, plan-splitter,
+  --mode MODE       auto, review-only, task-card-audit, plan-splitter,
                     validation-planner, failure-triage, evidence-checker,
                     or micro-builder
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
@@ -46,7 +46,8 @@ EOF
 
 TASK_CARD=""
 CODEX_BIN="${CODEX_SPARK_CODEX_BIN:-codex}"
-MODE="${CODEX_SPARK_MODE:-review-only}"
+MODE="${CODEX_SPARK_MODE:-auto}"
+REQUESTED_MODE="$MODE"
 MODEL="${CODEX_SPARK_MODEL:-gpt-5.3-codex-spark}"
 SANDBOX="${CODEX_SPARK_SANDBOX:-read-only}"
 OUTPUT_DIR="${CODEX_SPARK_OUTPUT_DIR:-}"
@@ -122,7 +123,7 @@ if [ -z "$TASK_CARD" ]; then
 fi
 
 case "$MODE" in
-    review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder) ;;
+    auto|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder) ;;
     *)
         echo "Error: invalid --mode: $MODE" >&2
         exit 1
@@ -143,11 +144,6 @@ case "$SANDBOX" in
         exit 1
         ;;
 esac
-
-if [ "$MODE" = "micro-builder" ] && [ "$SANDBOX" != "workspace-write" ]; then
-    echo "Error: micro-builder mode requires --sandbox workspace-write." >&2
-    exit 1
-fi
 
 if [ ! -f "$TASK_CARD" ]; then
     echo "Error: task card not found: $TASK_CARD" >&2
@@ -194,6 +190,50 @@ for artifact in "${ARTIFACTS[@]}"; do
     printf '%s\n' "$artifact" >> "$ARTIFACT_MANIFEST"
 done
 
+artifact_failure_signals() {
+    [ "${#ARTIFACTS[@]}" -gt 0 ] || return 1
+    grep -Eiq \
+        'FAILED|ERROR|timeout|timed out|no valid report|seeded report|fallback report|acknowledgement only|quota|auth|permission|stale HEAD|dirty source|no useful progress' \
+        "${ARTIFACTS[@]}" 2>/dev/null
+}
+
+artifact_name_matches() {
+    local pattern="$1"
+    local artifact=""
+    for artifact in "${ARTIFACTS[@]}"; do
+        case "$(basename "$artifact")" in
+            $pattern) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+resolve_auto_mode() {
+    if [ "$MODE" != "auto" ]; then
+        return
+    fi
+    if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
+        if artifact_failure_signals; then
+            MODE="failure-triage"
+        elif artifact_name_matches "*.diff" || artifact_name_matches "*.diffstat.txt"; then
+            MODE="review-only"
+        else
+            MODE="evidence-checker"
+        fi
+    elif grep -Eiq 'checker-test|Validation Contract|Local validation allowed|Test-First / TDD|TDD mode' "$TASK_CARD_COPY"; then
+        MODE="validation-planner"
+    else
+        MODE="task-card-audit"
+    fi
+}
+
+resolve_auto_mode
+
+if [ "$MODE" = "micro-builder" ] && [ "$SANDBOX" != "workspace-write" ]; then
+    echo "Error: micro-builder mode requires --sandbox workspace-write." >&2
+    exit 1
+fi
+
 write_report_header() {
     local exit_value="${1:-pending}"
     local diff_value="${2:-pending}"
@@ -207,6 +247,7 @@ write_report_header() {
         echo "| Spark enabled in task card? | yes |"
         echo "| Spark invoked? | ${SPARK_INVOKED} |"
         echo "| Spark purpose used | ${MODE} |"
+        echo "| Spark requested mode | ${REQUESTED_MODE} |"
         echo "| Spark model used | ${MODEL} |"
         echo "| Invocation command or artifact | ${PROMPT_FILE} |"
         echo "| Sandbox used | ${SANDBOX} |"
@@ -219,6 +260,8 @@ write_report_header() {
         echo "| Helper exit behavior | $([ "$REQUIRE_SPARK" = "1" ] && echo require-spark || echo optional-spark) |"
         echo "| Strong-model fallback used | no |"
         echo "| Spark result accepted by Codex? | pending review |"
+        echo "| Spark suggestions accepted | pending Codex review |"
+        echo "| Spark suggestions ignored | pending Codex review |"
         echo "| Conflict with Claude or local evidence? | pending review |"
         echo "| Remaining Spark-related risk | pending review |"
         echo "| Artifact directory | ${OUTPUT_DIR} |"
@@ -363,7 +406,8 @@ cat > "$PROMPT_FILE" <<EOF
 You are an optional Codex Spark auxiliary in a Codex/Claude workflow.
 
 Model requested: ${MODEL}
-Mode: ${MODE}
+Mode requested: ${REQUESTED_MODE}
+Mode resolved: ${MODE}
 Sandbox: ${SANDBOX}
 
 Operating rules:

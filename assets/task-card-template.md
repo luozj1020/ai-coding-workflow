@@ -134,6 +134,31 @@ Anti-loop rule: acknowledgement is a gate, not a discussion loop. Codex should a
 
 Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude recommends `proceed`, Claude must continue implementation in the same run. Stopping after acknowledgement without a concrete blocker or approval requirement is `acknowledgement only` and counts as no implementation progress.
 
+## Small Change Fast Path Gate
+
+<!-- Fill before dispatch. If every row supports direct Codex editing, Codex may skip Claude dispatch for this task and perform the bounded edit directly. If the edit grows beyond this gate, stop and return to task-card + Claude dispatch. -->
+
+| Field | Value |
+|-------|-------|
+| Fast path candidate? | yes/no |
+| Expected files touched | <=2 / >2 |
+| Files small and targeted? | yes/no |
+| Change type | docs/comment/test assertion/log text/mechanical helper fix/other |
+| Public API, data model, security, migration, permission, concurrency impact? | no / yes + explain |
+| Broad repository context needed? | no / yes |
+| Cross-module contract risk? | no / yes |
+| Test design or complex validation needed? | no / yes |
+| Direct Codex edit allowed? | yes/no |
+| Reason for skipping Claude dispatch | |
+| Narrow validation or reason skipped | |
+| Escalate to Claude if | files >2 / scope expands / uncertainty appears / validation needs Checker/Test |
+
+Fast path rules:
+- Use only for small, local, low-risk edits where Claude dispatch overhead would cost more than the change.
+- Do not use for public API, data shape, security, migration, permission, concurrency, broad refactor, or cross-module contract changes.
+- Spark is optional on fast path; skip it when the edit is obvious and evidence is local.
+- Record the reason Claude was not dispatched and preserve narrow validation evidence or an explicit validation-skip reason.
+
 ## Task Card Views
 
 <!-- Codex owns this full planning card. Dispatch scripts derive `CLAUDE_TASK_CARD.md` from it and omit Codex-only budget/planning/control sections before prompting Claude. Do not maintain a second hand-written Claude card. -->
@@ -212,7 +237,7 @@ Advisor timing rules:
 | Field | Value |
 |-------|-------|
 | Spark enabled? | auto / no / yes |
-| Spark purpose | review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
+| Spark purpose | auto / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
 | Spark model | gpt-5.3-codex-spark |
 | Quota rationale | separate Spark quota / latency / cost / not applicable |
 | Invocation helper | ai/run-codex-spark.sh |
@@ -227,9 +252,12 @@ Advisor timing rules:
 | Required Spark artifact | .worktrees/.../codex-spark.report.md |
 | Spark artifact inputs | none / specific `.worktrees/...` files via `--artifact` |
 | Spark result can satisfy acceptance? | no / yes, only for: |
+| Spark can replace Claude Builder? | no |
+| Spark can approve final review? | no |
 | Stop conditions | unclear scope / non-availability helper failure / explicit require-spark failure |
 
 Spark rules:
+- When `Spark purpose` is `auto`, use `task-card-audit` before normal dispatch, `validation-planner` before Checker/Test work, `failure-triage` after failed/no-report artifacts, `review-only` for diff review, and `evidence-checker` for report/evidence review.
 - Prefer `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, or `evidence-checker` before `micro-builder`.
 - Use `task-card-audit` to catch missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
 - Use `plan-splitter` to propose Builder/Checker slices or independent parallelizable task cards.

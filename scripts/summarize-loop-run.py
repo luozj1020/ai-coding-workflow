@@ -252,6 +252,7 @@ def spark_status(
     )
     invoked = followup.get("spark_invoked") or ("yes" if spark_reports else "no")
     mode = followup.get("spark_purpose_used") or gate.get("spark_purpose") or "not recorded"
+    requested_mode = followup.get("spark_requested_mode") or "not recorded"
     model = followup.get("spark_model_used") or gate.get("spark_model") or "not recorded"
     artifact = (
         followup.get("artifact_directory")
@@ -267,10 +268,13 @@ def spark_status(
         or "no"
     )
     sandbox = followup.get("sandbox_used") or gate.get("sandbox") or "not recorded"
+    accepted = followup.get("spark_suggestions_accepted") or followup.get("spark_result_accepted_by_codex") or "not recorded"
+    ignored = followup.get("spark_suggestions_ignored") or "not recorded"
     return {
         "enabled": enabled,
         "invoked": invoked,
         "mode": mode,
+        "requested_mode": requested_mode,
         "model": model,
         "artifact": artifact,
         "exit_code": exit_code,
@@ -278,6 +282,8 @@ def spark_status(
         "auto_disable_reason": auto_disable_reason,
         "strong_model_fallback": fallback,
         "sandbox": sandbox,
+        "accepted_suggestions": accepted,
+        "ignored_suggestions": ignored,
     }
 
 
@@ -474,6 +480,7 @@ def render_markdown(summary: dict) -> str:
         "enabled",
         "invoked",
         "mode",
+        "requested_mode",
         "model",
         "artifact",
         "exit_code",
@@ -481,6 +488,8 @@ def render_markdown(summary: dict) -> str:
         "auto_disable_reason",
         "strong_model_fallback",
         "sandbox",
+        "accepted_suggestions",
+        "ignored_suggestions",
     ]:
         lines.append(f"| {key} | {summary['spark_status'][key]} |")
 

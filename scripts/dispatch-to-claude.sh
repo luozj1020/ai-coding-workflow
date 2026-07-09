@@ -1096,7 +1096,13 @@ EOF_CHECKER_COMMANDS
     CHECKER_STATUS=$?
     set -e
     if [ "$CHECKER_STATUS" -eq 0 ]; then
-        progress_log "Checker helper completed: ALL GREEN"
+        if grep -Eq '^SKIPPED by policy$|^SKIPPED$|Local validation is disabled by the task card' "$CHECKER_REPORT_FILE" 2>/dev/null; then
+            progress_log "Checker helper completed: artifact collection OK; validation skipped by policy"
+        elif grep -Eq '^ALL GREEN$' "$CHECKER_REPORT_FILE" 2>/dev/null; then
+            progress_log "Checker helper completed: artifact collection OK; validation ALL GREEN"
+        else
+            progress_log "Checker helper completed: artifact collection OK; validation status unknown"
+        fi
     else
         progress_log "Checker helper completed: FAILED status=${CHECKER_STATUS}; report=${CHECKER_REPORT_FILE}"
         echo "Warning: checker helper reported failures. Review $CHECKER_REPORT_FILE" >&2

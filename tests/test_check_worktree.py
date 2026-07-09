@@ -92,6 +92,8 @@ class CheckWorktreeTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             text = report.read_text(encoding="utf-8")
+            self.assertIn("Artifact Collection", text)
+            self.assertIn("OK", text)
             self.assertIn("- custom: `printf validation-ok`", text)
             self.assertIn("ALL GREEN", text)
             self.assertIn("validation-ok", text)
@@ -179,6 +181,9 @@ class CheckWorktreeTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             text = report.read_text(encoding="utf-8")
+            self.assertIn("Artifact Collection", text)
+            self.assertIn("Validation", text)
+            self.assertIn("SKIPPED by policy", text)
             self.assertIn("SKIPPED", text)
             self.assertIn("Local validation is disabled", text)
             self.assertNotIn("ALL GREEN", text)

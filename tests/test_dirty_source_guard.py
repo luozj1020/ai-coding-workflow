@@ -11,6 +11,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DISPATCH = ROOT / "scripts" / "dispatch-to-claude.sh"
+CHECK_WORKTREE = ROOT / "scripts" / "check-worktree.sh"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -348,6 +349,32 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotEqual(second.returncode, 0)
         self.assertIn("reusable managed worktree already exists", second.stderr)
         self.assertIn("CLAUDE_CODE_REUSE_WORKTREE_RESET=1", second.stderr)
+
+    def test_checker_progress_distinguishes_validation_skipped_by_policy(self):
+        shutil.copy2(CHECK_WORKTREE, self.repo / "scripts" / "check-worktree.sh")
+        self._run(["git", "add", "scripts/check-worktree.sh"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add checker"], cwd=self.repo)
+        task = self._write_task_card()
+        task.write_text(
+            "# Task\n\n"
+            "## Validation Contract\n\n"
+            "| Check | Command | Required? | Notes |\n"
+            "|-------|---------|-----------|-------|\n"
+            "| Local validation allowed? | no | required | commands only |\n\n"
+            "```bash validation\n"
+            "false\n"
+            "```\n",
+            encoding="utf-8",
+        )
+
+        result = self._dispatch()
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        checker = self._artifact_path(result.stdout, "Checker Report").read_text(encoding="utf-8")
+        self.assertIn("artifact collection OK; validation skipped by policy", progress)
+        self.assertIn("SKIPPED by policy", checker)
+        self.assertNotIn("Checker helper completed: ALL GREEN", progress)
 
     def test_unrelated_untracked_file_blocks(self):
         self._write_task_card()

@@ -82,6 +82,31 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertEqual(lines.count("/.worktrees/*"), 1)
             self.assertEqual(lines.count("!/.worktrees/.gitkeep"), 1)
 
+    def test_local_only_uses_git_info_exclude_without_gitignore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), capture_output=True, check=True)
+
+            result = self.run_installer(repo, "--local-only")
+
+            self.assertIn("local-only control plane", result.stdout)
+            self.assertFalse((repo / ".gitignore").exists())
+            exclude = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+            self.assertIn("/AGENTS.md", exclude)
+            self.assertIn("/CLAUDE.md", exclude)
+            self.assertIn("/ai/", exclude)
+            self.assertIn("/.worktrees/", exclude)
+
+    def test_local_only_warns_without_git_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            result = self.run_installer(repo, "--local-only")
+
+            self.assertIn("git info/exclude unavailable", result.stdout)
+            self.assertFalse((repo / ".gitignore").exists())
+
     def test_help_does_not_create_repository_named_help(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--help"],
@@ -94,6 +119,7 @@ class InstallWorkflowTests(unittest.TestCase):
         )
 
         self.assertIn("--update-workflow-files", result.stdout)
+        self.assertIn("--local-only", result.stdout)
         self.assertFalse((ROOT / "--help").exists())
 
     def test_update_preserves_user_owned_content(self):
@@ -409,7 +435,10 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Check Root Cause Gate", review)
             self.assertIn("Check Test-First / TDD Contract", review)
             self.assertIn("Check Finish Branch Gate", review)
+            self.assertIn("Check Small Change Fast Path Gate", review)
             self.assertIn("Check Codex Spark Gate", review)
+            self.assertIn("accepted suggestions", review)
+            self.assertIn("ignored suggestions", review)
             self.assertIn("Check Worktree / Large Repo Strategy Gate", review)
             self.assertIn("Check Parallel Execution Gate", review)
             self.assertIn("### Codex Spark Gate", review)
@@ -419,6 +448,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("### Root Cause Gate", review)
             self.assertIn("### Test-First / TDD Contract", review)
             self.assertIn("### Finish Branch Gate", review)
+            self.assertIn("### Small Change Fast Path", review)
             self.assertIn("New Spec / Spark / Parallel / Root Cause / TDD / Finish Branch requirements", review)
             self.assertIn("Validation Contract", task_template)
             self.assertIn("Local validation allowed?", task_template)
@@ -442,6 +472,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("## Direction / Boundary Acknowledgement", task_template)
             self.assertIn("Maximum acknowledgement rounds", task_template)
             self.assertIn("Anti-loop rule", task_template)
+            self.assertIn("## Small Change Fast Path Gate", task_template)
+            self.assertIn("Reason for skipping Claude dispatch", task_template)
             self.assertIn("## Execution Progress", task_template)
             self.assertIn("Builder may run narrow sanity checks?", task_template)
             self.assertIn("Broad acceptance test execution owner", task_template)
@@ -464,7 +496,14 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Loop type", task_template)
             self.assertIn("## Codex Spark Gate", task_template)
             self.assertIn("gpt-5.3-codex-spark", task_template)
+            self.assertIn("Spark can replace Claude Builder?", task_template)
+            self.assertIn("When `Spark purpose` is `auto`", task_template)
+            self.assertIn("## Small Change Fast Path Follow-up", evidence_template)
+            self.assertIn("Claude dispatch skipped?", evidence_template)
             self.assertIn("## Codex Spark Follow-up", evidence_template)
+            self.assertIn("Spark requested mode", evidence_template)
+            self.assertIn("Spark suggestions accepted", evidence_template)
+            self.assertIn("Spark suggestions ignored", evidence_template)
             self.assertIn("## Parallel Execution Gate", task_template)
             self.assertIn("ai/run-parallel-loop.sh", task_template)
             self.assertIn("## Parallel Execution Follow-up", evidence_template)
@@ -545,6 +584,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Loop Engineering Validation Contract", agents)
             self.assertIn("do not use web search", agents)
             self.assertIn("read-only sandbox helper initialization", agents)
+            self.assertIn("Default `--mode auto` resolves", agents)
+            self.assertIn("cannot replace Claude Builder ownership", agents)
             self.assertIn("exact task-card validation commands", agents)
             self.assertIn("Local validation allowed?", agents)
             self.assertIn("Codex Intervention Policy", agents)
@@ -553,6 +594,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Missing Claude `result.json`, `CLAUDE_REPORT.md`, or acceptance evidence is an evidence gap", agents)
             self.assertIn("current-task repeated failure", agents)
             self.assertIn("salvage any reviewer-accepted first-round direction", agents)
+            self.assertIn("Small Change Fast Path Gate", agents)
+            self.assertIn("Small low-risk edits may stay Codex-owned", agents)
             self.assertIn("accepting one Claude round closes only that phase", agents)
             self.assertIn("remaining implementation/test-writing phases stay Claude-owned", agents)
             self.assertIn("Context Lifecycle", agents)

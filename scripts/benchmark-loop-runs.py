@@ -80,11 +80,14 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "advisor_cost_usd": field_number(advisor_followup, "advisor_cost_usd"),
                 "spark_enabled": spark_status.get("enabled", codex_spark_gate.get("spark_enabled", "")),
                 "spark_purpose": spark_status.get("mode", codex_spark_gate.get("spark_purpose", "")),
+                "spark_requested_mode": spark_status.get("requested_mode", ""),
                 "spark_invoked": spark_status.get("invoked", codex_spark_followup.get("spark_invoked", "")),
                 "spark_model": spark_status.get("model", codex_spark_followup.get("spark_model_used", "")),
                 "spark_exit_code": field_number(spark_status, "exit_code"),
                 "spark_auto_disabled": spark_status.get("auto_disabled", ""),
                 "spark_artifact": spark_status.get("artifact", ""),
+                "spark_accepted_suggestions": spark_status.get("accepted_suggestions", ""),
+                "spark_ignored_suggestions": spark_status.get("ignored_suggestions", ""),
                 "spark_strong_fallback_used": spark_status.get(
                     "strong_model_fallback",
                     codex_spark_followup.get("strong_model_fallback_used", ""),
@@ -169,20 +172,21 @@ def render_markdown(report: dict) -> str:
         "",
         "## Runs",
         "",
-        "| Run | Decision | Quality | Seconds | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Model | Parallel | Spec | TDD | Stability |",
-        "|-----|----------|---------|---------|-------|--------|------|------|------|---------|---------------|-------|-------------|----------|------|-----|-----------|",
+        "| Run | Decision | Quality | Seconds | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Mode | Spark Model | Spark Accepted | Spark Ignored | Parallel | Spec | TDD | Stability |",
+        "|-----|----------|---------|---------|-------|--------|------|------|------|---------|---------------|-------|------------|-------------|----------------|---------------|----------|------|-----|-----------|",
     ]
     if report["runs"]:
         for run in report["runs"]:
             lines.append(
                 "| {run_path} | {decision} | {quality_score} | {elapsed_seconds} | {input_tokens} | "
                 "{output_tokens} | {total_cost_usd} | {loop_type} | {benchmark_tags} | {advisor_model} | "
-                "{advisor_calls} | {spark_invoked} | {spark_model} | {parallel_helper_invoked} | {spec_matched} | {tdd_mode} | {stability_findings} |".format(
+                "{advisor_calls} | {spark_invoked} | {spark_purpose} | {spark_model} | {spark_accepted_suggestions} | "
+                "{spark_ignored_suggestions} | {parallel_helper_invoked} | {spec_matched} | {tdd_mode} | {stability_findings} |".format(
                     **{key: format_value(value) for key, value in run.items()}
                 )
             )
     else:
-        lines.append("| no runs | UNKNOWN | 0 | unavailable | 0 | 0 | 0 | | | | 0 | | | | | | 0 |")
+        lines.append("| no runs | UNKNOWN | 0 | unavailable | 0 | 0 | 0 | | | | 0 | | | | | | | | | 0 |")
     return "\n".join(lines) + "\n"
 
 

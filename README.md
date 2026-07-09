@@ -26,9 +26,12 @@ ai-coding-workflow bootstraps repositories with:
 | **Install Skill** | Once per computer | `python scripts/install_for_codex.py` |
 | **Update Skill** | After pulling a newer checkout | `python scripts/update_skill.py --bootstrap-current` |
 | **Bootstrap project** | Once per repository | `python scripts/install_workflow.py .` |
+| **Bootstrap local-only** | Repositories that should not commit workflow control-plane files | `python scripts/install_workflow.py . --local-only` |
 | **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
 
 These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create or refresh the target repository's `ai/` directory. Already bootstrapped projects keep local copies of `ai/dispatch-to-claude.sh`, `ai/task-card-template.md`, and other workflow files. Use `update_skill.py --bootstrap-current` or `install_workflow.py . --update-workflow-files` to refresh those local copies after updating the Skill.
+
+Use `--local-only` when a target repository should use `ai/`, `AGENTS.md`, `CLAUDE.md`, and `.worktrees/` locally but should not commit them. It writes those control-plane paths to `.git/info/exclude` and leaves `.gitignore` untouched; `doctor_workflow.py` accepts this as the local-only ignore mode.
 
 ## Repository layout
 
@@ -163,6 +166,8 @@ During Skill installation, the installer performs a read-only context intelligen
 
 It only prints suggestions. It does not install LSP tools and does not run `codegraph init` automatically. Use `python ~/.codex/skills/ai-coding-workflow/scripts/install_context_tools.py` to inspect LSP install suggestions, and run `codegraph init` inside a target repository when you want that repository indexed.
 
+In large repositories, keep CodeGraph queries narrow. If a broad query times out, record that timeout in the task evidence, narrow once to concrete files/symbols, then fall back to `rg --files` plus targeted line reads instead of repeatedly issuing broad CodeGraph queries.
+
 **Test it works:**
 
 ```
@@ -296,6 +301,8 @@ Phase ownership is explicit:
 | Checker/Test | Validation task dispatch and evidence review | Assigned tests, assigned validation, failure evidence |
 | Final Review | Accept / revise / split / reject; human merge stays separate | N/A unless re-dispatched |
 
+Small low-risk edits can use a Codex-only fast path instead of dispatching Claude. Use it only when the change is local, expected to touch no more than two small files, needs no broad context, has no public API/data/security/migration/permission/concurrency/cross-module contract risk, and has narrow validation or an explicit validation-skip reason. Record why Claude was not dispatched, files touched, validation evidence, and the condition that would have escalated to Claude. If scope expands or uncertainty appears, stop and return to task-card + Claude dispatch.
+
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 
 Permission or approval blockers include sandbox write denial, forbidden files, missing CLI authentication, network-restricted commands, commands that need human approval, and configured "do not read or modify" paths. These should be recorded in progress/report artifacts and handled as environment or orchestration blockers unless Claude ignored an available allowed path.
@@ -338,6 +345,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave `Codex Spark Gate` at `auto` for eligible tasks. Spark is auxiliary, not a default Claude replacement; if the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue:
 
+- `auto`: default role selection. It resolves to `task-card-audit` before normal dispatch, `validation-planner` for Checker/Test tasks, `failure-triage` for failed/no-report artifacts, `review-only` for diff artifacts, and `evidence-checker` for report/evidence artifacts.
 - `review-only`: quick read-only critique of the task card or likely direction.
 - `task-card-audit`: check missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
 - `plan-splitter`: propose smaller Builder/Checker task cards or independent parallelizable slices.
@@ -346,10 +354,10 @@ If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave 
 - `evidence-checker`: quick evidence sanity check after artifacts exist.
 - `micro-builder`: tiny scoped edits only, in the helper-created isolated worktree.
 
-Run the default read-only helper:
+Run the default auto-selected read-only helper:
 
 ```bash
-bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 ```
 
 Run an evidence check:
@@ -382,6 +390,8 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 ```
 
 Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.prompt.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.artifacts.txt`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model. If read-only sandbox initialization fails, for example due to a local app-server write requirement, the helper marks Spark auto-disabled and exits 0 unless `--require-spark` was used.
+
+Spark output is advisory. Record accepted and ignored suggestions in the Spark follow-up table, but do not let Spark replace Claude Builder ownership or Codex final review.
 
 **Large repositories / slow filesystems**
 
@@ -549,7 +559,7 @@ The checker also reads task-card validation fences when `--task-card` is passed:
 bazel test //path/to:target
 ```
 
-If the task card says `Local validation allowed? | no`, checker reports `SKIPPED` and does not run commands. Use that when the user or repository policy forbids local test execution; the report should list commands for the human or CI to run.
+If the task card says `Local validation allowed? | no`, checker reports artifact collection as `OK` and validation as `SKIPPED by policy`; it does not run commands and does not mean tests passed. Use that when the user or repository policy forbids local test execution; the report should list commands for the human or CI to run.
 
 **Project test tiers:** The workflow test suite has fast checks and slower integration coverage. Use the smallest tier that matches the edit:
 

@@ -18,6 +18,14 @@ Skill installation and project bootstrap are separate. If another repository doe
 python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 ```
 
+If the target repository should use the workflow locally but should not commit `ai/`, `AGENTS.md`, `CLAUDE.md`, `.worktrees/`, or `.gitignore` changes, use local-only bootstrap:
+
+```bash
+python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py . --local-only
+```
+
+`--local-only` writes the control-plane paths to `.git/info/exclude` and leaves `.gitignore` untouched. `doctor_workflow.py` treats that as a valid local-only ignore configuration.
+
 On Windows PowerShell:
 
 ```powershell
@@ -73,6 +81,8 @@ Phase ownership is explicit:
 | Direction Review | Wait, revise, split, dispatch checker-test, or threshold-based takeover decision | Report blockers and avoid repeated confirmation loops |
 | Checker/Test | Validation task dispatch and evidence review | Assigned tests, assigned validation, failure evidence |
 | Final Review | Accept / revise / split / reject; human merge stays separate | N/A unless re-dispatched |
+
+Small low-risk edits can use a Codex-only fast path instead of dispatching Claude. Use it only when the change is local, expected to touch no more than two small files, needs no broad context, has no public API/data/security/migration/permission/concurrency/cross-module contract risk, and has narrow validation or an explicit validation-skip reason. Record why Claude was not dispatched, files touched, validation evidence, and the condition that would have escalated to Claude. If scope expands or uncertainty appears, stop and return to task-card + Claude dispatch.
 
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 
@@ -196,10 +206,13 @@ It does **not** merge automatically.
 When the task card leaves `Codex Spark Gate` at `auto`, run Spark as a low-cost auxiliary for eligible tasks. Spark is optional support: if the CLI, model access, auth, network, Spark quota, or read-only sandbox helper initialization is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue.
 
 ```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode task-card-audit
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode validation-planner
 ```
+
+Default `--mode auto` resolves to `task-card-audit` before normal dispatch, `validation-planner` for Checker/Test tasks, `failure-triage` for failed/no-report artifacts, `review-only` for diff artifacts, and `evidence-checker` for report/evidence artifacts.
 
 For evidence checks:
 
@@ -225,9 +238,13 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 
 Spark artifacts include `codex-spark.report.md`, `codex-spark.prompt.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.artifacts.txt`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. Spark does not silently fall back to GPT-5.5 or another stronger model. Use `--require-spark` only when Spark availability should become a hard failure.
 
+Spark output is advisory. Record accepted and ignored suggestions in the Spark follow-up table, but do not let Spark replace Claude Builder ownership or Codex final review.
+
 ### Large Repositories / Slow Filesystems
 
 Fill `Worktree / Large Repo Strategy Gate` before dispatch when `git worktree add`, filesystem reads, or dispatcher status/diff collection are materially slow. Defaults keep complete evidence. Prefer the explicit fast profile when the gate accepts managed reuse and summary evidence:
+
+Keep CodeGraph queries narrow in large repositories. If a broad query times out, record the timeout as context evidence, narrow once to concrete files/symbols, then fall back to `rg --files` plus targeted line reads instead of repeatedly issuing broad CodeGraph queries.
 
 ```bash
 CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo \
@@ -338,7 +355,7 @@ The checker also reads task-card validation fences when `--task-card` is passed:
 bazel test //path/to:target
 ```
 
-If the task card says `Local validation allowed? | no`, checker reports `SKIPPED` and does not run commands. Use that when the user or repository policy forbids local test execution.
+If the task card says `Local validation allowed? | no`, checker reports artifact collection as `OK` and validation as `SKIPPED by policy`; it does not run commands and does not mean tests passed. Use that when the user or repository policy forbids local test execution.
 
 ### Project Test Tiers
 

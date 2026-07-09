@@ -43,6 +43,7 @@ class RunCodexSparkTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("gpt-5.3-codex-spark", result.stderr)
+        self.assertIn("auto", result.stderr)
         self.assertIn("review-only", result.stderr)
         self.assertIn("task-card-audit", result.stderr)
         self.assertIn("plan-splitter", result.stderr)
@@ -119,6 +120,132 @@ class RunCodexSparkTests(unittest.TestCase):
                 (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
                 ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "read-only", "-"],
             )
+
+    def test_auto_mode_defaults_to_task_card_audit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            task_card = repo / "task-card.md"
+            task_card.write_text("# Task\n\nSmall implementation task.\n", encoding="utf-8")
+
+            fake_codex = tmp_path / "codex.sh"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "cat > \"$CODEX_FAKE_STDIN\"\n"
+                "echo 'audit ok'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            output_dir = repo / ".worktrees" / "spark-test"
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_FAKE_STDIN"] = bash_path(tmp_path / "stdin.md")
+
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--output",
+                    bash_path(output_dir),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            prompt = (tmp_path / "stdin.md").read_text(encoding="utf-8")
+            self.assertIn("| Spark purpose used | task-card-audit |", report)
+            self.assertIn("| Spark requested mode | auto |", report)
+            self.assertIn("Mode resolved: task-card-audit", prompt)
+
+    def test_auto_mode_uses_validation_planner_for_checker_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            task_card = repo / "task-card.md"
+            task_card.write_text(
+                "# Task\n\n"
+                "## Task Mode\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Mode | checker-test |\n\n"
+                "## Validation Contract\n\n"
+                "| Local validation allowed? | yes |\n",
+                encoding="utf-8",
+            )
+
+            fake_codex = tmp_path / "codex.sh"
+            fake_codex.write_text("#!/usr/bin/env bash\ncat >/dev/null\necho 'planner ok'\n", encoding="utf-8")
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            output_dir = repo / ".worktrees" / "spark-test"
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card), "--output", bash_path(output_dir)],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("| Spark purpose used | validation-planner |", report)
+
+    def test_auto_mode_uses_failure_triage_for_failed_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            task_card = repo / "task-card.md"
+            task_card.write_text("# Task\n", encoding="utf-8")
+            artifact = repo / ".worktrees" / "claude-1.checker-report.md"
+            artifact.parent.mkdir()
+            artifact.write_text("FAILED\nNo valid report\n", encoding="utf-8")
+
+            fake_codex = tmp_path / "codex.sh"
+            fake_codex.write_text("#!/usr/bin/env bash\ncat >/dev/null\necho 'triage ok'\n", encoding="utf-8")
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            output_dir = repo / ".worktrees" / "spark-test"
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--artifact",
+                    bash_path(artifact),
+                    "--output",
+                    bash_path(output_dir),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("| Spark purpose used | failure-triage |", report)
 
     def test_failure_triage_accepts_bounded_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

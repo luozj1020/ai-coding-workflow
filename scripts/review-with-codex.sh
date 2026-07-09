@@ -111,7 +111,8 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - Review the Phase Responsibility Matrix when present. Verify that Codex and Claude stayed inside the active phase ownership boundaries, and do not treat work outside Claude's assigned phase as Claude failure.
 - Review any Deviations From Plan. Accept deviations only when the discovered constraint is real, the action taken is conservative or explicitly allowed, and the reviewer briefing makes the behavioral impact clear.
 - Check the Handoff Contract if present. Verify Must do, Must not do, May decide, Must report, and Stop condition against the diff and evidence.
-- Check Codex Spark Gate if present. If Spark was enabled, verify its purpose, model, sandbox, artifact, source-edit permission, isolated worktree use for micro-builder, and whether strong-model fallback was explicitly prohibited or approved. Treat Spark as auxiliary evidence unless the task card explicitly says it can satisfy acceptance.
+- Check Small Change Fast Path Gate if present or if Claude dispatch was skipped. Verify the change touched no more than two small targeted files, had no public API/data/security/migration/permission/concurrency/cross-module contract risk, needed no broad context, stayed within the fast-path scope, and preserved narrow validation evidence or a validation-skip reason.
+- Check Codex Spark Gate if present. If Spark was enabled, verify its requested/resolved mode, model, sandbox, artifact, source-edit permission, isolated worktree use for micro-builder, accepted suggestions, ignored suggestions, and whether strong-model fallback was explicitly prohibited or approved. Treat Spark as auxiliary evidence unless the task card explicitly says it can satisfy acceptance; Spark cannot replace Claude Builder ownership or Codex final review.
 - Check Worktree / Large Repo Strategy Gate if present. If worktree reuse or large-repo mode was used, verify it was explicitly allowed, resets/cleans were limited to `.worktrees/reuse/claude-managed`, the source repo was not reset or cleaned, and skipped untracked evidence is called out as a review risk.
 - Check Parallel Execution Gate if present. If parallel dispatch was enabled, verify that each task card explicitly allowed it, file/module scopes did not overlap unless intentionally waived, no automatic merge occurred, and review/merge remains serial or manually reconciled.
 - Check Spec Gate if present. If a spec was required, verify the spec artifact was reviewed, implementation matched the spec, non-goals were respected, and Claude did not invent product/API/UX decisions outside the spec.
@@ -161,6 +162,9 @@ State whether this was a builder, checker-test, mixed-exception, or control-plan
 ### Phase Responsibility
 State the active phase, what Codex owned, what Claude owned, and whether either side crossed a non-owner boundary. If a missing artifact or test was outside Claude's assigned phase, do not count it as Claude failure; produce the correct next task owner instead.
 
+### Small Change Fast Path
+State whether Codex skipped Claude dispatch, whether the fast-path gate was satisfied, files touched, why direct Codex editing was safe, whether scope stayed within the gate, what validation ran or why validation was skipped, and whether the work should have escalated to Claude.
+
 ### Stall / Ambiguity Triage
 State whether any apparent stall or incomplete evidence is better explained by Claude execution, task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission/tool approval blocker, network/proxy/auth/model wait, long-running validation, missing progress artifacts, or external environment. State which artifacts were checked and whether the next action is continue waiting, narrow and re-dispatch, split builder/checker, stop for human, or allow Codex takeover.
 
@@ -174,7 +178,7 @@ State whether acknowledgement was required, whether it was blocking, whether Cla
 State whether the task card assigned test writing and test execution to Claude, Codex/human, or neither, and whether the evidence matches that assignment.
 
 ### Codex Spark Gate
-State the fixed Spark fields: enabled/disabled/not recorded, mode, model, sandbox, artifact path, exit code, auto-disabled reason, and strong-model fallback status. Also state whether source edits were allowed, whether micro-builder work used an isolated worktree, whether strong-model fallback was avoided or explicitly approved, and whether Spark evidence can satisfy any acceptance criterion.
+State the fixed Spark fields: enabled/disabled/not recorded, requested mode, resolved mode, model, sandbox, artifact path, exit code, auto-disabled reason, strong-model fallback status, accepted suggestions, and ignored suggestions. Also state whether source edits were allowed, whether micro-builder work used an isolated worktree, whether strong-model fallback was avoided or explicitly approved, and whether Spark evidence can satisfy any acceptance criterion.
 
 ### Claude Evidence Classification
 Classify the Claude evidence as one of: valid report, seeded report only, fallback report, no report but diff accepted, diff without report, acknowledgement only, or no useful progress. State whether a valid Claude-owned report exists, whether implementation diff is present, and whether any accepted diff is being accepted with a report/evidence gap.

@@ -64,10 +64,13 @@ def write_loop_run(run: pathlib.Path, decision: str, cost: str = "0.10"):
         "|-------|-------|\n"
         "| Spark invoked? | yes |\n"
         "| Spark purpose used | failure-triage |\n"
+        "| Spark requested mode | auto |\n"
         "| Spark model used | gpt-5.3-codex-spark |\n"
         "| Spark exit code | 0 |\n"
         "| Spark auto-disabled? | no |\n"
         "| Strong-model fallback used? | no |\n"
+        "| Spark suggestions accepted | failure attribution |\n"
+        "| Spark suggestions ignored | none |\n"
         "\n"
         "## Test-First / TDD Follow-up\n\n"
         "| Field | Value |\n"
@@ -151,7 +154,10 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertEqual(report["runs"][0]["parallel_helper_invoked"], "yes")
             self.assertEqual(report["runs"][0]["spark_invoked"], "yes")
             self.assertEqual(report["runs"][0]["spark_purpose"], "failure-triage")
+            self.assertEqual(report["runs"][0]["spark_requested_mode"], "auto")
             self.assertEqual(report["runs"][0]["spark_auto_disabled"], "no")
+            self.assertEqual(report["runs"][0]["spark_accepted_suggestions"], "failure attribution")
+            self.assertEqual(report["runs"][0]["spark_ignored_suggestions"], "none")
             self.assertEqual(report["runs"][0]["tdd_mode"], "required")
             self.assertEqual(report["runs"][0]["tdd_red_captured"], "yes")
 

@@ -5,6 +5,7 @@ install_workflow.py  -  Install or update the AI coding workflow in a target rep
 Usage:
     python scripts/install_workflow.py /path/to/repo
     python scripts/install_workflow.py /path/to/repo --update-workflow-files
+    python scripts/install_workflow.py /path/to/repo --local-only
 
 This script:
     1. Copies assets into the target repo.
@@ -12,7 +13,8 @@ This script:
     3. Ensures CLAUDE.md contains @AGENTS.md import.
     4. Makes shell scripts executable.
     5. Runs bash -n on installed shell scripts (if bash is available).
-    6. Prints a summary of created, updated, outdated, skipped, and validated files.
+    6. Optionally keeps control-plane ignores local through .git/info/exclude.
+    7. Prints a summary of created, updated, outdated, skipped, and validated files.
 
 Uses only the Python standard library.
 """
@@ -82,6 +84,13 @@ PYTHON_SCRIPTS = [
 WORKTREES_GITIGNORE_LINES = [
     "/.worktrees/*",
     "!/.worktrees/.gitkeep",
+]
+
+LOCAL_ONLY_EXCLUDE_LINES = [
+    "/AGENTS.md",
+    "/CLAUDE.md",
+    "/ai/",
+    "/.worktrees/",
 ]
 
 
@@ -399,6 +408,70 @@ def ensure_worktrees_gitignore(repo_path):
     return "updated" if existing else "created"
 
 
+def git_info_exclude_path(repo_path):
+    """Return the repo-local git info/exclude path, or None if unavailable."""
+    try:
+        root_result = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if root_result.returncode != 0:
+            return None
+        git_root = os.path.abspath(root_result.stdout.strip())
+        if git_root != os.path.abspath(repo_path):
+            return None
+        result = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", "--git-path", "info/exclude"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            path = result.stdout.strip()
+            if not os.path.isabs(path):
+                path = os.path.join(repo_path, path)
+            return path
+    except (FileNotFoundError, OSError):
+        pass
+
+    fallback = os.path.join(repo_path, ".git", "info", "exclude")
+    if os.path.isdir(os.path.join(repo_path, ".git")):
+        return fallback
+    return None
+
+
+def ensure_local_only_exclude(repo_path):
+    """Ignore workflow control-plane files locally through .git/info/exclude."""
+    exclude_path = git_info_exclude_path(repo_path)
+    if not exclude_path:
+        return "warned", "git info/exclude unavailable; initialize git before using --local-only"
+
+    if os.path.exists(exclude_path):
+        existing = read_file(exclude_path)
+    else:
+        existing = ""
+
+    existing_lines = existing.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    present = {line.strip() for line in existing_lines}
+    missing = [line for line in LOCAL_ONLY_EXCLUDE_LINES if line not in present]
+    if not missing:
+        return "skipped", ".git/info/exclude"
+
+    lines = [line.rstrip() for line in existing_lines]
+    while lines and lines[-1] == "":
+        lines.pop()
+    if lines:
+        lines.append("")
+    lines.append("# ai-coding-workflow local-only control plane")
+    lines.extend(missing)
+    write_file(exclude_path, "\n".join(lines))
+    return ("updated" if existing else "created"), ".git/info/exclude"
+
+
 def make_executable(path):
     """Make a file executable (no-op on Windows, sets mode on Unix)."""
     try:
@@ -471,12 +544,17 @@ def parse_args(argv=None):
         action="store_true",
         help="Refresh existing plain ai/* workflow files from the current skill copy.",
     )
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Install workflow control-plane files for local use only by updating .git/info/exclude instead of .gitignore.",
+    )
     args = parser.parse_args(argv)
-    return os.path.abspath(args.repo), args.update_workflow_files
+    return os.path.abspath(args.repo), args.update_workflow_files, args.local_only
 
 
 def main(argv=None):
-    repo_path, update_workflow_files = parse_args(argv)
+    repo_path, update_workflow_files, local_only = parse_args(argv)
     assets_dir = get_assets_dir()
     scripts_dir = get_script_dir()
 
@@ -495,6 +573,9 @@ def main(argv=None):
         "warned": [],
         "failed": [],
     }
+
+    if local_only:
+        print("  mode: local-only control plane (.git/info/exclude, no .gitignore edits)")
 
     # --- Install AGENTS.md (managed) ---
     src = os.path.join(assets_dir, "AGENTS.md")
@@ -564,10 +645,15 @@ def main(argv=None):
         results["skipped"].append(".worktrees/.gitkeep")
         print(f"  skipped: .worktrees/.gitkeep (already exists)")
 
-    # --- Ensure .worktrees runtime artifacts are ignored ---
-    status = ensure_worktrees_gitignore(repo_path)
-    results[status].append(".gitignore")
-    print(f"  {status}: .gitignore (.worktrees runtime ignore)")
+    # --- Ensure runtime/control-plane artifacts are ignored ---
+    if local_only:
+        status, label = ensure_local_only_exclude(repo_path)
+        results[status].append(label)
+        print(f"  {status}: {label} (local-only control-plane ignore)")
+    else:
+        status = ensure_worktrees_gitignore(repo_path)
+        results[status].append(".gitignore")
+        print(f"  {status}: .gitignore (.worktrees runtime ignore)")
 
     # --- Print summary ---
     print("\n=== Installation Summary ===")
@@ -582,7 +668,7 @@ def main(argv=None):
     for f in results["validated"]:
         print(f"    OK {f}")
     if results["warned"]:
-        print(f"  Warned:    {len(results['warned'])} scripts (bash unavailable)")
+        print(f"  Warned:    {len(results['warned'])} item(s)")
         for f in results["warned"]:
             print(f"    ! {f}")
     if results["failed"]:
