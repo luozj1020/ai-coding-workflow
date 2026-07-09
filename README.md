@@ -311,6 +311,34 @@ Use ai-coding-workflow to create a task card for implementing <feature>.
 
 For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 
+**Optional: use Codex Spark during execution planning**
+
+If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, fill `Codex Spark Gate` in the task card before running Spark. Spark is an auxiliary, not a default Claude replacement:
+
+- `review-only`: quick read-only critique of the task card or likely direction.
+- `evidence-checker`: quick evidence sanity check after artifacts exist.
+- `micro-builder`: tiny scoped edits only, in the helper-created isolated worktree.
+
+Run the default read-only helper:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
+```
+
+Run an evidence check:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode evidence-checker
+```
+
+Run a tiny isolated Spark edit only when the task card explicitly allows it:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
+```
+
+Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model; if Spark is unavailable, it records the blocker and exits non-zero.
+
 **Optional: create persistent planning files** for long-running work:
 
 ```bash

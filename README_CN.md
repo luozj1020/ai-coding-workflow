@@ -292,6 +292,34 @@ Use ai-coding-workflow to create a task card for implementing <功能>.
 
 对于有明确完成标准的循环任务，请填写任务卡中的 `Goal Loop Contract`。优先写清楚 success signal、最大尝试次数、重复失败停止阈值、无改进停止阈值、回归停止规则、必须提供的证据和 benchmark tags。宽泛或有歧义的工作先填 `Spec Gate`，bugfix/regression 修复先填 `Root Cause Gate`，需要 red-green 证据时填 `Test-First / TDD Contract`，声明 ready for merge 前填 `Finish Branch Gate`。需要更强模型、Codex reviewer 或人工专家在高风险工作前给建议时，填写 `Advisor Gate`，记录咨询时机、调用上限、输出预算、结果可见性、冲突调和和 fallback 行为。`Unknowns` 则用于记录 blindspot scan、会改变架构的问题、参考样例，以及 Claude 偏离原计划时应记录到哪里。
 
+**可选：在执行规划中使用 Codex Spark**
+
+如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，可以先在任务卡中填写 `Codex Spark Gate`，再运行 Spark。Spark 是辅助层，不是默认替代 Claude：
+
+- `review-only`：快速只读审查任务卡或实现方向。
+- `evidence-checker`：已有 artifacts 后快速检查证据质量。
+- `micro-builder`：仅用于任务卡明确允许的极小范围修改，并在 helper 创建的隔离 worktree 中执行。
+
+默认只读运行：
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
+```
+
+运行证据检查：
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode evidence-checker
+```
+
+只有任务卡明确允许时，才运行极小范围隔离修改：
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
+```
+
+Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型；如果 Spark 不可用，它会记录 blocker 并以非零状态退出。
+
 **可选：为长任务创建持久计划文件**
 
 ```bash
