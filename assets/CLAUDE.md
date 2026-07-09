@@ -28,9 +28,10 @@ You are the execution agent in a Codex / Claude Code workflow.
 15. Work only in the current isolated worktree.
 16. Make scoped edits that match the task card.
 17. Run only the checks assigned to this task mode; Builder tasks avoid broad acceptance tests unless explicitly allowed.
-18. Run exact assigned checks when available; prefer `bash ai/check-worktree.sh --no-discover --command 'label=command'` over broad discovery unless the task card explicitly allows discovery.
-19. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
-20. Do not merge changes.
+18. Run exact assigned checks when available; prefer `bash ai/check-worktree.sh --task-card CLAUDE_TASK_CARD.md --no-discover --command 'label=command'` over broad discovery unless the task card explicitly allows discovery.
+19. If the task card says `Local validation allowed?` is `no`, do not run local validation. Provide exact commands for Codex, a human, or CI to run instead.
+20. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
+21. Do not merge changes.
 
 ### Direction and boundary acknowledgement
 
@@ -69,6 +70,7 @@ For Checker/Test tasks:
 
 - Write or update assigned tests.
 - Run assigned validation commands.
+- Do not run local validation when `Local validation allowed?` is `no`; list the exact commands only.
 - If Python/Node/test command approval or sandbox policy blocks validation, record the exact blocked command and leave it for Codex/human rerun instead of treating implementation as failed.
 - Produce a test/validation report with command, exit code, key output, and artifact paths.
 - Do not perform broad implementation rewrites.

@@ -13,6 +13,7 @@ ai-coding-workflow bootstraps repositories with:
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
 - Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` review/evidence checks and tiny isolated micro-builder work
 - Large-repository dispatch options for managed worktree reuse and reduced expensive untracked-file scans
+- Local-validation gates and task-card validation command extraction
 - Builder / Checker-Test task modes for separating implementation from validation
 - Direction / boundary acknowledgement gates with anti-loop rules
 - Managed blocks for idempotent updates
@@ -362,6 +363,12 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
 This reuses only `.worktrees/reuse/claude-managed` and resets/cleans only that managed worktree, never the source repository.
+Bootstrap also keeps workflow runtime artifacts ignored with:
+
+```gitignore
+/.worktrees/*
+!/.worktrees/.gitkeep
+```
 
 When untracked scans or untracked patch generation are too expensive, use:
 
@@ -486,10 +493,18 @@ The loop runner automates Steps 3-5, stopping on accept, max iterations, or huma
 **Checker-only validation:** Installed projects include `ai/check-worktree.sh`. Prefer exact task-card checks:
 
 ```bash
-bash ai/check-worktree.sh --no-discover --command 'tests=pytest tests/test_target.py'
+bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover --command 'tests=pytest tests/test_target.py'
 ```
 
 The dispatcher records a checker report after Claude finishes, but broad discovery is disabled by default to avoid unrelated pytest/ruff/mypy noise. Pass `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'` for exact dispatcher-run checks, or `CLAUDE_CODE_CHECKER_DISCOVER=1` when the task card explicitly allows broad project discovery.
+
+The checker also reads task-card validation fences when `--task-card` is passed:
+
+```bash validation
+bazel test //path/to:target
+```
+
+If the task card says `Local validation allowed? | no`, checker reports `SKIPPED` and does not run commands. Use that when the user or repository policy forbids local test execution; the report should list commands for the human or CI to run.
 
 **Project test tiers:** The workflow test suite has fast checks and slower integration coverage. Use the smallest tier that matches the edit:
 

@@ -233,6 +233,12 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
 The managed reuse path is limited to `.worktrees/reuse/claude-managed`. Large-repo mode preserves tracked/staged diff evidence but intentionally reduces untracked-file evidence.
+Bootstrap also keeps workflow runtime artifacts ignored:
+
+```gitignore
+/.worktrees/*
+!/.worktrees/.gitkeep
+```
 
 ### Experimental Parallel Dispatch
 
@@ -288,10 +294,18 @@ Use compact view only after the current phase, handoff, testing responsibility, 
 Installed projects include `ai/check-worktree.sh`. Prefer exact task-card validation commands:
 
 ```bash
-bash ai/check-worktree.sh --no-discover --command 'tests=pytest tests/test_target.py'
+bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover --command 'tests=pytest tests/test_target.py'
 ```
 
 The dispatcher records a checker report after Claude finishes, but broad discovery is disabled by default to avoid unrelated validation noise. Pass `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'` for exact dispatcher-run checks, or `CLAUDE_CODE_CHECKER_DISCOVER=1` when the task card explicitly allows broad project discovery.
+
+The checker also reads task-card validation fences when `--task-card` is passed:
+
+```bash validation
+bazel test //path/to:target
+```
+
+If the task card says `Local validation allowed? | no`, checker reports `SKIPPED` and does not run commands. Use that when the user or repository policy forbids local test execution.
 
 ### Project Test Tiers
 

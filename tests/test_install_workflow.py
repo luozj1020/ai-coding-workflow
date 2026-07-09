@@ -63,6 +63,24 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "init-plan.py").exists())
             self.assertTrue((repo / "ai" / "session-catchup.py").exists())
             self.assertTrue((repo / ".worktrees" / ".gitkeep").exists())
+            gitignore = (repo / ".gitignore").read_text(encoding="utf-8")
+            self.assertIn("/.worktrees/*", gitignore)
+            self.assertIn("!/.worktrees/.gitkeep", gitignore)
+
+    def test_install_preserves_gitignore_and_adds_worktree_rules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / ".gitignore").write_text("node_modules/\n.worktrees/\n", encoding="utf-8")
+
+            self.run_installer(repo)
+            self.run_installer(repo)
+
+            lines = (repo / ".gitignore").read_text(encoding="utf-8").splitlines()
+            self.assertIn("node_modules/", lines)
+            self.assertNotIn(".worktrees/", lines)
+            self.assertEqual(lines.count("/.worktrees/*"), 1)
+            self.assertEqual(lines.count("!/.worktrees/.gitkeep"), 1)
 
     def test_help_does_not_create_repository_named_help(self):
         result = subprocess.run(
@@ -338,6 +356,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("ALL GREEN", checker)
             self.assertIn("FAILED", checker)
             self.assertIn("--command", checker)
+            self.assertIn("--task-card", checker)
+            self.assertIn("Local validation is disabled", checker)
             self.assertIn("SKIPPED", checker)
             self.assertIn("Checker Mutation Guard", checker)
             self.assertIn("checker-report.md", review)
@@ -387,6 +407,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("### Finish Branch Gate", review)
             self.assertIn("New Spec / Spark / Parallel / Root Cause / TDD / Finish Branch requirements", review)
             self.assertIn("Validation Contract", task_template)
+            self.assertIn("Local validation allowed?", task_template)
+            self.assertIn("```bash validation", task_template)
             self.assertIn("## Task Mode", task_template)
             self.assertIn("builder / checker-test", task_template)
             self.assertIn("Mixed-task guard", task_template)
@@ -473,6 +495,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Repeated same approval request after proceed?", evidence_template)
             self.assertIn("## Testing Responsibility Follow-up", evidence_template)
             self.assertIn("Validation command source", evidence_template)
+            self.assertIn("Local validation allowed by task card?", evidence_template)
             self.assertIn("Codex rerun required for blocked validation", evidence_template)
             self.assertIn("## Evidence Gap Recovery", evidence_template)
             self.assertIn("Evidence reconstructed by Codex?", evidence_template)
@@ -507,6 +530,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("do not use web search", agents)
             self.assertIn("read-only sandbox helper initialization", agents)
             self.assertIn("exact task-card validation commands", agents)
+            self.assertIn("Local validation allowed?", agents)
             self.assertIn("Codex Intervention Policy", agents)
             self.assertIn("not permission for Codex to patch", agents)
             self.assertIn("Prior-session Claude failures are carry-forward context", agents)
@@ -526,6 +550,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Unknowns and Decision Gates", claude)
             self.assertIn("tests/evidence only", claude)
             self.assertIn("--no-discover --command", claude)
+            self.assertIn("Local validation allowed?", claude)
             self.assertIn("approval or sandbox policy blocks validation", claude)
             self.assertIn("which phases remain for the next Claude dispatch", claude)
 

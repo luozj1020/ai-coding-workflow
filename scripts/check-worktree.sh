@@ -2,7 +2,7 @@
 # check-worktree.sh  -  Run project validation checks without editing files.
 #
 # Usage: bash ai/check-worktree.sh [--report <path>] [--logs-dir <dir>]
-#       [--command <label=command>] [--discover|--no-discover]
+#       [--task-card <path>] [--command <label=command>] [--discover|--no-discover]
 #
 # The checker runs explicitly assigned validation commands and, when discovery
 # is enabled, common project validation commands. It writes a concise report and
@@ -15,6 +15,7 @@ export PATH
 
 REPORT_FILE=""
 LOGS_DIR=""
+TASK_CARD_FILE=""
 DISCOVER="${AI_CHECK_WORKTREE_DISCOVER:-1}"
 COMMANDS=()
 COMMAND_LABELS=()
@@ -73,6 +74,14 @@ while [ $# -gt 0 ]; do
             add_command_arg "$2"
             shift 2
             ;;
+        --task-card)
+            if [ $# -lt 2 ]; then
+                echo "Error: --task-card requires a path" >&2
+                exit 1
+            fi
+            TASK_CARD_FILE="$2"
+            shift 2
+            ;;
         --discover)
             DISCOVER=1
             shift
@@ -117,6 +126,79 @@ if [ -z "$REPORT_FILE" ]; then
     REPORT_FILE="${LOGS_DIR}/checker-report.md"
 fi
 mkdir -p "$(dirname "$REPORT_FILE")"
+
+task_card_local_validation_disabled() {
+    [ -n "$TASK_CARD_FILE" ] || return 1
+    [ -f "$TASK_CARD_FILE" ] || return 1
+    awk '
+        BEGIN { found = 0 }
+        {
+            line = tolower($0)
+            if (index(line, "local validation allowed") > 0 && line ~ /\|[[:space:]]*no[[:space:]]*(\||\/|;|,)/) {
+                found = 1
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    ' "$TASK_CARD_FILE"
+}
+
+load_task_card_validation_commands() {
+    [ -n "$TASK_CARD_FILE" ] || return 0
+    [ -f "$TASK_CARD_FILE" ] || return 0
+    local index=1
+    while IFS= read -r command; do
+        [ -z "$command" ] && continue
+        add_command "task-card-${index}" "$command"
+        index=$((index + 1))
+    done < <(
+        awk '
+            BEGIN { in_block = 0 }
+            /^```/ {
+                fence = $0
+                sub(/^```[[:space:]]*/, "", fence)
+                fence = tolower(fence)
+                if (in_block) {
+                    in_block = 0
+                    next
+                }
+                if (fence ~ /validation|check/) {
+                    in_block = 1
+                }
+                next
+            }
+            in_block {
+                line = $0
+                sub(/^[[:space:]]+/, "", line)
+                sub(/[[:space:]]+$/, "", line)
+                if (line == "" || line ~ /^#/) {
+                    next
+                }
+                print line
+            }
+        ' "$TASK_CARD_FILE"
+    )
+}
+
+if task_card_local_validation_disabled; then
+    {
+        echo "# Checker Report"
+        echo ""
+        echo "Repository: ${REPO_ROOT}"
+        echo "Report: ${REPORT_FILE}"
+        echo "Logs directory: ${LOGS_DIR}"
+        echo "Task card: ${TASK_CARD_FILE}"
+        echo ""
+        echo "## Result"
+        echo ""
+        echo "SKIPPED"
+        echo ""
+        echo "Local validation is disabled by the task card. Provide commands only; do not run local validation."
+    } > "$REPORT_FILE"
+    cat "$REPORT_FILE"
+    exit 0
+fi
+
+load_task_card_validation_commands
 
 has_script() {
     local script="$1"
@@ -200,6 +282,9 @@ BEFORE_STATUS="$(status_snapshot)"
     echo "Repository: ${REPO_ROOT}"
     echo "Report: ${REPORT_FILE}"
     echo "Logs directory: ${LOGS_DIR}"
+    if [ -n "$TASK_CARD_FILE" ]; then
+        echo "Task card: ${TASK_CARD_FILE}"
+    fi
     echo ""
     echo "## Discovered Commands"
     echo ""

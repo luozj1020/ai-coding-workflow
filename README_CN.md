@@ -13,6 +13,7 @@ ai-coding-workflow 可以为仓库自动配置：
 - Codex + Claude Code 工作流的安全调度/审查/循环脚本
 - 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做快速审查、证据检查或极小范围隔离 micro-builder 工作
 - 大型仓库调度选项：受管 worktree 复用，以及减少昂贵的未跟踪文件扫描
+- 本地验证 gate，以及从任务卡 validation fenced block 自动抽取命令
 - Builder / Checker-Test 任务模式，用于分离实现和验证职责
 - Direction / Boundary Acknowledgement 方向/边界确认门，以及防反复确认规则
 - 幂等更新的托管块（managed blocks）
@@ -343,6 +344,12 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
 这只会复用 `.worktrees/reuse/claude-managed`，并且只 reset/clean 这个受管 worktree，绝不会 reset/clean 源仓库。
+bootstrap 也会确保 workflow runtime artifacts 被忽略：
+
+```gitignore
+/.worktrees/*
+!/.worktrees/.gitkeep
+```
 
 如果未跟踪文件扫描或未跟踪文件 patch 生成太慢，可以使用：
 
@@ -467,10 +474,18 @@ bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
 **只检查验证：** 安装后的项目包含 `ai/check-worktree.sh`。优先运行任务卡里的精确验证命令：
 
 ```bash
-bash ai/check-worktree.sh --no-discover --command 'tests=pytest tests/test_target.py'
+bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover --command 'tests=pytest tests/test_target.py'
 ```
 
 dispatcher 会在 Claude 结束后记录 checker report，但默认关闭广域 discover，避免与当前任务无关的 pytest/ruff/mypy 噪音。需要 dispatcher 复跑精确命令时，传入 `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'`；只有任务卡明确允许广域项目检查时，才设置 `CLAUDE_CODE_CHECKER_DISCOVER=1`。
+
+当传入 `--task-card` 时，checker 也会读取任务卡中的 validation fenced block：
+
+```bash validation
+bazel test //path/to:target
+```
+
+如果任务卡写明 `Local validation allowed? | no`，checker 会报告 `SKIPPED`，不会运行命令。适用于用户或仓库策略明确禁止本地测试的场景；报告里应只给出人类或 CI 可运行的命令。
 
 **项目测试分层：** 这个 workflow 项目的测试分为快速检查和较慢的集成覆盖。按改动范围选择最小验证层级：
 

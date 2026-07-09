@@ -250,6 +250,47 @@ class DoctorWorkflowTests(unittest.TestCase):
             self.assertIn("1 runtime", result.stdout)
             self.assertIn("1 tmp-*", result.stdout)
 
+    def test_doctor_warns_when_worktrees_ignore_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+
+            result = self.run_doctor(repo)
+
+            self.assertIn("[worktrees-ignore]", result.stdout)
+            self.assertIn("/.worktrees/*", result.stdout)
+
+    def test_doctor_reports_worktrees_ignore_when_installed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+
+            result = self.run_doctor(repo)
+
+            self.assertIn("[worktrees-ignore]", result.stdout)
+            self.assertIn("runtime artifacts are ignored", result.stdout)
+
+    def test_doctor_warns_for_large_repositories(self):
+        module = load_module()
+        old_count = module._tracked_file_count
+        try:
+            module._tracked_file_count = lambda repo_root: 20000
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = pathlib.Path(tmp) / "repo"
+                repo.mkdir()
+                subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+
+                findings, has_error = module.run_doctor(str(repo))
+        finally:
+            module._tracked_file_count = old_count
+
+        self.assertTrue(has_error)
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("large-repo", text)
+        self.assertIn("CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed", text)
+
     # --- Proxy masking ---
 
     def test_mask_proxy_value_with_credentials(self):

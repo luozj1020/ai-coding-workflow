@@ -96,6 +96,93 @@ class CheckWorktreeTests(unittest.TestCase):
             self.assertIn("ALL GREEN", text)
             self.assertIn("validation-ok", text)
 
+    def test_task_card_validation_block_runs_without_discovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(pathlib.Path(tmp))
+            task_card = repo / "task-card.md"
+            task_card.write_text(
+                "# Task\n\n"
+                "## Validation Contract\n\n"
+                "| Check | Command | Required? | Notes |\n"
+                "|-------|---------|-----------|-------|\n"
+                "| Local validation allowed? | yes | required | |\n\n"
+                "```bash validation\n"
+                "# comment lines are ignored\n"
+                "printf task-card-validation-ok\n"
+                "```\n",
+                encoding="utf-8",
+            )
+            report = repo / ".worktrees" / "checker-report.md"
+            logs = repo / ".worktrees" / "logs"
+
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    "--no-discover",
+                    "--task-card",
+                    bash_path(task_card),
+                    "--report",
+                    bash_path(report),
+                    "--logs-dir",
+                    bash_path(logs),
+                ],
+                cwd=str(repo),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            text = report.read_text(encoding="utf-8")
+            self.assertIn("- task-card-1: `printf task-card-validation-ok`", text)
+            self.assertIn("task-card-validation-ok", text)
+            self.assertIn("ALL GREEN", text)
+
+    def test_task_card_local_validation_no_skips_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(pathlib.Path(tmp))
+            task_card = repo / "task-card.md"
+            task_card.write_text(
+                "# Task\n\n"
+                "## Validation Contract\n\n"
+                "| Check | Command | Required? | Notes |\n"
+                "|-------|---------|-----------|-------|\n"
+                "| Local validation allowed? | no | required | commands only |\n\n"
+                "```bash validation\n"
+                "false\n"
+                "```\n",
+                encoding="utf-8",
+            )
+            report = repo / ".worktrees" / "checker-report.md"
+            logs = repo / ".worktrees" / "logs"
+
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    "--no-discover",
+                    "--task-card",
+                    bash_path(task_card),
+                    "--report",
+                    bash_path(report),
+                    "--logs-dir",
+                    bash_path(logs),
+                ],
+                cwd=str(repo),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            text = report.read_text(encoding="utf-8")
+            self.assertIn("SKIPPED", text)
+            self.assertIn("Local validation is disabled", text)
+            self.assertNotIn("ALL GREEN", text)
+
 
 if __name__ == "__main__":
     unittest.main()

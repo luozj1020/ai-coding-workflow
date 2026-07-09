@@ -438,7 +438,8 @@ Testing responsibility:
 - Treat writing/updating test code and running test commands as separate responsibilities.
 - Add or modify tests when the task card says tests are user-requested, acceptance-critical, or otherwise in scope.
 - Do not add or modify tests when test code is out of scope.
-- If Claude is assigned to run tests, run the listed validation commands or report why they are blocked.
+- If Claude is assigned to run tests and local validation is allowed, run the listed validation commands or report why they are blocked.
+- If `Local validation allowed?` is `no`, do not run local validation; provide the exact commands only for Codex/human/CI to run.
 - If Codex/human is assigned to run verification after Claude, finish with implementation evidence and clear commands for that reviewer to run.
 
 Wait policy requirements:
@@ -451,7 +452,8 @@ Wait policy requirements:
 In addition to making the requested edits, update `CLAUDE_REPORT.md` in the worktree before finishing. Remove the dispatcher seeded-report marker when you first update the report.
 
 Checker expectations:
-- Run project validation before finishing only when this task mode assigns validation. If `ai/check-worktree.sh` is available and assigned exact commands, prefer `bash ai/check-worktree.sh --no-discover --command 'label=command'` so broad unrelated checks do not create noise.
+- Run project validation before finishing only when this task mode assigns validation and local validation is allowed. If `ai/check-worktree.sh` is available and assigned exact commands, prefer `bash ai/check-worktree.sh --task-card CLAUDE_TASK_CARD.md --no-discover --command 'label=command'` so broad unrelated checks do not create noise.
+- If `Local validation allowed?` is `no`, do not run local validation; report the commands only.
 - Preserve failed command, exit code, key original output, and file:line details.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.
 - If a validation blocker is environmental or external, stop and record the blocker instead of guessing.
@@ -998,7 +1000,7 @@ cd "$WORKTREE_DIR"
 CHECK_SCRIPT="${SCRIPT_DIR}/check-worktree.sh"
 if [ -f "$CHECK_SCRIPT" ]; then
     progress_log "Starting checker helper: ${CHECK_SCRIPT}"
-    CHECK_ARGS=(--report "$CHECKER_REPORT_FILE" --logs-dir "$CHECKER_LOGS_DIR")
+    CHECK_ARGS=(--report "$CHECKER_REPORT_FILE" --logs-dir "$CHECKER_LOGS_DIR" --task-card "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md")
     if [ "$CLAUDE_CODE_CHECKER_DISCOVER" = "1" ]; then
         CHECK_ARGS+=(--discover)
     else

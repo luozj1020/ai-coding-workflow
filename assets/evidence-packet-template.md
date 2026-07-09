@@ -346,6 +346,8 @@
 | Claude ran assigned tests? | yes/no/not assigned |
 | Validation command source | exact task-card commands / broad discovery / skipped / blocked |
 | Broad discovery used? | yes/no + reason |
+| Local validation allowed by task card? | yes/no |
+| If local validation disallowed, commands provided only? | yes/no + commands/artifact |
 | Approval or sandbox blocked validation? | yes/no + exact command |
 | Codex rerun required for blocked validation? | yes/no + command |
 | Codex/human verification still required? | yes/no |

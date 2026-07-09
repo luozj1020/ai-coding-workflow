@@ -391,12 +391,19 @@ TDD rule: when TDD mode is required, do not accept production edits without a fa
 
 | Check | Command | Required? | Notes |
 |-------|---------|-----------|-------|
+| Local validation allowed? | yes/no | required | If no, Claude/Codex must provide commands only and must not run local checks |
 | Tests | | yes/no | |
 | Lint | | yes/no | |
 | Type check | | yes/no | |
 | Build | | yes/no | |
 | Format check | | yes/no | |
 | Project aggregate check | | yes/no | |
+
+Optional exact validation command blocks for `ai/check-worktree.sh --task-card`:
+
+```bash validation
+# one command per non-comment line; each line is run as a separate check
+```
 
 Checker expectations:
 - Follow `Task Mode` and `Testing Responsibility`: Builder tasks do not add tests or run broad suites; Checker/Test tasks do not skip assigned test writing or validation unless blocked and reported.
@@ -405,6 +412,7 @@ Checker expectations:
 - A valid Claude report must include touched files, acceptance criteria mapping, checks run or blocked, out-of-scope confirmation, and remaining risks.
 - Prefer exact assigned checks with `bash ai/check-worktree.sh --no-discover --command 'label=command'` when available.
 - Use broad discovery only when the task card explicitly allows it: `bash ai/check-worktree.sh --discover` or dispatcher env `CLAUDE_CODE_CHECKER_DISCOVER=1`.
+- If `Local validation allowed?` is `no`, do not run local validation. Report the exact commands the reviewer should run instead.
 - If Claude cannot run Python/Node/test commands because of approval or sandbox policy, record the exact blocked command and leave it for Codex/human rerun instead of treating the implementation itself as failed.
 - Preserve failed command, exit code, key original output, and `file:line` locations.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.

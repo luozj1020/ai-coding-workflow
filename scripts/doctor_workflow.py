@@ -172,6 +172,40 @@ def _count_runtime_artifacts(repo_root):
     return worktree_count, tmp_count
 
 
+def _worktrees_ignore_status(repo_root):
+    """Return (ok, message) for .worktrees runtime ignore configuration."""
+    gitignore = os.path.join(repo_root, ".gitignore")
+    if not os.path.isfile(gitignore):
+        return False, ".gitignore is missing .worktrees runtime rules"
+    try:
+        text = _read_text(gitignore)
+    except OSError as exc:
+        return False, "could not read .gitignore: {}".format(exc)
+    lines = {line.strip() for line in text.splitlines()}
+    required = {"/.worktrees/*", "!/.worktrees/.gitkeep"}
+    missing = sorted(required - lines)
+    if missing:
+        return False, ".gitignore missing: {}".format(", ".join(missing))
+    return True, ".worktrees runtime artifacts are ignored"
+
+
+def _tracked_file_count(repo_root):
+    """Return tracked file count or None when git ls-files is unavailable."""
+    try:
+        r = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=repo_root,
+            capture_output=True,
+        )
+        if r.returncode != 0:
+            return None
+        if not r.stdout:
+            return 0
+        return r.stdout.count(b"\0")
+    except (FileNotFoundError, OSError):
+        return None
+
+
 def _resolve_bash():
     """Find a usable bash. Returns (path, label) or (None, reason)."""
     if sys.platform == "win32":
@@ -451,6 +485,19 @@ def run_doctor(repo_path=None):
         findings.append((INFO, "artifacts", "Root has {} tmp-* artifact(s)".format(tmp_count)))
     if wt_count > 0 or tmp_count > 0:
         findings.append((INFO, "artifacts", "Run 'python ai/clean_runtime.py' to preview, '--apply' to remove"))
+
+    ignore_ok, ignore_message = _worktrees_ignore_status(root)
+    if ignore_ok:
+        findings.append((INFO, "worktrees-ignore", ignore_message))
+    else:
+        findings.append((WARN, "worktrees-ignore", "{}. Add '/.worktrees/*' and '!/.worktrees/.gitkeep' or rerun the installer.".format(ignore_message)))
+
+    tracked_count = _tracked_file_count(root)
+    if tracked_count is not None:
+        if tracked_count >= 10000:
+            findings.append((WARN, "large-repo", "{} tracked files; dispatch worktree creation may be slow. Consider CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed and CLAUDE_CODE_LARGE_REPO_MODE=1 when the evidence tradeoff is acceptable.".format(tracked_count)))
+        else:
+            findings.append((INFO, "large-repo", "{} tracked files".format(tracked_count)))
 
     # 4. Bash resolution
     bash_path, bash_label = _resolve_bash()

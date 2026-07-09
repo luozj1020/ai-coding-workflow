@@ -79,6 +79,11 @@ PYTHON_SCRIPTS = [
     ("session-catchup.py", "ai/session-catchup.py"),
 ]
 
+WORKTREES_GITIGNORE_LINES = [
+    "/.worktrees/*",
+    "!/.worktrees/.gitkeep",
+]
+
 
 def get_script_dir():
     """Return the directory containing this script."""
@@ -362,6 +367,38 @@ def install_or_update_plain(src_content, dest_path, update_existing=False):
     return "skipped"
 
 
+def ensure_worktrees_gitignore(repo_path):
+    """Ensure workflow runtime artifacts under .worktrees stay ignored."""
+    gitignore_path = os.path.join(repo_path, ".gitignore")
+    if os.path.exists(gitignore_path):
+        existing = read_file(gitignore_path)
+    else:
+        existing = ""
+
+    existing_lines = existing.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    # Older bootstraps or hand-written ignores may ignore the whole directory,
+    # which prevents the negated .gitkeep rule from taking effect.
+    normalized_lines = [
+        line for line in existing_lines
+        if line.strip() not in {".worktrees/", "/.worktrees/"}
+    ]
+    changed_legacy_rule = normalized_lines != existing_lines
+    existing_lines = normalized_lines
+    present = {line.strip() for line in existing_lines}
+    missing = [line for line in WORKTREES_GITIGNORE_LINES if line not in present]
+    if not missing and not changed_legacy_rule:
+        return "skipped"
+
+    lines = [line.rstrip() for line in existing_lines]
+    while lines and lines[-1] == "":
+        lines.pop()
+    if lines:
+        lines.append("")
+    lines.extend(missing)
+    write_file(gitignore_path, "\n".join(lines))
+    return "updated" if existing else "created"
+
+
 def make_executable(path):
     """Make a file executable (no-op on Windows, sets mode on Unix)."""
     try:
@@ -526,6 +563,11 @@ def main(argv=None):
     else:
         results["skipped"].append(".worktrees/.gitkeep")
         print(f"  skipped: .worktrees/.gitkeep (already exists)")
+
+    # --- Ensure .worktrees runtime artifacts are ignored ---
+    status = ensure_worktrees_gitignore(repo_path)
+    results[status].append(".gitignore")
+    print(f"  {status}: .gitignore (.worktrees runtime ignore)")
 
     # --- Print summary ---
     print("\n=== Installation Summary ===")
