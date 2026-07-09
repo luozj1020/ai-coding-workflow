@@ -46,7 +46,7 @@ This repository has been set up with a multi-agent AI coding workflow. The workf
 
 - **Codex / GPT**  -  plans and reviews (top-level design, not concrete edits)
 - **Claude Code**  -  implements in Builder tasks and validates in Checker/Test tasks
-- **Codex Spark**  -  optional `gpt-5.3-codex-spark` auxiliary for quick review, evidence checks, or tiny isolated micro-builder work
+- **Codex Spark**  -  default-on optional `gpt-5.3-codex-spark` auxiliary for quick review, evidence checks, or tiny isolated micro-builder work
 - **MiMo / DeepSeek**  -  optional exhaustive review helper
 - **LSP / Codegraph / MCP**  -  low-token code intelligence (used first, before broad reads)
 
@@ -61,7 +61,7 @@ Task cards can require **Direction / Boundary Acknowledgement** before editing. 
 
 Use `ai/init-spec.py` for ambiguous feature, UX, API, or data-model work, then fill `Spec Gate` in the task card. `ai/init-plan.py` creates `task_plan.md` with `### Task N: ...` sections; use `ai/plan-to-task-cards.py` to turn reviewed task sections into scoped task cards. Use `Root Cause Gate` before bugfixes/regressions, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work is ready for human merge.
 
-Use `Codex Spark Gate` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Default to `review-only` or `evidence-checker`; use `micro-builder` only for tiny scoped edits in the helper-created isolated worktree. Spark evidence is auxiliary and must not silently fall back to GPT-5.5 or another stronger model.
+Leave `Codex Spark Gate` at `auto` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Default to `review-only` or `evidence-checker`; use `micro-builder` only for tiny scoped edits in the helper-created isolated worktree. Spark evidence is auxiliary, auto-disables when unavailable or quota-exhausted, and must not silently fall back to GPT-5.5 or another stronger model.
 
 Phase ownership is explicit:
 
@@ -127,7 +127,7 @@ cp ai/task-card-template.md ai/task-cards/PROJ-123.md
 # Edit ai/task-cards/PROJ-123.md
 ```
 
-For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Use `Codex Spark Gate` when Spark should perform low-cost review/evidence checking or tiny isolated micro-builder work. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
+For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Leave `Codex Spark Gate` at `auto` when Spark should perform low-cost review/evidence checking or tiny isolated micro-builder work, with auto-disable on Spark unavailability. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 
 For longer tasks, create persistent planning files:
 
@@ -190,9 +190,9 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 
 It does **not** merge automatically.
 
-### Optional Codex Spark Auxiliary
+### Default-On Optional Codex Spark Auxiliary
 
-When the task card enables `Codex Spark Gate`, run Spark as a low-cost auxiliary:
+When the task card leaves `Codex Spark Gate` at `auto`, run Spark as a low-cost auxiliary for eligible tasks. Spark is optional support: if the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue.
 
 ```bash
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
@@ -210,7 +210,7 @@ For tiny scoped edits only, use micro-builder mode. The helper creates an isolat
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
 ```
 
-Spark artifacts include `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. Spark does not silently fall back to GPT-5.5 or another stronger model.
+Spark artifacts include `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. Spark does not silently fall back to GPT-5.5 or another stronger model. Use `--require-spark` only when Spark availability should become a hard failure.
 
 ### Experimental Parallel Dispatch
 

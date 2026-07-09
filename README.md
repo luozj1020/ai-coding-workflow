@@ -11,7 +11,7 @@ ai-coding-workflow bootstraps repositories with:
 - `CLAUDE.md` - Claude Code execution rules
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
-- Optional Codex Spark helper for `gpt-5.3-codex-spark` review/evidence checks and tiny isolated micro-builder work
+- Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` review/evidence checks and tiny isolated micro-builder work
 - Builder / Checker-Test task modes for separating implementation from validation
 - Direction / boundary acknowledgement gates with anti-loop rules
 - Managed blocks for idempotent updates
@@ -313,9 +313,9 @@ Use ai-coding-workflow to create a task card for implementing <feature>.
 
 For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 
-**Optional: use Codex Spark during execution planning**
+**Default-on optional: use Codex Spark during execution planning**
 
-If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, fill `Codex Spark Gate` in the task card before running Spark. Spark is an auxiliary, not a default Claude replacement:
+If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave `Codex Spark Gate` at `auto` for eligible tasks. Spark is auxiliary, not a default Claude replacement; if the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue:
 
 - `review-only`: quick read-only critique of the task card or likely direction.
 - `evidence-checker`: quick evidence sanity check after artifacts exist.
@@ -339,7 +339,7 @@ Run a tiny isolated Spark edit only when the task card explicitly allows it:
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
 ```
 
-Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model; if Spark is unavailable, it records the blocker and exits non-zero.
+Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model. Use `--require-spark` only when Spark availability should become a hard failure instead of optional auto-disable.
 
 **Experimental: parallel dispatch**
 

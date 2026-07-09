@@ -115,6 +115,87 @@ class RunCodexSparkTests(unittest.TestCase):
                 ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "read-only", "-"],
             )
 
+    def test_missing_codex_auto_disables_without_failing_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            task_card = repo / "task-card.md"
+            task_card.write_text("# Task\n\n## Codex Spark Gate\n\n| Spark enabled? | auto |\n", encoding="utf-8")
+            output_dir = repo / ".worktrees" / "spark-test"
+
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(tmp_path / "missing-codex")
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--output",
+                    bash_path(output_dir),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("| Spark invoked? | no |", report)
+            self.assertIn("| Spark auto-disabled? | yes |", report)
+            self.assertIn("codex CLI is not installed", report)
+            self.assertIn("helper exits 0", report)
+
+    def test_quota_failure_auto_disables_without_failing_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            task_card = repo / "task-card.md"
+            task_card.write_text("# Task\n\n## Codex Spark Gate\n\n| Spark enabled? | auto |\n", encoding="utf-8")
+
+            fake_codex = tmp_path / "codex.sh"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo 'quota exceeded for requested model' >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            output_dir = repo / ".worktrees" / "spark-test"
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--output",
+                    bash_path(output_dir),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            stderr_log = (output_dir / "codex-spark.stderr.log").read_text(encoding="utf-8")
+            self.assertIn("| Spark invoked? | yes |", report)
+            self.assertIn("| Spark exit code | 1 |", report)
+            self.assertIn("| Spark auto-disabled? | yes |", report)
+            self.assertIn("quota exceeded", stderr_log)
+            self.assertIn("helper exits 0", report)
+
 
 if __name__ == "__main__":
     unittest.main()

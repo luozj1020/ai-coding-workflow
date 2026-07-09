@@ -150,7 +150,7 @@
 
 | Field | Value |
 |-------|-------|
-| Spark enabled in task card? | yes/no |
+| Spark enabled in task card? | auto/yes/no |
 | Spark invoked? | yes/no/not required |
 | Spark purpose used | review-only / evidence-checker / micro-builder / none |
 | Spark model used | gpt-5.3-codex-spark / other |
@@ -160,6 +160,9 @@
 | Source diff produced? | no / yes + diff artifact |
 | Spark checks run | |
 | Spark exit code | |
+| Spark auto-disabled? | no / yes |
+| Auto-disable reason | missing CLI / model unavailable / quota exhausted / auth or network blocker / not applicable |
+| Helper exit behavior | optional-spark / require-spark |
 | Strong-model fallback used? | no / yes + explicit approval artifact |
 | Spark result accepted by Codex? | yes/no/partial |
 | Conflict with Claude or local evidence? | yes/no + reconciliation |

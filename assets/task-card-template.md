@@ -182,12 +182,12 @@ Advisor timing rules:
 
 ## Codex Spark Gate
 
-<!-- Optional execution-stage auxiliary using OpenAI gpt-5.3-codex-spark. Use it to reduce strong-model quota for quick review, evidence checks, or tightly scoped micro-builder work. It is not a default Claude replacement and must not silently fall back to a stronger model. -->
+<!-- Optional execution-stage auxiliary using OpenAI gpt-5.3-codex-spark. Default to auto so eligible review/evidence work can use separate Spark quota. Spark is auxiliary: if unavailable, unauthenticated, network-blocked, or quota-exhausted, auto-disable it for this run and continue the main workflow. It is not a default Claude replacement and must not silently fall back to a stronger model. -->
 
 | Field | Value |
 |-------|-------|
-| Spark enabled? | no / yes |
-| Spark purpose | none / review-only / evidence-checker / micro-builder |
+| Spark enabled? | auto / no / yes |
+| Spark purpose | review-only / evidence-checker / micro-builder / none |
 | Spark model | gpt-5.3-codex-spark |
 | Quota rationale | separate Spark quota / latency / cost / not applicable |
 | Invocation helper | ai/run-codex-spark.sh |
@@ -196,15 +196,18 @@ Advisor timing rules:
 | Source edits allowed? | no / yes, only in micro-builder worktree |
 | Allowed files/modules | |
 | Validation commands allowed | none / exact commands |
+| Auto-disable when unavailable? | yes |
+| Auto-disable conditions | missing CLI / model access denied / auth or network blocker / Spark quota exhausted |
 | Strong-model fallback allowed? | no / yes, explicit human approval required |
 | Required Spark artifact | .worktrees/.../codex-spark.report.md |
 | Spark result can satisfy acceptance? | no / yes, only for: |
-| Stop conditions | missing model access / auth/network blocker / unclear scope / nonzero helper exit |
+| Stop conditions | unclear scope / non-availability helper failure / explicit require-spark failure |
 
 Spark rules:
 - Prefer `review-only` or `evidence-checker` before `micro-builder`.
 - Run `micro-builder` only for tiny, explicitly scoped edits and only with `--sandbox workspace-write` in the helper-created isolated worktree.
 - Spark evidence can inform Codex review, but it does not override Claude reports, task-card ownership, or required validation.
+- Treat Spark as default-on optional support. If Spark is unavailable or quota-exhausted, record the auto-disable report and continue the main Claude/Codex workflow.
 - Do not consume GPT-5.5/strong-model quota as an implicit fallback. If Spark is unavailable or insufficient, report the gap and let Codex or the human decide the next model.
 
 ## Parallel Execution Gate

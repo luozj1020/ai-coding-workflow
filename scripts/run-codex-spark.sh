@@ -6,7 +6,8 @@
 #       [--model gpt-5.3-codex-spark] [--sandbox read-only|workspace-write]
 #       [--output .worktrees/codex-spark-...]
 #
-# Defaults are intentionally conservative: review-only, read-only, no strong-model fallback.
+# Defaults are intentionally conservative: review-only, read-only, optional Spark,
+# and no strong-model fallback.
 
 set -euo pipefail
 
@@ -24,6 +25,7 @@ Options:
   --output DIR      Artifact directory (default: .worktrees/codex-spark-<timestamp>)
   --allow-dirty-source
                     Allow micro-builder dispatch from a dirty source repo
+  --require-spark   Treat Spark unavailability as a hard helper failure
   -h, --help        Show this help
 
 Environment:
@@ -33,6 +35,7 @@ Environment:
   CODEX_SPARK_SANDBOX
   CODEX_SPARK_OUTPUT_DIR
   CODEX_SPARK_ALLOW_DIRTY_SOURCE=1
+  CODEX_SPARK_REQUIRED=1
 EOF
 }
 
@@ -43,6 +46,12 @@ MODEL="${CODEX_SPARK_MODEL:-gpt-5.3-codex-spark}"
 SANDBOX="${CODEX_SPARK_SANDBOX:-read-only}"
 OUTPUT_DIR="${CODEX_SPARK_OUTPUT_DIR:-}"
 ALLOW_DIRTY_SOURCE="${CODEX_SPARK_ALLOW_DIRTY_SOURCE:-0}"
+REQUIRE_SPARK="${CODEX_SPARK_REQUIRED:-0}"
+SPARK_INVOKED="yes"
+SPARK_AUTO_DISABLED="no"
+SPARK_DISABLE_REASON="not applicable"
+SPARK_CHECKS_RUN="codex exec"
+HELPER_EXIT_STATUS=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -68,6 +77,10 @@ while [ $# -gt 0 ]; do
             ;;
         --allow-dirty-source)
             ALLOW_DIRTY_SOURCE="1"
+            shift
+            ;;
+        --require-spark)
+            REQUIRE_SPARK="1"
             shift
             ;;
         -h|--help)
@@ -161,15 +174,18 @@ write_report_header() {
         echo "| Field | Value |"
         echo "|-------|-------|"
         echo "| Spark enabled in task card? | yes |"
-        echo "| Spark invoked? | yes |"
+        echo "| Spark invoked? | ${SPARK_INVOKED} |"
         echo "| Spark purpose used | ${MODE} |"
         echo "| Spark model used | ${MODEL} |"
         echo "| Invocation command or artifact | ${PROMPT_FILE} |"
         echo "| Sandbox used | ${SANDBOX} |"
         echo "| Isolated worktree used? | $([ -n "$WORKTREE_DIR" ] && echo yes || echo no) |"
         echo "| Source diff produced? | ${diff_value} |"
-        echo "| Spark checks run | codex exec |"
+        echo "| Spark checks run | ${SPARK_CHECKS_RUN} |"
         echo "| Spark exit code | ${exit_value} |"
+        echo "| Spark auto-disabled? | ${SPARK_AUTO_DISABLED} |"
+        echo "| Auto-disable reason | ${SPARK_DISABLE_REASON} |"
+        echo "| Helper exit behavior | $([ "$REQUIRE_SPARK" = "1" ] && echo require-spark || echo optional-spark) |"
         echo "| Strong-model fallback used | no |"
         echo "| Spark result accepted by Codex? | pending review |"
         echo "| Conflict with Claude or local evidence? | pending review |"
@@ -185,16 +201,53 @@ write_report_header() {
 
 write_report_header
 
-if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+auto_disable_spark() {
+    local reason="$1"
+    local codex_exit="${2:-not-run}"
+    SPARK_AUTO_DISABLED="yes"
+    SPARK_DISABLE_REASON="$reason"
+    SPARK_CHECKS_RUN="not run"
+    HELPER_EXIT_STATUS=0
+    write_report_header "$codex_exit" "no"
     {
         echo "## Result"
         echo ""
-        echo "Codex CLI is not installed or not in PATH. Spark was not run."
+        echo "Codex Spark was auto-disabled for this run: ${reason}."
+        echo ""
+        echo "Spark is auxiliary in the workflow, so the helper exits 0 by default and the main Claude/Codex flow may continue."
         echo ""
         echo "Strong-model fallback is disabled by this helper; re-run explicitly with another model only after human approval."
     } >> "$REPORT_FILE"
-    echo "Error: codex CLI is not installed or not in PATH." >&2
-    exit 127
+    echo "Codex Spark auto-disabled: ${reason}" >&2
+    echo "Codex Spark report: $REPORT_FILE"
+    exit "$HELPER_EXIT_STATUS"
+}
+
+spark_unavailable_failure() {
+    local text=""
+    if [ -s "$STDERR_FILE" ]; then
+        text="$(tr '[:upper:]' '[:lower:]' < "$STDERR_FILE")"
+    fi
+    printf '%s\n' "$text" | grep -Eiq \
+        'quota|rate limit|rate-limit|insufficient|exceeded|billing|credit|model.*(not|unavailable|unsupported|unknown)|not.*model|access|permission|unauthori[sz]ed|forbidden|login|auth|network|connection|timeout|timed out|proxy|dns'
+}
+
+if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+    SPARK_INVOKED="no"
+    SPARK_CHECKS_RUN="not run"
+    if [ "$REQUIRE_SPARK" = "1" ]; then
+        write_report_header "127" "no"
+        {
+            echo "## Result"
+            echo ""
+            echo "Codex CLI is not installed or not in PATH. Spark was not run."
+            echo ""
+            echo "Strong-model fallback is disabled by this helper; re-run explicitly with another model only after human approval."
+        } >> "$REPORT_FILE"
+        echo "Error: codex CLI is not installed or not in PATH." >&2
+        exit 127
+    fi
+    auto_disable_spark "codex CLI is not installed or not in PATH" "not-run"
 fi
 
 run_codex() {
@@ -265,6 +318,7 @@ set +e
 )
 CODEX_STATUS=$?
 set -e
+HELPER_EXIT_STATUS="$CODEX_STATUS"
 
 if [ "$MODE" = "micro-builder" ]; then
     git -C "$RUN_DIR" status --porcelain --untracked-files=all > "$STATUS_FILE" || true
@@ -279,6 +333,11 @@ fi
 DIFF_VALUE="no"
 if [ "$MODE" = "micro-builder" ] && [ -s "$DIFF_FILE" ]; then
     DIFF_VALUE="yes: ${DIFF_FILE}"
+fi
+if [ "$CODEX_STATUS" -ne 0 ] && [ "$REQUIRE_SPARK" != "1" ] && spark_unavailable_failure; then
+    SPARK_AUTO_DISABLED="yes"
+    SPARK_DISABLE_REASON="codex exec reported model, quota, auth, network, or access unavailability"
+    HELPER_EXIT_STATUS=0
 fi
 write_report_header "$CODEX_STATUS" "$DIFF_VALUE"
 
@@ -307,9 +366,13 @@ write_report_header "$CODEX_STATUS" "$DIFF_VALUE"
         echo ""
         echo "## Failure Handling"
         echo ""
-        echo "Spark exited non-zero. Strong-model fallback was not used. Re-run explicitly with another model only after human approval."
+        if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+            echo "Spark exited non-zero with an availability-style failure and was auto-disabled because it is auxiliary. The helper exits 0 so the main workflow may continue."
+        else
+            echo "Spark exited non-zero. Strong-model fallback was not used. Re-run explicitly with another model only after human approval."
+        fi
     fi
 } >> "$REPORT_FILE"
 
 echo "Codex Spark report: $REPORT_FILE"
-exit "$CODEX_STATUS"
+exit "$HELPER_EXIT_STATUS"
