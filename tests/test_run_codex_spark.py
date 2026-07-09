@@ -10,10 +10,19 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run-codex-spark.sh"
 
 
+def bash_path(path: pathlib.Path) -> str:
+    value = str(path)
+    if os.name == "nt":
+        value = value.replace("\\", "/")
+        if len(value) >= 2 and value[1] == ":":
+            value = "/" + value[0].lower() + value[2:]
+    return value
+
+
 class RunCodexSparkTests(unittest.TestCase):
     def test_help_mentions_default_model_and_modes(self):
         result = subprocess.run(
-            ["bash", str(SCRIPT), "--help"],
+            ["bash", bash_path(SCRIPT), "--help"],
             cwd=str(ROOT),
             text=True,
             encoding="utf-8",
@@ -57,19 +66,19 @@ class RunCodexSparkTests(unittest.TestCase):
             output_dir = repo / ".worktrees" / "spark-test"
             env = os.environ.copy()
             env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
-            env["CODEX_SPARK_CODEX_BIN"] = str(fake_codex)
-            env["CODEX_FAKE_ARGS"] = str(tmp_path / "args.txt")
-            env["CODEX_FAKE_STDIN"] = str(tmp_path / "stdin.md")
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_FAKE_ARGS"] = bash_path(tmp_path / "args.txt")
+            env["CODEX_FAKE_STDIN"] = bash_path(tmp_path / "stdin.md")
 
             result = subprocess.run(
                 [
                     "bash",
-                    str(SCRIPT),
-                    str(task_card),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
                     "--mode",
                     "review-only",
                     "--output",
-                    str(output_dir),
+                    bash_path(output_dir),
                 ],
                 cwd=str(repo),
                 env=env,

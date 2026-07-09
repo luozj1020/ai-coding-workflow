@@ -10,6 +10,15 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run-parallel-loop.sh"
 
 
+def bash_path(path: pathlib.Path) -> str:
+    value = str(path)
+    if os.name == "nt":
+        value = value.replace("\\", "/")
+        if len(value) >= 2 and value[1] == ":":
+            value = "/" + value[0].lower() + value[2:]
+    return value
+
+
 def write_task(path: pathlib.Path, scope: str, parallel: str = "yes"):
     path.write_text(
         "# Task\n\n"
@@ -26,7 +35,7 @@ def write_task(path: pathlib.Path, scope: str, parallel: str = "yes"):
 class RunParallelLoopTests(unittest.TestCase):
     def test_help_mentions_experimental_parallel_dispatch(self):
         result = subprocess.run(
-            ["bash", str(SCRIPT), "--help"],
+            ["bash", bash_path(SCRIPT), "--help"],
             cwd=str(ROOT),
             text=True,
             encoding="utf-8",
@@ -63,17 +72,17 @@ class RunParallelLoopTests(unittest.TestCase):
 
             output_dir = repo / ".worktrees" / "parallel-test"
             env = os.environ.copy()
-            env["AI_CODING_WORKFLOW_DISPATCH_BIN"] = str(fake_dispatch)
+            env["AI_CODING_WORKFLOW_DISPATCH_BIN"] = bash_path(fake_dispatch)
             result = subprocess.run(
                 [
                     "bash",
-                    str(SCRIPT),
+                    bash_path(SCRIPT),
                     "--max-concurrency",
                     "2",
                     "--output",
-                    str(output_dir),
-                    str(task_a),
-                    str(task_b),
+                    bash_path(output_dir),
+                    bash_path(task_a),
+                    bash_path(task_b),
                 ],
                 cwd=str(repo),
                 env=env,
@@ -109,7 +118,7 @@ class RunParallelLoopTests(unittest.TestCase):
             write_task(task_b, "src/b.py")
 
             result = subprocess.run(
-                ["bash", str(SCRIPT), str(task_a), str(task_b)],
+                ["bash", bash_path(SCRIPT), bash_path(task_a), bash_path(task_b)],
                 cwd=str(repo),
                 text=True,
                 encoding="utf-8",
@@ -131,7 +140,7 @@ class RunParallelLoopTests(unittest.TestCase):
             write_task(task_b, "src/shared.py")
 
             result = subprocess.run(
-                ["bash", str(SCRIPT), str(task_a), str(task_b)],
+                ["bash", bash_path(SCRIPT), bash_path(task_a), bash_path(task_b)],
                 cwd=str(repo),
                 text=True,
                 encoding="utf-8",
