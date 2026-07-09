@@ -14,6 +14,13 @@ from pathlib import Path
 TIMESTAMP_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
 DECISION_RE = re.compile(r"\b(ACCEPT|REVISE|SPLIT|REJECT)\b", re.I)
 NUMBER_RE = re.compile(r"[-+]?[0-9]*\.?[0-9]+")
+SEEDED_REPORT_MARKER = "AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
+FALLBACK_REPORT_MARKER = "AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
+ACK_RE = re.compile(
+    r"Direction / Boundary Acknowledgement|My understanding:|Planned scope:|"
+    r"Recommendation:\s*(proceed|narrow|split|stop-and-report|stop)",
+    re.I,
+)
 
 
 def read_text(path: Path) -> str:
@@ -98,6 +105,99 @@ def checker_status(path: Path) -> str:
     return "MISSING"
 
 
+def is_spark_report(path: Path) -> bool:
+    return path.name == "codex-spark.report.md"
+
+
+def report_status(path: Path) -> str:
+    text = read_text(path)
+    if not text.strip():
+        return "missing"
+    lowered = text.lower()
+    if SEEDED_REPORT_MARKER in text or "dispatcher-created draft" in lowered:
+        return "seeded report only"
+    if (
+        FALLBACK_REPORT_MARKER in text
+        or "fallback report was generated" in lowered
+        or "did not produce a valid claude-owned claude_report.md" in lowered
+        or "did not produce a claude-owned claude_report.md" in lowered
+    ):
+        return "fallback report"
+    return "valid report"
+
+
+def has_diff_evidence(paths: list[Path]) -> bool:
+    for path in paths:
+        if path.name.startswith("codex-spark."):
+            continue
+        text = read_text(path).strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if "diff --git" in text or "unstaged name status" in lowered or "staged name status" in lowered:
+            return True
+        meaningful = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip()
+            and line.strip() != "(none)"
+            and not line.startswith("#")
+            and not line.startswith("##")
+            and not line.lower().startswith("evidence mode:")
+        ]
+        if meaningful:
+            return True
+    return False
+
+
+def classify_claude_evidence(artifacts: dict[str, list[Path]], decision: str) -> dict[str, str]:
+    claude_reports = [path for path in artifacts["report"] if not is_spark_report(path)]
+    statuses = [report_status(path) for path in claude_reports]
+    valid_report = any(status == "valid report" for status in statuses)
+    seeded_report = any(status == "seeded report only" for status in statuses)
+    fallback_report = any(status == "fallback report" for status in statuses)
+    diff_present = has_diff_evidence(artifacts["diff"])
+    evidence_text = "\n".join(read_text(path) for path in artifacts["progress"] + claude_reports)
+    ack_only = bool(ACK_RE.search(evidence_text)) and not diff_present and not valid_report
+
+    if diff_present and valid_report:
+        state = "diff + valid report"
+    elif diff_present and decision == "ACCEPT" and not valid_report:
+        state = "no report but diff accepted"
+    elif diff_present:
+        state = "diff without report"
+    elif ack_only:
+        state = "acknowledgement only"
+    elif fallback_report:
+        state = "fallback report"
+    elif seeded_report:
+        state = "seeded report only"
+    elif valid_report:
+        state = "valid report without diff"
+    else:
+        state = "no useful progress"
+
+    if valid_report:
+        report_state = "valid report"
+    elif fallback_report:
+        report_state = "fallback report"
+    elif seeded_report:
+        report_state = "seeded report only"
+    elif claude_reports:
+        report_state = ", ".join(statuses)
+    else:
+        report_state = "missing"
+
+    return {
+        "evidence_state": state,
+        "report_state": report_state,
+        "valid_report": "yes" if valid_report else "no",
+        "diff_present": "yes" if diff_present else "no",
+        "accepted_without_valid_report": "yes" if state == "no report but diff accepted" else "no",
+        "claude_report_count": str(len(claude_reports)),
+    }
+
+
 def parse_markdown_table_fields(text: str, heading: str) -> dict[str, str]:
     fields: dict[str, str] = {}
     in_section = False
@@ -138,6 +238,47 @@ def parse_first_table(paths: list[Path], headings: list[str]) -> dict[str, str]:
             if fields:
                 return fields
     return {}
+
+
+def spark_status(
+    gate: dict[str, str],
+    followup: dict[str, str],
+    spark_reports: list[Path],
+) -> dict[str, str]:
+    enabled = (
+        followup.get("spark_enabled_in_task_card")
+        or gate.get("spark_enabled")
+        or "not recorded"
+    )
+    invoked = followup.get("spark_invoked") or ("yes" if spark_reports else "no")
+    mode = followup.get("spark_purpose_used") or gate.get("spark_purpose") or "not recorded"
+    model = followup.get("spark_model_used") or gate.get("spark_model") or "not recorded"
+    artifact = (
+        followup.get("artifact_directory")
+        or followup.get("invocation_command_or_artifact")
+        or (str(spark_reports[0]) if spark_reports else "none")
+    )
+    exit_code = followup.get("spark_exit_code") or "not recorded"
+    auto_disabled = followup.get("spark_auto_disabled") or "not recorded"
+    auto_disable_reason = followup.get("auto_disable_reason") or "not recorded"
+    fallback = (
+        followup.get("strong_model_fallback_used")
+        or followup.get("strong_model_fallback_used?")
+        or "no"
+    )
+    sandbox = followup.get("sandbox_used") or gate.get("sandbox") or "not recorded"
+    return {
+        "enabled": enabled,
+        "invoked": invoked,
+        "mode": mode,
+        "model": model,
+        "artifact": artifact,
+        "exit_code": exit_code,
+        "auto_disabled": auto_disabled,
+        "auto_disable_reason": auto_disable_reason,
+        "strong_model_fallback": fallback,
+        "sandbox": sandbox,
+    }
 
 
 def quality_score(decision: str, checker_results: list[str]) -> float:
@@ -192,6 +333,7 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
         "status": sorted(root.rglob("*.status.txt")),
         "network": sorted(root.rglob("*.network.log")),
         "report": sorted(root.rglob("*.report.md")),
+        "spark_report": sorted(root.rglob("codex-spark.report.md")),
         "diff": sorted(root.rglob("*.diff")),
         "events": sorted(root.rglob("loop-events.jsonl")),
         "parallel": sorted(root.rglob("parallel-summary.md")),
@@ -219,7 +361,10 @@ def summarize(path: Path) -> dict:
     advisor_gate = parse_first_table(artifacts["task_card"], ["Advisor Gate"])
     advisor_followup = parse_first_table(artifacts["report"], ["Advisor Follow-up", "Advisor Result"])
     codex_spark_gate = parse_first_table(artifacts["task_card"], ["Codex Spark Gate"])
-    codex_spark_followup = parse_first_table(artifacts["report"], ["Codex Spark Follow-up"])
+    codex_spark_followup = parse_first_table(
+        artifacts["spark_report"] + artifacts["report"],
+        ["Codex Spark Follow-up"],
+    )
     parallel_execution_gate = parse_first_table(artifacts["task_card"], ["Parallel Execution Gate"])
     parallel_execution_followup = parse_first_table(
         artifacts["report"] + artifacts["parallel"],
@@ -238,6 +383,13 @@ def summarize(path: Path) -> dict:
         checker_results,
     )
 
+    claude_evidence = classify_claude_evidence(artifacts, decision)
+    normalized_spark_status = spark_status(
+        codex_spark_gate,
+        codex_spark_followup,
+        artifacts["spark_report"],
+    )
+
     return {
         "run_path": str(path),
         "decision": decision,
@@ -252,6 +404,7 @@ def summarize(path: Path) -> dict:
         "advisor_followup": advisor_followup,
         "codex_spark_gate": codex_spark_gate,
         "codex_spark_followup": codex_spark_followup,
+        "spark_status": normalized_spark_status,
         "parallel_execution_gate": parallel_execution_gate,
         "parallel_execution_followup": parallel_execution_followup,
         "spec_gate": spec_gate,
@@ -266,6 +419,7 @@ def summarize(path: Path) -> dict:
             "findings": stability,
         },
         "artifacts": {key: len(value) for key, value in artifacts.items()},
+        "claude_evidence": claude_evidence,
         "checker_results": checker_results,
     }
 
@@ -303,6 +457,32 @@ def render_markdown(summary: dict) -> str:
             lines.append(f"| {key} | {format_value(summary['cost'][key])} |")
     else:
         lines.append("| usage | unavailable |")
+
+    lines.extend(["", "## Claude Evidence Classification", "", "| Field | Value |", "|-------|-------|"])
+    for key in [
+        "evidence_state",
+        "report_state",
+        "valid_report",
+        "diff_present",
+        "accepted_without_valid_report",
+        "claude_report_count",
+    ]:
+        lines.append(f"| {key} | {summary['claude_evidence'][key]} |")
+
+    lines.extend(["", "## Spark Status", "", "| Field | Value |", "|-------|-------|"])
+    for key in [
+        "enabled",
+        "invoked",
+        "mode",
+        "model",
+        "artifact",
+        "exit_code",
+        "auto_disabled",
+        "auto_disable_reason",
+        "strong_model_fallback",
+        "sandbox",
+    ]:
+        lines.append(f"| {key} | {summary['spark_status'][key]} |")
 
     lines.extend(["", "## Goal Loop Contract", "", "| Field | Value |", "|-------|-------|"])
     if summary["goal_loop_contract"]:

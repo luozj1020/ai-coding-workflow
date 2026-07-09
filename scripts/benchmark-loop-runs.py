@@ -53,6 +53,7 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         advisor_followup = summary.get("advisor_followup", {})
         codex_spark_gate = summary.get("codex_spark_gate", {})
         codex_spark_followup = summary.get("codex_spark_followup", {})
+        spark_status = summary.get("spark_status", {})
         parallel_gate = summary.get("parallel_execution_gate", {})
         parallel_followup = summary.get("parallel_execution_followup", {})
         spec_gate = summary.get("spec_gate", {})
@@ -77,12 +78,17 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "advisor_input_tokens": field_number(advisor_followup, "advisor_input_tokens"),
                 "advisor_output_tokens": field_number(advisor_followup, "advisor_output_tokens"),
                 "advisor_cost_usd": field_number(advisor_followup, "advisor_cost_usd"),
-                "spark_enabled": codex_spark_gate.get("spark_enabled", ""),
-                "spark_purpose": codex_spark_gate.get("spark_purpose", ""),
-                "spark_invoked": codex_spark_followup.get("spark_invoked", ""),
-                "spark_model": codex_spark_followup.get("spark_model_used", ""),
-                "spark_exit_code": field_number(codex_spark_followup, "spark_exit_code"),
-                "spark_strong_fallback_used": codex_spark_followup.get("strong_model_fallback_used", ""),
+                "spark_enabled": spark_status.get("enabled", codex_spark_gate.get("spark_enabled", "")),
+                "spark_purpose": spark_status.get("mode", codex_spark_gate.get("spark_purpose", "")),
+                "spark_invoked": spark_status.get("invoked", codex_spark_followup.get("spark_invoked", "")),
+                "spark_model": spark_status.get("model", codex_spark_followup.get("spark_model_used", "")),
+                "spark_exit_code": field_number(spark_status, "exit_code"),
+                "spark_auto_disabled": spark_status.get("auto_disabled", ""),
+                "spark_artifact": spark_status.get("artifact", ""),
+                "spark_strong_fallback_used": spark_status.get(
+                    "strong_model_fallback",
+                    codex_spark_followup.get("strong_model_fallback_used", ""),
+                ),
                 "parallel_allowed": parallel_gate.get("parallel_allowed", ""),
                 "parallel_group_id": parallel_gate.get("parallel_group_id", ""),
                 "parallel_helper_invoked": parallel_followup.get("parallel_helper_invoked", ""),
@@ -113,6 +119,7 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         "advisor_output_tokens_total": sum(run["advisor_output_tokens"] for run in runs),
         "advisor_cost_usd_total": round(sum(run["advisor_cost_usd"] for run in runs), 6),
         "spark_enabled_count": sum(1 for run in runs if str(run["spark_enabled"]).startswith("yes")),
+        "spark_auto_disabled_count": sum(1 for run in runs if str(run["spark_auto_disabled"]).startswith("yes")),
         "spark_invoked_count": sum(1 for run in runs if str(run["spark_invoked"]).startswith("yes")),
         "spark_strong_fallback_count": sum(1 for run in runs if str(run["spark_strong_fallback_used"]).startswith("yes")),
         "parallel_allowed_count": sum(1 for run in runs if str(run["parallel_allowed"]).startswith("yes")),
@@ -153,6 +160,7 @@ def render_markdown(report: dict) -> str:
         f"| Advisor cost USD | {format_value(report['advisor_cost_usd_total'])} |",
         f"| Spark-enabled runs | {format_value(report['spark_enabled_count'])} |",
         f"| Spark-invoked runs | {format_value(report['spark_invoked_count'])} |",
+        f"| Spark auto-disabled runs | {format_value(report['spark_auto_disabled_count'])} |",
         f"| Spark strong-fallback runs | {format_value(report['spark_strong_fallback_count'])} |",
         f"| Parallel-allowed runs | {format_value(report['parallel_allowed_count'])} |",
         f"| Parallel-invoked runs | {format_value(report['parallel_invoked_count'])} |",

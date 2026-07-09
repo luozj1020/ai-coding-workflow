@@ -106,7 +106,7 @@ Builder and checker responsibilities must remain separate:
 
 Stop when work is accepted, max iterations are reached, the same failure repeats, a fix regresses prior behavior, failure count stops improving, or the blocker is external.
 
-Use `ai/benchmark-loop-runs.py` to compare multiple loop runs as a lightweight living benchmark across quality, speed, cost, stability, loop type, benchmark tags, advisor usage, Spark usage, parallel-dispatch usage, spec adherence, root-cause evidence, and TDD usage.
+Use `ai/benchmark-loop-runs.py` to compare multiple loop runs as a lightweight living benchmark across quality, speed, cost, stability, loop type, benchmark tags, advisor usage, Spark usage, Spark auto-disable/fallback status, Claude evidence classification, parallel-dispatch usage, spec adherence, root-cause evidence, and TDD usage.
 
 ## Token Budget and Delegation Contract
 

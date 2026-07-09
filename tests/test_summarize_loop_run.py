@@ -59,7 +59,9 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "| Spark invoked? | yes |\n"
                 "| Spark purpose used | review-only |\n"
                 "| Spark model used | gpt-5.3-codex-spark |\n"
+                "| Artifact directory | .worktrees/codex-spark-fixture |\n"
                 "| Spark exit code | 0 |\n"
+                "| Spark auto-disabled? | no |\n"
                 "| Strong-model fallback used? | no |\n"
                 "\n"
                 "## Parallel Execution Follow-up\n\n"
@@ -168,6 +170,14 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["codex_spark_gate"]["spark_enabled"], "yes")
             self.assertEqual(summary["codex_spark_followup"]["spark_invoked"], "yes")
             self.assertEqual(summary["codex_spark_followup"]["spark_model_used"], "gpt-5.3-codex-spark")
+            self.assertEqual(summary["spark_status"]["enabled"], "yes")
+            self.assertEqual(summary["spark_status"]["invoked"], "yes")
+            self.assertEqual(summary["spark_status"]["mode"], "review-only")
+            self.assertEqual(summary["spark_status"]["artifact"], ".worktrees/codex-spark-fixture")
+            self.assertEqual(summary["spark_status"]["exit_code"], "0")
+            self.assertEqual(summary["spark_status"]["auto_disabled"], "no")
+            self.assertEqual(summary["claude_evidence"]["evidence_state"], "valid report without diff")
+            self.assertEqual(summary["claude_evidence"]["valid_report"], "yes")
             self.assertEqual(summary["parallel_execution_gate"]["parallel_allowed"], "yes")
             self.assertEqual(summary["parallel_execution_followup"]["parallel_helper_invoked"], "yes")
             self.assertEqual(summary["parallel_execution_followup"]["max_concurrency_used"], "2")
@@ -181,6 +191,62 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["stability"]["finding_count"], 0)
             self.assertEqual(summary["artifacts"]["events"], 1)
             self.assertEqual(summary["artifacts"]["task_card"], 1)
+            self.assertEqual(summary["artifacts"]["spark_report"], 0)
+
+            markdown = module.render_markdown(summary)
+            self.assertIn("## Spark Status", markdown)
+            self.assertIn("| invoked | yes |", markdown)
+            self.assertIn("## Claude Evidence Classification", markdown)
+            self.assertIn("| evidence_state | valid report without diff |", markdown)
+
+    def test_classifies_accepted_diff_without_valid_report(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            run = pathlib.Path(tmp) / "loop-20990101-000000"
+            dispatch = run / "dispatch-1"
+            dispatch.mkdir(parents=True)
+            (dispatch / "claude.diff").write_text(
+                "diff --git a/app.py b/app.py\n"
+                "--- a/app.py\n"
+                "+++ b/app.py\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n",
+                encoding="utf-8",
+            )
+            (dispatch / "claude.report.md").write_text(
+                "<!-- AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT -->\n"
+                "# Claude Modification Report\n\n"
+                "This fallback report was generated from workflow artifacts.\n",
+                encoding="utf-8",
+            )
+            (run / "review-1.txt").write_text("### Decision\n\n**ACCEPT**\n", encoding="utf-8")
+
+            summary = module.summarize(run)
+
+            self.assertEqual(summary["claude_evidence"]["evidence_state"], "no report but diff accepted")
+            self.assertEqual(summary["claude_evidence"]["report_state"], "fallback report")
+            self.assertEqual(summary["claude_evidence"]["diff_present"], "yes")
+            self.assertEqual(summary["claude_evidence"]["accepted_without_valid_report"], "yes")
+
+    def test_classifies_seeded_report_as_invalid(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            run = pathlib.Path(tmp) / "loop-20990101-000000"
+            dispatch = run / "dispatch-1"
+            dispatch.mkdir(parents=True)
+            (dispatch / "claude.report.md").write_text(
+                "<!-- AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT -->\n"
+                "# Claude Modification Report\n\n"
+                "This dispatcher-created draft must be replaced by Claude.\n",
+                encoding="utf-8",
+            )
+
+            summary = module.summarize(run)
+
+            self.assertEqual(summary["claude_evidence"]["evidence_state"], "seeded report only")
+            self.assertEqual(summary["claude_evidence"]["report_state"], "seeded report only")
+            self.assertEqual(summary["claude_evidence"]["valid_report"], "no")
 
     def test_cli_writes_markdown_and_json(self):
         with tempfile.TemporaryDirectory() as tmp:

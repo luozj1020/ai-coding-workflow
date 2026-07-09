@@ -59,6 +59,16 @@ def write_loop_run(run: pathlib.Path, decision: str, cost: str = "0.10"):
         "| Parallel helper invoked? | yes |\n"
         "| Max concurrency used | 2 |\n"
         "\n"
+        "## Codex Spark Follow-up\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Spark invoked? | yes |\n"
+        "| Spark purpose used | failure-triage |\n"
+        "| Spark model used | gpt-5.3-codex-spark |\n"
+        "| Spark exit code | 0 |\n"
+        "| Spark auto-disabled? | no |\n"
+        "| Strong-model fallback used? | no |\n"
+        "\n"
         "## Test-First / TDD Follow-up\n\n"
         "| Field | Value |\n"
         "|-------|-------|\n"
@@ -90,7 +100,13 @@ def write_loop_run(run: pathlib.Path, decision: str, cost: str = "0.10"):
         "| Field | Value |\n"
         "|-------|-------|\n"
         "| Parallel allowed? | yes |\n"
-        "| Parallel group id | fixture-group |\n",
+        "| Parallel group id | fixture-group |\n"
+        "\n"
+        "## Codex Spark Gate\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Spark enabled? | yes |\n"
+        "| Spark purpose | failure-triage |\n",
         encoding="utf-8",
     )
 
@@ -120,6 +136,9 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertEqual(report["advisor_cost_usd_total"], 0.06)
             self.assertEqual(report["parallel_allowed_count"], 2)
             self.assertEqual(report["parallel_invoked_count"], 2)
+            self.assertEqual(report["spark_enabled_count"], 2)
+            self.assertEqual(report["spark_invoked_count"], 2)
+            self.assertEqual(report["spark_auto_disabled_count"], 0)
             self.assertEqual(report["spec_required_count"], 2)
             self.assertEqual(report["tdd_required_count"], 2)
             self.assertEqual(report["runs"][0]["loop_type"], "goal-based")
@@ -130,6 +149,9 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertEqual(report["runs"][0]["root_cause_identified"], "yes")
             self.assertEqual(report["runs"][0]["parallel_allowed"], "yes")
             self.assertEqual(report["runs"][0]["parallel_helper_invoked"], "yes")
+            self.assertEqual(report["runs"][0]["spark_invoked"], "yes")
+            self.assertEqual(report["runs"][0]["spark_purpose"], "failure-triage")
+            self.assertEqual(report["runs"][0]["spark_auto_disabled"], "no")
             self.assertEqual(report["runs"][0]["tdd_mode"], "required")
             self.assertEqual(report["runs"][0]["tdd_red_captured"], "yes")
 

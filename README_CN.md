@@ -559,6 +559,8 @@ python ai/summarize-loop-run.py .worktrees/loop-<timestamp> \
   --json-output .worktrees/loop-<timestamp>/loop-quality-summary.json
 ```
 
+汇总报告会固定输出 `Spark Status` 和 `Claude Evidence Classification` 两段。Spark 字段记录 enabled/invoked 状态、mode、model、artifact path、exit code、auto-disable reason、sandbox 和 strong-model fallback 状态。Claude evidence 会分类为 `diff + valid report`、`no report but diff accepted`、`diff without report`、`acknowledgement only`、`seeded report only`、`fallback report`、`valid report without diff` 或 `no useful progress`。
+
 **Workflow benchmark 汇总：** 要把多次 loop run 聚合成轻量 living benchmark：
 
 ```bash
@@ -567,7 +569,7 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
   --json-output .worktrees/workflow-benchmark.json
 ```
 
-benchmark 会聚合每次运行的 decision、quality score、elapsed time、token/cost、stability findings，并读取任务卡和报告中的 loop type、benchmark tags 与 advisor usage。
+benchmark 会聚合每次运行的 decision、quality score、elapsed time、token/cost、stability findings，并读取任务卡和报告中的 loop type、benchmark tags、advisor usage、Spark invocation/auto-disable/fallback 状态与 parallel-dispatch usage。
 
 **追加式 loop 事件：** `ai/run-loop.sh` 会写入 `.worktrees/loop-<timestamp>/loop-events.jsonl`，记录 run start、iteration start、dispatch complete、review complete、decision、revision task created 和 stop reason。它保留恢复上下文，不重写旧观察。
 

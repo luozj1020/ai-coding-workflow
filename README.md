@@ -578,6 +578,8 @@ python ai/summarize-loop-run.py .worktrees/loop-<timestamp> \
   --json-output .worktrees/loop-<timestamp>/loop-quality-summary.json
 ```
 
+The summary includes fixed `Spark Status` and `Claude Evidence Classification` sections. Spark fields record enabled/invoked state, mode, model, artifact path, exit code, auto-disable reason, sandbox, and strong-model fallback status. Claude evidence is classified as `diff + valid report`, `no report but diff accepted`, `diff without report`, `acknowledgement only`, `seeded report only`, `fallback report`, `valid report without diff`, or `no useful progress`.
+
 **Workflow benchmark summary:** To compare multiple loop runs as a lightweight living benchmark:
 
 ```bash
@@ -586,7 +588,7 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
   --json-output .worktrees/workflow-benchmark.json
 ```
 
-The benchmark aggregates decision, quality score, elapsed time, token/cost totals, stability findings, loop type, benchmark tags, and advisor usage parsed from task cards and reports.
+The benchmark aggregates decision, quality score, elapsed time, token/cost totals, stability findings, loop type, benchmark tags, advisor usage, Spark invocation/auto-disable/fallback status, and parallel-dispatch usage parsed from task cards and reports.
 
 **Append-only loop events:** `ai/run-loop.sh` writes `.worktrees/loop-<timestamp>/loop-events.jsonl`, an append-only event stream for run start, iteration start, dispatch completion, review completion, decisions, revision task creation, and stop reasons. This preserves recovery context without rewriting prior observations.
 

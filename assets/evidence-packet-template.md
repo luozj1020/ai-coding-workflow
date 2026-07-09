@@ -152,9 +152,10 @@
 |-------|-------|
 | Spark enabled in task card? | auto/yes/no |
 | Spark invoked? | yes/no/not required |
-| Spark purpose used | review-only / evidence-checker / micro-builder / none |
+| Spark purpose used | review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
 | Spark model used | gpt-5.3-codex-spark / other |
 | Invocation command or artifact | |
+| Artifact inputs manifest | none / codex-spark.artifacts.txt |
 | Sandbox used | read-only / workspace-write |
 | Isolated worktree used? | yes/no/not applicable |
 | Source diff produced? | no / yes + diff artifact |
@@ -167,6 +168,18 @@
 | Spark result accepted by Codex? | yes/no/partial |
 | Conflict with Claude or local evidence? | yes/no + reconciliation |
 | Remaining Spark-related risk | |
+
+## Claude Evidence Classification
+
+<!-- Prefer the machine-readable classification from dispatch/status/summary artifacts when available. -->
+
+| Field | Value |
+|-------|-------|
+| Evidence state | valid report / seeded report only / fallback report / no report but diff accepted / diff without report / acknowledgement only / no useful progress |
+| Valid Claude-owned report exists? | yes/no |
+| Implementation diff present? | yes/no |
+| Accepted with report/evidence gap? | yes/no |
+| Classification artifact | status-claude / watch-claude / summarize-loop-run / dispatch status |
 
 ## Parallel Execution Follow-up
 

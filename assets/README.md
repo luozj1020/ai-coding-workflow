@@ -394,6 +394,7 @@ The loop runner:
 - Persists all output in `.worktrees/loop-<timestamp>/`.
 - Writes `loop-usage-summary.md` with available Claude and Codex usage summaries.
 - Writes `loop-quality-summary.md` and `loop-quality-summary.json` with quality, speed, cost, and stability metrics.
+- Adds fixed `Spark Status` and `Claude Evidence Classification` sections to loop quality summaries, so Spark availability/fallback and Claude report/diff gaps are visible without reading raw artifacts.
 - Writes `loop-events.jsonl` as an append-only event stream for run start, iteration start, dispatch/review completion, decisions, revisions, and stop reasons.
 - Does NOT merge automatically. Human must review and merge.
 
@@ -412,6 +413,8 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
   --output .worktrees/workflow-benchmark.md \
   --json-output .worktrees/workflow-benchmark.json
 ```
+
+The benchmark aggregates advisor usage, Spark invocation/auto-disable/fallback status, parallel-dispatch usage, spec adherence, root-cause evidence, and TDD fields when those tables are present in task cards or reports.
 
 The benchmark aggregates decision, quality score, elapsed time, token/cost totals, stability findings, loop type, benchmark tags, and advisor usage parsed from task cards and reports.
 

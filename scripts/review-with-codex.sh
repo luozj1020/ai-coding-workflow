@@ -87,6 +87,7 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - Prior-session Claude failures are context only. Do not skip Claude in a fresh session unless the current task card cites matching task IDs and artifact paths proving the same threshold, or the human explicitly asks Codex to take over.
 - Missing result/report/acceptance prose is an evidence gap, not automatically an implementation failure. If the diff matches the task card and assigned validation is green, reconstruct minimal review evidence from artifacts, diff, and verification output instead of revising only to obtain prose.
 - Treat reports containing AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT or AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT as missing valid Claude-owned reports, not as completion evidence.
+- Classify Claude evidence explicitly when reviewing: valid report, seeded report only, fallback report, no report but diff accepted, diff without report, acknowledgement only, or no useful progress.
 - Treat acknowledgement-only as no implementation progress when there is no code diff, no valid Claude-owned report, and only acknowledgement/proceed text.
 - Do not require new tests merely because none were written. Treat missing tests as a revise reason only when the task card assigned Claude to write tests, the user requested tests, or you now explicitly mark tests acceptance-critical for the next iteration.
 - When revising only for missing task-card-required tests or evidence, preserve the accepted implementation direction and make the next Claude task narrow: tests/evidence only, no broad rewrite unless a concrete defect is found.
@@ -173,7 +174,10 @@ State whether acknowledgement was required, whether it was blocking, whether Cla
 State whether the task card assigned test writing and test execution to Claude, Codex/human, or neither, and whether the evidence matches that assignment.
 
 ### Codex Spark Gate
-State whether Spark was enabled, which mode/model/sandbox/artifact was used, whether source edits were allowed, whether micro-builder work used an isolated worktree, whether strong-model fallback was avoided or explicitly approved, and whether Spark evidence can satisfy any acceptance criterion.
+State the fixed Spark fields: enabled/disabled/not recorded, mode, model, sandbox, artifact path, exit code, auto-disabled reason, and strong-model fallback status. Also state whether source edits were allowed, whether micro-builder work used an isolated worktree, whether strong-model fallback was avoided or explicitly approved, and whether Spark evidence can satisfy any acceptance criterion.
+
+### Claude Evidence Classification
+Classify the Claude evidence as one of: valid report, seeded report only, fallback report, no report but diff accepted, diff without report, acknowledgement only, or no useful progress. State whether a valid Claude-owned report exists, whether implementation diff is present, and whether any accepted diff is being accepted with a report/evidence gap.
 
 ### Worktree / Large Repo Strategy
 State whether fresh or reuse-managed worktree strategy was used, whether `CLAUDE_CODE_LARGE_REPO_MODE=1` skipped untracked scans or untracked patch evidence, whether the task card accepted that evidence tradeoff, and whether any reset/clean touched only `.worktrees/reuse/claude-managed`.
