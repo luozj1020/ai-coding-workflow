@@ -98,6 +98,48 @@ def checker_status(path: Path) -> str:
     return "MISSING"
 
 
+def parse_markdown_table_fields(text: str, heading: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    in_section = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            in_section = line.strip() == f"## {heading}"
+            continue
+        if not in_section:
+            continue
+        stripped = line.strip()
+        if not stripped.startswith("|") or "---" in stripped:
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        key, value = cells[0], cells[1]
+        if not key or key.lower() == "field":
+            continue
+        normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+        if normalized:
+            fields[normalized] = value
+    return fields
+
+
+def parse_goal_loop_contract(paths: list[Path]) -> dict[str, str]:
+    for path in paths:
+        fields = parse_markdown_table_fields(read_text(path), "Goal Loop Contract")
+        if fields:
+            return fields
+    return {}
+
+
+def parse_first_table(paths: list[Path], headings: list[str]) -> dict[str, str]:
+    for path in paths:
+        text = read_text(path)
+        for heading in headings:
+            fields = parse_markdown_table_fields(text, heading)
+            if fields:
+                return fields
+    return {}
+
+
 def quality_score(decision: str, checker_results: list[str]) -> float:
     decision_score = {
         "ACCEPT": 1.0,
@@ -152,6 +194,7 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
         "report": sorted(root.rglob("*.report.md")),
         "diff": sorted(root.rglob("*.diff")),
         "events": sorted(root.rglob("loop-events.jsonl")),
+        "task_card": sorted(root.rglob("task-card-*.md")) + sorted(root.rglob("CLAUDE_TASK_CARD.md")),
     }
 
 
@@ -171,6 +214,18 @@ def summarize(path: Path) -> dict:
 
     checker_results = [checker_status(path) for path in artifacts["checker"]]
     decision = parse_decision(artifacts["review"])
+    goal_contract = parse_goal_loop_contract(artifacts["task_card"])
+    advisor_gate = parse_first_table(artifacts["task_card"], ["Advisor Gate"])
+    advisor_followup = parse_first_table(artifacts["report"], ["Advisor Follow-up", "Advisor Result"])
+    codex_spark_gate = parse_first_table(artifacts["task_card"], ["Codex Spark Gate"])
+    codex_spark_followup = parse_first_table(artifacts["report"], ["Codex Spark Follow-up"])
+    spec_gate = parse_first_table(artifacts["task_card"], ["Spec Gate"])
+    spec_followup = parse_first_table(artifacts["report"], ["Spec Follow-up"])
+    root_cause_gate = parse_first_table(artifacts["task_card"], ["Root Cause Gate"])
+    root_cause_followup = parse_first_table(artifacts["report"], ["Root Cause Follow-up"])
+    tdd_contract = parse_first_table(artifacts["task_card"], ["Test-First / TDD Contract"])
+    tdd_followup = parse_first_table(artifacts["report"], ["Test-First / TDD Follow-up"])
+    finish_branch_followup = parse_first_table(artifacts["report"], ["Finish Branch Follow-up"])
     elapsed_seconds = parse_progress_seconds(artifacts["progress"])
     stability = stability_findings(
         artifacts["progress"] + artifacts["status"] + artifacts["report"] + artifacts["checker"],
@@ -186,6 +241,18 @@ def summarize(path: Path) -> dict:
             "progress_logs": len(artifacts["progress"]),
         },
         "cost": usage_total,
+        "goal_loop_contract": goal_contract,
+        "advisor_gate": advisor_gate,
+        "advisor_followup": advisor_followup,
+        "codex_spark_gate": codex_spark_gate,
+        "codex_spark_followup": codex_spark_followup,
+        "spec_gate": spec_gate,
+        "spec_followup": spec_followup,
+        "root_cause_gate": root_cause_gate,
+        "root_cause_followup": root_cause_followup,
+        "tdd_contract": tdd_contract,
+        "tdd_followup": tdd_followup,
+        "finish_branch_followup": finish_branch_followup,
         "stability": {
             "finding_count": len(stability),
             "findings": stability,
@@ -228,6 +295,45 @@ def render_markdown(summary: dict) -> str:
             lines.append(f"| {key} | {format_value(summary['cost'][key])} |")
     else:
         lines.append("| usage | unavailable |")
+
+    lines.extend(["", "## Goal Loop Contract", "", "| Field | Value |", "|-------|-------|"])
+    if summary["goal_loop_contract"]:
+        for key in sorted(summary["goal_loop_contract"]):
+            lines.append(f"| {key} | {summary['goal_loop_contract'][key]} |")
+    else:
+        lines.append("| goal_loop_contract | unavailable |")
+
+    lines.extend(["", "## Advisor Gate", "", "| Field | Value |", "|-------|-------|"])
+    if summary["advisor_gate"]:
+        for key in sorted(summary["advisor_gate"]):
+            lines.append(f"| {key} | {summary['advisor_gate'][key]} |")
+    else:
+        lines.append("| advisor_gate | unavailable |")
+
+    lines.extend(["", "## Advisor Follow-up", "", "| Field | Value |", "|-------|-------|"])
+    if summary["advisor_followup"]:
+        for key in sorted(summary["advisor_followup"]):
+            lines.append(f"| {key} | {summary['advisor_followup'][key]} |")
+    else:
+        lines.append("| advisor_followup | unavailable |")
+
+    for heading, key in [
+        ("Spec Gate", "spec_gate"),
+        ("Spec Follow-up", "spec_followup"),
+        ("Codex Spark Gate", "codex_spark_gate"),
+        ("Codex Spark Follow-up", "codex_spark_followup"),
+        ("Root Cause Gate", "root_cause_gate"),
+        ("Root Cause Follow-up", "root_cause_followup"),
+        ("Test-First / TDD Contract", "tdd_contract"),
+        ("Test-First / TDD Follow-up", "tdd_followup"),
+        ("Finish Branch Follow-up", "finish_branch_followup"),
+    ]:
+        lines.extend(["", f"## {heading}", "", "| Field | Value |", "|-------|-------|"])
+        if summary[key]:
+            for field in sorted(summary[key]):
+                lines.append(f"| {field} | {summary[key][field]} |")
+        else:
+            lines.append(f"| {key} | unavailable |")
 
     lines.extend(["", "## Artifacts", "", "| Artifact Type | Count |", "|---------------|-------|"])
     for key in sorted(summary["artifacts"]):

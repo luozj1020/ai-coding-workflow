@@ -294,6 +294,26 @@ monitor_policy() {
     fi
 }
 
+monitor_level() {
+    local running="$1"
+    local elapsed="$2"
+    local quiet="$3"
+    local worktree_changes="$4"
+    local action="$5"
+
+    if [ "$running" != "yes" ]; then
+        echo "L0"
+    elif [ "$elapsed" -lt "$STARTUP_GRACE" ] || [ "$quiet" -lt "$STALE_AFTER" ]; then
+        echo "L0"
+    elif [ "$worktree_changes" -gt 0 ] && [ "$quiet" -lt "$INTERRUPT_AFTER" ]; then
+        echo "L1"
+    elif [ "$action" = "LIKELY_STUCK" ] || [ "$quiet" -ge "$INTERRUPT_AFTER" ]; then
+        echo "L3"
+    else
+        echo "L2"
+    fi
+}
+
 print_file() {
     local label="$1"
     local file="$2"
@@ -360,10 +380,12 @@ if [ -d "$WORKTREE_DIR" ]; then
     RISK_SUMMARY="$(partial_risk_summary)"
     NETWORK_SUMMARY="$(latest_network_summary)"
     MONITOR_POLICY="$(monitor_policy "$RUNNING" "$ELAPSED" "$QUIET" "$CHANGE_COUNT" "$ACTION")"
+    MONITOR_LEVEL="$(monitor_level "$RUNNING" "$ELAPSED" "$QUIET" "$CHANGE_COUNT" "$ACTION")"
     echo "Action: $ACTION"
     echo "Evidence: $EVIDENCE_STATE"
     echo "Network: $NETWORK_SUMMARY"
     echo "Monitor policy: $MONITOR_POLICY"
+    echo "Machine monitor: monitor_level=${MONITOR_LEVEL} action=${ACTION} evidence_state=\"${EVIDENCE_STATE}\" running=${RUNNING} elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET} worktree_changes=${CHANGE_COUNT} network=\"${NETWORK_SUMMARY}\""
     echo "Report source: $REPORT_SOURCE"
     echo "Claude progress source: $CLAUDE_PROGRESS_SOURCE"
     echo "Elapsed: ${ELAPSED}s"

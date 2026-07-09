@@ -132,9 +132,102 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 
 <!-- What needs to be accomplished in one sentence. -->
 
+## Goal Loop Contract
+
+<!-- Use this to turn the task into a bounded goal-based loop with explicit success and stop criteria. Keep it deterministic where possible. -->
+
+| Field | Value |
+|-------|-------|
+| Loop type | turn-based / goal-based / time-based / proactive |
+| Success signal | exact test/check/output/user-visible state that proves done |
+| Max attempts / iterations | |
+| Stop on repeated failure? | yes/no; same failure threshold: |
+| Stop on no improvement? | yes/no; no-progress threshold: |
+| Stop on regression? | yes/no; prior passing checks that must not fail: |
+| Required evidence before accept | diff + valid report / checker report / screenshots / trace / benchmark summary / human review |
+| Token/cost budget, if any | |
+| Wall-clock budget, if any | |
+| Benchmark tags | <!-- e.g., bugfix, refactor, frontend, product, harness, docs --> |
+
+Loop type guide:
+- Turn-based: short or exploratory work where a single reviewed pass is enough.
+- Goal-based: work with a concrete success signal and bounded attempts; preferred for `ai/run-loop.sh`.
+- Time-based: periodic polling or external-system follow-up.
+- Proactive: recurring well-defined pipeline work such as issue triage, dependency updates, or CI repair.
+
+## Advisor Gate
+
+<!-- Use this when a stronger reviewer/planner should advise the executor before risky work. The advisor may be Codex as an external reviewer, Claude's advisor tool, or a human/domain expert. -->
+
+| Field | Value |
+|-------|-------|
+| Advisor required? | no / yes |
+| Advisor role | none / Codex external advisor / Claude advisor tool / human domain expert |
+| Advisor model or person | |
+| Advisor timing | after orientation / before first write / before final report / when stuck / reconcile conflict |
+| Read-only orientation required before advisor? | yes/no |
+| Required before state-changing edit? | yes/no |
+| Max advisor calls for this task | |
+| Advisor output budget | words/tokens cap, if any |
+| Advisor result visibility | plaintext / redacted / unavailable / not applicable |
+| Reconcile conflicts with local evidence? | yes/no |
+| Fallback if advisor unavailable or cap reached | proceed conservatively / stop-and-report / ask human |
+| Advisor evidence artifact | CLAUDE_PROGRESS.md / CLAUDE_REPORT.md / review artifact / other |
+
+Advisor timing rules:
+- Do not ask for a low-context advisor opinion before basic read-only orientation.
+- Treat advisor guidance as high-value input, not unquestionable truth.
+- If local evidence conflicts with advisor guidance, record the conflict and reconcile before changing direction.
+- If the advisor result is redacted or unavailable to Codex, report the advice category, whether it was followed, and any stop reason/truncation signal.
+
+## Codex Spark Gate
+
+<!-- Optional execution-stage auxiliary using OpenAI gpt-5.3-codex-spark. Use it to reduce strong-model quota for quick review, evidence checks, or tightly scoped micro-builder work. It is not a default Claude replacement and must not silently fall back to a stronger model. -->
+
+| Field | Value |
+|-------|-------|
+| Spark enabled? | no / yes |
+| Spark purpose | none / review-only / evidence-checker / micro-builder |
+| Spark model | gpt-5.3-codex-spark |
+| Quota rationale | separate Spark quota / latency / cost / not applicable |
+| Invocation helper | ai/run-codex-spark.sh |
+| Sandbox | read-only / workspace-write |
+| Isolated worktree required? | yes/no/not applicable |
+| Source edits allowed? | no / yes, only in micro-builder worktree |
+| Allowed files/modules | |
+| Validation commands allowed | none / exact commands |
+| Strong-model fallback allowed? | no / yes, explicit human approval required |
+| Required Spark artifact | .worktrees/.../codex-spark.report.md |
+| Spark result can satisfy acceptance? | no / yes, only for: |
+| Stop conditions | missing model access / auth/network blocker / unclear scope / nonzero helper exit |
+
+Spark rules:
+- Prefer `review-only` or `evidence-checker` before `micro-builder`.
+- Run `micro-builder` only for tiny, explicitly scoped edits and only with `--sandbox workspace-write` in the helper-created isolated worktree.
+- Spark evidence can inform Codex review, but it does not override Claude reports, task-card ownership, or required validation.
+- Do not consume GPT-5.5/strong-model quota as an implicit fallback. If Spark is unavailable or insufficient, report the gap and let Codex or the human decide the next model.
+
 ## Context
 
 <!-- Background, related work, constraints, links to design docs or discussions. -->
+
+## Spec Gate
+
+<!-- Use this for new features, UX/API changes, ambiguous requests, or work where user intent can be lost. For tiny mechanical fixes, mark "not required" with rationale. -->
+
+| Field | Value |
+|-------|-------|
+| Spec required? | yes/no + rationale |
+| Spec artifact | ai/specs/YYYY-MM-DD--slug.md / task card section / not required |
+| Problem statement confirmed? | yes/no |
+| User-visible behavior described? | yes/no/not applicable |
+| Public API/data model/UX impact described? | yes/no/not applicable |
+| Alternatives considered | |
+| Non-goals listed | yes/no |
+| Review gate before implementation | Codex accepted / human accepted / not required |
+| Plan/task-card derivation path | ai/plan-to-task-cards.py output / manual task cards / not applicable |
+
+Spec rule: do not dispatch broad or ambiguous implementation work until the spec is reviewed or explicitly waived. A spec may be short, but it must make the target behavior, non-goals, and acceptance surface concrete enough that Claude does not need to invent product direction.
 
 ## Execution Readiness Gate
 
@@ -158,6 +251,26 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 | Known unknowns | <!-- Questions known before dispatch. --> | |
 | Assumed knowns | <!-- Constraints obvious to the human/Codex but easy for Claude to miss. --> | |
 | Unknown-unknown scan request | <!-- Blindspot pass Claude should perform before implementation. --> | |
+| Questions that would change architecture | <!-- Ask before editing if the answer would change data model, API, UX, or ownership boundaries. --> | |
+| Reference examples / source-of-truth files | <!-- Existing code, docs, screenshots, or specs Claude should treat as examples. --> | |
+| Deviation recording path | <!-- e.g., CLAUDE_REPORT.md Deviations, implementation-notes.md, or stop-and-report. --> | |
+
+## Root Cause Gate
+
+<!-- Use this for bugfixes, failing tests, regressions, flaky behavior, performance problems, or repeated failed attempts. -->
+
+| Field | Value |
+|-------|-------|
+| Root cause required before fix? | yes/no + rationale |
+| Symptom reproduced? | yes/no/not required |
+| Minimal failing case or evidence | test / log / command / trace / user report |
+| Suspected root cause | |
+| Root cause confidence | high/medium/low |
+| Similar patterns checked | yes/no + files or query |
+| Fix targets root cause, not symptom? | yes/no |
+| Stop after repeated failed fixes? | yes/no; threshold: 3 attempted fixes or task-specific value |
+
+Root cause rule: for bugfix/debugging tasks, do not guess-and-patch. Reproduce or cite the failure, identify why it happens, search for nearby pattern matches, then make the smallest fix that addresses the cause. After repeated failed fixes, stop and question the design or task framing.
 
 ## Decision Gates
 
@@ -203,6 +316,23 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 | Acceptance evidence owner | Claude / Codex / human |
 | Evidence-only redispatch allowed? | yes/no; only when task-card-required evidence cannot be reconstructed |
 | No-test rationale, if applicable | |
+
+## Test-First / TDD Contract
+
+<!-- Use this when behavior is new, bug-prone, acceptance-critical, or user-requested tests are part of done. Keep Builder and Checker/Test split unless a mixed-exception is justified. -->
+
+| Field | Value |
+|-------|-------|
+| TDD mode | required / recommended / not applicable |
+| Failing test required before production change? | yes/no + rationale |
+| Red evidence command/artifact | |
+| Green evidence command/artifact | |
+| Refactor pass allowed after green? | yes/no |
+| Existing behavior preserved by tests? | yes/no/not applicable |
+| Test owner | Checker/Test Claude / Codex / human |
+| Production-change owner | Builder Claude / Codex control-plane / human |
+
+TDD rule: when TDD mode is required, do not accept production edits without a failing test or equivalent failing evidence first, then a passing check after the implementation. If Builder and Checker/Test are split, Codex must stage this as separate task cards or record the explicit mixed-exception rationale.
 
 ## Validation Contract
 
@@ -254,6 +384,22 @@ Checker expectations:
 | Remaining implementation/test-writing phases | |
 | Next executor for remaining phases | Claude Code / Codex control-plane / human |
 | If not Claude, threshold or human override cited | |
+
+## Finish Branch Gate
+
+<!-- Complete before claiming the branch/task is ready for human merge. This is separate from accepting one Claude phase. -->
+
+| Check | Value |
+|-------|-------|
+| All accepted phases linked | |
+| Required verification rerun fresh? | yes/no + commands |
+| Evidence packet complete? | yes/no |
+| Dirty/untracked artifacts classified? | yes/no |
+| Out-of-scope changes absent or explained? | yes/no |
+| Remaining risks documented? | yes/no |
+| Human review/merge instructions prepared? | yes/no |
+
+Finish rule: do not claim completion from stale evidence, seeded/fallback reports, or an accepted partial phase. Completion requires fresh verification evidence, artifact classification, and a final review-ready summary.
 
 ## Wait Policy
 

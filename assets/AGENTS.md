@@ -16,6 +16,11 @@ This file defines shared rules for AI agents working in this repository.
 Use the explicit loop: OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW -> LEARN.
 
 - PLAN with `ai/task-card-template.md`.
+- For ambiguous product/API/UX changes, create or cite a spec with `ai/init-spec.py` and fill `Spec Gate` before implementation dispatch.
+- For multi-step plans, use `ai/plan-to-task-cards.py` or manual equivalents to derive small task cards from reviewed plan sections.
+- For bounded loops, fill `Goal Loop Contract` with success signal, max attempts, stop rules, required evidence, budget, and benchmark tags.
+- For tasks needing stronger strategic judgment, fill `Advisor Gate`: advisor role/model, timing, call cap, output budget, result visibility, conflict reconciliation, fallback behavior, and evidence artifact.
+- Optionally fill `Codex Spark Gate` to use `gpt-5.3-codex-spark` as a low-latency auxiliary for review-only, evidence-checker, or tiny isolated micro-builder work; do not use it as an implicit Claude replacement or strong-model fallback.
 - DISPATCH with `ai/dispatch-to-claude.sh` or `ai/run-loop.sh`; dispatch preserves the full Codex task card and renders a smaller Claude execution card.
 - Split risky work into Builder Claude (implementation only) followed by Checker/Test Claude (tests, validation, report) after Codex accepts the implementation direction.
 - Before dispatch, check for mixed builder/checker responsibilities, dirty-source risk, permission/tool approval risk, long-running validation, and missing progress-artifact requirements so a later stall is not misdiagnosed as Claude execution failure.
@@ -49,6 +54,10 @@ For multi-phase or multi-part tasks, accepting one Claude round closes only that
 Keep default context small and file-backed:
 
 - Codex task cards should expose material unknowns and decision gates before dispatch.
+- Specs should make desired behavior, non-goals, acceptance surface, constraints, alternatives, and risks explicit before broad execution. A waived spec needs a short rationale.
+- Use task-card unknowns to reduce information gaps: known unknowns, assumed knowns, blindspot scan requests, architecture-changing questions, reference examples, and deviation recording paths.
+- Do not request advisor guidance with no task context. Prefer read-only orientation first, then advisor consultation before state-changing edits when the task card requires it.
+- Treat Codex Spark evidence as auxiliary: store `codex-spark.report.md` artifacts, reconcile conflicts with Claude/local evidence, and require explicit human approval before any strong-model fallback.
 - Codex should complete the Execution Readiness Gate and Handoff Contract before implementation dispatch.
 - Codex should fill the Phase Responsibility Matrix so each phase has a clear owner and explicit non-owner duties.
 - Store long-lived state in `.worktrees/` artifacts or `ai/plans/<task-id>/`.
@@ -64,6 +73,9 @@ Keep default context small and file-backed:
 
 Builder and checker responsibilities must remain separate:
 
+- Use `Spec Gate` before broad or ambiguous implementation. Do not let Claude invent product direction when a short reviewed spec would make the target behavior concrete.
+- For bugfixes, regressions, failing tests, and repeated failed attempts, fill `Root Cause Gate`: reproduce or cite the symptom, identify the likely cause, check similar patterns, and stop after repeated failed fixes instead of guess-and-patch.
+- Use `Test-First / TDD Contract` when tests are user-requested, acceptance-critical, or the change is bug-prone. Required TDD needs red evidence before production edits and green evidence after implementation.
 - Builder Claude implements scoped changes and reports direction. Builder tasks do not write acceptance tests or run broad suites unless the task card explicitly allows narrow sanity checks.
 - A single Claude task that mixes implementation, test writing, broad validation, and phase stop gates must be split unless the task card explicitly marks `mixed-exception` and explains why one combined pass is intentional.
 - Before editing, Claude performs Direction / Boundary Acknowledgement when requested. It must state understanding, scope, out-of-scope boundaries, likely files, acceptance interpretation, testing responsibility, confusion, risks, and proceed/narrow/split/stop recommendation.
@@ -73,13 +85,19 @@ Builder and checker responsibilities must remain separate:
 - Treat `acknowledgement only` as no implementation progress: no code diff, no valid Claude-owned report, and only acknowledgement/proceed text.
 - Codex reviews builder direction before validation work: wait when the partial diff matches the plan, interrupt and narrow when it runs off-plan, and take over only after the current-task threshold is met.
 - When Claude appears stuck, first attribute the stall: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress updates, external environment, or true Claude no-progress. Use the monitoring escalation ladder: L0 compact watch heartbeat/progress, L1 partial diff review, L2 status/details after repeated suspect snapshots, L3 network/status/diff corroboration after the interrupt window, and L4 kill only after multiple evidence sources agree useful progress is unlikely.
+- Prefer machine-readable monitor fields from `ai/watch-claude.sh` and `ai/status-claude.sh` (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count) before reading full progress, status, or network tails.
 - When network diagnostics are enabled, inspect socket summary and healthcheck status before attributing a quiet run to Claude no-progress.
+- Treat advisor guidance as high-value input, not a command. If advisor guidance conflicts with local evidence, record the conflict and reconcile before changing direction. If advisor output is redacted or unavailable to Codex, report advice category, whether it was followed, stop reason/truncation signals, and any fallback used.
+- Use `Codex Spark Gate` only when it reduces strong-model quota or latency without weakening ownership. Prefer `review-only` or `evidence-checker`; use `micro-builder` only for tiny scoped edits in a helper-created isolated worktree with `--sandbox workspace-write`. Spark must not silently fall back to GPT-5.5 or another stronger model.
 - When dirty source or stale HEAD is the attribution, fill the Delegation Restoration Gate and try to restore a clean updated dispatch base before considering takeover.
 - Checker/Test Claude writes or updates assigned tests, runs assigned validation, and reports results. Checker/Test tasks should not perform broad implementation rewrites; only concrete small fixes allowed by the task card are permitted.
 - Use `ai/check-worktree.sh` when available.
 - Forward checker failures with command, exit code, key output, and `file:line` details.
+- Before claiming work ready for merge, fill `Finish Branch Gate`: link accepted phases, rerun required verification fresh, classify dirty/untracked artifacts, document remaining risks, and prepare human review/merge instructions.
 
 Stop when work is accepted, max iterations are reached, the same failure repeats, a fix regresses prior behavior, failure count stops improving, or the blocker is external.
+
+Use `ai/benchmark-loop-runs.py` to compare multiple loop runs as a lightweight living benchmark across quality, speed, cost, stability, loop type, benchmark tags, advisor usage, Spark usage, spec adherence, root-cause evidence, and TDD usage.
 
 ## Token Budget and Delegation Contract
 

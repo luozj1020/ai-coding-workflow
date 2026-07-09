@@ -11,6 +11,7 @@ ai-coding-workflow bootstraps repositories with:
 - `CLAUDE.md` - Claude Code execution rules
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
+- Optional Codex Spark helper for `gpt-5.3-codex-spark` review/evidence checks and tiny isolated micro-builder work
 - Builder / Checker-Test task modes for separating implementation from validation
 - Direction / boundary acknowledgement gates with anti-loop rules
 - Managed blocks for idempotent updates
@@ -59,6 +60,7 @@ ai-coding-workflow/
     dispatch-to-claude.sh -> Dispatch task cards to Claude Code
     check-worktree.sh    -> Run checker-only validation and write a checker report
     review-with-codex.sh -> Send evidence to Codex/GPT for review
+    run-codex-spark.sh   -> Optional gpt-5.3-codex-spark auxiliary runner
     run-loop.sh          -> Optional loop runner (dispatch + review)
     status-claude.sh     -> Inspect Claude dispatch status and artifacts
     watch-claude.sh      -> Show CLI progress panel for running dispatches
@@ -69,6 +71,9 @@ ai-coding-workflow/
     clean_runtime.py     -> Preview/remove ignored runtime artifacts
     install_context_tools.py -> Check/install context tools (LSP, linting)
     summarize-loop-run.py -> Summarize workflow quality, speed, cost, and stability
+    benchmark-loop-runs.py -> Aggregate loop summaries into a lightweight benchmark
+    init-spec.py         -> Create ai/specs/YYYY-MM-DD--slug.md
+    plan-to-task-cards.py -> Generate task cards from reviewed plan sections
     init-plan.py         -> Create ai/plans/<task-id>/ planning files
     session-catchup.py   -> Generate resume-context.md from plan and artifacts
   tests/
@@ -200,6 +205,7 @@ ai/README.md
 ai/dispatch-to-claude.sh
 ai/check-worktree.sh
 ai/review-with-codex.sh
+ai/run-codex-spark.sh
 ai/run-loop.sh
 ai/status-claude.sh
 ai/watch-claude.sh
@@ -210,6 +216,9 @@ ai/doctor_workflow.py
 ai/clean_runtime.py
 ai/install_context_tools.py
 ai/summarize-loop-run.py
+ai/benchmark-loop-runs.py
+ai/init-spec.py
+ai/plan-to-task-cards.py
 ai/init-plan.py
 ai/session-catchup.py
 .worktrees/.gitkeep
@@ -258,6 +267,20 @@ For non-trivial changes, split the work into two Claude roles:
 
 Task cards can require **Direction / Boundary Acknowledgement** before editing. Claude restates the goal, scope, out-of-scope boundaries, likely files, acceptance criteria, testing responsibility, confusions, and risks. This is a gate, not a discussion loop: at most one blocking acknowledgement is allowed per task or phase unless Codex materially changes the goal, scope, boundaries, or risk. Codex must answer with exactly one decision: proceed, narrow-once/re-dispatch, split, or stop.
 
+For ambiguous feature, UX, API, or data-model work, write a short spec before implementation:
+
+```bash
+python ai/init-spec.py "Feature or change name"
+```
+
+The spec records desired behavior, non-goals, acceptance surface, constraints, alternatives, and risks. Fill `Spec Gate` in the task card and link the spec. `ai/init-plan.py` creates a `task_plan.md` with `### Task N: ...` sections; after reviewing those sections, generate scoped task cards with:
+
+```bash
+python ai/plan-to-task-cards.py ai/plans/PROJ-123/task_plan.md
+```
+
+For bugfixes and regressions, fill `Root Cause Gate` before assigning a fix. For acceptance-critical behavior, fill `Test-First / TDD Contract` so red evidence before production edits and green evidence after implementation are explicit. Before saying a branch is ready, fill `Finish Branch Gate` with fresh verification and artifact classification.
+
 Phase ownership is explicit:
 
 | Phase | Codex owns | Claude owns |
@@ -285,6 +308,8 @@ python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflo
 ```
 Use ai-coding-workflow to create a task card for implementing <feature>.
 ```
+
+For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 
 **Optional: create persistent planning files** for long-running work:
 
@@ -393,6 +418,16 @@ python ai/summarize-loop-run.py .worktrees/loop-<timestamp> \
   --json-output .worktrees/loop-<timestamp>/loop-quality-summary.json
 ```
 
+**Workflow benchmark summary:** To compare multiple loop runs as a lightweight living benchmark:
+
+```bash
+python ai/benchmark-loop-runs.py .worktrees/loop-* \
+  --output .worktrees/workflow-benchmark.md \
+  --json-output .worktrees/workflow-benchmark.json
+```
+
+The benchmark aggregates decision, quality score, elapsed time, token/cost totals, stability findings, loop type, benchmark tags, and advisor usage parsed from task cards and reports.
+
 **Append-only loop events:** `ai/run-loop.sh` writes `.worktrees/loop-<timestamp>/loop-events.jsonl`, an append-only event stream for run start, iteration start, dispatch completion, review completion, decisions, revision task creation, and stop reasons. This preserves recovery context without rewriting prior observations.
 
 **Structured progress memory:** Claude is instructed to maintain `CLAUDE_PROGRESS.md` with stable fields: Goal, Current Phase, Next Check, Blocker, and Last Update. This keeps long-running tasks anchored without pasting large logs into prompts.
@@ -450,6 +485,8 @@ Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones.
 `dispatch-to-claude.sh` prints copy-paste `Watch Progress` and `Watch Details` commands immediately after it starts Claude and again in the completion summary, so users can check progress directly from Codex CLI without opening docs or artifact files.
 
 `watch-claude.sh` defaults to a low-cost status panel: running state, elapsed/quiet seconds, a checklist-derived progress bar, the latest milestone, artifact sizes, and a short stuck-run analysis. It does not print full progress/status/network tails unless `--details` is provided or the run has produced repeated suspect snapshots. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
+
+`watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
 Monitoring priority is intentionally conservative to avoid false kills:
 

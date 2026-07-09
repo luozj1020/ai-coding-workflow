@@ -1,0 +1,161 @@
+import importlib.util
+import json
+import pathlib
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "benchmark-loop-runs.py"
+INSTALLER = ROOT / "scripts" / "install_workflow.py"
+
+
+def load_module():
+    spec = importlib.util.spec_from_file_location("benchmark_loop_runs", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def write_loop_run(run: pathlib.Path, decision: str, cost: str = "0.10"):
+    dispatch = run / "dispatch-1"
+    dispatch.mkdir(parents=True)
+    (dispatch / "claude.progress.log").write_text(
+        "[2099-01-01 00:00:00] Starting Claude Code\n"
+        "[2099-01-01 00:00:10] Claude completed successfully\n",
+        encoding="utf-8",
+    )
+    (dispatch / "claude.checker-report.md").write_text("ALL GREEN\n", encoding="utf-8")
+    (dispatch / "claude.usage.txt").write_text(
+        f"input_tokens: 10\noutput_tokens: 5\ntotal_cost_usd: {cost}\n",
+        encoding="utf-8",
+    )
+    (dispatch / "claude.report.md").write_text(
+        "# Claude Report\n\n"
+        "## Advisor Follow-up\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Advisor consulted? | yes |\n"
+        "| Advisor calls used | 1 |\n"
+        "| Advisor input tokens | 20 |\n"
+        "| Advisor output tokens | 8 |\n"
+        "| Advisor cost USD | 0.03 |\n"
+        "\n"
+        "## Spec Follow-up\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Implementation matched spec? | yes |\n"
+        "\n"
+        "## Root Cause Follow-up\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Root cause identified? | yes |\n"
+        "\n"
+        "## Test-First / TDD Follow-up\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| TDD mode | required |\n"
+        "| Failing test or failing evidence captured before production edit? | yes |\n",
+        encoding="utf-8",
+    )
+    (run / "review-1.txt").write_text(f"Decision: {decision}\n", encoding="utf-8")
+    (run / "task-card-001.md").write_text(
+        "# Task Card\n\n"
+        "## Goal Loop Contract\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Loop type | goal-based |\n"
+        "| Benchmark tags | fixture |\n"
+        "\n"
+        "## Advisor Gate\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Advisor required? | yes |\n"
+        "| Advisor model or person | claude-fable-5 |\n"
+        "\n"
+        "## Spec Gate\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| Spec required? | yes |\n",
+        encoding="utf-8",
+    )
+
+
+class BenchmarkLoopRunsTests(unittest.TestCase):
+    def test_aggregates_quality_speed_cost_and_tags(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            run1 = root / "loop-20990101-000001"
+            run2 = root / "loop-20990101-000002"
+            write_loop_run(run1, "ACCEPT", "0.10")
+            write_loop_run(run2, "REVISE", "0.20")
+
+            report = module.benchmark([run1, run2], root)
+
+            self.assertEqual(report["run_count"], 2)
+            self.assertEqual(report["accepted_count"], 1)
+            self.assertEqual(report["accept_rate"], 0.5)
+            self.assertEqual(report["elapsed_seconds_total"], 20)
+            self.assertEqual(report["input_tokens_total"], 20)
+            self.assertEqual(report["output_tokens_total"], 10)
+            self.assertEqual(report["total_cost_usd"], 0.3)
+            self.assertEqual(report["advisor_calls_total"], 2)
+            self.assertEqual(report["advisor_input_tokens_total"], 40)
+            self.assertEqual(report["advisor_output_tokens_total"], 16)
+            self.assertEqual(report["advisor_cost_usd_total"], 0.06)
+            self.assertEqual(report["spec_required_count"], 2)
+            self.assertEqual(report["tdd_required_count"], 2)
+            self.assertEqual(report["runs"][0]["loop_type"], "goal-based")
+            self.assertEqual(report["runs"][0]["benchmark_tags"], "fixture")
+            self.assertEqual(report["runs"][0]["advisor_required"], "yes")
+            self.assertEqual(report["runs"][0]["advisor_model"], "claude-fable-5")
+            self.assertEqual(report["runs"][0]["spec_matched"], "yes")
+            self.assertEqual(report["runs"][0]["root_cause_identified"], "yes")
+            self.assertEqual(report["runs"][0]["tdd_mode"], "required")
+            self.assertEqual(report["runs"][0]["tdd_red_captured"], "yes")
+
+    def test_cli_writes_markdown_and_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            run = root / "loop-20990101-000001"
+            write_loop_run(run, "ACCEPT")
+            md = root / "benchmark.md"
+            js = root / "benchmark.json"
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(run), "--output", str(md), "--json-output", str(js)],
+                cwd=str(ROOT),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Workflow Benchmark Summary", md.read_text(encoding="utf-8"))
+            data = json.loads(js.read_text(encoding="utf-8"))
+            self.assertEqual(data["run_count"], 1)
+            self.assertEqual(data["accepted_count"], 1)
+
+    def test_installer_copies_benchmark_helper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            subprocess.run(
+                [sys.executable, str(INSTALLER), str(repo)],
+                cwd=str(ROOT),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=True,
+            )
+
+            self.assertTrue((repo / "ai" / "benchmark-loop-runs.py").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -110,7 +110,12 @@ REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the fol
 - Review the Phase Responsibility Matrix when present. Verify that Codex and Claude stayed inside the active phase ownership boundaries, and do not treat work outside Claude's assigned phase as Claude failure.
 - Review any Deviations From Plan. Accept deviations only when the discovered constraint is real, the action taken is conservative or explicitly allowed, and the reviewer briefing makes the behavioral impact clear.
 - Check the Handoff Contract if present. Verify Must do, Must not do, May decide, Must report, and Stop condition against the diff and evidence.
+- Check Codex Spark Gate if present. If Spark was enabled, verify its purpose, model, sandbox, artifact, source-edit permission, isolated worktree use for micro-builder, and whether strong-model fallback was explicitly prohibited or approved. Treat Spark as auxiliary evidence unless the task card explicitly says it can satisfy acceptance.
+- Check Spec Gate if present. If a spec was required, verify the spec artifact was reviewed, implementation matched the spec, non-goals were respected, and Claude did not invent product/API/UX decisions outside the spec.
+- Check Root Cause Gate for bugfixes, regressions, failing tests, flaky behavior, performance issues, and repeated failed attempts. Verify symptom reproduction or cited evidence, likely root cause, similar-pattern scan, and whether the fix targets the cause rather than the symptom.
 - Check Testing Responsibility if present. Verify whether test code changes were user-requested, acceptance-critical, or out of scope; whether Claude was assigned to write/update tests; and whether Claude or Codex/human was responsible for running tests.
+- Check Test-First / TDD Contract when present. If TDD was required, require red evidence before production edits and green evidence after implementation. If Builder/Checker ownership was split, verify the evidence came from the assigned owner or request the correct next task.
+- Check Finish Branch Gate before saying a whole task or branch is ready for human merge. Require fresh verification, dirty/untracked artifact classification, out-of-scope change review, remaining risks, and human review/merge instructions.
 - Check Plan Match, Validation Confidence, and Reviewer Should Check fields when present. If confidence is low or the reviewer briefing is insufficient, normally choose REVISE.
 - Assess regression risk and design coherence.
 - Check for security implications.
@@ -165,6 +170,21 @@ State whether acknowledgement was required, whether it was blocking, whether Cla
 ### Testing Responsibility
 State whether the task card assigned test writing and test execution to Claude, Codex/human, or neither, and whether the evidence matches that assignment.
 
+### Codex Spark Gate
+State whether Spark was enabled, which mode/model/sandbox/artifact was used, whether source edits were allowed, whether micro-builder work used an isolated worktree, whether strong-model fallback was avoided or explicitly approved, and whether Spark evidence can satisfy any acceptance criterion.
+
+### Spec Gate
+State whether a spec was required, which spec artifact or task-card section was reviewed, whether implementation matched the spec, whether non-goals were respected, and whether any product/API/UX decision was invented outside the spec.
+
+### Root Cause Gate
+For bugfix/debugging/regression work, state whether root cause was required, whether the symptom was reproduced or cited, what root cause evidence was provided, whether similar patterns were checked, and whether the fix targets the cause rather than the symptom.
+
+### Test-First / TDD Contract
+State whether TDD was required/recommended/not applicable, whether red evidence existed before production edits, whether green evidence exists after implementation, and whether the test owner and production-change owner matched the task card.
+
+### Finish Branch Gate
+State whether the whole task or branch is actually ready for human merge. Check fresh verification, evidence packet completeness, dirty/untracked artifact classification, out-of-scope changes, remaining risks, and review/merge instructions. If only a phase is accepted, say that Finish Branch Gate is not yet satisfied.
+
 ### Unknowns / Decision Gates
 State which unknowns were resolved, which remain open, whether new unknown-unknowns were discovered, and whether any decision gate was crossed appropriately.
 
@@ -192,6 +212,7 @@ For REVISE, SPLIT, or REJECT, provide a task-card-ready handoff with:
 - Do Not Repeat
 - New Acceptance Criteria
 - New Unknowns / Decision Gates
+- New Spec / Spark / Root Cause / TDD / Finish Branch requirements
 - New Handoff Contract
 
 For phase-only ACCEPT with remaining implementation/test-writing work, also provide this contract for the next Claude dispatch.

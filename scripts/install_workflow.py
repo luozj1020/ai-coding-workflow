@@ -40,6 +40,7 @@ AGENTS_IMPORT = "@AGENTS.md"
 DIRECT_COPY = [
     ("task-card-template.md", "ai/task-card-template.md"),
     ("evidence-packet-template.md", "ai/evidence-packet-template.md"),
+    ("spec-template.md", "ai/spec-template.md"),
     ("plan-task-template.md", "ai/plan-task-template.md"),
     ("plan-findings-template.md", "ai/plan-findings-template.md"),
     ("plan-progress-template.md", "ai/plan-progress-template.md"),
@@ -51,6 +52,7 @@ SCRIPTS = [
     ("dispatch-to-claude.sh", "ai/dispatch-to-claude.sh"),
     ("check-worktree.sh", "ai/check-worktree.sh"),
     ("review-with-codex.sh", "ai/review-with-codex.sh"),
+    ("run-codex-spark.sh", "ai/run-codex-spark.sh"),
     ("run-loop.sh", "ai/run-loop.sh"),
     ("status-claude.sh", "ai/status-claude.sh"),
     ("watch-claude.sh", "ai/watch-claude.sh"),
@@ -69,6 +71,9 @@ PYTHON_SCRIPTS = [
     ("clean_runtime.py", "ai/clean_runtime.py"),
     ("install_context_tools.py", "ai/install_context_tools.py"),
     ("summarize-loop-run.py", "ai/summarize-loop-run.py"),
+    ("benchmark-loop-runs.py", "ai/benchmark-loop-runs.py"),
+    ("init-spec.py", "ai/init-spec.py"),
+    ("plan-to-task-cards.py", "ai/plan-to-task-cards.py"),
     ("init-plan.py", "ai/init-plan.py"),
     ("session-catchup.py", "ai/session-catchup.py"),
 ]

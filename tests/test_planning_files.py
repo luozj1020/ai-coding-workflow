@@ -44,7 +44,10 @@ class PlanningFilesTests(unittest.TestCase):
             self.assertTrue((plan / "findings.md").exists())
             self.assertTrue((plan / "progress.md").exists())
             self.assertEqual((repo / "ai" / "plans" / ".active_plan").read_text(encoding="utf-8").strip(), "PROJ-123")
-            self.assertIn("PROJ-123", (plan / "task_plan.md").read_text(encoding="utf-8"))
+            task_plan = (plan / "task_plan.md").read_text(encoding="utf-8")
+            self.assertIn("PROJ-123", task_plan)
+            self.assertIn("## Task Sections", task_plan)
+            self.assertIn("### Task 1: Define the first scoped task", task_plan)
 
     def test_session_catchup_generates_resume_context(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -109,4 +112,3 @@ class PlanningFilesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

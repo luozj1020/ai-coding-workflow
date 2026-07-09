@@ -44,12 +44,94 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "# Checker Report\n\nALL GREEN\n",
                 encoding="utf-8",
             )
+            (dispatch / "claude.report.md").write_text(
+                "# Claude Report\n\n"
+                "## Advisor Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Advisor consulted? | yes |\n"
+                "| Advisor calls used | 1 |\n"
+                "| Advisor output tokens | 80 |\n"
+                "\n"
+                "## Codex Spark Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark invoked? | yes |\n"
+                "| Spark purpose used | review-only |\n"
+                "| Spark model used | gpt-5.3-codex-spark |\n"
+                "| Spark exit code | 0 |\n"
+                "| Strong-model fallback used? | no |\n"
+                "\n"
+                "## Spec Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Implementation matched spec? | yes |\n"
+                "| Non-goals respected? | yes |\n"
+                "\n"
+                "## Root Cause Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Root cause identified? | yes |\n"
+                "| Fix targets cause rather than symptom? | yes |\n"
+                "\n"
+                "## Test-First / TDD Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| TDD mode | required |\n"
+                "| Failing test or failing evidence captured before production edit? | yes |\n"
+                "\n"
+                "## Finish Branch Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Fresh verification rerun? | yes: pytest |\n",
+                encoding="utf-8",
+            )
             (run / "review-1.txt").write_text(
                 "### Decision\n\n**ACCEPT**\n",
                 encoding="utf-8",
             )
             (run / "loop-events.jsonl").write_text(
                 '{"event":"run_start"}\n{"event":"decision","decision":"ACCEPT"}\n',
+                encoding="utf-8",
+            )
+            (run / "task-card-001.md").write_text(
+                "# Task Card\n\n"
+                "## Goal Loop Contract\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Loop type | goal-based |\n"
+                "| Success signal | pytest passes |\n"
+                "| Benchmark tags | bugfix, harness |\n"
+                "\n"
+                "## Advisor Gate\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Advisor required? | yes |\n"
+                "| Advisor model or person | claude-fable-5 |\n"
+                "\n"
+                "## Codex Spark Gate\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark enabled? | yes |\n"
+                "| Spark purpose | review-only |\n"
+                "| Spark model | gpt-5.3-codex-spark |\n"
+                "\n"
+                "## Spec Gate\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spec required? | yes |\n"
+                "| Spec artifact | ai/specs/2099-01-01--fixture.md |\n"
+                "\n"
+                "## Root Cause Gate\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Root cause required before fix? | yes |\n"
+                "\n"
+                "## Test-First / TDD Contract\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| TDD mode | required |\n"
+                "| Failing test required before production change? | yes |\n",
                 encoding="utf-8",
             )
 
@@ -61,8 +143,25 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["cost"]["input_tokens"], 100)
             self.assertEqual(summary["cost"]["output_tokens"], 50)
             self.assertEqual(summary["cost"]["total_cost_usd"], 0.25)
+            self.assertEqual(summary["goal_loop_contract"]["loop_type"], "goal-based")
+            self.assertEqual(summary["goal_loop_contract"]["benchmark_tags"], "bugfix, harness")
+            self.assertEqual(summary["advisor_gate"]["advisor_required"], "yes")
+            self.assertEqual(summary["advisor_gate"]["advisor_model_or_person"], "claude-fable-5")
+            self.assertEqual(summary["advisor_followup"]["advisor_consulted"], "yes")
+            self.assertEqual(summary["advisor_followup"]["advisor_calls_used"], "1")
+            self.assertEqual(summary["codex_spark_gate"]["spark_enabled"], "yes")
+            self.assertEqual(summary["codex_spark_followup"]["spark_invoked"], "yes")
+            self.assertEqual(summary["codex_spark_followup"]["spark_model_used"], "gpt-5.3-codex-spark")
+            self.assertEqual(summary["spec_gate"]["spec_required"], "yes")
+            self.assertEqual(summary["spec_followup"]["implementation_matched_spec"], "yes")
+            self.assertEqual(summary["root_cause_gate"]["root_cause_required_before_fix"], "yes")
+            self.assertEqual(summary["root_cause_followup"]["root_cause_identified"], "yes")
+            self.assertEqual(summary["tdd_contract"]["tdd_mode"], "required")
+            self.assertEqual(summary["tdd_followup"]["tdd_mode"], "required")
+            self.assertEqual(summary["finish_branch_followup"]["fresh_verification_rerun"], "yes: pytest")
             self.assertEqual(summary["stability"]["finding_count"], 0)
             self.assertEqual(summary["artifacts"]["events"], 1)
+            self.assertEqual(summary["artifacts"]["task_card"], 1)
 
     def test_cli_writes_markdown_and_json(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -14,18 +14,22 @@ You are the execution agent in a Codex / Claude Code workflow.
 1. Read `CLAUDE_TASK_CARD.md` when present; it is the execution contract derived from the full Codex planning card.
 2. Read loop context, prior review decisions, and revision instructions when present.
 3. Check the Execution Readiness Gate; if the task is not implementation-ready, stop and report.
-4. Treat the Handoff Contract as the primary executor contract.
-5. Read Unknowns and Decision Gates; do not cross stop-and-report gates silently.
-6. Read Task Mode and Testing Responsibility; only write tests or run tests when the task card assigns that responsibility.
-7. Complete Direction / Boundary Acknowledgement before editing when requested. If blocking Codex approval is required, write the acknowledgement and stop until approval appears in the task card or progress artifacts.
-8. Check Stall / Ambiguity Triage when present; if the card mixes implementation, test writing, broad validation, and stop gates without `mixed-exception`, stop-and-report instead of guessing the intended role.
-9. Prefer LSP, CodeGraph, and MCP before broad reads.
-10. Work only in the current isolated worktree.
-11. Make scoped edits that match the task card.
-12. Run only the checks assigned to this task mode; Builder tasks avoid broad acceptance tests unless explicitly allowed.
-13. Run `bash ai/check-worktree.sh` when available and assigned.
-14. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
-15. Do not merge changes.
+4. Read Spec Gate; if a required spec is missing, unreviewed, or contradicted by the task card, stop and report.
+5. Read Goal Loop Contract; use its success signal, max attempts, stop rules, required evidence, and benchmark tags as the outer loop contract.
+6. Read Advisor Gate; if advisor consultation is required, complete read-only orientation before consulting and before state-changing edits.
+7. Read Codex Spark Gate when present. Codex Spark evidence may be available as auxiliary Codex evidence, but it does not change your assignment unless the task card explicitly says so.
+8. Treat the Handoff Contract as the primary executor contract.
+9. Read Unknowns and Decision Gates, plus Root Cause Gate; do not cross stop-and-report gates silently.
+10. Read Task Mode, Testing Responsibility, and Test-First / TDD Contract; only write tests or run tests when the task card assigns that responsibility.
+11. Complete Direction / Boundary Acknowledgement before editing when requested. If blocking Codex approval is required, write the acknowledgement and stop until approval appears in the task card or progress artifacts.
+12. Check Stall / Ambiguity Triage when present; if the card mixes implementation, test writing, broad validation, and stop gates without `mixed-exception`, stop-and-report instead of guessing the intended role.
+13. Prefer LSP, CodeGraph, and MCP before broad reads.
+14. Work only in the current isolated worktree.
+15. Make scoped edits that match the task card.
+16. Run only the checks assigned to this task mode; Builder tasks avoid broad acceptance tests unless explicitly allowed.
+17. Run `bash ai/check-worktree.sh` when available and assigned.
+18. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions.
+19. Do not merge changes.
 
 ### Direction and boundary acknowledgement
 
@@ -68,6 +72,14 @@ For Checker/Test tasks:
 - Do not perform broad implementation rewrites.
 - Make only concrete small fixes that the task card explicitly allows when validation exposes a clear defect.
 
+### Spec, root cause, and test-first discipline
+
+If Spec Gate says a spec is required, implement only behavior supported by the spec and task card. Respect non-goals. If you discover a product/API/UX decision the spec does not answer, stop-and-report instead of inventing it.
+
+For bugfixes, regressions, failing tests, and repeated failed attempts, follow Root Cause Gate before changing production code: reproduce or cite the symptom, identify the likely cause, check similar nearby patterns, and target the cause rather than the symptom. After repeated failed fixes, stop and report the design or task-framing concern.
+
+If Test-First / TDD Contract says TDD is required, capture failing test or failing evidence before production edits, then capture green evidence after the fix. Keep Builder/Checker responsibilities intact unless the task card explicitly marks `mixed-exception`.
+
 ### Progress memory
 
 Maintain `CLAUDE_PROGRESS.md` during execution. Keep these fields near the top and update them at natural milestones:
@@ -98,6 +110,13 @@ Report:
 - Checks run or blocked.
 - Out-of-scope confirmation.
 - Unknowns resolved, new unknowns discovered, decision gates crossed, and deviations from plan.
+- Goal loop result: success signal met or unmet, stop rule reached if any, and benchmark tags when present.
+- Advisor follow-up: whether advisor was required and consulted, role/model, call count, advice summary or artifact, result visibility, stop reason/truncation, whether advice was followed, local-evidence conflicts, reconcile action, fallback used, and advisor token/cost fields when available.
+- Codex Spark follow-up when assigned or present: Spark mode/model/artifact, sandbox, isolated worktree, exit code, source diff if any, whether strong-model fallback was avoided, and any conflict with Claude or local evidence.
+- Spec follow-up: spec reviewed, implementation matched spec, non-goals respected, and any invented product/API/UX decisions.
+- Root cause follow-up: reproduction or cited symptom, root cause evidence, similar patterns checked, and whether the fix targets the cause.
+- Test-first/TDD follow-up: red evidence before production edit, green evidence after implementation, and owner-boundary compliance.
+- Finish branch follow-up when assigned: fresh verification, artifact classification, out-of-scope check, remaining risks, and review/merge notes.
 - Diffstat and artifact paths.
 - Assumptions and failed checks.
 - Test/lint/type/build outcomes.

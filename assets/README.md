@@ -46,6 +46,7 @@ This repository has been set up with a multi-agent AI coding workflow. The workf
 
 - **Codex / GPT**  -  plans and reviews (top-level design, not concrete edits)
 - **Claude Code**  -  implements in Builder tasks and validates in Checker/Test tasks
+- **Codex Spark**  -  optional `gpt-5.3-codex-spark` auxiliary for quick review, evidence checks, or tiny isolated micro-builder work
 - **MiMo / DeepSeek**  -  optional exhaustive review helper
 - **LSP / Codegraph / MCP**  -  low-token code intelligence (used first, before broad reads)
 
@@ -57,6 +58,10 @@ For non-trivial changes, split Claude work into two roles:
 - **Checker/Test Claude** runs after Codex accepts the builder direction. It writes or updates assigned tests, runs validation commands, and reports evidence without broad implementation rewrites.
 
 Task cards can require **Direction / Boundary Acknowledgement** before editing. Claude restates the goal, scope, out-of-scope boundaries, likely files, acceptance criteria, testing responsibility, confusions, and risks. This is a gate, not a discussion loop: at most one blocking acknowledgement is allowed per task or phase unless Codex materially changes the goal, scope, boundaries, or risk. Codex answers with exactly one decision: proceed, narrow-once/re-dispatch, split, or stop.
+
+Use `ai/init-spec.py` for ambiguous feature, UX, API, or data-model work, then fill `Spec Gate` in the task card. `ai/init-plan.py` creates `task_plan.md` with `### Task N: ...` sections; use `ai/plan-to-task-cards.py` to turn reviewed task sections into scoped task cards. Use `Root Cause Gate` before bugfixes/regressions, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work is ready for human merge.
+
+Use `Codex Spark Gate` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Default to `review-only` or `evidence-checker`; use `micro-builder` only for tiny scoped edits in the helper-created isolated worktree. Spark evidence is auxiliary and must not silently fall back to GPT-5.5 or another stronger model.
 
 Phase ownership is explicit:
 
@@ -80,12 +85,14 @@ Dirty source or stale HEAD is handled the same way: it blocks reliable delegatio
 ai/
   task-card-template.md      # Template for planning work items
   evidence-packet-template.md # Template for documenting execution results
+  spec-template.md           # Template for lightweight specs
   plan-task-template.md       # Persistent task plan template
   plan-findings-template.md   # Persistent findings template
   plan-progress-template.md   # Persistent progress template
   dispatch-to-claude.sh       # Dispatches task cards to Claude Code
   check-worktree.sh           # Runs checker-only validation and writes a report
   review-with-codex.sh        # Sends evidence to Codex/GPT for review
+  run-codex-spark.sh          # Optional gpt-5.3-codex-spark auxiliary runner
   run-loop.sh                 # Optional loop runner (dispatch + review)
   status-claude.sh            # Inspect Claude dispatch progress/artifacts
   watch-claude.sh             # Stream Claude progress in a terminal
@@ -96,6 +103,9 @@ ai/
   clean_runtime.py            # Preview/remove ignored runtime artifacts
   install_context_tools.py    # Check/install context tools (LSP, linting)
   summarize-loop-run.py       # Summarize workflow quality, speed, cost, and stability
+  benchmark-loop-runs.py      # Aggregate loop summaries into a lightweight benchmark
+  init-spec.py                # Create ai/specs/YYYY-MM-DD--slug.md
+  plan-to-task-cards.py       # Generate task cards from reviewed plan sections
   init-plan.py                # Create ai/plans/<task-id>/ planning files
   session-catchup.py          # Generate resume-context.md from plan and artifacts
   README.md                   # This file
@@ -115,6 +125,8 @@ Copy the template and fill it in:
 cp ai/task-card-template.md ai/task-cards/PROJ-123.md
 # Edit ai/task-cards/PROJ-123.md
 ```
+
+For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Use `Codex Spark Gate` when Spark should perform low-cost review/evidence checking or tiny isolated micro-builder work. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 
 For longer tasks, create persistent planning files:
 
@@ -176,6 +188,28 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.codex-usage.txt` | Codex review token/cost usage summary when available |
 
 It does **not** merge automatically.
+
+### Optional Codex Spark Auxiliary
+
+When the task card enables `Codex Spark Gate`, run Spark as a low-cost auxiliary:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
+```
+
+For evidence checks:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode evidence-checker
+```
+
+For tiny scoped edits only, use micro-builder mode. The helper creates an isolated worktree and refuses dirty source repositories unless explicitly overridden:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
+```
+
+Spark artifacts include `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. Spark does not silently fall back to GPT-5.5 or another stronger model.
 
 While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
 
@@ -252,6 +286,16 @@ python ai/summarize-loop-run.py .worktrees/loop-<timestamp> \
   --output .worktrees/loop-<timestamp>/loop-quality-summary.md \
   --json-output .worktrees/loop-<timestamp>/loop-quality-summary.json
 ```
+
+To compare multiple loop runs as a lightweight living benchmark:
+
+```bash
+python ai/benchmark-loop-runs.py .worktrees/loop-* \
+  --output .worktrees/workflow-benchmark.md \
+  --json-output .worktrees/workflow-benchmark.json
+```
+
+The benchmark aggregates decision, quality score, elapsed time, token/cost totals, stability findings, loop type, benchmark tags, and advisor usage parsed from task cards and reports.
 
 Claude also maintains `CLAUDE_PROGRESS.md` as a compact progress memory with stable fields: Goal, Current Phase, Next Check, Blocker, and Last Update.
 
@@ -344,6 +388,8 @@ Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones.
 `dispatch-to-claude.sh` prints copy-paste `Watch Progress` and `Watch Details` commands immediately after it starts Claude and again in the completion summary, so users can check progress directly from Codex CLI without opening docs or artifact files.
 
 `watch-claude.sh` defaults to a low-cost status panel: running state, elapsed/quiet seconds, a checklist-derived progress bar, the latest milestone, artifact sizes, and a short stuck-run analysis. It does not print full progress/status/network tails unless `--details` is provided or the run has produced repeated suspect snapshots. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
+
+`watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
 Monitoring priority is intentionally conservative to avoid false kills:
 

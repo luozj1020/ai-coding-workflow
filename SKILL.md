@@ -60,7 +60,7 @@ If doctor reports `workflow-version` warnings, the repository is still using old
 Core loop:
 
 1. OBSERVE: gather low-token context with LSP, CodeGraph, MCP, and targeted snippets.
-2. PLAN: create or revise a task card from `ai/task-card-template.md`.
+2. PLAN: create or revise a task card from `ai/task-card-template.md`; for ambiguous work, first create a short spec with `ai/init-spec.py` and fill `Spec Gate`.
 3. DISPATCH: run `bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md`.
 4. VERIFY: Claude edits in an isolated worktree and produces report/checker evidence.
 5. REVIEW: run `bash ai/review-with-codex.sh ...` or `bash ai/run-loop.sh ...`.
@@ -89,6 +89,14 @@ Core loop:
 - Use LSP/CodeGraph/MCP before broad reads.
 - Delegate whole-file scans, long logs, and multi-file implementation to Claude.
 - Codex owns the full planning task card; dispatch renders a smaller Claude execution card and omits Codex-only budget, planning, and control-plane sections from Claude's prompt.
+- For bounded loop work, Codex should fill `Goal Loop Contract`: loop type, success signal, max attempts, repeated-failure/no-improvement/regression stop rules, required evidence, budget, and benchmark tags.
+- For ambiguous feature, UX, API, or data-model work, Codex should fill `Spec Gate` and link a reviewed spec artifact. Use `ai/init-spec.py` for lightweight specs and `ai/plan-to-task-cards.py` to derive small task cards from reviewed `### Task N: ...` plan sections.
+- For bugfixes, regressions, failing tests, and repeated failed attempts, Codex should fill `Root Cause Gate` before assigning a fix: reproduce or cite the symptom, identify likely cause, check similar patterns, and stop after repeated failed fixes instead of guess-and-patch.
+- For test-critical work, Codex should fill `Test-First / TDD Contract`: red evidence before production edits, green evidence after implementation, and explicit test/production owner split.
+- Before claiming work ready for human merge, Codex should fill `Finish Branch Gate`: accepted phase links, fresh verification, dirty/untracked artifact classification, out-of-scope check, remaining risks, and review/merge instructions.
+- For strategic or risky work, Codex should fill `Advisor Gate`: advisor role/model, consult timing, read-only orientation requirement, state-changing edit checkpoint, call cap, output budget, result visibility, conflict reconciliation, fallback behavior, and evidence artifact.
+- For execution-stage quota savings, Codex may fill `Codex Spark Gate` and run `ai/run-codex-spark.sh` with `gpt-5.3-codex-spark`. Default to review-only/read-only or evidence-checker; use micro-builder only for tiny scoped edits in an isolated worktree. Do not silently fall back to GPT-5.5 or another stronger model.
+- Use the task card `Unknowns` section to reduce the information gap before execution: known unknowns, assumed knowns, blindspot scan request, architecture-changing questions, reference examples, and where deviations must be recorded.
 - For multi-phase or multi-part tasks, accepting one Claude round only closes that phase; remaining implementation/test phases stay Claude-owned and must be dispatched as next task cards unless a takeover threshold or explicit human override applies.
 - Task cards must say whether Claude writes tests, runs tests, or leaves verification to Codex/humans; test-code tasks can be delegated to Claude when the user asks for tests or Codex makes them acceptance-critical.
 - Claude must update `CLAUDE_PROGRESS.md` and, when present, the progress/checklist in `CLAUDE_TASK_CARD.md` after completing each assigned item so Codex can distinguish active progress from stalls.
@@ -100,7 +108,10 @@ Core loop:
 - Do not merge automatically.
 - Destructive or high-risk actions require explicit human approval.
 - If Claude appears quiet, follow the monitoring escalation ladder: L0 compact `ai/watch-claude.sh` heartbeat/progress first; L1 partial diff review when worktree changes exist; L2 `ai/status-claude.sh` or watch details only after repeated suspect snapshots; L3 network/status/diff corroboration when quiet time exceeds the interrupt window; L4 `ai/kill-claude.sh` only after multiple evidence sources agree useful progress is unlikely.
+- Prefer machine-readable monitor fields from `watch-claude.sh`/`status-claude.sh` (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count) before reading full progress, status, or network tails.
 - Optional network diagnostics are available with `CLAUDE_CODE_NETWORK_MONITOR=1`. They record metadata-only process socket snapshots in `*.network.log`; optional `CLAUDE_CODE_NETWORK_HEALTHCHECK_URL` records healthcheck status. Do not treat network metadata as request-content evidence or implementation evidence.
+- Use `ai/benchmark-loop-runs.py` to aggregate multiple loop runs into a lightweight living benchmark with quality, speed, cost, stability, loop type, and benchmark tags.
+- Benchmark and evidence reports should include advisor and Spark usage when available: calls, model/person or model slug, visibility, advice followed, conflicts reconciled, stop reason/truncation, Spark mode, Spark exit code, strong-model fallback status, and token/cost fields when known. They should also preserve spec adherence, root-cause evidence, TDD mode, and red/green evidence when present.
 - When Claude appears stuck, diagnose orchestration causes before blaming execution: mixed-role task card, unclear testing responsibility, blocking acknowledgement loop, dirty source/stale HEAD, permission/tool approval blocker, long-running command, missing progress artifact, or external environment. Only call it Claude no-progress after progress, status, and worktree evidence are all quiet past the grace period.
 - If dirty source/stale HEAD blocks dispatch, Codex must record the Delegation Restoration Gate and explain why restoration was attempted or impossible before any direct intervention.
 
@@ -144,6 +155,7 @@ Dispatch artifacts live under `.worktrees/`:
 - `*.report.md`, `*.claude-progress.md`, `*.progress.log`, `*.pid`
 - `*.network.log` when `CLAUDE_CODE_NETWORK_MONITOR=1`
 - `*.usage.txt`, `*.worktree-status.txt`, `*.untracked.txt`
+- `codex-spark.report.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, and optional `codex-spark.diff` from `ai/run-codex-spark.sh`
 
 ## When To Load More
 

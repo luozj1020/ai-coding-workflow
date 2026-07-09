@@ -104,6 +104,110 @@
 | Decision gate crossed? | yes/no | |
 | Deviation from plan? | yes/no | |
 
+## Goal Loop Result
+
+<!-- Compare the run against the task card's Goal Loop Contract. This feeds summarize-loop-run.py and benchmark-loop-runs.py. -->
+
+| Field | Value |
+|-------|-------|
+| Loop type | turn-based / goal-based / time-based / proactive |
+| Success signal met? | yes/no/partial |
+| Success signal evidence | |
+| Attempts / iterations used | |
+| Stop rule reached | none / max attempts / repeated failure / no improvement / regression / external blocker |
+| Required evidence present? | yes/no/partial |
+| Token/cost budget status | within / exceeded / not set |
+| Wall-clock budget status | within / exceeded / not set |
+| Benchmark tags | |
+
+## Advisor Follow-up
+
+<!-- Compare the run against the task card's Advisor Gate. Use this for external Codex advisor reviews and Claude advisor-tool calls. -->
+
+| Field | Value |
+|-------|-------|
+| Advisor required? | yes/no |
+| Advisor consulted? | yes/no/not required |
+| Advisor role | Codex external advisor / Claude advisor tool / human domain expert / none |
+| Advisor model or person | |
+| Advisor calls used | |
+| Advisor max calls | |
+| Advisor timing used | after orientation / before first write / before final report / when stuck / reconcile conflict |
+| Advice summary or artifact | |
+| Advisor result visibility | plaintext / redacted / unavailable / not applicable |
+| Advisor stop reason / truncation | |
+| Advice followed? | yes/no/partial |
+| Conflict with local evidence? | yes/no |
+| Reconcile action | none / second advisor call / Codex decision / human decision / conservative fallback |
+| Fallback used? | no / proceed conservatively / stop-and-report / ask human |
+| Advisor input tokens | |
+| Advisor output tokens | |
+| Advisor cost USD | |
+
+## Codex Spark Follow-up
+
+<!-- Compare the run against the task card's Codex Spark Gate. Fill only when Spark was enabled or considered. -->
+
+| Field | Value |
+|-------|-------|
+| Spark enabled in task card? | yes/no |
+| Spark invoked? | yes/no/not required |
+| Spark purpose used | review-only / evidence-checker / micro-builder / none |
+| Spark model used | gpt-5.3-codex-spark / other |
+| Invocation command or artifact | |
+| Sandbox used | read-only / workspace-write |
+| Isolated worktree used? | yes/no/not applicable |
+| Source diff produced? | no / yes + diff artifact |
+| Spark checks run | |
+| Spark exit code | |
+| Strong-model fallback used? | no / yes + explicit approval artifact |
+| Spark result accepted by Codex? | yes/no/partial |
+| Conflict with Claude or local evidence? | yes/no + reconciliation |
+| Remaining Spark-related risk | |
+
+## Spec Follow-up
+
+<!-- Compare the run against the task card's Spec Gate. -->
+
+| Field | Value |
+|-------|-------|
+| Spec required? | yes/no |
+| Spec artifact reviewed | |
+| Spec review gate satisfied? | yes/no/not required |
+| Implementation matched spec? | yes/no/partial |
+| Non-goals respected? | yes/no |
+| Product/API/UX decisions invented by executor? | yes/no + details |
+| Follow-up spec change needed? | yes/no + artifact |
+
+## Root Cause Follow-up
+
+<!-- Fill for bugfix/debugging/regression tasks. -->
+
+| Field | Value |
+|-------|-------|
+| Root cause required? | yes/no |
+| Symptom reproduced or cited? | yes/no/not required |
+| Root cause identified? | yes/no/partial |
+| Root cause evidence | |
+| Similar patterns checked? | yes/no + query/files |
+| Fix targets cause rather than symptom? | yes/no |
+| Failed fix attempt count | |
+| Stop threshold reached? | yes/no |
+
+## Test-First / TDD Follow-up
+
+<!-- Fill when the task card requires or recommends TDD/test-first behavior. -->
+
+| Field | Value |
+|-------|-------|
+| TDD mode | required / recommended / not applicable |
+| Failing test or failing evidence captured before production edit? | yes/no/not required |
+| Red evidence artifact | |
+| Green evidence artifact | |
+| Refactor pass performed after green? | yes/no/not applicable |
+| Test owner followed assignment? | yes/no |
+| Production-change owner followed assignment? | yes/no |
+
 ### Deviations From Plan
 
 <!-- For each deviation: original plan, discovered constraint, conservative action taken, and reviewer decision needed. -->
@@ -230,6 +334,20 @@
 | Remaining implementation/test-writing phases | |
 | Next executor for remaining phases | Claude Code / Codex control-plane / human |
 | Next task-card artifact | |
+
+## Finish Branch Follow-up
+
+<!-- Fill before claiming the branch/task is ready for human merge. -->
+
+| Field | Value |
+|-------|-------|
+| All accepted phases linked? | yes/no |
+| Fresh verification rerun? | yes/no + commands |
+| Evidence packet complete? | yes/no |
+| Dirty/untracked artifacts classified? | yes/no |
+| Out-of-scope changes absent or explained? | yes/no |
+| Remaining risks documented? | yes/no |
+| Human review/merge instructions prepared? | yes/no |
 
 ## Control-Plane Salvage
 

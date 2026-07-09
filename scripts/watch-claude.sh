@@ -524,6 +524,26 @@ monitor_plan() {
     fi
 }
 
+monitor_level() {
+    local running="$1"
+    local elapsed="$2"
+    local quiet="$3"
+    local worktree_changes="$4"
+    local suspect_count="$5"
+
+    if [ "$running" != "yes" ]; then
+        echo "L0"
+    elif [ "$elapsed" -lt "$STARTUP_GRACE" ] || [ "$quiet" -lt "$STALE_AFTER" ]; then
+        echo "L0"
+    elif [ "$worktree_changes" -gt 0 ] && [ "$quiet" -lt "$INTERRUPT_AFTER" ]; then
+        echo "L1"
+    elif [ "$suspect_count" -lt "$ESCALATION_CONFIRMATIONS" ] || [ "$quiet" -lt "$INTERRUPT_AFTER" ]; then
+        echo "L2"
+    else
+        echo "L3"
+    fi
+}
+
 print_header() {
     if [ "$printed_header" -eq 0 ]; then
         if [ "$PLAIN" -eq 1 ]; then
@@ -587,7 +607,7 @@ print_details_if_needed() {
 print_snapshot() {
     print_header
 
-    local claude_progress_source report_source running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor digest show_details
+    local claude_progress_source report_source running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor level digest show_details
     claude_progress_source="$(select_claude_progress_file)"
     report_source="$(select_report_file)"
     if is_running "$PID_FILE"; then running="yes"; else running="no"; fi
@@ -617,8 +637,9 @@ print_snapshot() {
         monitor_suspect_count=0
     fi
     monitor="$(monitor_plan "$running" "$elapsed" "$quiet" "$worktree_changes" "$action" "$monitor_suspect_count")"
+    level="$(monitor_level "$running" "$elapsed" "$quiet" "$worktree_changes" "$monitor_suspect_count")"
 
-    digest="${running}|${elapsed}|${quiet}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${reason}|${action}|${monitor}|${monitor_suspect_count}"
+    digest="${running}|${elapsed}|${quiet}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${reason}|${action}|${monitor}|${level}|${monitor_suspect_count}"
     if [ "$digest" != "$last_digest" ]; then
         if [ "$running" = "yes" ]; then
             state="RUNNING"
@@ -643,6 +664,7 @@ print_snapshot() {
             echo "risk: ${risk_summary}"
             echo "network: ${network_summary}"
             echo "monitor: ${monitor}"
+            echo "machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" running=${running} suspect_count=${monitor_suspect_count} escalation_confirmations=${ESCALATION_CONFIRMATIONS} elapsed_seconds=${elapsed} quiet_seconds=${quiet} worktree_changes=${worktree_changes} network=\"${network_summary}\""
             echo "action: ${action}"
             echo "analysis: ${reason}"
             echo ""
@@ -658,6 +680,7 @@ print_snapshot() {
             printf ' RISK     : %s\n' "$risk_summary"
             printf ' NETWORK  : %s\n' "$network_summary"
             printf ' MONITOR  : %s\n' "$monitor"
+            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" running=%s suspect_count=%s escalation_confirmations=%s elapsed_seconds=%s quiet_seconds=%s worktree_changes=%s network="%s"\n' "$level" "$action" "$evidence" "$running" "$monitor_suspect_count" "$ESCALATION_CONFIRMATIONS" "$elapsed" "$quiet" "$worktree_changes" "$network_summary"
             printf ' ACTION   : %s\n' "$action"
             if [ "$state" = "COMPLETE" ]; then
                 printf ' RESULT   : %s\n' "$reason"
