@@ -10,6 +10,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run-parallel-loop.sh"
 
 
+def bash_exe() -> str:
+    if os.name == "nt":
+        for candidate in (
+            pathlib.Path(r"C:\Program Files\Git\bin\bash.exe"),
+            pathlib.Path(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ):
+            if candidate.is_file():
+                return str(candidate)
+    return "bash"
+
+
 def bash_path(path: pathlib.Path) -> str:
     value = str(path)
     if os.name == "nt":
@@ -35,7 +46,7 @@ def write_task(path: pathlib.Path, scope: str, parallel: str = "yes"):
 class RunParallelLoopTests(unittest.TestCase):
     def test_help_mentions_experimental_parallel_dispatch(self):
         result = subprocess.run(
-            ["bash", bash_path(SCRIPT), "--help"],
+            [bash_exe(), bash_path(SCRIPT), "--help"],
             cwd=str(ROOT),
             text=True,
             encoding="utf-8",
@@ -43,7 +54,7 @@ class RunParallelLoopTests(unittest.TestCase):
             capture_output=True,
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Experimental helper", result.stderr)
         self.assertIn("--max-concurrency", result.stderr)
         self.assertIn("--allow-overlap", result.stderr)
@@ -75,7 +86,7 @@ class RunParallelLoopTests(unittest.TestCase):
             env["AI_CODING_WORKFLOW_DISPATCH_BIN"] = bash_path(fake_dispatch)
             result = subprocess.run(
                 [
-                    "bash",
+                    bash_exe(),
                     bash_path(SCRIPT),
                     "--max-concurrency",
                     "2",
@@ -92,7 +103,7 @@ class RunParallelLoopTests(unittest.TestCase):
                 capture_output=True,
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             summary = output_dir / "parallel-summary.md"
             events = output_dir / "parallel-events.jsonl"
             manifest = output_dir / "parallel-manifest.tsv"
@@ -118,7 +129,7 @@ class RunParallelLoopTests(unittest.TestCase):
             write_task(task_b, "src/b.py")
 
             result = subprocess.run(
-                ["bash", bash_path(SCRIPT), bash_path(task_a), bash_path(task_b)],
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_a), bash_path(task_b)],
                 cwd=str(repo),
                 text=True,
                 encoding="utf-8",
@@ -140,7 +151,7 @@ class RunParallelLoopTests(unittest.TestCase):
             write_task(task_b, "src/shared.py")
 
             result = subprocess.run(
-                ["bash", bash_path(SCRIPT), bash_path(task_a), bash_path(task_b)],
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_a), bash_path(task_b)],
                 cwd=str(repo),
                 text=True,
                 encoding="utf-8",

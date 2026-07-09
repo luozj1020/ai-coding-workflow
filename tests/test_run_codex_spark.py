@@ -10,6 +10,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run-codex-spark.sh"
 
 
+def bash_exe() -> str:
+    if os.name == "nt":
+        for candidate in (
+            pathlib.Path(r"C:\Program Files\Git\bin\bash.exe"),
+            pathlib.Path(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ):
+            if candidate.is_file():
+                return str(candidate)
+    return "bash"
+
+
 def bash_path(path: pathlib.Path) -> str:
     value = str(path)
     if os.name == "nt":
@@ -22,7 +33,7 @@ def bash_path(path: pathlib.Path) -> str:
 class RunCodexSparkTests(unittest.TestCase):
     def test_help_mentions_default_model_and_modes(self):
         result = subprocess.run(
-            ["bash", bash_path(SCRIPT), "--help"],
+            [bash_exe(), bash_path(SCRIPT), "--help"],
             cwd=str(ROOT),
             text=True,
             encoding="utf-8",
@@ -30,7 +41,7 @@ class RunCodexSparkTests(unittest.TestCase):
             capture_output=True,
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("gpt-5.3-codex-spark", result.stderr)
         self.assertIn("review-only", result.stderr)
         self.assertIn("micro-builder", result.stderr)
@@ -72,7 +83,7 @@ class RunCodexSparkTests(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    "bash",
+                    bash_exe(),
                     bash_path(SCRIPT),
                     bash_path(task_card),
                     "--mode",
@@ -88,7 +99,7 @@ class RunCodexSparkTests(unittest.TestCase):
                 capture_output=True,
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             report = output_dir / "codex-spark.report.md"
             prompt = output_dir / "codex-spark.prompt.md"
             result_file = output_dir / "codex-spark.result.txt"

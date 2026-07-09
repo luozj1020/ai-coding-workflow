@@ -197,6 +197,17 @@ if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
     exit 127
 fi
 
+run_codex() {
+    case "$CODEX_BIN" in
+        *.sh)
+            bash "$CODEX_BIN" "$@"
+            ;;
+        *)
+            "$CODEX_BIN" "$@"
+            ;;
+    esac
+}
+
 if [ "$MODE" = "micro-builder" ]; then
     SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
     if [ -n "$SOURCE_STATUS" ] && [ "$ALLOW_DIRTY_SOURCE" != "1" ]; then
@@ -250,7 +261,7 @@ EOF
 set +e
 (
     cd "$RUN_DIR"
-    "$CODEX_BIN" exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+    run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
 )
 CODEX_STATUS=$?
 set -e

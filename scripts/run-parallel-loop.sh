@@ -112,6 +112,17 @@ if [ ! -f "$DISPATCH_BIN" ] && ! command -v "$DISPATCH_BIN" >/dev/null 2>&1; the
     exit 1
 fi
 
+run_dispatch() {
+    case "$DISPATCH_BIN" in
+        *.sh)
+            bash "$DISPATCH_BIN" "$@"
+            ;;
+        *)
+            "$DISPATCH_BIN" "$@"
+            ;;
+    esac
+}
+
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 if [ -z "$OUTPUT_DIR" ]; then
     OUTPUT_DIR="${REPO_ROOT}/.worktrees/parallel-${TIMESTAMP}"
@@ -266,7 +277,7 @@ run_one() {
     local exit_file="${OUTPUT_DIR}/${safe_name}.exit"
     write_event "dispatch_start" "$task" "$out"
     set +e
-    "$DISPATCH_BIN" "$task" > "$out" 2> "$err"
+    run_dispatch "$task" > "$out" 2> "$err"
     local status=$?
     set -e
     printf '%s\n' "$status" > "$exit_file"
