@@ -2,12 +2,13 @@
 # run-codex-spark.sh  -  Optional Codex Spark auxiliary execution for the workflow.
 #
 # Usage:
-#   bash ai/run-codex-spark.sh <task-card> [--mode auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner]
+#   bash ai/run-codex-spark.sh <task-card> [--mode auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor]
 #       [--model gpt-5.3-codex-spark] [--sandbox read-only|workspace-write]
+#       [--budget-mode aggressive|balanced|conservative]
 #       [--artifact .worktrees/claude-....report.md] [--output .worktrees/codex-spark-...]
 #
 # Defaults are intentionally conservative: auto-selected auxiliary role,
-# read-only, optional Spark, and no strong-model fallback.
+# read-only, balanced budget mode, optional Spark, and no strong-model fallback.
 
 set -euo pipefail
 
@@ -21,9 +22,13 @@ Usage: run-codex-spark.sh <task-card> [options]
 Options:
   --mode MODE       auto, task-size-classifier, review-only, task-card-audit,
                     plan-splitter, validation-planner, failure-triage,
-                    evidence-checker, micro-builder, or parallel-planner
+                    evidence-checker, micro-builder, parallel-planner,
+                    observe-synthesizer, task-card-drafter, context-packet-builder,
+                    preflight-bundle, direction-precheck, acceptance-matrix,
+                    postflight-bundle, revision-drafter, or lesson-extractor
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
   --sandbox MODE    read-only or workspace-write (default: read-only)
+  --budget-mode     aggressive, balanced, or conservative (default: balanced)
   --artifact PATH   Add a bounded artifact excerpt to the Spark prompt.
                     May be passed more than once.
   --output DIR      Artifact directory (default: .worktrees/codex-spark-<timestamp>)
@@ -41,6 +46,7 @@ Environment:
   CODEX_SPARK_ARTIFACT_LINES=160
   CODEX_SPARK_ALLOW_DIRTY_SOURCE=1
   CODEX_SPARK_REQUIRED=1
+  AI_SPARK_BUDGET_MODE=aggressive|balanced|conservative
 EOF
 }
 
@@ -54,11 +60,17 @@ OUTPUT_DIR="${CODEX_SPARK_OUTPUT_DIR:-}"
 ARTIFACT_LINES="${CODEX_SPARK_ARTIFACT_LINES:-160}"
 ALLOW_DIRTY_SOURCE="${CODEX_SPARK_ALLOW_DIRTY_SOURCE:-0}"
 REQUIRE_SPARK="${CODEX_SPARK_REQUIRED:-0}"
+BUDGET_MODE="${AI_SPARK_BUDGET_MODE:-balanced}"
+REQUESTED_BUDGET_MODE="$BUDGET_MODE"
 SPARK_INVOKED="yes"
 SPARK_AUTO_DISABLED="no"
 SPARK_DISABLE_REASON="not applicable"
 SPARK_CHECKS_RUN="codex exec"
 HELPER_EXIT_STATUS=0
+SPARK_PIPELINE_STAGE=""
+SPARK_ROLES_EXECUTED=""
+SPARK_CALLS_USED=0
+SPARK_PROVISIONAL_ACCEPTANCE="not applicable"
 ARTIFACTS=()
 
 while [ $# -gt 0 ]; do
@@ -77,6 +89,12 @@ while [ $# -gt 0 ]; do
         --sandbox)
             [ $# -ge 2 ] || { echo "Error: --sandbox requires a value." >&2; exit 1; }
             SANDBOX="$2"
+            shift 2
+            ;;
+        --budget-mode)
+            [ $# -ge 2 ] || { echo "Error: --budget-mode requires a value." >&2; exit 1; }
+            BUDGET_MODE="$2"
+            REQUESTED_BUDGET_MODE="$BUDGET_MODE"
             shift 2
             ;;
         --artifact)
@@ -124,9 +142,17 @@ if [ -z "$TASK_CARD" ]; then
 fi
 
 case "$MODE" in
-    auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner) ;;
+    auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor) ;;
     *)
         echo "Error: invalid --mode: $MODE" >&2
+        exit 1
+        ;;
+esac
+
+case "$BUDGET_MODE" in
+    aggressive|balanced|conservative) ;;
+    *)
+        echo "Error: invalid --budget-mode: $BUDGET_MODE (expected aggressive, balanced, or conservative)" >&2
         exit 1
         ;;
 esac
@@ -209,26 +235,126 @@ artifact_name_matches() {
     return 1
 }
 
+is_read_only_synthesis_mode() {
+    case "$MODE" in
+        observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor)
+            return 0 ;;
+        *)
+            return 1 ;;
+    esac
+}
+
+is_checker_task() {
+    grep -Eiq 'checker-test|Validation Contract|Local validation allowed|Test-First / TDD|TDD mode' "$TASK_CARD_COPY"
+}
+
 resolve_auto_mode() {
     if [ "$MODE" != "auto" ]; then
         return
     fi
-    if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
-        if artifact_failure_signals; then
-            MODE="failure-triage"
-        elif artifact_name_matches "*.diff" || artifact_name_matches "*.diffstat.txt"; then
-            MODE="review-only"
-        else
-            MODE="evidence-checker"
-        fi
-    elif grep -Eiq 'checker-test|Validation Contract|Local validation allowed|Test-First / TDD|TDD mode' "$TASK_CARD_COPY"; then
-        MODE="validation-planner"
-    else
-        MODE="task-size-classifier"
-    fi
+    case "$BUDGET_MODE" in
+        conservative)
+            # Preserve old routing behavior
+            if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
+                if artifact_failure_signals; then
+                    MODE="failure-triage"
+                elif artifact_name_matches "*.diff" || artifact_name_matches "*.diffstat.txt"; then
+                    MODE="review-only"
+                else
+                    MODE="evidence-checker"
+                fi
+            elif is_checker_task; then
+                MODE="validation-planner"
+            else
+                MODE="task-size-classifier"
+            fi
+            ;;
+        balanced)
+            if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
+                if artifact_failure_signals; then
+                    MODE="failure-triage"
+                else
+                    MODE="postflight-bundle"
+                fi
+            elif is_checker_task; then
+                MODE="validation-planner"
+            else
+                MODE="preflight-bundle"
+            fi
+            ;;
+        aggressive)
+            if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
+                if artifact_failure_signals; then
+                    MODE="failure-triage"
+                else
+                    MODE="postflight-bundle"
+                fi
+            else
+                MODE="preflight-bundle"
+            fi
+            ;;
+    esac
 }
 
 resolve_auto_mode
+
+resolve_pipeline_stage() {
+    case "$MODE" in
+        preflight-bundle|observe-synthesizer|task-card-drafter|context-packet-builder|direction-precheck)
+            SPARK_PIPELINE_STAGE="preflight" ;;
+        postflight-bundle)
+            SPARK_PIPELINE_STAGE="postflight" ;;
+        acceptance-matrix)
+            SPARK_PIPELINE_STAGE="postflight" ;;
+        failure-triage|revision-drafter)
+            SPARK_PIPELINE_STAGE="failure" ;;
+        task-size-classifier|plan-splitter)
+            SPARK_PIPELINE_STAGE="planning" ;;
+        validation-planner)
+            SPARK_PIPELINE_STAGE="validation" ;;
+        micro-builder)
+            SPARK_PIPELINE_STAGE="builder" ;;
+        lesson-extractor)
+            SPARK_PIPELINE_STAGE="learning" ;;
+        review-only|task-card-audit|evidence-checker|parallel-planner)
+            SPARK_PIPELINE_STAGE="standalone" ;;
+    esac
+}
+
+resolve_roles_executed() {
+    case "$MODE" in
+        preflight-bundle)
+            SPARK_ROLES_EXECUTED="risk-classifier,evidence-synthesizer,task-card-drafter,context-packet-builder,unknown-extractor,split-advisor" ;;
+        postflight-bundle)
+            SPARK_ROLES_EXECUTED="direction-checker,boundary-checker,acceptance-mapper,evidence-conflict-detector,validation-advisor,acceptance-advisor" ;;
+        observe-synthesizer|task-card-drafter|context-packet-builder|direction-precheck|acceptance-matrix|revision-drafter|lesson-extractor)
+            SPARK_ROLES_EXECUTED="$MODE" ;;
+        *)
+            SPARK_ROLES_EXECUTED="$MODE" ;;
+    esac
+}
+
+resolve_pipeline_stage
+resolve_roles_executed
+SPARK_CALLS_USED=1
+
+# Provisional acceptance: pending output only for acceptance/postflight roles
+case "$MODE" in
+    postflight-bundle|acceptance-matrix)
+        SPARK_PROVISIONAL_ACCEPTANCE="pending output" ;;
+    *)
+        SPARK_PROVISIONAL_ACCEPTANCE="not applicable" ;;
+esac
+
+# Read-only synthesis/bundle modes run from artifact dir with workspace-write
+# when the requested sandbox is read-only, like the existing classifier isolation.
+# This gives local Codex initialization a writable directory without giving Spark
+# write access to the source repository.
+if is_read_only_synthesis_mode && [ "$SANDBOX" = "read-only" ]; then
+    SANDBOX="workspace-write"
+    RUN_DIR="$OUTPUT_DIR"
+    SPARK_CHECKS_RUN="codex exec (${MODE} in artifact dir)"
+fi
 
 if [ "$MODE" = "task-size-classifier" ] && [ "$SANDBOX" = "read-only" ]; then
     # Codex Spark task-size classification only needs the rendered prompt. Running
@@ -283,6 +409,14 @@ write_report_header() {
         echo "| Spark purpose used | ${MODE} |"
         echo "| Spark requested mode | ${REQUESTED_MODE} |"
         echo "| Spark model used | ${MODEL} |"
+        echo "| Spark budget mode requested | ${REQUESTED_BUDGET_MODE} |"
+        echo "| Spark budget mode effective | ${BUDGET_MODE} |"
+        echo "| Spark pipeline stage | ${SPARK_PIPELINE_STAGE} |"
+        echo "| Spark roles executed | ${SPARK_ROLES_EXECUTED} |"
+        echo "| Spark calls used | ${SPARK_CALLS_USED} |"
+        echo "| Spark provisional acceptance | ${SPARK_PROVISIONAL_ACCEPTANCE} |"
+        echo "| Strong review required | yes |"
+        echo "| Merge authorized | no |"
         echo "| Task size classification | $([ "$MODE" = "task-size-classifier" ] && echo "see Spark output" || echo "not used") |"
         echo "| Spark routing recommendation | $([ "$MODE" = "task-size-classifier" ] && echo "see Spark output" || echo "not used") |"
         echo "| Spark classification confidence | $([ "$MODE" = "task-size-classifier" ] && echo "see Spark output" || echo "not used") |"
@@ -466,6 +600,10 @@ Model requested: ${MODEL}
 Mode requested: ${REQUESTED_MODE}
 Mode resolved: ${MODE}
 Sandbox: ${SANDBOX}
+Budget mode requested: ${REQUESTED_BUDGET_MODE}
+Budget mode effective: ${BUDGET_MODE}
+Pipeline stage: ${SPARK_PIPELINE_STAGE}
+Roles executed: ${SPARK_ROLES_EXECUTED}
 
 Operating rules:
 - Use the requested Spark model only. Do not silently fall back to a stronger model.
@@ -486,11 +624,35 @@ Mode contract:
 - evidence-checker: inspect evidence artifacts and run only narrow, task-card-allowed checks; do not edit files.
 - micro-builder: only when the task card explicitly authorizes tiny isolated work. Touch no more than one or two small files, avoid public API/data/security/migration/permission/concurrency/cross-module contracts, keep the diff minimal, and report narrow validation evidence.
 - parallel-planner: produce an advisory parallel scheduling proposal as strict JSON. Do not edit files. Do not dispatch or execute any tasks. Output exactly one JSON object in a fenced code block matching this schema: {"schema_version":1,"group_id":"<group-slug>","max_concurrency":<int>,"failure_policy":"skip-dependents","tasks":[{"id":"<task-id>","task_card":"<path>","depends_on":["<task-id>"]}]}. After the JSON block, end with these reconciliation fields exactly: accepted_suggestions=<none or comma-separated>; ignored_suggestions=<none or comma-separated>; conflicts_with_claude=<none or short note>; conflicts_with_local_evidence=<none or short note>; acceptance_satisfied_by_spark=no. The proposal is advisory only; Codex or a human must review and save the plan before any dispatch.
+- observe-synthesizer: read-only synthesis of provided artifacts. Compress observations into structured findings. Do not edit files. Output structured observations with evidence citations.
+- task-card-drafter: draft a task card from the provided context and artifacts. Do not edit files. Output a structured task card proposal.
+- context-packet-builder: build a Context Packet draft from the task card and any provided artifacts. Do not edit files. Output a structured Context Packet with bounded excerpts.
+- preflight-bundle: combined preflight analysis in one invocation. Perform risk classification, bounded evidence synthesis, task-card drafting, Context Packet drafting, unknown/risk extraction, and split/parallel recommendation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
+- direction-precheck: check direction and boundary against the task card and provided artifacts. Do not edit files. Output direction/boundary assessment with specific risks.
+- acceptance-matrix: produce an acceptance criteria matrix from the task card. Do not edit files. Map each acceptance criterion to verification method, evidence source, and pass/fail status.
+- postflight-bundle: combined postflight analysis in one invocation. Perform direction/boundary/omission checks, acceptance mapping, evidence conflict detection, validation recommendations, and provisional accept/revise/split/escalate recommendation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
+- revision-drafter: draft a bounded revision task card from failure triage results or postflight findings. Do not edit source files. Output a structured revision task card proposal.
+- lesson-extractor: extract reusable lessons from provided artifacts. Do not edit files. Output structured lessons with evidence citations.
+EOF
+
+# In aggressive budget mode, failure-triage additionally asks for a bounded revision task draft.
+if [ "$MODE" = "failure-triage" ] && [ "$BUDGET_MODE" = "aggressive" ]; then
+    cat >> "$PROMPT_FILE" <<'REVISION_EOF'
+
+Additional failure-triage responsibilities (aggressive budget mode):
+- After your failure triage analysis, also produce a bounded revision task draft.
+- The revision draft should include: specific files/areas to change, minimal scope, and narrow validation commands.
+- Do not edit files. Output the revision draft after your triage findings.
+REVISION_EOF
+fi
+
+cat >> "$PROMPT_FILE" <<'TASK_EOF'
 
 ## Task Card
 
-$(cat "$TASK_CARD_COPY")
-EOF
+TASK_EOF
+cat "$TASK_CARD_COPY" >> "$PROMPT_FILE"
+
 append_artifact_excerpts
 
 set +e
