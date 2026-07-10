@@ -218,5 +218,122 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "benchmark-loop-runs.py").exists())
 
 
+    def test_benchmark_exposes_staged_spark_fields_and_totals(self):
+        """Benchmark exposes per-run staged fields plus helper-invocation and call totals."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+
+            # Run 1: staged (two dispatches, each with a Spark followup)
+            run1 = root / "loop-20990101-000001"
+            d1a = run1 / "dispatch-1"
+            d1b = run1 / "dispatch-2"
+            d1a.mkdir(parents=True)
+            d1b.mkdir(parents=True)
+
+            (d1a / "claude.report.md").write_text(
+                "# Claude Report\n\n"
+                "## Codex Spark Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark invoked? | yes |\n"
+                "| Spark purpose used | review-only |\n"
+                "| Spark pipeline stage | preflight |\n"
+                "| Spark calls used | 1 |\n"
+                "| Spark roles executed | reviewer |\n"
+                "| Spark budget mode requested | standard |\n"
+                "| Spark budget mode effective | standard |\n"
+                "| Spark provisional acceptance | yes |\n"
+                "| Strong review required | no |\n"
+                "| Merge authorized | no |\n"
+                "| Spark auto-disabled? | no |\n",
+                encoding="utf-8",
+            )
+
+            (d1b / "claude.report.md").write_text(
+                "# Claude Report\n\n"
+                "## Codex Spark Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark invoked? | yes |\n"
+                "| Spark purpose used | failure-triage |\n"
+                "| Spark pipeline stage | postflight |\n"
+                "| Spark calls used | 1 |\n"
+                "| Spark roles executed | triage |\n"
+                "| Spark budget mode requested | extended |\n"
+                "| Spark budget mode effective | extended |\n"
+                "| Spark provisional acceptance | no |\n"
+                "| Strong review required | yes |\n"
+                "| Merge authorized | yes |\n"
+                "| Spark auto-disabled? | no |\n",
+                encoding="utf-8",
+            )
+
+            (d1a / "claude.progress.log").write_text(
+                "[2099-01-01 00:00:00] Starting Claude Code: execution_profile=balanced\n"
+                "[2099-01-01 00:00:01] Claude process started: pid=123\n"
+                "[2099-01-01 00:00:08] Claude subprocess ended; dispatcher finalizing artifacts: pid=123, wait_status=0, elapsed_seconds=7\n"
+                "[2099-01-01 00:00:09] Starting checker helper: ai/check-worktree.sh\n"
+                "[2099-01-01 00:00:10] Checker helper completed: artifact collection OK; validation ALL GREEN\n",
+                encoding="utf-8",
+            )
+            (d1a / "claude.usage.txt").write_text(
+                "input_tokens: 10\noutput_tokens: 5\ntotal_cost_usd: 0.10\n",
+                encoding="utf-8",
+            )
+            (run1 / "review-1.txt").write_text(
+                "### Decision\n\n**ACCEPT**\n", encoding="utf-8"
+            )
+            (run1 / "task-card-001.md").write_text(
+                "# Task Card\n\n"
+                "## Goal Loop Contract\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Loop type | goal-based |\n"
+                "| Benchmark tags | staged |\n\n"
+                "## Codex Spark Gate\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark enabled? | yes |\n"
+                "| Spark purpose | review-only |\n",
+                encoding="utf-8",
+            )
+
+            # Run 2: single followup (legacy)
+            run2 = root / "loop-20990101-000002"
+            write_loop_run(run2, "ACCEPT", "0.20")
+
+            report = module.benchmark([run1, run2], root)
+
+            # Aggregate totals
+            self.assertEqual(report["spark_helper_invocations_total"], 3)
+            self.assertEqual(report["spark_calls_total"], 2)
+
+            # Per-run staged fields for run1
+            r1 = report["runs"][0]
+            self.assertEqual(r1["spark_helper_invocations"], 2)
+            self.assertEqual(r1["spark_total_calls"], 2)
+            self.assertEqual(r1["spark_unique_modes"], ["review-only", "failure-triage"])
+            self.assertEqual(r1["spark_unique_pipeline_stages"], ["preflight", "postflight"])
+            self.assertEqual(r1["spark_unique_roles"], ["reviewer", "triage"])
+            self.assertEqual(r1["spark_budget_requested"], ["standard", "extended"])
+            self.assertEqual(r1["spark_budget_effective"], ["standard", "extended"])
+            self.assertEqual(r1["spark_provisional_acceptance"], ["yes", "no"])
+            self.assertEqual(r1["spark_strong_review_required"], ["no", "yes"])
+            self.assertEqual(r1["spark_merge_authorized"], ["no", "yes"])
+
+            # Per-run staged fields for run2 (single followup, no spark_calls_used)
+            r2 = report["runs"][1]
+            self.assertEqual(r2["spark_helper_invocations"], 1)
+            self.assertEqual(r2["spark_total_calls"], 0)
+
+            # Markdown exposes staged field names
+            md = module.render_markdown(report)
+            self.assertIn("Spark helper invocations", md)
+            self.assertIn("Spark calls total", md)
+            self.assertIn("Spark Invocations", md)
+            self.assertIn("Spark Calls", md)
+
+
 if __name__ == "__main__":
     unittest.main()

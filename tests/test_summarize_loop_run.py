@@ -319,5 +319,229 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "summarize-loop-run.py").exists())
 
 
+    def test_staged_spark_reports_aggregate_exactly(self):
+        """Two Codex Spark Follow-up reports (preflight + postflight) aggregate exactly."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            run = pathlib.Path(tmp) / "loop-20990101-000000"
+            dispatch1 = run / "dispatch-1"
+            dispatch2 = run / "dispatch-2"
+            dispatch1.mkdir(parents=True)
+            dispatch2.mkdir(parents=True)
+
+            (dispatch1 / "claude.report.md").write_text(
+                "# Claude Report\n\n"
+                "## Codex Spark Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark invoked? | yes |\n"
+                "| Spark purpose used | review-only |\n"
+                "| Spark requested mode | auto |\n"
+                "| Spark model used | gpt-5.3-codex-spark |\n"
+                "| Spark pipeline stage | preflight |\n"
+                "| Spark calls used | 1 |\n"
+                "| Spark roles executed | reviewer, auditor |\n"
+                "| Spark budget mode requested | standard |\n"
+                "| Spark budget mode effective | standard |\n"
+                "| Spark provisional acceptance | yes |\n"
+                "| Strong review required | no |\n"
+                "| Merge authorized | no |\n"
+                "| Task size classification | tiny |\n"
+                "| Spark routing recommendation | codex-fast-path |\n"
+                "| Spark classification confidence | high |\n"
+                "| Spark exit code | 0 |\n"
+                "| Spark auto-disabled? | no |\n"
+                "| Strong-model fallback used? | no |\n"
+                "| accepted_suggestions | validation |\n"
+                "| ignored_suggestions | none |\n"
+                "| conflicts_with_claude | none |\n"
+                "| conflicts_with_local_evidence | none |\n"
+                "| acceptance_satisfied_by_spark | no |\n",
+                encoding="utf-8",
+            )
+
+            (dispatch2 / "claude.report.md").write_text(
+                "# Claude Report\n\n"
+                "## Codex Spark Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark invoked? | yes |\n"
+                "| Spark purpose used | failure-triage |\n"
+                "| Spark requested mode | extended |\n"
+                "| Spark model used | gpt-5.3-codex-spark |\n"
+                "| Spark pipeline stage | postflight |\n"
+                "| Spark calls used | 1 |\n"
+                "| Spark roles executed | triage, fixer |\n"
+                "| Spark budget mode requested | extended |\n"
+                "| Spark budget mode effective | extended |\n"
+                "| Spark provisional acceptance | no |\n"
+                "| Strong review required | yes |\n"
+                "| Merge authorized | yes |\n"
+                "| Task size classification | small |\n"
+                "| Spark routing recommendation | claude-builder |\n"
+                "| Spark classification confidence | medium |\n"
+                "| Spark exit code | 0 |\n"
+                "| Spark auto-disabled? | no |\n"
+                "| Strong-model fallback used? | no |\n"
+                "| accepted_suggestions | failure attribution |\n"
+                "| ignored_suggestions | none |\n"
+                "| conflicts_with_claude | none |\n"
+                "| conflicts_with_local_evidence | none |\n"
+                "| acceptance_satisfied_by_spark | yes |\n",
+                encoding="utf-8",
+            )
+
+            (run / "review-1.txt").write_text(
+                "### Decision\n\n**ACCEPT**\n", encoding="utf-8"
+            )
+
+            summary = module.summarize(run)
+            spark = summary["spark_status"]
+
+            self.assertEqual(spark["helper_invocation_count"], 2)
+            self.assertEqual(spark["total_spark_calls"], 2)
+            self.assertEqual(spark["unique_modes"], ["review-only", "failure-triage"])
+            self.assertEqual(spark["unique_pipeline_stages"], ["preflight", "postflight"])
+            self.assertEqual(
+                spark["unique_roles_executed"],
+                ["reviewer", "auditor", "triage", "fixer"],
+            )
+            self.assertEqual(spark["unique_budget_requested"], ["standard", "extended"])
+            self.assertEqual(spark["unique_budget_effective"], ["standard", "extended"])
+            self.assertEqual(spark["unique_provisional_acceptance"], ["yes", "no"])
+            self.assertEqual(spark["unique_strong_review_required"], ["no", "yes"])
+            self.assertEqual(spark["unique_merge_authorized"], ["no", "yes"])
+
+            markdown = module.render_markdown(summary)
+            self.assertIn("| helper_invocation_count | 2 |", markdown)
+            self.assertIn("| total_spark_calls | 2 |", markdown)
+            self.assertIn("| unique_modes | review-only, failure-triage |", markdown)
+            self.assertIn("| unique_pipeline_stages | preflight, postflight |", markdown)
+
+    def test_codex_spark_report_counted_once_despite_general_glob(self):
+        """codex-spark.report.md, matching *.report.md too, is counted once."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            run = pathlib.Path(tmp) / "loop-20990101-000000"
+            dispatch = run / "dispatch-1"
+            dispatch.mkdir(parents=True)
+
+            (dispatch / "codex-spark.report.md").write_text(
+                "# Codex Spark Report\n\n"
+                "## Codex Spark Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark invoked? | yes |\n"
+                "| Spark purpose used | review-only |\n"
+                "| Spark calls used | 1 |\n"
+                "| Spark auto-disabled? | no |\n",
+                encoding="utf-8",
+            )
+
+            (dispatch / "claude.report.md").write_text(
+                "# Claude Report\n\n"
+                "## Codex Spark Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark invoked? | yes |\n"
+                "| Spark purpose used | failure-triage |\n"
+                "| Spark calls used | 1 |\n"
+                "| Spark auto-disabled? | no |\n",
+                encoding="utf-8",
+            )
+
+            (run / "review-1.txt").write_text(
+                "### Decision\n\n**ACCEPT**\n", encoding="utf-8"
+            )
+
+            summary = module.summarize(run)
+
+            self.assertEqual(summary["artifacts"]["spark_report"], 1)
+            self.assertEqual(summary["artifacts"]["report"], 2)
+            self.assertEqual(summary["spark_status"]["helper_invocation_count"], 2)
+            self.assertEqual(summary["claude_evidence"]["claude_report_count"], "1")
+
+    def test_auto_disabled_aggregates_across_followups(self):
+        """Auto-disabled occurrences and reasons aggregate across followups."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            run = pathlib.Path(tmp) / "loop-20990101-000000"
+            dispatch1 = run / "dispatch-1"
+            dispatch2 = run / "dispatch-2"
+            dispatch1.mkdir(parents=True)
+            dispatch2.mkdir(parents=True)
+
+            (dispatch1 / "claude.report.md").write_text(
+                "# Claude Report\n\n"
+                "## Codex Spark Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark invoked? | yes |\n"
+                "| Spark purpose used | review-only |\n"
+                "| Spark calls used | 1 |\n"
+                "| Spark auto-disabled? | yes |\n"
+                "| Auto-disable reason | rate limit exceeded |\n",
+                encoding="utf-8",
+            )
+
+            (dispatch2 / "claude.report.md").write_text(
+                "# Claude Report\n\n"
+                "## Codex Spark Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark invoked? | yes |\n"
+                "| Spark purpose used | failure-triage |\n"
+                "| Spark calls used | 1 |\n"
+                "| Spark auto-disabled? | yes |\n"
+                "| Auto-disable reason | model unavailable |\n",
+                encoding="utf-8",
+            )
+
+            (run / "review-1.txt").write_text(
+                "### Decision\n\n**ACCEPT**\n", encoding="utf-8"
+            )
+
+            summary = module.summarize(run)
+            spark = summary["spark_status"]
+
+            self.assertEqual(spark["auto_disabled_occurrences"], 2)
+            self.assertEqual(
+                spark["auto_disabled_reasons"],
+                ["rate limit exceeded", "model unavailable"],
+            )
+
+    def test_no_spark_report_compatible(self):
+        """A run with no Spark report remains compatible."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            run = pathlib.Path(tmp) / "loop-20990101-000000"
+            dispatch = run / "dispatch-1"
+            dispatch.mkdir(parents=True)
+
+            (dispatch / "claude.report.md").write_text(
+                "# Claude Report\n\n"
+                "## Spec Follow-up\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Implementation matched spec? | yes |\n",
+                encoding="utf-8",
+            )
+            (run / "review-1.txt").write_text(
+                "### Decision\n\n**ACCEPT**\n", encoding="utf-8"
+            )
+
+            summary = module.summarize(run)
+            spark = summary["spark_status"]
+
+            self.assertEqual(spark["enabled"], "no")
+            self.assertEqual(spark["invoked"], "no")
+            self.assertEqual(spark["helper_invocation_count"], 0)
+            self.assertEqual(spark["total_spark_calls"], 0)
+            self.assertEqual(spark["unique_modes"], [])
+            self.assertEqual(spark["unique_pipeline_stages"], [])
+            self.assertEqual(spark["auto_disabled_occurrences"], 0)
+            self.assertEqual(summary["artifacts"]["spark_report"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
