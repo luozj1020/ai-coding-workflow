@@ -388,13 +388,13 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 包输出使用七个压缩标题：Decision Summary、Risk Flags、Scope and Boundaries、Acceptance Matrix、Evidence Conflicts、Required Codex Decisions、Recommended Next Action。
 
-默认 auto 选择只读辅助角色：
+默认 auto 执行阶段路由：
 
 ```bash
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 ```
 
-当 `auto` 解析为 `task-size-classifier` 时，helper 会在 Spark artifact 目录中用 `workspace-write` sandbox 启动 Codex。这样本地 helper 初始化有可写工作目录，但不会给源仓库写权限，且该模式仍禁止修改源代码。
+当显式使用 `task-size-classifier` 模式，或 conservative 预算下的 auto 路由选中该模式时，helper 会在 Spark artifact 目录中用 `workspace-write` sandbox 启动 Codex。这样本地 helper 初始化有可写工作目录，但不会给源仓库写权限，且该模式仍禁止修改源代码。
 
 运行证据检查：
 

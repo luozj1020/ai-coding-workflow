@@ -958,7 +958,7 @@ class InstallWorkflowTests(unittest.TestCase):
         # Check 3: multi-report metrics in both READMEs
         self.assertIn("helper invocation count", readme)
         self.assertIn("auto-disable occurrences", readme)
-        self.assertIn("helper invocation count", readme_cn)
+        self.assertIn("helper 调用次数", readme_cn)
 
         # Check 6: no stale "default role selection" in READMEs
         self.assertNotIn("default role selection", readme)
