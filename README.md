@@ -11,7 +11,7 @@ ai-coding-workflow bootstraps repositories with:
 - `CLAUDE.md` - Claude Code execution rules
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
-- Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` task-size classification, task-card audits, plan splitting, validation planning, failure triage, review/evidence checks, and tiny isolated micro-builder work
+- Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` task-size classification, task-card audits, plan splitting, validation planning, failure triage, review/evidence checks, parallel DAG planning, and tiny isolated micro-builder work
 - Execution profiles for token-saving balanced dispatch, safe full-context dispatch, and explicit fast large-repository dispatch
 - Large-repository dispatch options for managed worktree reuse and reduced expensive untracked-file scans
 - Local-validation gates and task-card validation command extraction
@@ -85,6 +85,7 @@ ai-coding-workflow/
     plan-to-task-cards.py -> Generate task cards from reviewed plan sections
     init-plan.py         -> Create ai/plans/<task-id>/ planning files
     session-catchup.py   -> Generate resume-context.md from plan and artifacts
+    validate-parallel-plan.py -> Validate parallel DAG plan JSON against schema v1
   tests/
     test_*.py            -> Installer, dispatch, and helper regression tests
 ```
@@ -267,6 +268,7 @@ ai/init-spec.py
 ai/plan-to-task-cards.py
 ai/init-plan.py
 ai/session-catchup.py
+ai/validate-parallel-plan.py
 .worktrees/.gitkeep
 ```
 
@@ -391,6 +393,7 @@ If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave 
 - `validation-planner`: propose exact low-noise validation commands without running broad suites.
 - `failure-triage`: inspect bounded artifacts after a stalled/failed run and recommend wait/re-dispatch/narrow/takeover.
 - `evidence-checker`: quick evidence sanity check after artifacts exist.
+- `parallel-planner`: propose a reviewed DAG scheduling plan for independent task cards. Spark produces strict schema-v1 JSON only — it does not execute or dispatch. Codex/human must review and save the plan before running `bash ai/run-parallel-loop.sh --plan <json>`.
 - `micro-builder`: tiny scoped edits only, in the helper-created isolated worktree, and only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and names exact narrow validation.
 
 Run the default auto-selected read-only helper:
@@ -423,6 +426,14 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode failure-triage \
   --artifact .worktrees/claude-<id>.status.txt \
   --artifact .worktrees/claude-<id>.progress.log
 ```
+
+Propose a reviewed DAG parallel plan:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode parallel-planner
+```
+
+`parallel-planner` produces strict schema-v1 JSON and standard reconciliation fields only. Spark does not execute or dispatch; Codex/human must review and save the JSON plan before running `bash ai/run-parallel-loop.sh --plan ai/plans/.../parallel-plan.json`.
 
 Run a tiny isolated Spark edit only when the task card explicitly allows it:
 
@@ -477,6 +488,10 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 **Experimental: parallel dispatch**
 
+Two compatible paths exist:
+
+*Path 1: Flat independent cards (positional arguments)*
+
 For independent task cards with non-overlapping file/module scopes, fill `Parallel Execution Gate` in each task card and run:
 
 ```bash
@@ -486,6 +501,24 @@ bash ai/run-parallel-loop.sh --max-concurrency 2 \
 ```
 
 The helper runs multiple `dispatch-to-claude.sh` jobs concurrently and writes `.worktrees/parallel-*/parallel-summary.md`, `parallel-events.jsonl`, `parallel-manifest.tsv`, and per-task dispatch logs. It refuses task cards that do not say `Parallel allowed? | yes` unless `--allow-ungated` is passed, and it refuses overlapping `Allowed files/modules` unless `--allow-overlap` is passed.
+
+*Path 2: Reviewed DAG plan (`--plan`)*
+
+For dependency-ordered parallel execution, use Spark `parallel-planner` to propose a reviewed DAG plan:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode parallel-planner
+```
+
+Spark produces strict schema-v1 JSON — it only proposes and never executes. Codex/human must review and save the plan before dispatch. Then run:
+
+```bash
+bash ai/run-parallel-loop.sh --plan ai/plans/PROJ-123/parallel-plan.json
+```
+
+Schema fields: `schema_version` (must be `1`), `group_id`, `max_concurrency`, `failure_policy` (currently `skip-dependents`), and `tasks` containing `id`, `task_card`, `depends_on` per task. Task-card paths resolve relative to the plan file. An explicit CLI `--max-concurrency` overrides the plan's cap.
+
+Scheduling semantics: the scheduler starts only dependency-ready tasks up to the concurrency cap. With `skip-dependents`, a failed prerequisite prevents all transitive dependents from dispatching while unrelated branches continue. All cards still require scope-gate and overlap checks.
 
 This is dispatch parallelism only. It does not merge worktrees, does not replace Codex review, and does not make conflicting implementation safe. Review each diff serially; shared API/data model/config changes should use a normal single-task flow or a manual reconcile task.
 

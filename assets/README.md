@@ -70,7 +70,7 @@ Task cards can require **Direction / Boundary Acknowledgement** before editing. 
 
 Use `ai/init-spec.py` for ambiguous feature, UX, API, or data-model work, then fill `Spec Gate` in the task card. `ai/init-plan.py` creates `task_plan.md` with `### Task N: ...` sections; use `ai/plan-to-task-cards.py` to turn reviewed task sections into scoped task cards. Use `Root Cause Gate` before bugfixes/regressions, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work is ready for human merge.
 
-Leave `Codex Spark Gate` at `auto` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Prefer Spark for uncertain task-size routing before spending stronger Codex/Claude context, but pass an explicit `--mode` when the support role is already known. Prefer read-only modes: `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, or `evidence-checker`; use `micro-builder` only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and gives exact narrow validation in the helper-created isolated worktree. Spark evidence is auxiliary, auto-disables when unavailable or quota-exhausted, must not silently fall back to GPT-5.5 or another stronger model, and cannot independently satisfy acceptance.
+Leave `Codex Spark Gate` at `auto` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Prefer Spark for uncertain task-size routing before spending stronger Codex/Claude context, but pass an explicit `--mode` when the support role is already known. Prefer read-only modes: `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, `evidence-checker`, or `parallel-planner`; use `micro-builder` only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and gives exact narrow validation in the helper-created isolated worktree. Spark evidence is auxiliary, auto-disables when unavailable or quota-exhausted, must not silently fall back to GPT-5.5 or another stronger model, and cannot independently satisfy acceptance.
 
 Phase ownership is explicit:
 
@@ -122,6 +122,7 @@ ai/
   plan-to-task-cards.py       # Generate task cards from reviewed plan sections
   init-plan.py                # Create ai/plans/<task-id>/ planning files
   session-catchup.py          # Generate resume-context.md from plan and artifacts
+  validate-parallel-plan.py   # Validate parallel DAG plan JSON against schema v1
   README.md                   # This file
 .worktrees/                   # Isolated git worktrees for execution
 ai/plans/                     # Persistent planning files for long-running tasks
@@ -236,6 +237,14 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode failure-triage \
   --artifact .worktrees/claude-<id>.progress.log
 ```
 
+For a reviewed DAG parallel plan:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode parallel-planner
+```
+
+`parallel-planner` produces strict schema-v1 JSON and standard reconciliation fields only. Spark does not execute or dispatch; Codex/human must review and save the JSON plan before running `bash ai/run-parallel-loop.sh --plan ai/plans/.../parallel-plan.json`.
+
 For tiny scoped edits only, use micro-builder mode. The task card must authorize Spark source edits, limit scope to one or two small files, rule out public API/contract risk, and provide exact narrow validation. The helper creates an isolated worktree and refuses dirty source repositories unless explicitly overridden:
 
 ```bash
@@ -305,6 +314,10 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 ### Experimental Parallel Dispatch
 
+Two compatible paths exist for parallel dispatch:
+
+**Path 1: Flat independent cards (positional arguments)**
+
 When task cards have `Parallel Execution Gate` filled and independent file/module scopes, run:
 
 ```bash
@@ -314,6 +327,24 @@ bash ai/run-parallel-loop.sh --max-concurrency 2 \
 ```
 
 The helper dispatches tasks concurrently, writes `.worktrees/parallel-*/parallel-summary.md`, and never merges automatically. It refuses ungated task cards and overlapping `Allowed files/modules` by default. Use `--allow-overlap` only for explicit manual-reconcile experiments.
+
+**Path 2: Reviewed DAG plan (`--plan`)**
+
+For dependency-ordered parallel execution, use Spark `parallel-planner` to propose a reviewed DAG plan:
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode parallel-planner
+```
+
+Spark produces strict schema-v1 JSON — it only proposes and never executes. Codex/human must review and save the plan before dispatch. Then run:
+
+```bash
+bash ai/run-parallel-loop.sh --plan ai/plans/PROJ-123/parallel-plan.json
+```
+
+Schema fields: `schema_version` (must be `1`), `group_id`, `max_concurrency`, `failure_policy` (currently `skip-dependents`), and `tasks` containing `id`, `task_card`, `depends_on` per task. Task-card paths resolve relative to the plan file. An explicit CLI `--max-concurrency` overrides the plan's cap.
+
+Scheduling semantics: the scheduler starts only dependency-ready tasks up to the concurrency cap. With `skip-dependents`, a failed prerequisite prevents all transitive dependents from dispatching while unrelated branches continue. All cards still require scope-gate and overlap checks. Review and merge remain serial.
 
 While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
 

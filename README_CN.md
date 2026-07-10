@@ -11,7 +11,7 @@ ai-coding-workflow 可以为仓库自动配置：
 - `CLAUDE.md` - Claude Code 执行规则
 - 任务卡和证据包模板
 - Codex + Claude Code 工作流的安全调度/审查/循环脚本
-- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做任务规模分类、任务卡审查、计划拆分、验证规划、失败归因、证据检查或极小范围隔离 micro-builder 工作
+- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做任务规模分类、任务卡审查、计划拆分、验证规划、失败归因、证据检查、并行 DAG 规划或极小范围隔离 micro-builder 工作
 - Execution profiles：默认省 token 的 balanced、完整上下文的 safe，以及显式大仓加速的 fast-large-repo
 - 大型仓库调度选项：受管 worktree 复用，以及减少昂贵的未跟踪文件扫描
 - 本地验证 gate，以及从任务卡 validation fenced block 自动抽取命令
@@ -77,6 +77,7 @@ ai-coding-workflow/
     summarize-loop-run.py ← 汇总 workflow 质量、速度、成本和稳定性
     init-plan.py        ← 创建 ai/plans/<task-id>/ 计划文件
     session-catchup.py  ← 根据计划和 artifacts 生成 resume-context.md
+    validate-parallel-plan.py ← 校验并行 DAG 计划 JSON 是否符合 schema v1
 ```
 
 ---
@@ -248,6 +249,7 @@ ai/init-spec.py
 ai/plan-to-task-cards.py
 ai/init-plan.py
 ai/session-catchup.py
+ai/validate-parallel-plan.py
 .worktrees/.gitkeep
 ```
 
@@ -372,6 +374,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 - `validation-planner`：给出精确、低噪音验证命令，不运行广域测试。
 - `failure-triage`：在 Claude 卡住/失败后读取有界 artifact 摘要，建议 wait / re-dispatch / narrow / takeover。
 - `evidence-checker`：已有 artifacts 后快速检查证据质量。
+- `parallel-planner`：为独立任务卡生成经过审查的 DAG 调度计划。Spark 只产出严格 schema-v1 JSON，不执行、不派发。Codex/人工必须审查并保存 JSON 计划后，再运行 `bash ai/run-parallel-loop.sh --plan <json>`。
 - `micro-builder`：仅用于任务卡明确允许的极小范围修改，并在 helper 创建的隔离 worktree 中执行；任务卡必须允许 Spark 修改源码、限制为一两个小文件、排除公共 API/契约风险，并给出精确窄验证。
 
 默认 auto 选择只读辅助角色：
@@ -404,6 +407,14 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode failure-triage \
   --artifact .worktrees/claude-<id>.status.txt \
   --artifact .worktrees/claude-<id>.progress.log
 ```
+
+生成经过审查的并行 DAG 计划：
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode parallel-planner
+```
+
+`parallel-planner` 只产出严格 schema-v1 JSON 和标准 reconciliation 字段。Spark 不执行、不派发；Codex/人工必须审查并保存 JSON 计划后，再运行 `bash ai/run-parallel-loop.sh --plan ai/plans/.../parallel-plan.json`。
 
 只有任务卡明确允许时，才运行极小范围隔离修改：
 
@@ -458,6 +469,10 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 **实验性：并行派发**
 
+有两种兼容路径：
+
+*路径 1：扁平独立卡片（位置参数）*
+
 对于文件/模块范围互不重叠的独立任务卡，在每张任务卡中填写 `Parallel Execution Gate`，然后运行：
 
 ```bash
@@ -467,6 +482,24 @@ bash ai/run-parallel-loop.sh --max-concurrency 2 \
 ```
 
 helper 会并发运行多个 `dispatch-to-claude.sh`，并写入 `.worktrees/parallel-*/parallel-summary.md`、`parallel-events.jsonl`、`parallel-manifest.tsv` 和每个任务的 dispatch 日志。默认情况下，任务卡必须写明 `Parallel allowed? | yes`，否则拒绝派发；多个任务的 `Allowed files/modules` 有重叠时也会拒绝，除非显式传入 `--allow-overlap`。
+
+*路径 2：经审查的 DAG 计划（`--plan`）*
+
+对于需要依赖排序的并行执行，使用 Spark `parallel-planner` 生成经过审查的 DAG 计划：
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode parallel-planner
+```
+
+Spark 只产出严格 schema-v1 JSON，只提议不执行。Codex/人工必须审查并保存计划后再派发：
+
+```bash
+bash ai/run-parallel-loop.sh --plan ai/plans/PROJ-123/parallel-plan.json
+```
+
+Schema 字段：`schema_version`（必须为 `1`）、`group_id`、`max_concurrency`、`failure_policy`（目前仅 `skip-dependents`），以及 `tasks` 中每个任务的 `id`、`task_card`、`depends_on`。任务卡路径相对于计划文件解析。显式 CLI `--max-concurrency` 会覆盖计划中的并发上限。
+
+调度语义：调度器只启动依赖就绪的任务，不超过并发上限。使用 `skip-dependents` 时，失败的前置任务会跳过所有传递依赖，而无关分支继续执行。所有卡片仍需 scope-gate 和 overlap 检查。
 
 这只是派发层并行，不会自动合并 worktree，不替代 Codex review，也不会让冲突实现变安全。每个 diff 仍需串行审查；共享 API、数据模型、全局配置等改动应走普通单任务流程，或单独创建人工 reconcile 任务卡。
 

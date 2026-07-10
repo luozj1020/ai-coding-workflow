@@ -81,6 +81,7 @@ PYTHON_SCRIPTS = [
     ("plan-to-task-cards.py", "ai/plan-to-task-cards.py"),
     ("init-plan.py", "ai/init-plan.py"),
     ("session-catchup.py", "ai/session-catchup.py"),
+    ("validate-parallel-plan.py", "ai/validate-parallel-plan.py"),
 ]
 
 WORKTREES_GITIGNORE_LINES = [

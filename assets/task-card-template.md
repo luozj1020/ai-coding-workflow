@@ -255,7 +255,7 @@ Advisor timing rules:
 | Field | Value |
 |-------|-------|
 | Spark enabled? | auto / no / yes |
-| Spark purpose | explicit mode preferred / auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
+| Spark purpose | explicit mode preferred / auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / parallel-planner / micro-builder / none |
 | Spark model | gpt-5.3-codex-spark |
 | Quota rationale | separate Spark quota / latency / cost / not applicable |
 | Invocation helper | ai/run-codex-spark.sh |
@@ -281,7 +281,8 @@ Spark rules:
 - Prefer an explicit `Spark purpose` when Codex already knows the needed support role. Use `auto` only for low-risk helper routing when task size or artifact type is uncertain.
 - When `Spark purpose` is `auto`, use `task-size-classifier` before normal dispatch, `validation-planner` before Checker/Test work, `failure-triage` after failed/no-report artifacts, `review-only` for diff review, and `evidence-checker` for report/evidence review.
 - Use `task-size-classifier` to cheaply route work before Codex spends stronger-model tokens: `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`.
-- Prefer `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, or `evidence-checker` before `micro-builder`.
+- Prefer `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, `evidence-checker`, or `parallel-planner` before `micro-builder`.
+- Use `parallel-planner` to propose a reviewed DAG scheduling plan for independent task cards. Spark produces strict schema-v1 JSON only — it does not execute or dispatch. Codex/human must review and save the plan before running `ai/run-parallel-loop.sh --plan <json>`.
 - Use `task-card-audit` to catch missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
 - Use `plan-splitter` to propose Builder/Checker slices or independent parallelizable task cards.
 - Use `validation-planner` to propose exact low-noise checks without running broad suites.
@@ -294,13 +295,18 @@ Spark rules:
 
 ## Parallel Execution Gate
 
-<!-- Experimental. Use only after Codex has split work into independent task cards with explicit file/module boundaries. Parallel dispatch can improve wall-clock time, but final review and merge remain serial. -->
+<!-- Experimental. Use only after Codex has split work into independent task cards with explicit file/module boundaries. Two compatible paths: (1) flat independent cards with positional arguments, (2) reviewed DAG plan with --plan <json>. Parallel dispatch can improve wall-clock time, but final review and merge remain serial. -->
 
 | Field | Value |
 |-------|-------|
 | Parallel allowed? | no / yes |
 | Parallel group id | |
 | Parallel helper | ai/run-parallel-loop.sh |
+| Dispatch path | flat positional / reviewed DAG plan (`--plan <json>`) |
+| Reviewed plan artifact? | no / yes, path: ai/plans/.../parallel-plan.json |
+| Plan produced by | not applicable / Spark parallel-planner / hand-written |
+| Plan schema version | not applicable / 1 |
+| Failure policy | not applicable / skip-dependents |
 | Max concurrency | 2 / exact cap |
 | Dependency order | independent / after task ID / blocks task ID |
 | Allowed files/modules | |
@@ -315,6 +321,11 @@ Spark rules:
 
 Parallel rules:
 - Keep this gate `no` unless the task card is one member of a reviewed parallel group.
+- For the flat path, use positional task-card arguments. For the DAG path, use `--plan <json>` with a reviewed schema-v1 JSON plan.
+- Spark `parallel-planner` only proposes the plan — Codex/human must review and save the JSON before dispatch. Spark output is advisory and must not execute automatically.
+- Schema fields: `schema_version` (must be `1`), `group_id`, `max_concurrency`, `failure_policy` (currently `skip-dependents`), and `tasks` containing `id`, `task_card`, `depends_on` per task.
+- Scheduling semantics: only dependency-ready tasks start, up to the concurrency cap. With `skip-dependents`, a failed prerequisite skips transitive dependents while unrelated branches continue.
+- An explicit CLI `--max-concurrency` overrides the plan's cap. All cards still require scope-gate and overlap checks.
 - Do not parallelize shared API, data model, migration, security, permission, or global config changes without explicit human approval and manual reconcile plan.
 - Default merge strategy is serial review: inspect each diff and evidence packet independently before merging anything.
 - If the helper detects overlapping `Allowed files/modules`, stop unless the experiment explicitly allows overlap and names the manual reconcile owner.
