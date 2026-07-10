@@ -940,32 +940,28 @@ class InstallWorkflowTests(unittest.TestCase):
 
     def test_readme_stage_routing_terminology(self):
         """Check 3+6: READMEs explain stage routing and use correct terminology."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = pathlib.Path(tmp) / "repo"
+        # READMEs live in the source repository, not in the installed target.
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_cn = (ROOT / "README_CN.md").read_text(encoding="utf-8")
 
-            self.run_installer(repo)
+        # Check 3: English README explains stage routing
+        self.assertIn("stage bundle", readme)
+        self.assertIn("preflight-bundle", readme)
+        self.assertIn("postflight-bundle", readme)
+        self.assertIn("AI_SPARK_BUDGET_MODE", readme)
 
-            readme = (repo / "README.md").read_text(encoding="utf-8")
-            readme_cn = (repo / "README_CN.md").read_text(encoding="utf-8")
+        # Check 3: Chinese README explains stage routing
+        self.assertIn("preflight-bundle", readme_cn)
+        self.assertIn("postflight-bundle", readme_cn)
+        self.assertIn("AI_SPARK_BUDGET_MODE", readme_cn)
 
-            # Check 3: English README explains stage routing
-            self.assertIn("stage bundle", readme)
-            self.assertIn("preflight-bundle", readme)
-            self.assertIn("postflight-bundle", readme)
-            self.assertIn("AI_SPARK_BUDGET_MODE", readme)
+        # Check 3: multi-report metrics in both READMEs
+        self.assertIn("helper invocation count", readme)
+        self.assertIn("auto-disable occurrences", readme)
+        self.assertIn("helper invocation count", readme_cn)
 
-            # Check 3: Chinese README explains stage routing
-            self.assertIn("preflight-bundle", readme_cn)
-            self.assertIn("postflight-bundle", readme_cn)
-            self.assertIn("AI_SPARK_BUDGET_MODE", readme_cn)
-
-            # Check 3: multi-report metrics in both READMEs
-            self.assertIn("helper invocation count", readme)
-            self.assertIn("auto-disable occurrences", readme)
-            self.assertIn("helper invocation count", readme_cn)
-
-            # Check 6: no stale "default role selection" in READMEs
-            self.assertNotIn("default role selection", readme)
-            self.assertNotIn("默认角色选择", readme_cn)
-            self.assertIn("stage routing / bundle selection", readme)
-            self.assertIn("阶段路由 / 包选择", readme_cn)
+        # Check 6: no stale "default role selection" in READMEs
+        self.assertNotIn("default role selection", readme)
+        self.assertNotIn("默认角色选择", readme_cn)
+        self.assertIn("stage routing / bundle selection", readme)
+        self.assertIn("阶段路由 / 包选择", readme_cn)

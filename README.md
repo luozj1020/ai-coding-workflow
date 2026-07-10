@@ -413,7 +413,7 @@ Run the default auto-selected read-only helper:
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 ```
 
-When `auto` resolves to `task-size-classifier`, the helper runs Codex from the Spark artifact directory with `workspace-write` sandbox. This gives local helper initialization a writable working directory without granting write access to the source repository, and the mode contract still forbids source edits.
+When using explicit `task-size-classifier` mode or conservative auto routing (balanced/aggressive ordinary preflight is `preflight-bundle`), the helper runs Codex from the Spark artifact directory with `workspace-write` sandbox. This gives local helper initialization a writable working directory without granting write access to the source repository, and the mode contract still forbids source edits.
 
 Run an evidence check:
 
