@@ -1695,5 +1695,122 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertEqual((repo / "base.txt").read_text(encoding="utf-8"), "original\n")
 
 
+class SparkExecutionCostRoutingTests(unittest.TestCase):
+    SAFE_OUTPUT = """predicted_diff_lines_low=8
+predicted_diff_lines_high=24
+predicted_files=1
+context_scope=local
+validation_complexity=low
+delegation_overhead=high
+estimated_direct_work_units=30
+estimated_delegated_work_units=80
+delegation_to_direct_ratio=2.67
+economic_recommendation=codex-fast-path
+safety_eligible=yes
+recommended_owner=codex-fast-path
+cost_confidence=high
+risk_flags=none
+reason=local deterministic edit
+stop_condition=scope expands"""
+
+    def _run(self, output_text, *extra_args, env_extra=None, result_mode="full"):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = pathlib.Path(temp.name)
+        repo = root / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+        task_card = repo / "task-card.md"
+        task_card.write_text("# Task\n\nSmall local edit.\n", encoding="utf-8")
+        fake = root / "codex.sh"
+        fake.write_text(
+            "#!/usr/bin/env bash\ncat > \"$CODEX_FAKE_STDIN\"\n"
+            "printf '%s\\n' " + " ".join(repr(line) for line in output_text.splitlines()) + "\n",
+            encoding="utf-8",
+        )
+        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        output_dir = repo / ".worktrees" / "cost"
+        env = os.environ.copy()
+        env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake)
+        env["CODEX_FAKE_STDIN"] = bash_path(root / "stdin.md")
+        if env_extra:
+            env.update(env_extra)
+        cmd = [bash_exe(), bash_path(SCRIPT), bash_path(task_card), "--mode",
+               "execution-cost-estimator", "--result-mode", result_mode]
+        if result_mode != "direct":
+            cmd.extend(["--output", bash_path(output_dir)])
+        cmd.extend(extra_args)
+        result = subprocess.run(
+            cmd, cwd=str(repo), env=env, text=True, encoding="utf-8",
+            errors="replace", capture_output=True,
+        )
+        return result, output_dir, root / "stdin.md"
+
+    def test_estimator_prompt_uses_actual_threshold_and_relative_units(self):
+        result, _, prompt_path = self._run(
+            self.SAFE_OUTPUT, "--fast-path-max-diff-lines", "42"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        prompt = prompt_path.read_text(encoding="utf-8")
+        self.assertIn("predicted upper diff <= 42 lines", prompt)
+        self.assertIn("relative estimates, not actual/billable token measurements", prompt)
+        self.assertIn("cost_confidence=high|medium|low", prompt)
+
+    def test_estimator_computes_safe_codex_fast_path(self):
+        result, output_dir, _ = self._run(self.SAFE_OUTPUT)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Safety eligible | yes |", report)
+        self.assertIn("| Safety gate reasons | none |", report)
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
+        self.assertIn("| Cost confidence | high |", report)
+
+    def test_estimator_overrides_unsafe_model_claims(self):
+        replacements = {
+            "diff": ("predicted_diff_lines_high=24", "predicted_diff_lines_high=61", "diff-high-exceeds-60"),
+            "files": ("predicted_files=1", "predicted_files=3", "predicted-files-exceed-2"),
+            "context": ("context_scope=local", "context_scope=bounded", "context-not-local"),
+            "validation": ("validation_complexity=low", "validation_complexity=medium", "validation-not-low"),
+            "confidence": ("cost_confidence=high", "cost_confidence=medium", "confidence-not-high"),
+            "risk": ("risk_flags=none", "risk_flags=concurrency", "risk-flags-present-or-invalid"),
+        }
+        for name, (old, new, reason) in replacements.items():
+            with self.subTest(name=name):
+                result, output_dir, _ = self._run(self.SAFE_OUTPUT.replace(old, new))
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+                self.assertIn("| Safety eligible | no |", report)
+                self.assertIn(reason, report)
+                self.assertIn("| Recommended owner | claude-builder |", report)
+
+    def test_estimator_rejects_malformed_ratio_and_risk_flags(self):
+        for old, new in (
+            ("delegation_to_direct_ratio=2.67", "delegation_to_direct_ratio=1.2.3"),
+            ("delegation_to_direct_ratio=2.67", "delegation_to_direct_ratio=0.0"),
+            ("risk_flags=none", "risk_flags=none,$(touch /tmp/nope)"),
+        ):
+            with self.subTest(value=new):
+                result, output_dir, _ = self._run(self.SAFE_OUTPUT.replace(old, new))
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+                self.assertIn("| Safety eligible | no |", report)
+                self.assertIn("| Recommended owner | claude-builder |", report)
+
+    def test_fast_path_threshold_validation(self):
+        for value in ("0", "201", "not-a-number"):
+            with self.subTest(value=value):
+                result, _, _ = self._run(
+                    self.SAFE_OUTPUT, "--fast-path-max-diff-lines", value
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("fast-path-max-diff-lines", result.stderr)
+
+    def test_direct_estimator_returns_only_model_result_and_no_artifacts(self):
+        result, output_dir, _ = self._run(self.SAFE_OUTPUT, result_mode="direct")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(result.stdout.strip(), self.SAFE_OUTPUT)
+        self.assertFalse(output_dir.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

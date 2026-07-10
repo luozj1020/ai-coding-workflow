@@ -86,3 +86,10 @@ Add an `Execution Cost / Fast Path Gate` with:
 - Minimal/full reports parse and expose estimator fields; direct output remains file-free.
 - Tests cover safe tiny, economically attractive but unsafe, uncertain/low-confidence, and over-threshold recommendations.
 - Installer/template/docs propagation and focused regression pass.
+
+## Implementation record
+
+- Initial Builder produced the estimator skeleton, but left the threshold implicit and trusted model-reported safety.
+- Tightened Builder retry `claude-20260710-231937-85a4d372` exited with a seeded report, empty result, and no implementation diff.
+- Codex scoped takeover was limited to `scripts/run-codex-spark.sh` and focused tests: actual-threshold prompt injection, strict parsing, deterministic safety reasons, and safe owner selection.
+- A Spark preflight attempt auto-disabled after local helper initialization failed; no strong-model fallback was used.
