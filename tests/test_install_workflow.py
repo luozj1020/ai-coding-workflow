@@ -965,3 +965,132 @@ class InstallWorkflowTests(unittest.TestCase):
         self.assertNotIn("默认角色选择", readme_cn)
         self.assertIn("stage routing / bundle selection", readme)
         self.assertIn("阶段路由 / 包选择", readme_cn)
+
+    def test_installed_task_card_template_has_exact_controlled_builder_rows(self):
+        """Required test 3: installed task-card-template.md contains every exact
+        controlled-builder row with the correct field labels and example values."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            template = (repo / "ai" / "task-card-template.md").read_text(encoding="utf-8")
+
+            required_rows = [
+                "Controlled-builder authorized? | no / yes",
+                "Controlled-builder allowed paths | ...",
+                "Max files | not allowed / 3",
+                "Max diff lines | not allowed / 1-200",
+                "Public API risk | not allowed / no",
+                "Data model risk | not allowed / no",
+                "Security risk | not allowed / no",
+                "Migration risk | not allowed / no",
+                "Permission risk | not allowed / no",
+                "Concurrency risk | not allowed / no",
+                "Cross-module risk | not allowed / no",
+                "Existing pattern | file reference / not applicable",
+                "Source-of-truth reference | file reference / not applicable",
+                "Validation command | exact narrow command / not applicable",
+            ]
+            for row in required_rows:
+                self.assertIn(row, template, f"Missing exact row in task-card template: {row}")
+
+            # Combined placeholder row that would break exact parsing must be removed
+            self.assertNotIn("Controlled-builder risk exclusions", template)
+
+    def test_installed_run_codex_spark_has_direct_minimal_full_and_controlled_support(self):
+        """Required test 2: installed ai/run-codex-spark.sh contains direct/minimal/full,
+        controlled-builder, allow-write and max-diff-lines support."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            spark = (repo / "ai" / "run-codex-spark.sh").read_text(encoding="utf-8")
+
+            # Result delivery modes
+            self.assertIn("direct", spark)
+            self.assertIn("minimal", spark)
+            self.assertIn("full", spark)
+
+            # Controlled-builder support
+            self.assertIn("controlled-builder", spark)
+            self.assertIn("--allow-write", spark)
+            self.assertIn("--max-diff-lines", spark)
+
+    def test_installed_agents_docs_controlled_builder_and_delivery_modes(self):
+        """Required test 4: installed AGENTS.md documents direct observability tradeoff,
+        minimal/full audit choice, controlled-builder isolation, exact path/cap,
+        and no merge/acceptance."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
+
+            # Direct observability tradeoff
+            self.assertIn("direct", agents)
+            self.assertIn("no file-backed metrics", agents)
+
+            # Minimal/full audit choice
+            self.assertIn("minimal", agents)
+            self.assertIn("full", agents)
+            self.assertIn("audit", agents.lower())
+
+            # Controlled-builder isolation
+            self.assertIn("controlled-builder", agents)
+            self.assertIn("isolated", agents.lower())
+
+            # Exact path and cap
+            self.assertIn("--allow-write", agents)
+            self.assertIn("--max-diff-lines", agents)
+
+            # No merge/acceptance
+            self.assertIn("never", agents.lower())
+            self.assertIn("merge", agents.lower())
+
+    def test_readme_docs_controlled_builder_and_no_model_tier_routing(self):
+        """Required test 5: source English and Chinese READMEs document the same
+        controlled-builder feature and no model-tier routing."""
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_cn = (ROOT / "README_CN.md").read_text(encoding="utf-8")
+
+        # Both READMEs document controlled-builder
+        self.assertIn("controlled-builder", readme)
+        self.assertIn("controlled-builder", readme_cn)
+
+        # Both READMEs document direct/minimal/full delivery modes
+        self.assertIn("direct", readme)
+        self.assertIn("minimal", readme)
+        self.assertIn("full", readme)
+        self.assertIn("direct", readme_cn)
+        self.assertIn("minimal", readme_cn)
+        self.assertIn("full", readme_cn)
+
+        # No model-tier routing in either README
+        self.assertNotIn("model-tier routing", readme.lower())
+        self.assertNotIn("model-tier routing", readme_cn.lower())
+
+    def test_installed_templates_preserve_micro_builder_parallel_planner_and_stage_bundles(self):
+        """Required test 6: preserve micro-builder, parallel-planner, stage bundles,
+        and prior installer tests (spot check key content)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+
+            agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
+            template = (repo / "ai" / "task-card-template.md").read_text(encoding="utf-8")
+
+            # Micro-builder preserved
+            self.assertIn("micro-builder", agents)
+            self.assertIn("micro-builder", template)
+
+            # Parallel-planner preserved
+            self.assertIn("parallel-planner", agents)
+            self.assertIn("parallel-planner", template)
+
+            # Stage bundles preserved
+            self.assertIn("preflight-bundle", agents)
+            self.assertIn("postflight-bundle", agents)
+            self.assertIn("preflight-bundle", template)
+            self.assertIn("postflight-bundle", template)
+
+            # Key prior content preserved
+            self.assertIn("gpt-5.3-codex-spark", agents)
+            self.assertIn("task-size-classifier", agents)
+            self.assertIn("advisory", agents.lower())

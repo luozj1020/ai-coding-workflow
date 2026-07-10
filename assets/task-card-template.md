@@ -270,12 +270,19 @@ Advisor timing rules:
 | Validation commands allowed | none / exact commands |
 | Result mode | direct (advisory default) / minimal (stdout + report) / full (all evidence) |
 | Controlled-builder authorized? | no / yes |
-| Controlled-builder allowed paths | exact 1–3 `--allow-write` paths |
-| Controlled-builder max files | not allowed / 3 |
-| Controlled-builder max diff lines | not allowed / 1–200 |
-| Controlled-builder risk exclusions | public API / data model / security / migration / permission / concurrency / cross-module (one row each) |
-| Controlled-builder existing pattern | file or pattern reference / not applicable |
-| Controlled-builder narrow validation | not allowed / exact command |
+| Controlled-builder allowed paths | ... |
+| Max files | not allowed / 3 |
+| Max diff lines | not allowed / 1-200 |
+| Public API risk | not allowed / no |
+| Data model risk | not allowed / no |
+| Security risk | not allowed / no |
+| Migration risk | not allowed / no |
+| Permission risk | not allowed / no |
+| Concurrency risk | not allowed / no |
+| Cross-module risk | not allowed / no |
+| Existing pattern | file reference / not applicable |
+| Source-of-truth reference | file reference / not applicable |
+| Validation command | exact narrow command / not applicable |
 | Micro-builder max files | not allowed / 1-2 small files |
 | Micro-builder public API or contract risk? | not allowed / no |
 | Micro-builder narrow validation | not allowed / exact command |

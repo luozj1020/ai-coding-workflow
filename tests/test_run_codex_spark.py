@@ -53,6 +53,25 @@ class RunCodexSparkTests(unittest.TestCase):
         self.assertIn("micro-builder", result.stderr)
         self.assertIn("--artifact", result.stderr)
 
+    def test_help_mentions_controlled_builder_and_flags(self):
+        """Required test 1: help output includes controlled-builder, --result-mode,
+        --allow-write, --max-diff-lines, and CODEX_SPARK_RESULT_MODE."""
+        result = subprocess.run(
+            [bash_exe(), bash_path(SCRIPT), "--help"],
+            cwd=str(ROOT),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("controlled-builder", result.stderr)
+        self.assertIn("--result-mode", result.stderr)
+        self.assertIn("--allow-write", result.stderr)
+        self.assertIn("--max-diff-lines", result.stderr)
+        self.assertIn("CODEX_SPARK_RESULT_MODE", result.stderr)
+
     def test_review_only_invokes_codex_and_writes_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
