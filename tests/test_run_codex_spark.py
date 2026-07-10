@@ -690,8 +690,10 @@ class RunCodexSparkTests(unittest.TestCase):
             "| Field | Value |\n"
             "|-------|-------|\n"
             "| Spark purpose | controlled-builder |\n"
+            "| Controlled-builder authorized? | yes |\n"
             "| Source edits allowed? | yes |\n"
             f"| Max files | {max_files} |\n"
+            "| Max diff lines | 200 |\n"
             f"| Controlled-builder allowed paths | {', '.join(allowed_paths)} |\n"
             "| Public API risk | no |\n"
             "| Data model risk | no |\n"
@@ -1501,6 +1503,38 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
             self.assertIn("do not match", result.stderr)
             self.assertEqual((repo / "base.txt").read_text(encoding="utf-8"), "original\n")
+
+    def test_controlled_builder_requires_explicit_authorization_and_task_cap(self):
+        cases = [
+            ("| Controlled-builder authorized? | yes |",
+             "| Controlled-builder authorized? | no |", 20, "authorized? to yes"),
+            ("| Max diff lines | 200 |",
+             "| Max diff lines | 1 |", 2, "exceeds the task card"),
+        ]
+        for old, new, cli_cap, expected in cases:
+            with self.subTest(new=new):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = pathlib.Path(tmp)
+                    repo, task_card = self._make_controlled_repo(tmp_path, ["base.txt"])
+                    text = task_card.read_text(encoding="utf-8").replace(old, new)
+                    task_card.write_text(text, encoding="utf-8")
+                    subprocess.run(["git", "add", "task-card.md"], cwd=str(repo), check=True)
+                    subprocess.run(
+                        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                         "commit", "-m", "adjust authorization"],
+                        cwd=str(repo), check=True, capture_output=True,
+                    )
+                    fake_codex = self._make_editing_codex(
+                        tmp_path, "printf 'changed\\n' > base.txt"
+                    )
+                    result, _ = self._run_controlled(
+                        repo, task_card, fake_codex, ["base.txt"], max_diff_lines=cli_cap
+                    )
+                    self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
+                    self.assertIn(expected, result.stderr)
+                    self.assertEqual(
+                        (repo / "base.txt").read_text(encoding="utf-8"), "original\n"
+                    )
 
     def test_controlled_builder_accepts_tracked_allowlisted_change(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -653,12 +653,26 @@ controlled_builder_contract_missing() {
         echo "controlled-builder mode is not explicitly authorized in the task card"
         return 0
     fi
+    if [ "$(markdown_table_value "Controlled-builder authorized?")" != "yes" ]; then
+        echo "task card does not explicitly set Controlled-builder authorized? to yes"
+        return 0
+    fi
     if ! grep -Eiq 'Source edits allowed\?[[:space:]]*\|[[:space:]]*yes|Source edits allowed[[:space:]]*\|[[:space:]]*yes' "$TASK_CARD_COPY"; then
         echo "task card does not explicitly allow Spark source edits"
         return 0
     fi
     if ! grep -Eiq 'maximum 3 files|max files[[:space:]]*\|[[:space:]]*3|max files[[:space:]]*\|[[:space:]]*1-3' "$TASK_CARD_COPY"; then
         echo "task card does not limit Spark controlled-builder scope to at most three files"
+        return 0
+    fi
+    local _task_diff_cap
+    _task_diff_cap="$(markdown_table_value "Max diff lines")"
+    if ! [[ "$_task_diff_cap" =~ ^[0-9]+$ ]] || [ "$_task_diff_cap" -lt 1 ] || [ "$_task_diff_cap" -gt 200 ]; then
+        echo "task card Max diff lines must be a numeric authorization from 1 to 200"
+        return 0
+    fi
+    if [ "$MAX_DIFF_LINES" -gt "$_task_diff_cap" ]; then
+        echo "CLI --max-diff-lines exceeds the task card Max diff lines authorization"
         return 0
     fi
     if ! grep -Eiq 'public API[[:space:]/_-]*(risk)?[[:space:]]*\|[[:space:]]*no|no public API|no API contract' "$TASK_CARD_COPY"; then
