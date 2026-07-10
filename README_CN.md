@@ -366,7 +366,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；优先用更便宜的 Spark 额度判断任务规模和路由，再消耗更贵的 Codex/Claude 强模型上下文。已经知道所需辅助角色时，优先显式传 `--mode`；只有需要低风险自动路由时才用 `auto`。预算模式由 `AI_SPARK_BUDGET_MODE` / `--budget-mode` 控制：`balanced`（默认）、`aggressive`（失败时额外启用修订起草职责）、`conservative`（传统单角色路由）。建议每个任务最多调用三次短 Spark helper——预检、可选的定向/失败角色、后检——这是工作流建议，不是跨进程守护或状态强制。如果 CLI、模型权限、auth、网络、Spark 额度不可用，或本地 helper 因 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
 
-- `auto`：默认角色选择。解析为适用的阶段包：普通 Builder 前使用解析为 `preflight-bundle`，diff/report/evidence 使用解析为 `postflight-bundle`，Checker/Test 保持 `validation-planner`，失败/无报告证据包含失败归因。在 aggressive 预算模式下，失败证据还额外启用修订起草职责。
+- `auto`：阶段路由 / 包选择。解析为适用的阶段包：普通 Builder 前使用解析为 `preflight-bundle`，diff/report/evidence 使用解析为 `postflight-bundle`，Checker/Test 保持 `validation-planner`，失败/无报告证据包含失败归因。在 aggressive 预算模式下，失败证据还额外启用修订起草职责。
 - `task-size-classifier`：判断任务是 tiny/small/medium/large/unknown，并建议 `codex-fast-path`、`spark-review-only`、`spark-micro-builder`、`claude-builder`、`checker-test`、`spec-first` 或 `human-clarification`。
 - `review-only`：快速只读审查任务卡或实现方向。
 - `task-card-audit`：派发前检查缺失 gate、职责混合、验收不清和可能导致 Claude 卡住的风险。

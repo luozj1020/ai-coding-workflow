@@ -874,6 +874,98 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Evidence compression", claude)
             self.assertIn("summaries and artifact paths", claude)
 
+    def test_installed_templates_include_spark_stage_routing(self):
+        """Required checks 1-7: validate Spark stage documentation propagation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
 
-if __name__ == "__main__":
-    unittest.main()
+            self.run_installer(repo)
+
+            agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
+            task_template = (repo / "ai" / "task-card-template.md").read_text(encoding="utf-8")
+
+            # Check 1: preflight-bundle and postflight-bundle present
+            self.assertIn("preflight-bundle", agents)
+            self.assertIn("postflight-bundle", agents)
+            self.assertIn("preflight-bundle", task_template)
+            self.assertIn("postflight-bundle", task_template)
+
+            # Check 1: AI_SPARK_BUDGET_MODE present
+            self.assertIn("AI_SPARK_BUDGET_MODE", agents)
+            self.assertIn("AI_SPARK_BUDGET_MODE", task_template)
+
+            # Check 1: balanced, aggressive, conservative present
+            self.assertIn("balanced", agents)
+            self.assertIn("aggressive", agents)
+            self.assertIn("conservative", agents)
+
+            # Check 1: at-most-three invocation recommendation
+            self.assertIn("at most three", agents)
+            self.assertIn("at most three", task_template)
+
+            # Check 1: merge guardrails
+            self.assertIn("never authorizes merge", agents)
+            self.assertIn("strong Codex review remains required", agents)
+
+            # Check 2: task-card template exposes budget mode, pipeline stage,
+            # roles, call recommendation, and all nine new explicit modes
+            nine_modes = [
+                "observe-synthesizer", "task-card-drafter", "context-packet-builder",
+                "preflight-bundle", "direction-precheck", "acceptance-matrix",
+                "postflight-bundle", "revision-drafter", "lesson-extractor",
+            ]
+            for mode in nine_modes:
+                self.assertIn(mode, task_template, f"Missing mode {mode} in task-card template")
+            self.assertIn("Budget mode", task_template)
+            self.assertIn("Pipeline stage", task_template)
+            self.assertIn("Roles used", task_template)
+            self.assertIn("Call cap recommendation", task_template)
+
+            # Check 4: parallel-planner and micro-builder documentation preserved
+            self.assertIn("parallel-planner", agents)
+            self.assertIn("micro-builder", agents)
+            self.assertIn("parallel-planner", task_template)
+            self.assertIn("micro-builder", task_template)
+
+            # Check 5: no stale classifier wording - auto resolves to stage bundle
+            self.assertIn("resolves to an applicable stage bundle", agents)
+            self.assertIn("resolves to an applicable stage bundle", task_template)
+
+            # Check 6: prefer "stage routing" over "default role selection"
+            self.assertNotIn("default role selection", agents)
+
+            # Check 7: no Sol/Terra/Luna model-tier routing
+            self.assertNotIn("model-tier routing in this change", "")  # sanity
+            self.assertIn("no model-tier routing in this change", agents)
+
+    def test_readme_stage_routing_terminology(self):
+        """Check 3+6: READMEs explain stage routing and use correct terminology."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            self.run_installer(repo)
+
+            readme = (repo / "README.md").read_text(encoding="utf-8")
+            readme_cn = (repo / "README_CN.md").read_text(encoding="utf-8")
+
+            # Check 3: English README explains stage routing
+            self.assertIn("stage bundle", readme)
+            self.assertIn("preflight-bundle", readme)
+            self.assertIn("postflight-bundle", readme)
+            self.assertIn("AI_SPARK_BUDGET_MODE", readme)
+
+            # Check 3: Chinese README explains stage routing
+            self.assertIn("preflight-bundle", readme_cn)
+            self.assertIn("postflight-bundle", readme_cn)
+            self.assertIn("AI_SPARK_BUDGET_MODE", readme_cn)
+
+            # Check 3: multi-report metrics in both READMEs
+            self.assertIn("helper invocation count", readme)
+            self.assertIn("auto-disable occurrences", readme)
+            self.assertIn("helper invocation count", readme_cn)
+
+            # Check 6: no stale "default role selection" in READMEs
+            self.assertNotIn("default role selection", readme)
+            self.assertNotIn("默认角色选择", readme_cn)
+            self.assertIn("stage routing / bundle selection", readme)
+            self.assertIn("阶段路由 / 包选择", readme_cn)
