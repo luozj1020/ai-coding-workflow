@@ -724,6 +724,7 @@ class RunCodexSparkTests(unittest.TestCase):
             env = os.environ.copy()
             env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
             env["CODEX_FAKE_ARGS"] = bash_path(tmp_path / "args.txt")
+            env["CODEX_FAKE_STDIN"] = bash_path(tmp_path / "stdin.md")
             env["CODEX_FAKE_CWD"] = bash_path(tmp_path / "cwd.txt")
             result = subprocess.run(
                 [bash_exe(), bash_path(SCRIPT), bash_path(task_card), "--output", bash_path(output_dir)],
