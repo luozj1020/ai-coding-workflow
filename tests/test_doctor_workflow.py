@@ -305,8 +305,30 @@ class DoctorWorkflowTests(unittest.TestCase):
         self.assertIn("large-repo", text)
         self.assertIn("Worktree / Large Repo Strategy Gate", text)
         self.assertIn("CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo", text)
+        self.assertIn("Claude Context Packet", text)
+        self.assertIn("task-size-classifier", text)
         self.assertIn("CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed", text)
         self.assertIn("CodeGraph queries to concrete files/symbols", text)
+
+    def test_doctor_recommends_reuse_and_local_only_for_very_large_repositories(self):
+        module = load_module()
+        old_count = module._tracked_file_count
+        try:
+            module._tracked_file_count = lambda repo_root: 50000
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = pathlib.Path(tmp) / "repo"
+                repo.mkdir()
+                subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+
+                findings, has_error = module.run_doctor(str(repo))
+        finally:
+            module._tracked_file_count = old_count
+
+        self.assertTrue(has_error)
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("very large", text)
+        self.assertIn("--local-only", text)
+        self.assertIn("CLAUDE_CODE_EVIDENCE_MODE=summary", text)
 
     # --- Proxy masking ---
 

@@ -156,7 +156,7 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 Fast path rules:
 - Use only for small, local, low-risk edits where Claude dispatch overhead would cost more than the change.
 - Do not use for public API, data shape, security, migration, permission, concurrency, broad refactor, or cross-module contract changes.
-- Spark is optional on fast path; skip it when the edit is obvious and evidence is local.
+- Spark is optional on obvious fast path edits. When task size is unclear, prefer Spark `task-size-classifier` before spending stronger Codex/Claude context.
 - Record the reason Claude was not dispatched and preserve narrow validation evidence or an explicit validation-skip reason.
 
 ## Task Card Views
@@ -173,6 +173,21 @@ Fast path rules:
 | Fast large-repo profile allowed? | no / yes, accepts managed worktree reuse, skipped unrelated untracked scans, and summary diff evidence |
 | Dispatch env override | none / `CLAUDE_CODE_EXECUTION_PROFILE=safe` / `CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo` |
 | Full audit card retained? | yes, `TASK_CARD_FULL.md` |
+
+## Claude Context Packet
+
+<!-- Execution-facing packet for large repositories or slow filesystems. Keep it small and concrete so Claude does not rediscover the repository. This section is retained in the Claude execution card. -->
+
+| Field | Value |
+|-------|-------|
+| Target files/modules | |
+| Relevant symbols/functions | |
+| Reference examples / source of truth | |
+| Do not read / do not modify | |
+| Known constraints | |
+| Narrow validation commands | |
+| Context is sufficient for execution? | yes/no |
+| Escalate before broad search if | missing target file / symbol not found / contract unclear / validation unavailable |
 
 ## Control-Plane Exception Rationale
 
@@ -232,12 +247,12 @@ Advisor timing rules:
 
 ## Codex Spark Gate
 
-<!-- Optional execution-stage auxiliary using OpenAI gpt-5.3-codex-spark. Default to auto so eligible planning, task-card audit, validation planning, failure triage, review, and evidence work can use separate Spark quota. Spark is auxiliary: if unavailable, unauthenticated, network-blocked, or quota-exhausted, auto-disable it for this run and continue the main workflow. It is not a default Claude replacement and must not silently fall back to a stronger model. -->
+<!-- Optional execution-stage auxiliary using OpenAI gpt-5.3-codex-spark. Default to auto so eligible task-size classification, planning, task-card audit, validation planning, failure triage, review, and evidence work can use separate Spark quota before spending stronger-model context. Spark is auxiliary: if unavailable, unauthenticated, network-blocked, or quota-exhausted, auto-disable it for this run and continue the main workflow. It is not a default Claude replacement and must not silently fall back to a stronger model. -->
 
 | Field | Value |
 |-------|-------|
 | Spark enabled? | auto / no / yes |
-| Spark purpose | auto / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
+| Spark purpose | auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
 | Spark model | gpt-5.3-codex-spark |
 | Quota rationale | separate Spark quota / latency / cost / not applicable |
 | Invocation helper | ai/run-codex-spark.sh |
@@ -257,8 +272,9 @@ Advisor timing rules:
 | Stop conditions | unclear scope / non-availability helper failure / explicit require-spark failure |
 
 Spark rules:
-- When `Spark purpose` is `auto`, use `task-card-audit` before normal dispatch, `validation-planner` before Checker/Test work, `failure-triage` after failed/no-report artifacts, `review-only` for diff review, and `evidence-checker` for report/evidence review.
-- Prefer `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, or `evidence-checker` before `micro-builder`.
+- When `Spark purpose` is `auto`, use `task-size-classifier` before normal dispatch, `validation-planner` before Checker/Test work, `failure-triage` after failed/no-report artifacts, `review-only` for diff review, and `evidence-checker` for report/evidence review.
+- Use `task-size-classifier` to cheaply route work before Codex spends stronger-model tokens: `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`.
+- Prefer `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, or `evidence-checker` before `micro-builder`.
 - Use `task-card-audit` to catch missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
 - Use `plan-splitter` to propose Builder/Checker slices or independent parallelizable task cards.
 - Use `validation-planner` to propose exact low-noise checks without running broad suites.

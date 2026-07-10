@@ -44,6 +44,7 @@ class RunCodexSparkTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("gpt-5.3-codex-spark", result.stderr)
         self.assertIn("auto", result.stderr)
+        self.assertIn("task-size-classifier", result.stderr)
         self.assertIn("review-only", result.stderr)
         self.assertIn("task-card-audit", result.stderr)
         self.assertIn("plan-splitter", result.stderr)
@@ -121,7 +122,7 @@ class RunCodexSparkTests(unittest.TestCase):
                 ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "read-only", "-"],
             )
 
-    def test_auto_mode_defaults_to_task_card_audit(self):
+    def test_auto_mode_defaults_to_task_size_classifier(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             repo = tmp_path / "repo"
@@ -133,6 +134,8 @@ class RunCodexSparkTests(unittest.TestCase):
             fake_codex = tmp_path / "codex.sh"
             fake_codex.write_text(
                 "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"$@\" > \"$CODEX_FAKE_ARGS\"\n"
+                "pwd > \"$CODEX_FAKE_CWD\"\n"
                 "cat > \"$CODEX_FAKE_STDIN\"\n"
                 "echo 'audit ok'\n",
                 encoding="utf-8",
@@ -143,6 +146,8 @@ class RunCodexSparkTests(unittest.TestCase):
             env = os.environ.copy()
             env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
             env["CODEX_FAKE_STDIN"] = bash_path(tmp_path / "stdin.md")
+            env["CODEX_FAKE_ARGS"] = bash_path(tmp_path / "args.txt")
+            env["CODEX_FAKE_CWD"] = bash_path(tmp_path / "cwd.txt")
 
             result = subprocess.run(
                 [
@@ -163,9 +168,22 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
             prompt = (tmp_path / "stdin.md").read_text(encoding="utf-8")
-            self.assertIn("| Spark purpose used | task-card-audit |", report)
+            self.assertIn("| Spark purpose used | task-size-classifier |", report)
             self.assertIn("| Spark requested mode | auto |", report)
-            self.assertIn("Mode resolved: task-card-audit", prompt)
+            self.assertIn("| Sandbox used | workspace-write |", report)
+            self.assertIn("codex exec (classifier in artifact dir)", report)
+            self.assertIn("| Task size classification | see Spark output |", report)
+            self.assertIn("| Spark routing recommendation | see Spark output |", report)
+            self.assertIn("Mode resolved: task-size-classifier", prompt)
+            self.assertIn("recommended_route=codex-fast-path", prompt)
+            self.assertEqual(
+                (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
+                ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"],
+            )
+            self.assertEqual(
+                pathlib.Path((tmp_path / "cwd.txt").read_text(encoding="utf-8").strip()),
+                output_dir.resolve(),
+            )
 
     def test_auto_mode_uses_validation_planner_for_checker_task(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -446,7 +464,7 @@ class RunCodexSparkTests(unittest.TestCase):
             report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
             stderr_log = (output_dir / "codex-spark.stderr.log").read_text(encoding="utf-8")
             self.assertIn("| Spark auto-disabled? | yes |", report)
-            self.assertIn("read-only sandbox helper initialization", report)
+            self.assertIn("local app-server/helper initialization", report)
             self.assertIn("Read-only file system", stderr_log)
 
 

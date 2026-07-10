@@ -23,8 +23,12 @@ def write_loop_run(run: pathlib.Path, decision: str, cost: str = "0.10"):
     dispatch = run / "dispatch-1"
     dispatch.mkdir(parents=True)
     (dispatch / "claude.progress.log").write_text(
-        "[2099-01-01 00:00:00] Starting Claude Code\n"
-        "[2099-01-01 00:00:10] Claude completed successfully\n",
+        "[2099-01-01 00:00:00] Starting Claude Code: execution_profile=balanced\n"
+        "[2099-01-01 00:00:01] Claude process started: pid=123\n"
+        "[2099-01-01 00:00:08] Claude subprocess ended; dispatcher finalizing artifacts: pid=123, wait_status=0, elapsed_seconds=7\n"
+        "[2099-01-01 00:00:09] Starting checker helper: ai/check-worktree.sh\n"
+        "[2099-01-01 00:00:10] Checker helper completed: artifact collection OK; validation ALL GREEN\n"
+        "[2099-01-01 00:00:10] Dispatch evidence classification: state=diff + valid report\n",
         encoding="utf-8",
     )
     (dispatch / "claude.checker-report.md").write_text("ALL GREEN\n", encoding="utf-8")
@@ -66,6 +70,9 @@ def write_loop_run(run: pathlib.Path, decision: str, cost: str = "0.10"):
         "| Spark purpose used | failure-triage |\n"
         "| Spark requested mode | auto |\n"
         "| Spark model used | gpt-5.3-codex-spark |\n"
+        "| Task size classification | small |\n"
+        "| Spark routing recommendation | claude-builder |\n"
+        "| Spark classification confidence | medium |\n"
         "| Spark exit code | 0 |\n"
         "| Spark auto-disabled? | no |\n"
         "| Strong-model fallback used? | no |\n"
@@ -156,8 +163,14 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertEqual(report["runs"][0]["spark_purpose"], "failure-triage")
             self.assertEqual(report["runs"][0]["spark_requested_mode"], "auto")
             self.assertEqual(report["runs"][0]["spark_auto_disabled"], "no")
+            self.assertEqual(report["runs"][0]["spark_task_size"], "small")
+            self.assertEqual(report["runs"][0]["spark_route"], "claude-builder")
+            self.assertEqual(report["runs"][0]["spark_confidence"], "medium")
             self.assertEqual(report["runs"][0]["spark_accepted_suggestions"], "failure attribution")
             self.assertEqual(report["runs"][0]["spark_ignored_suggestions"], "none")
+            self.assertEqual(report["runs"][0]["claude_startup_seconds"], 1)
+            self.assertEqual(report["runs"][0]["claude_execution_seconds"], 7)
+            self.assertEqual(report["runs"][0]["checker_seconds"], 1)
             self.assertEqual(report["runs"][0]["tdd_mode"], "required")
             self.assertEqual(report["runs"][0]["tdd_red_captured"], "yes")
 

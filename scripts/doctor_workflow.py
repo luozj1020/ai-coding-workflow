@@ -543,8 +543,14 @@ def run_doctor(repo_path=None):
         if tracked_count >= 10000:
             findings.append((WARN, "large-repo", "{} tracked files; dispatch worktree creation may be slow. Fill Worktree / Large Repo Strategy Gate before dispatch.".format(tracked_count)))
             findings.append((INFO, "large-repo", "Recommended fast dispatch when the evidence tradeoff is acceptable: CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo bash ai/dispatch-to-claude.sh <task-card>"))
+            findings.append((INFO, "large-repo", "Before dispatch, fill Claude Context Packet with target files, relevant symbols, source-of-truth examples, forbidden paths, constraints, and narrow validation commands."))
+            findings.append((INFO, "large-repo", "Use Spark task-size-classifier for uncertain scope before spending stronger-model context: bash ai/run-codex-spark.sh <task-card>"))
             findings.append((INFO, "large-repo", "Manual knobs: CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed and CLAUDE_CODE_LARGE_REPO_MODE=1; reset only .worktrees/reuse/claude-managed with CLAUDE_CODE_REUSE_WORKTREE_RESET=1 after preserving evidence."))
             findings.append((INFO, "codegraph", "For large repositories, keep CodeGraph queries to concrete files/symbols. If a broad query times out, record the timeout, narrow once, then fall back to rg --files plus targeted line reads."))
+            if tracked_count >= 50000:
+                findings.append((WARN, "large-repo", "{} tracked files is very large; prefer local-only workflow bootstrap and managed worktree reuse for repeated dispatches.".format(tracked_count)))
+                findings.append((INFO, "large-repo", "Suggested local-only bootstrap for business repositories: python scripts/install_workflow.py . --local-only"))
+                findings.append((INFO, "large-repo", "Suggested repeated-dispatch profile: CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed CLAUDE_CODE_LARGE_REPO_MODE=1 CLAUDE_CODE_EVIDENCE_MODE=summary bash ai/dispatch-to-claude.sh <task-card>"))
         else:
             findings.append((INFO, "large-repo", "{} tracked files".format(tracked_count)))
 

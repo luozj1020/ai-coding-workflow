@@ -66,6 +66,10 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "decision": summary["decision"],
                 "quality_score": summary["quality_score"],
                 "elapsed_seconds": summary["speed"]["elapsed_seconds_from_progress"],
+                "claude_startup_seconds": summary["speed"].get("claude_startup_seconds"),
+                "claude_execution_seconds": summary["speed"].get("claude_execution_seconds"),
+                "checker_seconds": summary["speed"].get("checker_seconds"),
+                "artifact_finalization_seconds": summary["speed"].get("artifact_finalization_seconds"),
                 "input_tokens": cost_value(summary["cost"], "input_tokens"),
                 "output_tokens": cost_value(summary["cost"], "output_tokens"),
                 "total_cost_usd": cost_value(summary["cost"], "total_cost_usd"),
@@ -86,6 +90,9 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "spark_exit_code": field_number(spark_status, "exit_code"),
                 "spark_auto_disabled": spark_status.get("auto_disabled", ""),
                 "spark_artifact": spark_status.get("artifact", ""),
+                "spark_task_size": spark_status.get("task_size_classification", ""),
+                "spark_route": spark_status.get("routing_recommendation", ""),
+                "spark_confidence": spark_status.get("classification_confidence", ""),
                 "spark_accepted_suggestions": spark_status.get("accepted_suggestions", ""),
                 "spark_ignored_suggestions": spark_status.get("ignored_suggestions", ""),
                 "spark_strong_fallback_used": spark_status.get(
@@ -172,21 +179,23 @@ def render_markdown(report: dict) -> str:
         "",
         "## Runs",
         "",
-        "| Run | Decision | Quality | Seconds | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Mode | Spark Model | Spark Accepted | Spark Ignored | Parallel | Spec | TDD | Stability |",
-        "|-----|----------|---------|---------|-------|--------|------|------|------|---------|---------------|-------|------------|-------------|----------------|---------------|----------|------|-----|-----------|",
+        "| Run | Decision | Quality | Seconds | Claude Startup | Claude Exec | Checker | Finalize | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Mode | Spark Size | Spark Route | Spark Confidence | Spark Model | Spark Accepted | Spark Ignored | Parallel | Spec | TDD | Stability |",
+        "|-----|----------|---------|---------|----------------|-------------|---------|----------|-------|--------|------|------|------|---------|---------------|-------|------------|------------|-------------|------------------|-------------|----------------|---------------|----------|------|-----|-----------|",
     ]
     if report["runs"]:
         for run in report["runs"]:
             lines.append(
-                "| {run_path} | {decision} | {quality_score} | {elapsed_seconds} | {input_tokens} | "
+                "| {run_path} | {decision} | {quality_score} | {elapsed_seconds} | {claude_startup_seconds} | "
+                "{claude_execution_seconds} | {checker_seconds} | {artifact_finalization_seconds} | {input_tokens} | "
                 "{output_tokens} | {total_cost_usd} | {loop_type} | {benchmark_tags} | {advisor_model} | "
-                "{advisor_calls} | {spark_invoked} | {spark_purpose} | {spark_model} | {spark_accepted_suggestions} | "
+                "{advisor_calls} | {spark_invoked} | {spark_purpose} | {spark_task_size} | {spark_route} | "
+                "{spark_confidence} | {spark_model} | {spark_accepted_suggestions} | "
                 "{spark_ignored_suggestions} | {parallel_helper_invoked} | {spec_matched} | {tdd_mode} | {stability_findings} |".format(
                     **{key: format_value(value) for key, value in run.items()}
                 )
             )
     else:
-        lines.append("| no runs | UNKNOWN | 0 | unavailable | 0 | 0 | 0 | | | | 0 | | | | | | | | | 0 |")
+        lines.append("| no runs | UNKNOWN | 0 | unavailable | unavailable | unavailable | unavailable | unavailable | 0 | 0 | 0 | | | | 0 | | | | | | | | | | | | 0 |")
     return "\n".join(lines) + "\n"
 
 

@@ -11,7 +11,7 @@ ai-coding-workflow 可以为仓库自动配置：
 - `CLAUDE.md` - Claude Code 执行规则
 - 任务卡和证据包模板
 - Codex + Claude Code 工作流的安全调度/审查/循环脚本
-- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做任务卡审查、计划拆分、验证规划、失败归因、证据检查或极小范围隔离 micro-builder 工作
+- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做任务规模分类、任务卡审查、计划拆分、验证规划、失败归因、证据检查或极小范围隔离 micro-builder 工作
 - Execution profiles：默认省 token 的 balanced、完整上下文的 safe，以及显式大仓加速的 fast-large-repo
 - 大型仓库调度选项：受管 worktree 复用，以及减少昂贵的未跟踪文件扫描
 - 本地验证 gate，以及从任务卡 validation fenced block 自动抽取命令
@@ -322,11 +322,14 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 `fast-large-repo` 会使用 managed reuse worktree、跳过无关 untracked 扫描，并写入 summary diff evidence 而不是完整 patch 文本。它不会 reset 源仓库。如果 `.worktrees/reuse/claude-managed` 已存在，请先保留或审查其中证据，再显式加入 `CLAUDE_CODE_REUSE_WORKTREE_RESET=1`，只 reset 这个受管 worktree。
 
+大型仓库派发前应填写 `Claude Context Packet`。它应该很小、面向执行：目标文件/模块、相关符号、source-of-truth 示例、Claude 不应读取或修改的路径、已知约束，以及窄验证命令。如果这个 packet 不完整，Claude 应 stop-and-report，而不是重新广域扫描整个仓库。
+
 **默认可选开启：在执行规划中使用 Codex Spark**
 
-如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；如果 CLI、模型权限、auth、网络、Spark 额度不可用，或 read-only sandbox 因本地 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
+如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；优先用更便宜的 Spark 额度判断任务规模和路由，再消耗更贵的 Codex/Claude 强模型上下文。如果 CLI、模型权限、auth、网络、Spark 额度不可用，或本地 helper 因 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
 
-- `auto`：默认角色选择。普通派发前解析为 `task-card-audit`，Checker/Test 任务解析为 `validation-planner`，失败/无报告 artifacts 解析为 `failure-triage`，diff artifacts 解析为 `review-only`，report/evidence artifacts 解析为 `evidence-checker`。
+- `auto`：默认角色选择。普通派发前解析为 `task-size-classifier`，Checker/Test 任务解析为 `validation-planner`，失败/无报告 artifacts 解析为 `failure-triage`，diff artifacts 解析为 `review-only`，report/evidence artifacts 解析为 `evidence-checker`。
+- `task-size-classifier`：判断任务是 tiny/small/medium/large/unknown，并建议 `codex-fast-path`、`spark-review-only`、`spark-micro-builder`、`claude-builder`、`checker-test`、`spec-first` 或 `human-clarification`。
 - `review-only`：快速只读审查任务卡或实现方向。
 - `task-card-audit`：派发前检查缺失 gate、职责混合、验收不清和可能导致 Claude 卡住的风险。
 - `plan-splitter`：建议更小的 Builder/Checker 任务卡，或可并行的独立切片。
@@ -340,6 +343,8 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```bash
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 ```
+
+当 `auto` 解析为 `task-size-classifier` 时，helper 会在 Spark artifact 目录中用 `workspace-write` sandbox 启动 Codex。这样本地 helper 初始化有可写工作目录，但不会给源仓库写权限，且该模式仍禁止修改源代码。
 
 运行证据检查：
 
@@ -579,7 +584,7 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
   --json-output .worktrees/workflow-benchmark.json
 ```
 
-benchmark 会聚合每次运行的 decision、quality score、elapsed time、token/cost、stability findings，并读取任务卡和报告中的 loop type、benchmark tags、advisor usage、Spark invocation/auto-disable/fallback 状态与 parallel-dispatch usage。
+benchmark 会聚合每次运行的 decision、quality score、elapsed time、dispatch 阶段耗时、token/cost、stability findings，并读取任务卡和报告中的 loop type、benchmark tags、advisor usage、Spark invocation/auto-disable/fallback 状态、Spark task-size classification / routing / confidence 与 parallel-dispatch usage。dispatch 阶段耗时包括 Claude startup、Claude execution、checker time 和 artifact finalization，前提是 progress log 中存在这些事件。
 
 **追加式 loop 事件：** `ai/run-loop.sh` 会写入 `.worktrees/loop-<timestamp>/loop-events.jsonl`，记录 run start、iteration start、dispatch complete、review complete、decision、revision task created 和 stop reason。它保留恢复上下文，不重写旧观察。
 

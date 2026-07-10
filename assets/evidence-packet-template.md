@@ -167,9 +167,12 @@
 |-------|-------|
 | Spark enabled in task card? | auto/yes/no |
 | Spark invoked? | yes/no/not required |
-| Spark purpose used | auto-selected / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
+| Spark purpose used | auto-selected / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
 | Spark requested mode | auto / explicit mode / not recorded |
 | Spark model used | gpt-5.3-codex-spark / other |
+| Task size classification | tiny / small / medium / large / unknown / not used |
+| Spark routing recommendation | codex-fast-path / spark-review-only / spark-micro-builder / claude-builder / checker-test / spec-first / human-clarification / not used |
+| Spark classification confidence | high / medium / low / not used |
 | Invocation command or artifact | |
 | Artifact inputs manifest | none / codex-spark.artifacts.txt |
 | Sandbox used | read-only / workspace-write |
@@ -342,6 +345,9 @@
 | Untracked scans skipped? | yes/no |
 | Untracked patch evidence skipped? | yes/no |
 | Evidence tradeoff accepted in task card? | yes/no |
+| Claude Context Packet provided? | yes/no |
+| Context packet sufficient? | yes/no + gap |
+| Broad repository search avoided? | yes/no |
 | Source repository reset or cleaned? | no |
 
 ## Direction / Boundary Acknowledgement Follow-up

@@ -84,6 +84,43 @@ def parse_progress_seconds(paths: list[Path]) -> int | None:
     return int((max(timestamps) - min(timestamps)).total_seconds())
 
 
+def parse_progress_stage_seconds(paths: list[Path]) -> dict[str, int | None]:
+    stages: dict[str, datetime] = {}
+    for path in paths:
+        for line in read_text(path).splitlines():
+            match = TIMESTAMP_RE.match(line)
+            if not match:
+                continue
+            try:
+                timestamp = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if "Starting Claude Code:" in line:
+                stages.setdefault("claude_starting", timestamp)
+            elif "Claude process started:" in line:
+                stages.setdefault("claude_process_started", timestamp)
+            elif "Claude subprocess ended; dispatcher finalizing artifacts:" in line:
+                stages.setdefault("claude_subprocess_ended", timestamp)
+            elif "Starting checker helper:" in line:
+                stages.setdefault("checker_started", timestamp)
+            elif "Checker helper completed:" in line:
+                stages.setdefault("checker_completed", timestamp)
+            elif "Dispatch evidence classification:" in line:
+                stages.setdefault("evidence_classified", timestamp)
+
+    def delta(start: str, end: str) -> int | None:
+        if start not in stages or end not in stages:
+            return None
+        return max(0, int((stages[end] - stages[start]).total_seconds()))
+
+    return {
+        "claude_startup_seconds": delta("claude_starting", "claude_process_started"),
+        "claude_execution_seconds": delta("claude_process_started", "claude_subprocess_ended"),
+        "checker_seconds": delta("checker_started", "checker_completed"),
+        "artifact_finalization_seconds": delta("claude_subprocess_ended", "evidence_classified"),
+    }
+
+
 def parse_decision(paths: list[Path]) -> str:
     for path in reversed(paths):
         text = read_text(path)
@@ -268,6 +305,9 @@ def spark_status(
         or "no"
     )
     sandbox = followup.get("sandbox_used") or gate.get("sandbox") or "not recorded"
+    task_size = followup.get("task_size_classification") or "not recorded"
+    route = followup.get("spark_routing_recommendation") or "not recorded"
+    confidence = followup.get("spark_classification_confidence") or "not recorded"
     accepted = followup.get("spark_suggestions_accepted") or followup.get("spark_result_accepted_by_codex") or "not recorded"
     ignored = followup.get("spark_suggestions_ignored") or "not recorded"
     return {
@@ -282,6 +322,9 @@ def spark_status(
         "auto_disable_reason": auto_disable_reason,
         "strong_model_fallback": fallback,
         "sandbox": sandbox,
+        "task_size_classification": task_size,
+        "routing_recommendation": route,
+        "classification_confidence": confidence,
         "accepted_suggestions": accepted,
         "ignored_suggestions": ignored,
     }
@@ -384,6 +427,7 @@ def summarize(path: Path) -> dict:
     tdd_followup = parse_first_table(artifacts["report"], ["Test-First / TDD Follow-up"])
     finish_branch_followup = parse_first_table(artifacts["report"], ["Finish Branch Follow-up"])
     elapsed_seconds = parse_progress_seconds(artifacts["progress"])
+    stage_seconds = parse_progress_stage_seconds(artifacts["progress"])
     stability = stability_findings(
         artifacts["progress"] + artifacts["status"] + artifacts["report"] + artifacts["checker"],
         checker_results,
@@ -403,6 +447,7 @@ def summarize(path: Path) -> dict:
         "speed": {
             "elapsed_seconds_from_progress": elapsed_seconds,
             "progress_logs": len(artifacts["progress"]),
+            **stage_seconds,
         },
         "cost": usage_total,
         "goal_loop_contract": goal_contract,
@@ -464,6 +509,17 @@ def render_markdown(summary: dict) -> str:
     else:
         lines.append("| usage | unavailable |")
 
+    lines.extend(["", "## Speed", "", "| Field | Value |", "|-------|-------|"])
+    for key in [
+        "elapsed_seconds_from_progress",
+        "claude_startup_seconds",
+        "claude_execution_seconds",
+        "checker_seconds",
+        "artifact_finalization_seconds",
+        "progress_logs",
+    ]:
+        lines.append(f"| {key} | {format_value(summary['speed'].get(key))} |")
+
     lines.extend(["", "## Claude Evidence Classification", "", "| Field | Value |", "|-------|-------|"])
     for key in [
         "evidence_state",
@@ -488,6 +544,9 @@ def render_markdown(summary: dict) -> str:
         "auto_disable_reason",
         "strong_model_fallback",
         "sandbox",
+        "task_size_classification",
+        "routing_recommendation",
+        "classification_confidence",
         "accepted_suggestions",
         "ignored_suggestions",
     ]:

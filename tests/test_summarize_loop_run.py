@@ -36,8 +36,12 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (dispatch / "claude.progress.log").write_text(
-                "[2099-01-01 00:00:00] Starting Claude Code\n"
-                "[2099-01-01 00:00:05] Claude completed successfully\n",
+                "[2099-01-01 00:00:00] Starting Claude Code: execution_profile=balanced\n"
+                "[2099-01-01 00:00:01] Claude process started: pid=123\n"
+                "[2099-01-01 00:00:04] Claude subprocess ended; dispatcher finalizing artifacts: pid=123, wait_status=0, elapsed_seconds=3\n"
+                "[2099-01-01 00:00:05] Starting checker helper: ai/check-worktree.sh\n"
+                "[2099-01-01 00:00:07] Checker helper completed: artifact collection OK; validation ALL GREEN\n"
+                "[2099-01-01 00:00:09] Dispatch evidence classification: state=diff + valid report\n",
                 encoding="utf-8",
             )
             (dispatch / "claude.checker-report.md").write_text(
@@ -60,6 +64,9 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "| Spark purpose used | review-only |\n"
                 "| Spark requested mode | auto |\n"
                 "| Spark model used | gpt-5.3-codex-spark |\n"
+                "| Task size classification | tiny |\n"
+                "| Spark routing recommendation | codex-fast-path |\n"
+                "| Spark classification confidence | high |\n"
                 "| Artifact directory | .worktrees/codex-spark-fixture |\n"
                 "| Spark exit code | 0 |\n"
                 "| Spark auto-disabled? | no |\n"
@@ -160,7 +167,11 @@ class SummarizeLoopRunTests(unittest.TestCase):
 
             self.assertEqual(summary["decision"], "ACCEPT")
             self.assertEqual(summary["quality_score"], 1.0)
-            self.assertEqual(summary["speed"]["elapsed_seconds_from_progress"], 5)
+            self.assertEqual(summary["speed"]["elapsed_seconds_from_progress"], 9)
+            self.assertEqual(summary["speed"]["claude_startup_seconds"], 1)
+            self.assertEqual(summary["speed"]["claude_execution_seconds"], 3)
+            self.assertEqual(summary["speed"]["checker_seconds"], 2)
+            self.assertEqual(summary["speed"]["artifact_finalization_seconds"], 5)
             self.assertEqual(summary["cost"]["input_tokens"], 100)
             self.assertEqual(summary["cost"]["output_tokens"], 50)
             self.assertEqual(summary["cost"]["total_cost_usd"], 0.25)
@@ -177,6 +188,9 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["spark_status"]["invoked"], "yes")
             self.assertEqual(summary["spark_status"]["mode"], "review-only")
             self.assertEqual(summary["spark_status"]["requested_mode"], "auto")
+            self.assertEqual(summary["spark_status"]["task_size_classification"], "tiny")
+            self.assertEqual(summary["spark_status"]["routing_recommendation"], "codex-fast-path")
+            self.assertEqual(summary["spark_status"]["classification_confidence"], "high")
             self.assertEqual(summary["spark_status"]["artifact"], ".worktrees/codex-spark-fixture")
             self.assertEqual(summary["spark_status"]["exit_code"], "0")
             self.assertEqual(summary["spark_status"]["auto_disabled"], "no")
@@ -200,7 +214,10 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["artifacts"]["spark_report"], 0)
 
             markdown = module.render_markdown(summary)
+            self.assertIn("## Speed", markdown)
+            self.assertIn("| claude_execution_seconds | 3 |", markdown)
             self.assertIn("## Spark Status", markdown)
+            self.assertIn("| routing_recommendation | codex-fast-path |", markdown)
             self.assertIn("| invoked | yes |", markdown)
             self.assertIn("| accepted_suggestions | validation file placement |", markdown)
             self.assertIn("## Claude Evidence Classification", markdown)

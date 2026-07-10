@@ -2,7 +2,7 @@
 # run-codex-spark.sh  -  Optional Codex Spark auxiliary execution for the workflow.
 #
 # Usage:
-#   bash ai/run-codex-spark.sh <task-card> [--mode auto|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder]
+#   bash ai/run-codex-spark.sh <task-card> [--mode auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder]
 #       [--model gpt-5.3-codex-spark] [--sandbox read-only|workspace-write]
 #       [--artifact .worktrees/claude-....report.md] [--output .worktrees/codex-spark-...]
 #
@@ -19,9 +19,9 @@ usage() {
 Usage: run-codex-spark.sh <task-card> [options]
 
 Options:
-  --mode MODE       auto, review-only, task-card-audit, plan-splitter,
-                    validation-planner, failure-triage, evidence-checker,
-                    or micro-builder
+  --mode MODE       auto, task-size-classifier, review-only, task-card-audit,
+                    plan-splitter, validation-planner, failure-triage,
+                    evidence-checker, or micro-builder
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
   --sandbox MODE    read-only or workspace-write (default: read-only)
   --artifact PATH   Add a bounded artifact excerpt to the Spark prompt.
@@ -123,7 +123,7 @@ if [ -z "$TASK_CARD" ]; then
 fi
 
 case "$MODE" in
-    auto|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder) ;;
+    auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder) ;;
     *)
         echo "Error: invalid --mode: $MODE" >&2
         exit 1
@@ -223,11 +223,20 @@ resolve_auto_mode() {
     elif grep -Eiq 'checker-test|Validation Contract|Local validation allowed|Test-First / TDD|TDD mode' "$TASK_CARD_COPY"; then
         MODE="validation-planner"
     else
-        MODE="task-card-audit"
+        MODE="task-size-classifier"
     fi
 }
 
 resolve_auto_mode
+
+if [ "$MODE" = "task-size-classifier" ] && [ "$SANDBOX" = "read-only" ]; then
+    # Codex Spark task-size classification only needs the rendered prompt. Running
+    # from the artifact directory with workspace-write prevents source-repo writes
+    # and gives local helper initialization a writable working directory.
+    SANDBOX="workspace-write"
+    RUN_DIR="$OUTPUT_DIR"
+    SPARK_CHECKS_RUN="codex exec (classifier in artifact dir)"
+fi
 
 if [ "$MODE" = "micro-builder" ] && [ "$SANDBOX" != "workspace-write" ]; then
     echo "Error: micro-builder mode requires --sandbox workspace-write." >&2
@@ -249,6 +258,9 @@ write_report_header() {
         echo "| Spark purpose used | ${MODE} |"
         echo "| Spark requested mode | ${REQUESTED_MODE} |"
         echo "| Spark model used | ${MODEL} |"
+        echo "| Task size classification | $([ "$MODE" = "task-size-classifier" ] && echo "see Spark output" || echo "not used") |"
+        echo "| Spark routing recommendation | $([ "$MODE" = "task-size-classifier" ] && echo "see Spark output" || echo "not used") |"
+        echo "| Spark classification confidence | $([ "$MODE" = "task-size-classifier" ] && echo "see Spark output" || echo "not used") |"
         echo "| Invocation command or artifact | ${PROMPT_FILE} |"
         echo "| Sandbox used | ${SANDBOX} |"
         echo "| Isolated worktree used? | $([ -n "$WORKTREE_DIR" ] && echo yes || echo no) |"
@@ -313,7 +325,7 @@ spark_failure_auto_disable_reason() {
         text="$(tr '[:upper:]' '[:lower:]' < "$STDERR_FILE")"
     fi
     if printf '%s\n' "$text" | grep -Eiq 'read-only file system|os error 30|app-server|failed to initialize'; then
-        echo "codex exec failed during read-only sandbox helper initialization"
+        echo "codex exec failed during local app-server/helper initialization that requires write access"
     else
         echo "codex exec reported model, quota, auth, network, or access unavailability"
     fi
@@ -418,6 +430,7 @@ Operating rules:
 - If blocked by missing context, permissions, model access, network, or auth, report the blocker instead of guessing.
 
 Mode contract:
+- task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output exactly these fields: size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown; risk_flags=none or comma-separated public-api,data-model,security,migration,permission,concurrency,cross-module,broad-context,validation-complexity; reason=one short paragraph; stop_condition=one sentence.
 - review-only: inspect the task card and available repository context, do not edit files.
 - task-card-audit: inspect the task card for missing gates, mixed responsibilities, unclear acceptance criteria, unsafe scope, and likely Claude stall risks; do not edit files.
 - plan-splitter: propose smaller Builder/Checker task cards or independent parallelizable slices; do not edit files.
