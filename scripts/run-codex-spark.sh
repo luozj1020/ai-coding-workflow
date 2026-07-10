@@ -249,6 +249,7 @@ fi
 
 REPO_ROOT="$(git -C "$(dirname "$TASK_CARD")" rev-parse --show-toplevel 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+INITIAL_SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
 
 # ---------------------------------------------------------------------------
 # Helper functions that read $TASK_CARD (not $TASK_CARD_COPY) so they can be
@@ -545,7 +546,7 @@ validate_allow_write_path() {
         return 1
     fi
     # Reject control characters (C0 + DEL)
-    if printf '%s' "$path" | LC_ALL=C grep -q '[\x00-\x1f\x7f]' 2>/dev/null; then
+    if [[ "$path" =~ [[:cntrl:]] ]]; then
         echo "Error: --allow-write path contains control characters: $path" >&2
         return 1
     fi
@@ -630,6 +631,23 @@ micro_builder_contract_missing() {
     return 1
 }
 
+markdown_table_value() {
+    local field_name="$1"
+    awk -F '|' -v wanted="$field_name" '
+        function trim(value) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            return value
+        }
+        {
+            field = trim($2)
+            if (tolower(field) == tolower(wanted)) {
+                print trim($3)
+                exit
+            }
+        }
+    ' "$TASK_CARD_COPY"
+}
+
 controlled_builder_contract_missing() {
     if ! grep -Eiq 'controlled-builder' "$TASK_CARD_COPY"; then
         echo "controlled-builder mode is not explicitly authorized in the task card"
@@ -675,15 +693,11 @@ controlled_builder_contract_missing() {
         echo "task card does not provide narrow validation for Spark controlled-builder"
         return 0
     fi
-    # Require Existing pattern or Source-of-truth reference with a non-empty value
-    if ! grep -Eiq 'Existing pattern|Source-of-truth reference' "$TASK_CARD_COPY"; then
-        echo "task card does not provide an existing pattern or source-of-truth reference"
-        return 0
-    fi
-    local _ref_line
-    _ref_line="$(grep -Ei 'Existing pattern|Source-of-truth reference' "$TASK_CARD_COPY" | head -1)"
     local _ref_value
-    _ref_value="$(printf '%s' "$_ref_line" | sed 's/.*|//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    _ref_value="$(markdown_table_value "Existing pattern")"
+    if [ -z "$_ref_value" ]; then
+        _ref_value="$(markdown_table_value "Source-of-truth reference")"
+    fi
     case "$_ref_value" in
         ''|none|None|NONE|n/a|N/A|'-')
             echo "task card existing-pattern or source-of-truth reference field is empty or none"
@@ -691,7 +705,7 @@ controlled_builder_contract_missing() {
             ;;
     esac
     # Require Controlled-builder allowed paths row
-    if ! grep -Eiq 'Controlled-builder allowed paths' "$TASK_CARD_COPY"; then
+    if [ -z "$(markdown_table_value "Controlled-builder allowed paths")" ]; then
         echo "task card does not provide a Controlled-builder allowed paths row"
         return 0
     fi
@@ -898,7 +912,7 @@ append_artifact_excerpts() {
 }
 
 if [ "$MODE" = "micro-builder" ]; then
-    SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
+    SOURCE_STATUS="$INITIAL_SOURCE_STATUS"
     if [ -n "$SOURCE_STATUS" ] && [ "$ALLOW_DIRTY_SOURCE" != "1" ]; then
         if [ "$RESULT_MODE" = "direct" ]; then
             echo "Error: dirty source repository blocks micro-builder mode." >&2
@@ -921,7 +935,6 @@ if [ "$MODE" = "micro-builder" ]; then
     BRANCH="codex-spark/${TIMESTAMP}"
     git -C "$REPO_ROOT" worktree add -b "$BRANCH" "$WORKTREE_DIR" HEAD >/dev/null
     RUN_DIR="$WORKTREE_DIR"
-    cp "$TASK_CARD_COPY" "${WORKTREE_DIR}/CODEX_SPARK_TASK_CARD.md"
     write_report_header
 fi
 
@@ -946,8 +959,7 @@ if [ "$MODE" = "controlled-builder" ]; then
     fi
 
     # Compare CLI --allow-write with task-card Controlled-builder allowed paths
-    TC_ALLOWED_LINE="$(grep -Ei 'Controlled-builder allowed paths' "$TASK_CARD_COPY" | head -1)"
-    TC_ALLOWED_RAW="${TC_ALLOWED_LINE#*|}"
+    TC_ALLOWED_RAW="$(markdown_table_value "Controlled-builder allowed paths")"
     TC_ALLOWED_PATHS=()
     IFS=',' read -ra _tc_parts <<< "$TC_ALLOWED_RAW"
     for _tp in "${_tc_parts[@]}"; do
@@ -972,7 +984,7 @@ if [ "$MODE" = "controlled-builder" ]; then
         exit 2
     fi
 
-    SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
+    SOURCE_STATUS="$INITIAL_SOURCE_STATUS"
     if [ -n "$SOURCE_STATUS" ] && [ "$ALLOW_DIRTY_SOURCE" != "1" ]; then
         if [ "$RESULT_MODE" = "direct" ]; then
             echo "Error: dirty source repository blocks controlled-builder mode." >&2
@@ -995,7 +1007,6 @@ if [ "$MODE" = "controlled-builder" ]; then
     BRANCH="codex-spark/${TIMESTAMP}"
     git -C "$REPO_ROOT" worktree add -b "$BRANCH" "$WORKTREE_DIR" HEAD >/dev/null
     RUN_DIR="$WORKTREE_DIR"
-    cp "$TASK_CARD_COPY" "${WORKTREE_DIR}/CODEX_SPARK_TASK_CARD.md"
     write_report_header
 fi
 
@@ -1104,6 +1115,7 @@ fi
 # Controlled-builder boundary validation (hardened: NUL-safe, binary-aware)
 CONTROLLED_BOUNDARY_FAILURE=""
 if [ "$MODE" = "controlled-builder" ] && [ "$CODEX_STATUS" -eq 0 ]; then
+    TOTAL_ADD_DEL=0
     # Collect tracked changes (modifications, deletions, staged adds)
     TRACKED_PATHS=()
     while IFS= read -r -d '' _line; do
@@ -1153,8 +1165,6 @@ if [ "$MODE" = "controlled-builder" ] && [ "$CODEX_STATUS" -eq 0 ]; then
 
     # Check for binary content and count added+deleted lines
     if [ -z "$CONTROLLED_BOUNDARY_FAILURE" ]; then
-        TOTAL_ADD_DEL=0
-
         # Count tracked changes via numstat; reject binary (shown as "-")
         if [ "${#TRACKED_PATHS[@]}" -gt 0 ]; then
             while IFS=$'\t' read -r _add _del _rest; do
@@ -1167,19 +1177,23 @@ if [ "$MODE" = "controlled-builder" ] && [ "$CODEX_STATUS" -eq 0 ]; then
             done < <(git -C "$RUN_DIR" diff --no-renames --numstat HEAD 2>/dev/null || true)
         fi
 
-        # Count untracked files; reject binary content
+        # Count untracked files with Git numstat so a final newline is not
+        # required for a one-line addition and binary files are reported as '-'.
         if [ -z "$CONTROLLED_BOUNDARY_FAILURE" ] && [ "${#UNTRACKED_PATHS[@]}" -gt 0 ]; then
             for _up in "${UNTRACKED_PATHS[@]}"; do
                 if [ -f "${RUN_DIR}/${_up}" ]; then
-                    # Reject binary: compare byte counts with and without NUL
-                    _file_bytes=$(wc -c < "${RUN_DIR}/${_up}" 2>/dev/null || echo 0)
-                    _text_bytes=$(tr -d '\0' < "${RUN_DIR}/${_up}" 2>/dev/null | wc -c || echo 0)
-                    if [ "${_file_bytes:-0}" -ne "${_text_bytes:-0}" ]; then
+                    _untracked_numstat="$(git -C "$RUN_DIR" diff --no-index --numstat -- /dev/null "$_up" 2>/dev/null || true)"
+                    IFS=$'\t' read -r _add _del _rest <<< "$_untracked_numstat"
+                    if [ "${_add:-}" = "-" ] || [ "${_del:-}" = "-" ]; then
                         CONTROLLED_BOUNDARY_FAILURE="binary content detected in untracked file: ${_up}"
                         break
                     fi
-                    _lines=$(wc -l < "${RUN_DIR}/${_up}" 2>/dev/null || echo 0)
-                    TOTAL_ADD_DEL=$((TOTAL_ADD_DEL + _lines))
+                    if [[ "${_add:-}" =~ ^[0-9]+$ ]] && [[ "${_del:-}" =~ ^[0-9]+$ ]]; then
+                        TOTAL_ADD_DEL=$((TOTAL_ADD_DEL + _add + _del))
+                    else
+                        CONTROLLED_BOUNDARY_FAILURE="unable to count untracked diff lines: ${_up}"
+                        break
+                    fi
                 fi
             done
         fi
@@ -1206,6 +1220,11 @@ ${_untracked_patch}"
             fi
         done
     fi
+    printf '%s\n' "$PATCH_EVIDENCE" > "$DIFF_FILE"
+    git -C "$RUN_DIR" diff --no-renames --stat HEAD > "$DIFFSTAT_FILE" 2>/dev/null || true
+    for _up in "${UNTRACKED_PATHS[@]}"; do
+        git -C "$RUN_DIR" diff --no-index --stat -- /dev/null "$_up" >> "$DIFFSTAT_FILE" 2>/dev/null || true
+    done
 
     # On boundary failure, report and exit non-zero with full isolated evidence
     if [ -n "$CONTROLLED_BOUNDARY_FAILURE" ]; then

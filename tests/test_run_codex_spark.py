@@ -660,6 +660,70 @@ class RunCodexSparkTests(unittest.TestCase):
         )
         return result
 
+    def _make_controlled_repo(self, tmp_path, allowed_paths, max_files=3):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+        (repo / "base.txt").write_text("original\n", encoding="utf-8")
+        task_card = repo / "task-card.md"
+        task_card.write_text(
+            "# Controlled Task\n\n## Codex Spark Gate\n\n"
+            "| Field | Value |\n"
+            "|-------|-------|\n"
+            "| Spark purpose | controlled-builder |\n"
+            "| Source edits allowed? | yes |\n"
+            f"| Max files | {max_files} |\n"
+            f"| Controlled-builder allowed paths | {', '.join(allowed_paths)} |\n"
+            "| Public API risk | no |\n"
+            "| Data model risk | no |\n"
+            "| Security risk | no |\n"
+            "| Migration risk | no |\n"
+            "| Permission risk | no |\n"
+            "| Concurrency risk | no |\n"
+            "| Cross-module risk | no |\n"
+            "| Existing pattern | base.txt |\n"
+            "| Validation command | test -f base.txt |\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "base.txt", "task-card.md"], cwd=str(repo), check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "-m", "baseline"],
+            cwd=str(repo), check=True, capture_output=True,
+        )
+        return repo, task_card
+
+    def _make_editing_codex(self, tmp_path, body):
+        fake_codex = tmp_path / "controlled-codex.sh"
+        fake_codex.write_text(
+            "#!/usr/bin/env bash\n"
+            "cat >/dev/null\n" + body + "\n"
+            "echo 'controlled result'\n",
+            encoding="utf-8",
+        )
+        fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+        return fake_codex
+
+    def _run_controlled(self, repo, task_card, fake_codex, allowed_paths,
+                        max_diff_lines=20, output_name="controlled-output"):
+        output_dir = repo / ".worktrees" / output_name
+        env = os.environ.copy()
+        env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+        cmd = [
+            bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+            "--mode", "controlled-builder",
+            "--sandbox", "workspace-write",
+            "--max-diff-lines", str(max_diff_lines),
+            "--output", bash_path(output_dir),
+        ]
+        for path in allowed_paths:
+            cmd.extend(["--allow-write", path])
+        result = subprocess.run(
+            cmd, cwd=str(repo), env=env, text=True, encoding="utf-8",
+            errors="replace", capture_output=True,
+        )
+        return result, output_dir
+
     # --- Coverage 1: Help lists every new mode, --budget-mode, AI_SPARK_BUDGET_MODE ---
 
     def test_help_lists_all_new_atomic_and_bundle_modes(self):
@@ -1406,6 +1470,176 @@ class RunCodexSparkTests(unittest.TestCase):
             # Output directory should not be created
             self.assertFalse(output_dir.exists(),
                              "output directory should not be created on usage error")
+
+    def test_controlled_builder_rejects_task_card_allowlist_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_controlled_repo(tmp_path, ["base.txt"])
+            fake_codex = self._make_editing_codex(tmp_path, "printf 'changed\\n' > base.txt")
+            result, _ = self._run_controlled(
+                repo, task_card, fake_codex, ["different.txt"]
+            )
+            self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
+            self.assertIn("do not match", result.stderr)
+            self.assertEqual((repo / "base.txt").read_text(encoding="utf-8"), "original\n")
+
+    def test_controlled_builder_accepts_tracked_allowlisted_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_controlled_repo(tmp_path, ["base.txt"])
+            fake_codex = self._make_editing_codex(tmp_path, "printf 'changed\\n' > base.txt")
+            result, output_dir = self._run_controlled(
+                repo, task_card, fake_codex, ["base.txt"], max_diff_lines=2
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            diff = (output_dir / "codex-spark.diff").read_text(encoding="utf-8")
+            self.assertIn("| Result mode | full |", report)
+            self.assertIn("| Boundary outcome | pass |", report)
+            self.assertIn("+changed", diff)
+            self.assertEqual((repo / "base.txt").read_text(encoding="utf-8"), "original\n")
+            self.assertTrue((output_dir / "worktree" / "base.txt").exists())
+
+    def test_controlled_builder_accepts_untracked_one_line_without_newline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_controlled_repo(tmp_path, ["new.txt"])
+            fake_codex = self._make_editing_codex(tmp_path, "printf 'one line' > new.txt")
+            result, output_dir = self._run_controlled(
+                repo, task_card, fake_codex, ["new.txt"], max_diff_lines=1
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            diff = (output_dir / "codex-spark.diff").read_text(encoding="utf-8")
+            self.assertIn("new.txt", diff)
+            self.assertIn("+one line", diff)
+            self.assertFalse((repo / "new.txt").exists())
+
+    def test_controlled_builder_rejects_outside_allowlist_and_preserves_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_controlled_repo(tmp_path, ["base.txt"])
+            fake_codex = self._make_editing_codex(
+                tmp_path, "printf 'changed\\n' > base.txt\nprintf 'escape\\n' > outside.txt"
+            )
+            result, output_dir = self._run_controlled(
+                repo, task_card, fake_codex, ["base.txt"], max_diff_lines=10
+            )
+            self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
+            self.assertIn("not in allowlist", result.stderr)
+            self.assertTrue((output_dir / "codex-spark.report.md").exists())
+            self.assertTrue((output_dir / "codex-spark.diff").exists())
+            self.assertTrue((output_dir / "worktree" / "outside.txt").exists())
+            self.assertFalse((repo / "outside.txt").exists())
+            self.assertEqual((repo / "base.txt").read_text(encoding="utf-8"), "original\n")
+
+    def test_controlled_builder_rejects_combined_diff_over_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_controlled_repo(
+                tmp_path, ["base.txt", "new.txt"]
+            )
+            fake_codex = self._make_editing_codex(
+                tmp_path, "printf 'changed\\n' > base.txt\nprintf 'one line' > new.txt"
+            )
+            result, output_dir = self._run_controlled(
+                repo, task_card, fake_codex, ["base.txt", "new.txt"], max_diff_lines=2
+            )
+            self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("diff too large", report)
+            self.assertEqual((repo / "base.txt").read_text(encoding="utf-8"), "original\n")
+
+    def test_controlled_builder_rejects_binary_untracked_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_controlled_repo(tmp_path, ["binary.dat"])
+            fake_codex = self._make_editing_codex(
+                tmp_path, "printf '\\000\\001binary' > binary.dat"
+            )
+            result, output_dir = self._run_controlled(
+                repo, task_card, fake_codex, ["binary.dat"], max_diff_lines=20
+            )
+            self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("binary content", report)
+            self.assertFalse((repo / "binary.dat").exists())
+
+    def test_controlled_builder_rejects_invalid_allow_write_paths(self):
+        cases = [
+            (["/absolute.txt"], "absolute"),
+            (["../escape.txt"], "must not contain"),
+            (["*.txt"], "specific file"),
+            (["directory/"], "specific file"),
+            (["base.txt", "base.txt"], "unique"),
+            (["a.txt", "b.txt", "c.txt", "d.txt"], "1-3"),
+        ]
+        for allowed_paths, expected in cases:
+            with self.subTest(allowed_paths=allowed_paths):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_path = pathlib.Path(tmp)
+                    repo, task_card = self._make_controlled_repo(
+                        tmp_path, allowed_paths[:3]
+                    )
+                    fake_codex = self._make_editing_codex(tmp_path, ":")
+                    result, _ = self._run_controlled(
+                        repo, task_card, fake_codex, allowed_paths
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(expected, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "symlink creation requires extra privileges on Windows")
+    def test_controlled_builder_rejects_symlink_path_component(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_controlled_repo(tmp_path, ["linked/new.txt"])
+            outside = tmp_path / "outside"
+            outside.mkdir()
+            (repo / "linked").symlink_to(outside, target_is_directory=True)
+            subprocess.run(["git", "add", "linked"], cwd=str(repo), check=True)
+            subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                 "commit", "-m", "add symlink"],
+                cwd=str(repo), check=True, capture_output=True,
+            )
+            fake_codex = self._make_editing_codex(tmp_path, "printf x > linked/new.txt")
+            result, _ = self._run_controlled(
+                repo, task_card, fake_codex, ["linked/new.txt"]
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("symlink", result.stderr)
+            self.assertFalse((outside / "new.txt").exists())
+
+    def test_controlled_builder_rejects_more_than_three_changed_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            allowed = ["one.txt", "two.txt", "three.txt"]
+            repo, task_card = self._make_controlled_repo(tmp_path, allowed)
+            fake_codex = self._make_editing_codex(
+                tmp_path,
+                "printf 1 > one.txt\nprintf 2 > two.txt\nprintf 3 > three.txt\nprintf 4 > four.txt",
+            )
+            result, output_dir = self._run_controlled(
+                repo, task_card, fake_codex, allowed, max_diff_lines=20
+            )
+            self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("too many changed files", report)
+            self.assertFalse((repo / "four.txt").exists())
+
+    def test_controlled_builder_rejects_binary_tracked_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_controlled_repo(tmp_path, ["base.txt"])
+            fake_codex = self._make_editing_codex(
+                tmp_path, "printf '\\000\\001binary' > base.txt"
+            )
+            result, output_dir = self._run_controlled(
+                repo, task_card, fake_codex, ["base.txt"], max_diff_lines=20
+            )
+            self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("binary content", report)
+            self.assertEqual((repo / "base.txt").read_text(encoding="utf-8"), "original\n")
 
 
 if __name__ == "__main__":
