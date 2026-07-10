@@ -260,6 +260,12 @@ python ai/code-search-service.py install-zoekt --yes
 python ai/code-search-service.py index-zoekt --repo . --yes
 ```
 
+`install-zoekt --yes` streams the underlying `go install` output and prints periodic `still running...` heartbeats while Go downloads or compiles quietly. Pass `--progress-interval 5` before the subcommand for more frequent updates:
+
+```bash
+python ai/code-search-service.py --progress-interval 5 install-zoekt --yes
+```
+
 Fill `Claude Context Packet` before dispatch in large repositories. Keep it small and execution-facing: target files/modules, relevant symbols, source-of-truth examples, paths Claude must not read or modify, known constraints, and narrow validation commands. If the packet is incomplete, Claude should stop-and-report instead of rediscovering the repository with broad searches.
 
 ```bash

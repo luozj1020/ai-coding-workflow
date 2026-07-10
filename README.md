@@ -194,6 +194,12 @@ python ai/code-search-service.py index-zoekt --repo . --yes
 AI_CODE_LOCATOR_BACKEND=auto python ai/locate-code.py "symbol or behavior"
 ```
 
+`install-zoekt --yes` runs three `go install` commands. The helper streams command output and prints periodic `still running...` heartbeats when Go is downloading or compiling quietly. Use `--progress-interval 5` before the subcommand to make heartbeats more frequent, or `--progress-interval 0` to disable them:
+
+```bash
+python ai/code-search-service.py --progress-interval 5 install-zoekt --yes
+```
+
 Sourcegraph is treated as an external/self-hosted service, not a default local dependency. Use `python ai/code-search-service.py sourcegraph-plan` for Docker Compose guidance, then set `SOURCEGRAPH_URL` and optionally `SOURCEGRAPH_TOKEN` when a service is available.
 
 **Test it works:**

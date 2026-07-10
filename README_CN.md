@@ -184,6 +184,12 @@ python ai/code-search-service.py index-zoekt --repo . --yes
 AI_CODE_LOCATOR_BACKEND=auto python ai/locate-code.py "需要修改的符号或行为"
 ```
 
+`install-zoekt --yes` 会运行三个 `go install` 命令。helper 会流式打印命令输出；当 Go 下载或编译阶段长时间没有输出时，会定期打印 `still running...` heartbeat。可以把 `--progress-interval 5` 放在子命令前面来提高提示频率，或用 `--progress-interval 0` 关闭提示：
+
+```bash
+python ai/code-search-service.py --progress-interval 5 install-zoekt --yes
+```
+
 Sourcegraph 被视为外部/自托管服务，不是默认本地依赖。运行 `python ai/code-search-service.py sourcegraph-plan` 查看 Docker Compose 指南；服务可用后设置 `SOURCEGRAPH_URL`，需要鉴权时再设置 `SOURCEGRAPH_TOKEN`。
 
 **测试是否生效：**

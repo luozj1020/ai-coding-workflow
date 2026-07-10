@@ -12,9 +12,11 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from queue import Empty, Queue
 
 
 ZOEKT_PACKAGES = [
@@ -41,6 +43,85 @@ def run_command(args, cwd=None, timeout=None):
         return 124, exc.stdout or "", exc.stderr or "timeout", time.monotonic() - started
     except FileNotFoundError as exc:
         return 127, "", str(exc), time.monotonic() - started
+
+
+def run_command_stream(args, cwd=None, timeout=None, heartbeat=15.0):
+    """Run a long command while streaming combined stdout/stderr.
+
+    Some tools, especially `go install`, can spend minutes downloading or
+    compiling with little output. This keeps the user informed without hiding
+    the underlying command output.
+    """
+    started = time.monotonic()
+    output_lines = []
+    try:
+        process = subprocess.Popen(
+            args,
+            cwd=cwd,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+    except FileNotFoundError as exc:
+        return 127, "", str(exc), time.monotonic() - started
+
+    queue = Queue()
+
+    def reader():
+        assert process.stdout is not None
+        for line in process.stdout:
+            queue.put(line)
+        process.stdout.close()
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    last_progress = started
+    timed_out = False
+
+    while True:
+        now = time.monotonic()
+        try:
+            line = queue.get(timeout=0.2)
+        except Empty:
+            line = None
+        if line is not None:
+            output_lines.append(line)
+            print(line, end="", flush=True)
+            last_progress = time.monotonic()
+
+        now = time.monotonic()
+        if timeout is not None and now - started > timeout:
+            timed_out = True
+            process.kill()
+            process.wait(timeout=1)
+            break
+
+        if heartbeat and now - last_progress >= heartbeat:
+            print(
+                "still running after {:.0f}s: {}".format(now - started, " ".join(args)),
+                flush=True,
+            )
+            last_progress = now
+
+        if process.poll() is not None:
+            break
+
+    thread.join(timeout=1)
+    while True:
+        try:
+            line = queue.get_nowait()
+        except Empty:
+            break
+        output_lines.append(line)
+        print(line, end="", flush=True)
+
+    elapsed = time.monotonic() - started
+    if timed_out:
+        return 124, "".join(output_lines), "timeout", elapsed
+    return process.returncode or 0, "".join(output_lines), "", elapsed
 
 
 def default_zoekt_index():
@@ -120,16 +201,23 @@ def command_install_zoekt(args):
     if not args.yes:
         print("Dry-run only. Re-run with --yes to install.")
         return 0
-    for command in commands:
-        print("Installing: {}".format(" ".join(command)))
-        rc, stdout, stderr, elapsed = run_command(command, timeout=args.timeout)
-        if stdout.strip():
-            print(stdout.strip())
+    for index, command in enumerate(commands, 1):
+        print(
+            "Installing {}/{}: {}".format(index, len(commands), " ".join(command)),
+            flush=True,
+        )
+        rc, stdout, stderr, elapsed = run_command_stream(
+            command,
+            timeout=args.timeout,
+            heartbeat=args.progress_interval,
+        )
         if stderr.strip():
             print(stderr.strip(), file=sys.stderr)
         if rc != 0:
             print("command failed rc={} elapsed={:.1f}s".format(rc, elapsed), file=sys.stderr)
             return rc
+        if not stdout.strip():
+            print("completed in {:.1f}s".format(elapsed), flush=True)
     return 0
 
 
@@ -146,9 +234,11 @@ def command_index_zoekt(args):
     if not args.yes:
         print("Dry-run only. Re-run with --yes to build/update the index.")
         return 0
-    rc, stdout, stderr, elapsed = run_command(command, timeout=args.timeout)
-    if stdout.strip():
-        print(stdout.strip())
+    rc, stdout, stderr, elapsed = run_command_stream(
+        command,
+        timeout=args.timeout,
+        heartbeat=args.progress_interval,
+    )
     if stderr.strip():
         print(stderr.strip(), file=sys.stderr)
     print("elapsed={:.1f}s".format(elapsed))
@@ -193,9 +283,12 @@ def command_sourcegraph_up(args):
     if not args.yes:
         print("Dry-run only. Re-run with --yes to start containers.")
         return 0
-    rc, stdout, stderr, _ = run_command(command, cwd=args.deployment_dir, timeout=args.timeout)
-    if stdout.strip():
-        print(stdout.strip())
+    rc, stdout, stderr, _ = run_command_stream(
+        command,
+        cwd=args.deployment_dir,
+        timeout=args.timeout,
+        heartbeat=args.progress_interval,
+    )
     if stderr.strip():
         print(stderr.strip(), file=sys.stderr)
     return rc
@@ -209,6 +302,12 @@ def parse_args(argv=None):
         help="Zoekt index directory. Default: AI_CODE_ZOEKT_INDEX or ~/.cache/ai-coding-workflow/zoekt.",
     )
     parser.add_argument("--timeout", type=float, default=600.0, help="Command timeout in seconds.")
+    parser.add_argument(
+        "--progress-interval",
+        type=float,
+        default=15.0,
+        help="Seconds between heartbeat messages for long-running commands. Use 0 to disable.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     doctor = sub.add_parser("doctor", help="Check local code-search service readiness.")
