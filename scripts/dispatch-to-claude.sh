@@ -161,7 +161,18 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-TASK_ID="claude-${TIMESTAMP}"
+
+# DAG mode: use caller-provided task ID for collision-resistant identity
+# When AI_CODING_WORKFLOW_DAG_TASK_ID is set, build TASK_ID from the DAG
+# task identifier rather than just the timestamp, so concurrent dispatches
+# in the same second cannot collide.
+if [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
+    DAG_GROUP="${AI_CODING_WORKFLOW_DAG_GROUP_ID:-dag}"
+    TASK_ID="${DAG_GROUP}-${AI_CODING_WORKFLOW_DAG_TASK_ID}-${TIMESTAMP}"
+else
+    TASK_ID="claude-${TIMESTAMP}"
+fi
+
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 REUSE_WORKTREE_DIR="${WORKTREE_ROOT}/reuse/claude-managed"
 if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
@@ -304,6 +315,10 @@ create_dispatch_worktree() {
 
 if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
     BRANCH_NAME="claude-managed-reuse"
+elif [ -n "${AI_CODING_WORKFLOW_DAG_BRANCH_NAME:-}" ]; then
+    # DAG mode: caller provides a collision-resistant branch name derived
+    # from group_id + task_id + timestamp + random suffix.
+    BRANCH_NAME="$AI_CODING_WORKFLOW_DAG_BRANCH_NAME"
 else
     BRANCH_NAME="claude-task-${TIMESTAMP}"
 fi
