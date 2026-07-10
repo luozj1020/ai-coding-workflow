@@ -277,55 +277,157 @@ def parse_first_table(paths: list[Path], headings: list[str]) -> dict[str, str]:
     return {}
 
 
+def parse_all_tables(paths: list[Path], headings: list[str]) -> list[dict[str, str]]:
+    """Parse every matching table across all files, not just the first."""
+    results: list[dict[str, str]] = []
+    for path in paths:
+        text = read_text(path)
+        for heading in headings:
+            # Walk all occurrences of the heading in this file
+            lines = text.splitlines()
+            idx = 0
+            while idx < len(lines):
+                if lines[idx].strip() == f"## {heading}":
+                    fields: dict[str, str] = {}
+                    idx += 1
+                    while idx < len(lines):
+                        stripped = lines[idx].strip()
+                        if not stripped.startswith("|") or "---" in stripped:
+                            if stripped.startswith("## "):
+                                break
+                            idx += 1
+                            continue
+                        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+                        if len(cells) >= 2:
+                            key, value = cells[0], cells[1]
+                            if key and key.lower() != "field":
+                                normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+                                if normalized:
+                                    fields[normalized] = value
+                        idx += 1
+                    if fields:
+                        results.append(fields)
+                else:
+                    idx += 1
+    return results
+
+
+def ordered_unique(values: list[str]) -> list[str]:
+    """Return unique values preserving first-seen order."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for v in values:
+        if v and v not in seen:
+            seen.add(v)
+            result.append(v)
+    return result
+
+
+def safe_numeric_sum(values: list[str | int | float]) -> float:
+    """Sum numeric values; missing/empty/non-numeric treated as 0."""
+    total = 0.0
+    for v in values:
+        if isinstance(v, (int, float)):
+            total += float(v)
+        elif isinstance(v, str):
+            num = parse_number(v)
+            if num is not None:
+                total += float(num)
+    return total
+
+
+def _first_str(*candidates: str) -> str:
+    """Return first non-empty candidate or 'not recorded'."""
+    for c in candidates:
+        if c:
+            return c
+    return "not recorded"
+
+
 def spark_status(
     gate: dict[str, str],
-    followup: dict[str, str],
+    followups: list[dict[str, str]],
     spark_reports: list[Path],
-) -> dict[str, str]:
-    enabled = (
-        followup.get("spark_enabled_in_task_card")
-        or gate.get("spark_enabled")
-        or "not recorded"
+) -> dict[str, str | int | list[str]]:
+    """Aggregate Spark status from gate and one or more follow-up tables.
+
+    Legacy singular fields use the first followup for backward compatibility.
+    New aggregate fields span all followups.
+    """
+    first = followups[0] if followups else {}
+
+    # --- Legacy singular fields (backward compatible) ---
+    enabled = _first_str(
+        first.get("spark_enabled_in_task_card"),
+        gate.get("spark_enabled"),
     )
-    invoked = followup.get("spark_invoked") or ("yes" if spark_reports else "no")
-    mode = followup.get("spark_purpose_used") or gate.get("spark_purpose") or "not recorded"
-    requested_mode = followup.get("spark_requested_mode") or "not recorded"
-    model = followup.get("spark_model_used") or gate.get("spark_model") or "not recorded"
-    artifact = (
-        followup.get("artifact_directory")
-        or followup.get("invocation_command_or_artifact")
-        or (str(spark_reports[0]) if spark_reports else "none")
+    invoked = _first_str(
+        first.get("spark_invoked"),
+        *([] if spark_reports else []),
+    ) if first else ("yes" if spark_reports else "no")
+    if not invoked or invoked == "not recorded":
+        invoked = "yes" if spark_reports else "no"
+    mode = _first_str(first.get("spark_purpose_used"), gate.get("spark_purpose"))
+    requested_mode = _first_str(first.get("spark_requested_mode"))
+    model = _first_str(first.get("spark_model_used"), gate.get("spark_model"))
+    artifact = _first_str(
+        first.get("artifact_directory"),
+        first.get("invocation_command_or_artifact"),
+        *(str(spark_reports[0]),) if spark_reports else (),
     )
-    exit_code = followup.get("spark_exit_code") or "not recorded"
-    auto_disabled = followup.get("spark_auto_disabled") or "not recorded"
-    auto_disable_reason = followup.get("auto_disable_reason") or "not recorded"
-    fallback = (
-        followup.get("strong_model_fallback_used")
-        or "no"
+    exit_code = _first_str(first.get("spark_exit_code"))
+    auto_disabled = _first_str(first.get("spark_auto_disabled"))
+    auto_disable_reason = _first_str(first.get("auto_disable_reason"))
+    fallback = _first_str(first.get("strong_model_fallback_used"))
+    if fallback == "not recorded":
+        fallback = "no"
+    sandbox = _first_str(first.get("sandbox_used"), gate.get("sandbox"))
+    task_size = _first_str(first.get("task_size_classification"))
+    route = _first_str(first.get("spark_routing_recommendation"))
+    confidence = _first_str(first.get("spark_classification_confidence"))
+    accepted = _first_str(
+        first.get("accepted_suggestions"),
+        first.get("spark_suggestions_accepted"),
+        first.get("spark_result_accepted_by_codex"),
     )
-    sandbox = followup.get("sandbox_used") or gate.get("sandbox") or "not recorded"
-    task_size = followup.get("task_size_classification") or "not recorded"
-    route = followup.get("spark_routing_recommendation") or "not recorded"
-    confidence = followup.get("spark_classification_confidence") or "not recorded"
-    accepted = (
-        followup.get("accepted_suggestions")
-        or followup.get("spark_suggestions_accepted")
-        or followup.get("spark_result_accepted_by_codex")
-        or "not recorded"
+    ignored = _first_str(
+        first.get("ignored_suggestions"),
+        first.get("spark_suggestions_ignored"),
     )
-    ignored = (
-        followup.get("ignored_suggestions")
-        or followup.get("spark_suggestions_ignored")
-        or "not recorded"
+    conflicts_with_claude = _first_str(first.get("conflicts_with_claude"))
+    conflicts_with_local_evidence = _first_str(first.get("conflicts_with_local_evidence"))
+    acceptance_satisfied = _first_str(
+        first.get("acceptance_satisfied_by_spark"),
+        first.get("spark_output_can_satisfy_acceptance"),
     )
-    conflicts_with_claude = followup.get("conflicts_with_claude") or "not recorded"
-    conflicts_with_local_evidence = followup.get("conflicts_with_local_evidence") or "not recorded"
-    acceptance_satisfied = (
-        followup.get("acceptance_satisfied_by_spark")
-        or followup.get("spark_output_can_satisfy_acceptance")
-        or "no"
-    )
-    return {
+    if acceptance_satisfied == "not recorded":
+        acceptance_satisfied = "no"
+
+    # --- Aggregate staged fields ---
+    helper_invocation_count = len(followups)
+    calls_values = [f.get("spark_calls_used", "0") for f in followups]
+    total_calls = int(safe_numeric_sum(calls_values))
+    unique_modes = ordered_unique([f.get("spark_purpose_used", "") for f in followups])
+    unique_stages = ordered_unique([f.get("spark_pipeline_stage", "") for f in followups])
+    unique_roles: list[str] = []
+    for f in followups:
+        roles_str = f.get("spark_roles_executed", "")
+        if roles_str:
+            for role in roles_str.split(","):
+                role = role.strip()
+                if role:
+                    unique_roles.append(role)
+    unique_roles = ordered_unique(unique_roles)
+    unique_budget_requested = ordered_unique([f.get("spark_budget_mode_requested", "") for f in followups])
+    unique_budget_effective = ordered_unique([f.get("spark_budget_mode_effective", "") for f in followups])
+    unique_provisional = ordered_unique([f.get("spark_provisional_acceptance", "") for f in followups])
+    unique_strong_review = ordered_unique([f.get("strong_review_required", "") for f in followups])
+    unique_merge_authorized = ordered_unique([f.get("merge_authorized", "") for f in followups])
+    auto_disabled_values = [f.get("spark_auto_disabled", "") for f in followups]
+    auto_disabled_reasons = ordered_unique([f.get("auto_disable_reason", "") for f in followups])
+
+    result: dict[str, str | int | list[str]] = {
+        # Legacy singular fields
         "enabled": enabled,
         "invoked": invoked,
         "mode": mode,
@@ -345,7 +447,21 @@ def spark_status(
         "conflicts_with_claude": conflicts_with_claude,
         "conflicts_with_local_evidence": conflicts_with_local_evidence,
         "acceptance_satisfied_by_spark": acceptance_satisfied,
+        # Aggregate staged fields
+        "helper_invocation_count": helper_invocation_count,
+        "total_spark_calls": total_calls,
+        "unique_modes": unique_modes,
+        "unique_pipeline_stages": unique_stages,
+        "unique_roles_executed": unique_roles,
+        "unique_budget_requested": unique_budget_requested,
+        "unique_budget_effective": unique_budget_effective,
+        "unique_provisional_acceptance": unique_provisional,
+        "unique_strong_review_required": unique_strong_review,
+        "unique_merge_authorized": unique_merge_authorized,
+        "auto_disabled_occurrences": sum(1 for v in auto_disabled_values if v.startswith("yes")),
+        "auto_disabled_reasons": auto_disabled_reasons,
     }
+    return result
 
 
 def quality_score(decision: str, checker_results: list[str]) -> float:
@@ -432,6 +548,12 @@ def summarize(path: Path) -> dict:
         artifacts["spark_report"] + artifacts["report"],
         ["Codex Spark Follow-up"],
     )
+    codex_spark_followups = parse_all_tables(
+        artifacts["spark_report"] + artifacts["report"],
+        ["Codex Spark Follow-up"],
+    )
+    if not codex_spark_followups and codex_spark_followup:
+        codex_spark_followups = [codex_spark_followup]
     parallel_execution_gate = parse_first_table(artifacts["task_card"], ["Parallel Execution Gate"])
     parallel_execution_followup = parse_first_table(
         artifacts["report"] + artifacts["parallel"],
@@ -454,7 +576,7 @@ def summarize(path: Path) -> dict:
     claude_evidence = classify_claude_evidence(artifacts, decision)
     normalized_spark_status = spark_status(
         codex_spark_gate,
-        codex_spark_followup,
+        codex_spark_followups,
         artifacts["spark_report"],
     )
 
@@ -473,6 +595,7 @@ def summarize(path: Path) -> dict:
         "advisor_followup": advisor_followup,
         "codex_spark_gate": codex_spark_gate,
         "codex_spark_followup": codex_spark_followup,
+        "codex_spark_followups": codex_spark_followups,
         "spark_status": normalized_spark_status,
         "parallel_execution_gate": parallel_execution_gate,
         "parallel_execution_followup": parallel_execution_followup,
@@ -550,6 +673,7 @@ def render_markdown(summary: dict) -> str:
         lines.append(f"| {key} | {summary['claude_evidence'][key]} |")
 
     lines.extend(["", "## Spark Status", "", "| Field | Value |", "|-------|-------|"])
+    spark = summary["spark_status"]
     for key in [
         "enabled",
         "invoked",
@@ -567,8 +691,30 @@ def render_markdown(summary: dict) -> str:
         "classification_confidence",
         "accepted_suggestions",
         "ignored_suggestions",
+        "conflicts_with_claude",
+        "conflicts_with_local_evidence",
+        "acceptance_satisfied_by_spark",
     ]:
-        lines.append(f"| {key} | {summary['spark_status'][key]} |")
+        lines.append(f"| {key} | {spark[key]} |")
+    # Aggregate staged fields
+    for key in [
+        "helper_invocation_count",
+        "total_spark_calls",
+        "unique_modes",
+        "unique_pipeline_stages",
+        "unique_roles_executed",
+        "unique_budget_requested",
+        "unique_budget_effective",
+        "unique_provisional_acceptance",
+        "unique_strong_review_required",
+        "unique_merge_authorized",
+        "auto_disabled_occurrences",
+        "auto_disabled_reasons",
+    ]:
+        value = spark[key]
+        if isinstance(value, list):
+            value = ", ".join(value) if value else "none"
+        lines.append(f"| {key} | {format_value(value)} |")
 
     lines.extend(["", "## Goal Loop Contract", "", "| Field | Value |", "|-------|-------|"])
     if summary["goal_loop_contract"]:

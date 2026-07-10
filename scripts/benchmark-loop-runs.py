@@ -97,6 +97,17 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "spark_ignored_suggestions": spark_status.get("ignored_suggestions", ""),
                 "spark_conflicts_with_claude": spark_status.get("conflicts_with_claude", ""),
                 "spark_acceptance_satisfied": spark_status.get("acceptance_satisfied_by_spark", ""),
+                "spark_helper_invocations": spark_status.get("helper_invocation_count", 0),
+                "spark_total_calls": field_number(spark_status, "total_spark_calls"),
+                "spark_unique_modes": spark_status.get("unique_modes", []),
+                "spark_unique_pipeline_stages": spark_status.get("unique_pipeline_stages", []),
+                "spark_unique_roles": spark_status.get("unique_roles_executed", []),
+                "spark_budget_requested": spark_status.get("unique_budget_requested", []),
+                "spark_budget_effective": spark_status.get("unique_budget_effective", []),
+                "spark_provisional_acceptance": spark_status.get("unique_provisional_acceptance", []),
+                "spark_strong_review_required": spark_status.get("unique_strong_review_required", []),
+                "spark_merge_authorized": spark_status.get("unique_merge_authorized", []),
+                "spark_auto_disabled_count": spark_status.get("auto_disabled_occurrences", 0),
                 "spark_strong_fallback_used": spark_status.get(
                     "strong_model_fallback",
                     codex_spark_followup.get("strong_model_fallback_used", ""),
@@ -134,6 +145,10 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         "spark_auto_disabled_count": sum(1 for run in runs if str(run["spark_auto_disabled"]).startswith("yes")),
         "spark_invoked_count": sum(1 for run in runs if str(run["spark_invoked"]).startswith("yes")),
         "spark_strong_fallback_count": sum(1 for run in runs if str(run["spark_strong_fallback_used"]).startswith("yes")),
+        "spark_helper_invocations_total": sum(
+            run["spark_helper_invocations"] for run in runs
+        ),
+        "spark_calls_total": sum(run["spark_total_calls"] for run in runs),
         "parallel_allowed_count": sum(1 for run in runs if str(run["parallel_allowed"]).startswith("yes")),
         "parallel_invoked_count": sum(1 for run in runs if str(run["parallel_helper_invoked"]).startswith("yes")),
         "spec_required_count": sum(1 for run in runs if str(run["spec_required"]).startswith("yes")),
@@ -174,6 +189,8 @@ def render_markdown(report: dict) -> str:
         f"| Spark-invoked runs | {format_value(report['spark_invoked_count'])} |",
         f"| Spark auto-disabled runs | {format_value(report['spark_auto_disabled_count'])} |",
         f"| Spark strong-fallback runs | {format_value(report['spark_strong_fallback_count'])} |",
+        f"| Spark helper invocations | {format_value(report['spark_helper_invocations_total'])} |",
+        f"| Spark calls total | {format_value(report['spark_calls_total'])} |",
         f"| Parallel-allowed runs | {format_value(report['parallel_allowed_count'])} |",
         f"| Parallel-invoked runs | {format_value(report['parallel_invoked_count'])} |",
         f"| Spec-required runs | {format_value(report['spec_required_count'])} |",
@@ -181,11 +198,18 @@ def render_markdown(report: dict) -> str:
         "",
         "## Runs",
         "",
-        "| Run | Decision | Quality | Seconds | Claude Startup | Claude Exec | Checker | Finalize | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Mode | Spark Size | Spark Route | Spark Confidence | Spark Model | Spark Accepted | Spark Ignored | Spark Conflicts | Spark Acceptance | Parallel | Spec | TDD | Stability |",
-        "|-----|----------|---------|---------|----------------|-------------|---------|----------|-------|--------|------|------|------|---------|---------------|-------|------------|------------|-------------|------------------|-------------|----------------|---------------|-----------------|------------------|----------|------|-----|-----------|",
+        "| Run | Decision | Quality | Seconds | Claude Startup | Claude Exec | Checker | Finalize | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Mode | Spark Size | Spark Route | Spark Confidence | Spark Model | Spark Accepted | Spark Ignored | Spark Conflicts | Spark Acceptance | Spark Invocations | Spark Calls | Spark Stages | Spark Roles | Spark Budget Req | Spark Budget Eff | Spark Provisional | Spark Strong-Review | Spark Merge-Auth | Parallel | Spec | TDD | Stability |",
+        "|-----|----------|---------|---------|----------------|-------------|---------|----------|-------|--------|------|------|------|---------|---------------|-------|------------|------------|-------------|------------------|-------------|----------------|---------------|-----------------|------------------|-------------------|-------------|--------------|-------------|------------------|------------------|-------------------|---------------------|------------------|----------|------|-----|-----------|",
     ]
     if report["runs"]:
         for run in report["runs"]:
+            # Format list fields as comma-separated strings
+            formatted = {}
+            for key, value in run.items():
+                if isinstance(value, list):
+                    formatted[key] = ", ".join(str(v) for v in value) if value else "none"
+                else:
+                    formatted[key] = format_value(value)
             lines.append(
                 "| {run_path} | {decision} | {quality_score} | {elapsed_seconds} | {claude_startup_seconds} | "
                 "{claude_execution_seconds} | {checker_seconds} | {artifact_finalization_seconds} | {input_tokens} | "
@@ -193,12 +217,15 @@ def render_markdown(report: dict) -> str:
                 "{advisor_calls} | {spark_invoked} | {spark_purpose} | {spark_task_size} | {spark_route} | "
                 "{spark_confidence} | {spark_model} | {spark_accepted_suggestions} | "
                 "{spark_ignored_suggestions} | {spark_conflicts_with_claude} | {spark_acceptance_satisfied} | "
+                "{spark_helper_invocations} | {spark_total_calls} | {spark_unique_pipeline_stages} | "
+                "{spark_unique_roles} | {spark_budget_requested} | {spark_budget_effective} | "
+                "{spark_provisional_acceptance} | {spark_strong_review_required} | {spark_merge_authorized} | "
                 "{parallel_helper_invoked} | {spec_matched} | {tdd_mode} | {stability_findings} |".format(
-                    **{key: format_value(value) for key, value in run.items()}
+                    **formatted
                 )
             )
     else:
-        lines.append("| no runs | UNKNOWN | 0 | unavailable | unavailable | unavailable | unavailable | unavailable | 0 | 0 | 0 | | | | 0 | | | | | | | | | | | | 0 |")
+        lines.append("| no runs | UNKNOWN | 0 | unavailable | unavailable | unavailable | unavailable | unavailable | 0 | 0 | 0 | | | | 0 | | | | | | | | | | | | 0 | 0 | none | none | none | none | none | none | none | none | | | | 0 |")
     return "\n".join(lines) + "\n"
 
 
