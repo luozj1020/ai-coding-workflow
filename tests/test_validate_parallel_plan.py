@@ -92,7 +92,7 @@ class TestValidatorAcceptsValidPlan(unittest.TestCase):
             self.assertEqual(fields[0], "TASK")
             self.assertEqual(fields[1], "task-a")
             self.assertEqual(fields[2], "task-a.md")
-            self.assertEqual(fields[3], "")  # empty depends_on → empty deps_csv
+            self.assertEqual(fields[3], "__none__")  # empty depends_on → sentinel
             # resolved path must exist and contain the task card
             self.assertTrue(fields[4].endswith("task-a.md") or fields[4].endswith("task-a.md"),
                             f"resolved path should end with task-a.md, got {fields[4]}")

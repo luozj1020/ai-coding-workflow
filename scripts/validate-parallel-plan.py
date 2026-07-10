@@ -287,7 +287,7 @@ def emit_tsv(meta: dict, tasks: list[dict]) -> None:
     for key in ("schema_version", "group_id", "max_concurrency", "failure_policy", "plan_path", "plan_dir"):
         print(f"META\t{key}\t{meta[key]}")
     for task in tasks:
-        deps_csv = ",".join(task["depends_on"])
+        deps_csv = ",".join(task["depends_on"]) or "__none__"
         print(f"TASK\t{task['id']}\t{task['task_card']}\t{deps_csv}\t{task['resolved_task_card']}")
 
 

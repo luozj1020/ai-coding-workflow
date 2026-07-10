@@ -523,6 +523,9 @@ run_dag_mode() {
 
     while IFS=$'\t' read -r record_type id task_card depends_csv resolved; do
         [ "$record_type" = "TASK" ] || continue
+        if [ "$depends_csv" = "__none__" ]; then
+            depends_csv=""
+        fi
         DAG_IDS+=("$id")
         DAG_CARDS+=("$task_card")
         DAG_DEPS+=("$depends_csv")
