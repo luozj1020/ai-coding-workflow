@@ -364,9 +364,9 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 **默认可选开启：在执行规划中使用 Codex Spark**
 
-如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；优先用更便宜的 Spark 额度判断任务规模和路由，再消耗更贵的 Codex/Claude 强模型上下文。已经知道所需辅助角色时，优先显式传 `--mode`；只有需要低风险自动路由时才用 `auto`。如果 CLI、模型权限、auth、网络、Spark 额度不可用，或本地 helper 因 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
+如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；优先用更便宜的 Spark 额度判断任务规模和路由，再消耗更贵的 Codex/Claude 强模型上下文。已经知道所需辅助角色时，优先显式传 `--mode`；只有需要低风险自动路由时才用 `auto`。预算模式由 `AI_SPARK_BUDGET_MODE` / `--budget-mode` 控制：`balanced`（默认）、`aggressive`（失败时额外启用修订起草职责）、`conservative`（传统单角色路由）。建议每个任务最多调用三次短 Spark helper——预检、可选的定向/失败角色、后检——这是工作流建议，不是跨进程守护或状态强制。如果 CLI、模型权限、auth、网络、Spark 额度不可用，或本地 helper 因 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
 
-- `auto`：默认角色选择。普通派发前解析为 `task-size-classifier`，Checker/Test 任务解析为 `validation-planner`，失败/无报告 artifacts 解析为 `failure-triage`，diff artifacts 解析为 `review-only`，report/evidence artifacts 解析为 `evidence-checker`。
+- `auto`：默认角色选择。解析为适用的阶段包：普通 Builder 前使用解析为 `preflight-bundle`，diff/report/evidence 使用解析为 `postflight-bundle`，Checker/Test 保持 `validation-planner`，失败/无报告证据包含失败归因。在 aggressive 预算模式下，失败证据还额外启用修订起草职责。
 - `task-size-classifier`：判断任务是 tiny/small/medium/large/unknown，并建议 `codex-fast-path`、`spark-review-only`、`spark-micro-builder`、`claude-builder`、`checker-test`、`spec-first` 或 `human-clarification`。
 - `review-only`：快速只读审查任务卡或实现方向。
 - `task-card-audit`：派发前检查缺失 gate、职责混合、验收不清和可能导致 Claude 卡住的风险。
@@ -376,6 +376,17 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 - `evidence-checker`：已有 artifacts 后快速检查证据质量。
 - `parallel-planner`：为独立任务卡生成经过审查的 DAG 调度计划。Spark 只产出严格 schema-v1 JSON，不执行、不派发。Codex/人工必须审查并保存 JSON 计划后，再运行 `bash ai/run-parallel-loop.sh --plan <json>`。
 - `micro-builder`：仅用于任务卡明确允许的极小范围修改，并在 helper 创建的隔离 worktree 中执行；任务卡必须允许 Spark 修改源码、限制为一两个小文件、排除公共 API/契约风险，并给出精确窄验证。
+- `observe-synthesizer`：只读模式，用于综合观察证据。
+- `task-card-drafter`：只读模式，用于起草任务卡内容。
+- `context-packet-builder`：只读模式，用于构建上下文包。
+- `preflight-bundle`：只读阶段包，用于普通 Builder 前使用。
+- `direction-precheck`：只读模式，用于预检实现方向。
+- `acceptance-matrix`：只读模式，用于构建验收矩阵。
+- `postflight-bundle`：只读阶段包，用于 diff/report/evidence 使用。
+- `revision-drafter`：只读模式，用于起草修订说明。
+- `lesson-extractor`：只读模式，用于从已完成工作中提取经验教训。
+
+包输出使用七个压缩标题：Decision Summary、Risk Flags、Scope and Boundaries、Acceptance Matrix、Evidence Conflicts、Required Codex Decisions、Recommended Next Action。
 
 默认 auto 选择只读辅助角色：
 
@@ -422,9 +433,9 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode parallel-planner
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
 ```
 
-Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.prompt.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.artifacts.txt`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型。只有当 Spark 不可用也应该成为硬失败时，才使用 `--require-spark`。
+Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.prompt.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.artifacts.txt`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型。Spark 永远不授权合并；强 Codex review 仍然必须；无隐式强模型回退；本次变更无模型层级路由。只有当 Spark 不可用也应该成为硬失败时，才使用 `--require-spark`。
 
-Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`conflicts_with_claude`、`conflicts_with_local_evidence` 和 `acceptance_satisfied_by_spark` 写入 Spark follow-up 表。Spark 不能独立满足验收，不能替代 Claude Builder 责任，也不能批准 Codex 最终 review。
+Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`conflicts_with_claude`、`conflicts_with_local_evidence` 和 `acceptance_satisfied_by_spark` 写入 Spark follow-up 表。Spark 不能独立满足验收，不能替代 Claude Builder 责任，不能批准 Codex 最终 review，也不能授权合并。强 Codex review 仍然必须。无隐式强模型回退。本次变更无模型层级路由。对于多次报告的汇总/benchmark 聚合，记录：helper 调用次数、Spark 总调用次数、唯一 modes/stages/roles、预算模式、临时状态、强 review 要求、合并授权状态，以及 auto-disable 出现次数/原因。
 
 **大型仓库 / 慢文件系统**
 

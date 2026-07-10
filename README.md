@@ -383,9 +383,9 @@ For large repositories, fill `Claude Context Packet` before dispatch. Keep it ex
 
 **Default-on optional: use Codex Spark during execution planning**
 
-If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave `Codex Spark Gate` at `auto` for eligible tasks. Spark is auxiliary, not a default Claude replacement; use its cheaper quota for uncertain task-size routing before spending stronger Codex/Claude context. Prefer an explicit `--mode` when you already know the needed support role, and use `auto` when routing is the point. If the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue:
+If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave `Codex Spark Gate` at `auto` for eligible tasks. Spark is auxiliary, not a default Claude replacement; use its cheaper quota for uncertain task-size routing before spending stronger Codex/Claude context. Prefer an explicit `--mode` when you already know the needed support role, and use `auto` when routing is the point. Budget mode is controlled by `AI_SPARK_BUDGET_MODE` / `--budget-mode`: `balanced` (default), `aggressive` (enables additional revision drafting on failure), `conservative` (legacy single-role routing). Recommend at most three short Spark helper invocations per task — a preflight call, an optional targeted or failure role call, and a postflight call — as a workflow recommendation, not cross-process daemon or state enforcement. If the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue:
 
-- `auto`: default role selection. It resolves to `task-size-classifier` before normal dispatch, `validation-planner` for Checker/Test tasks, `failure-triage` for failed/no-report artifacts, `review-only` for diff artifacts, and `evidence-checker` for report/evidence artifacts.
+- `auto`: default role selection. It resolves to an applicable stage bundle: ordinary pre-Builder use resolves to `preflight-bundle`, diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility.
 - `task-size-classifier`: classify tiny/small/medium/large/unknown and recommend `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`.
 - `review-only`: quick read-only critique of the task card or likely direction.
 - `task-card-audit`: check missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
@@ -395,6 +395,17 @@ If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave 
 - `evidence-checker`: quick evidence sanity check after artifacts exist.
 - `parallel-planner`: propose a reviewed DAG scheduling plan for independent task cards. Spark produces strict schema-v1 JSON only — it does not execute or dispatch. Codex/human must review and save the plan before running `bash ai/run-parallel-loop.sh --plan <json>`.
 - `micro-builder`: tiny scoped edits only, in the helper-created isolated worktree, and only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and names exact narrow validation.
+- `observe-synthesizer`: read-only mode for synthesizing observation evidence.
+- `task-card-drafter`: read-only mode for drafting task card content.
+- `context-packet-builder`: read-only mode for building context packets.
+- `preflight-bundle`: read-only stage bundle for ordinary pre-Builder use.
+- `direction-precheck`: read-only mode for pre-checking implementation direction.
+- `acceptance-matrix`: read-only mode for building acceptance matrices.
+- `postflight-bundle`: read-only stage bundle for diff/report/evidence use.
+- `revision-drafter`: read-only mode for drafting revision instructions.
+- `lesson-extractor`: read-only mode for extracting lessons from completed work.
+
+Bundle output uses seven compressed headings: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
 
 Run the default auto-selected read-only helper:
 
@@ -443,7 +454,7 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 
 Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.prompt.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.artifacts.txt`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model. If local helper initialization fails, for example due to an app-server write requirement, the helper marks Spark auto-disabled and exits 0 unless `--require-spark` was used.
 
-Spark output is advisory. Record `accepted_suggestions`, `ignored_suggestions`, `conflicts_with_claude`, `conflicts_with_local_evidence`, and `acceptance_satisfied_by_spark` in the Spark follow-up table. Spark cannot independently satisfy acceptance, replace Claude Builder ownership, or approve Codex final review.
+Spark output is advisory. Record `accepted_suggestions`, `ignored_suggestions`, `conflicts_with_claude`, `conflicts_with_local_evidence`, and `acceptance_satisfied_by_spark` in the Spark follow-up table. Spark cannot independently satisfy acceptance, replace Claude Builder ownership, or approve Codex final review. Spark never authorizes merge; strong Codex review remains required; no implicit strong-model fallback; no model-tier routing in this change. For summary/benchmark aggregation across multiple reports, record: helper invocation count, total Spark calls, unique modes/stages/roles, budget modes, provisional status, strong-review required, merge authorization status, and auto-disable occurrences/reasons.
 
 **Large repositories / slow filesystems**
 

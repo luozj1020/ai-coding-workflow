@@ -255,8 +255,12 @@ Advisor timing rules:
 | Field | Value |
 |-------|-------|
 | Spark enabled? | auto / no / yes |
-| Spark purpose | explicit mode preferred / auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / parallel-planner / micro-builder / none |
+| Spark purpose | explicit mode preferred / auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / parallel-planner / micro-builder / observe-synthesizer / task-card-drafter / context-packet-builder / preflight-bundle / direction-precheck / acceptance-matrix / postflight-bundle / revision-drafter / lesson-extractor / none |
 | Spark model | gpt-5.3-codex-spark |
+| Budget mode | balanced (default) / aggressive / conservative |
+| Pipeline stage | auto / preflight / midflight / postflight |
+| Roles used | <!-- comma-separated list of Spark roles invoked --> |
+| Call cap recommendation | at most 3 short Spark helper invocations per task (workflow recommendation, not enforcement) |
 | Quota rationale | separate Spark quota / latency / cost / not applicable |
 | Invocation helper | ai/run-codex-spark.sh |
 | Sandbox | read-only / workspace-write |
@@ -275,11 +279,16 @@ Advisor timing rules:
 | Spark result can satisfy acceptance? | no, advisory input only |
 | Spark can replace Claude Builder? | no |
 | Spark can approve final review? | no |
+| Spark authorizes merge? | no |
 | Stop conditions | unclear scope / non-availability helper failure / explicit require-spark failure |
 
 Spark rules:
 - Prefer an explicit `Spark purpose` when Codex already knows the needed support role. Use `auto` only for low-risk helper routing when task size or artifact type is uncertain.
-- When `Spark purpose` is `auto`, use `task-size-classifier` before normal dispatch, `validation-planner` before Checker/Test work, `failure-triage` after failed/no-report artifacts, `review-only` for diff review, and `evidence-checker` for report/evidence review.
+- `--mode auto` resolves to an applicable stage bundle: ordinary pre-Builder use resolves to `preflight-bundle`, diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility.
+- Budget mode (`AI_SPARK_BUDGET_MODE` / `--budget-mode`): `balanced` is the default, `aggressive` enables additional revision drafting on failure, and `conservative` uses legacy single-role routing.
+- Recommend at most three short Spark helper invocations per task: a preflight call, an optional targeted or failure role call, and a postflight call. This is a workflow recommendation, not cross-process daemon or state enforcement.
+- New explicit read-only modes: `observe-synthesizer`, `task-card-drafter`, `context-packet-builder`, `preflight-bundle`, `direction-precheck`, `acceptance-matrix`, `postflight-bundle`, `revision-drafter`, `lesson-extractor`.
+- Bundle output must use the seven compressed headings: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
 - Use `task-size-classifier` to cheaply route work before Codex spends stronger-model tokens: `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`.
 - Prefer `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, `evidence-checker`, or `parallel-planner` before `micro-builder`.
 - Use `parallel-planner` to propose a reviewed DAG scheduling plan for independent task cards. Spark produces strict schema-v1 JSON only — it does not execute or dispatch. Codex/human must review and save the plan before running `ai/run-parallel-loop.sh --plan <json>`.
@@ -291,7 +300,9 @@ Spark rules:
 - Spark evidence can inform Codex review, but it does not override Claude reports, task-card ownership, or required validation. Spark output cannot independently satisfy acceptance; Codex must verify and record acceptance separately.
 - Treat Spark as default-on optional support. If Spark is unavailable or quota-exhausted, record the auto-disable report and continue the main Claude/Codex workflow.
 - Do not consume GPT-5.5/strong-model quota as an implicit fallback. If Spark is unavailable or insufficient, report the gap and let Codex or the human decide the next model.
+- No implicit strong-model fallback. No model-tier routing in this change.
 - Final evidence must record `accepted_suggestions`, `ignored_suggestions`, `conflicts_with_claude`, `conflicts_with_local_evidence`, and `acceptance_satisfied_by_spark`.
+- For summary/benchmark aggregation across multiple reports, record: helper invocation count, total Spark calls, unique modes/stages/roles, budget modes, provisional status, strong-review required, merge authorization status, and auto-disable occurrences/reasons.
 
 ## Parallel Execution Gate
 
