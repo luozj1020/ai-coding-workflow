@@ -95,6 +95,8 @@ class RunCodexSparkTests(unittest.TestCase):
                     bash_path(task_card),
                     "--mode",
                     "review-only",
+                    "--result-mode",
+                    "full",
                     "--output",
                     bash_path(output_dir),
                 ],
@@ -156,6 +158,8 @@ class RunCodexSparkTests(unittest.TestCase):
                     bash_exe(),
                     bash_path(SCRIPT),
                     bash_path(task_card),
+                    "--result-mode",
+                    "full",
                     "--output",
                     bash_path(output_dir),
                 ],
@@ -314,6 +318,8 @@ class RunCodexSparkTests(unittest.TestCase):
                     "failure-triage",
                     "--artifact",
                     bash_path(artifact),
+                    "--result-mode",
+                    "full",
                     "--output",
                     bash_path(output_dir),
                 ],
@@ -444,6 +450,8 @@ class RunCodexSparkTests(unittest.TestCase):
                     bash_exe(),
                     bash_path(SCRIPT),
                     bash_path(task_card),
+                    "--result-mode",
+                    "full",
                     "--output",
                     bash_path(output_dir),
                 ],
@@ -492,6 +500,8 @@ class RunCodexSparkTests(unittest.TestCase):
                     bash_path(task_card),
                     "--sandbox",
                     "read-only",
+                    "--result-mode",
+                    "full",
                     "--output",
                     bash_path(output_dir),
                 ],
@@ -569,6 +579,8 @@ class RunCodexSparkTests(unittest.TestCase):
                     bash_path(task_card),
                     "--mode",
                     "parallel-planner",
+                    "--result-mode",
+                    "full",
                     "--output",
                     bash_path(output_dir),
                 ],
@@ -728,7 +740,7 @@ class RunCodexSparkTests(unittest.TestCase):
             env["CODEX_FAKE_STDIN"] = bash_path(tmp_path / "stdin.md")
             env["CODEX_FAKE_CWD"] = bash_path(tmp_path / "cwd.txt")
             result = subprocess.run(
-                [bash_exe(), bash_path(SCRIPT), bash_path(task_card), "--output", bash_path(output_dir)],
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card), "--result-mode", "full", "--output", bash_path(output_dir)],
                 cwd=str(repo), env=env,
                 text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
@@ -869,7 +881,7 @@ class RunCodexSparkTests(unittest.TestCase):
             fake_codex = self._make_fake_codex(tmp_path)
             result = self._run_spark(task_card, output_dir, fake_codex,
                                      env_extra={"AI_SPARK_BUDGET_MODE": "aggressive"},
-                                     args=["--artifact", bash_path(artifact)])
+                                     args=["--artifact", bash_path(artifact), "--result-mode", "full"])
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
             prompt = (output_dir / "codex-spark.prompt.md").read_text(encoding="utf-8")
@@ -1026,7 +1038,8 @@ class RunCodexSparkTests(unittest.TestCase):
             repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\nSmall task.\n")
             output_dir = repo / ".worktrees" / "spark-test"
             fake_codex = self._make_fake_codex(tmp_path)
-            result = self._run_spark(task_card, output_dir, fake_codex)
+            result = self._run_spark(task_card, output_dir, fake_codex,
+                                     args=["--result-mode", "full"])
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             prompt = (output_dir / "codex-spark.prompt.md").read_text(encoding="utf-8")
             for heading in self.PREFLIGHT_POSTFLIGHT_HEADINGS:
@@ -1046,7 +1059,7 @@ class RunCodexSparkTests(unittest.TestCase):
             output_dir = repo / ".worktrees" / "spark-test"
             fake_codex = self._make_fake_codex(tmp_path)
             result = self._run_spark(task_card, output_dir, fake_codex,
-                                     args=["--artifact", bash_path(artifact)])
+                                     args=["--artifact", bash_path(artifact), "--result-mode", "full"])
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             prompt = (output_dir / "codex-spark.prompt.md").read_text(encoding="utf-8")
             for heading in self.PREFLIGHT_POSTFLIGHT_HEADINGS:
@@ -1126,6 +1139,273 @@ class RunCodexSparkTests(unittest.TestCase):
             report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
             self.assertIn("| Spark invoked? | yes |", report)
             self.assertIn("| Spark calls used | 1 |", report)
+
+    # --- Direct result mode tests ---
+
+    def test_direct_advisory_stdout_is_exactly_fake_result(self):
+        """Direct mode: stdout is exactly the fake result with no extra output."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\nSmall task.\n")
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\necho 'direct result line'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            # stdout should be exactly the fake result, no report path or extra lines
+            self.assertEqual(result.stdout.strip(), "direct result line")
+
+    def test_direct_no_permanent_spark_directory(self):
+        """Direct mode: no permanent codex-spark directory is created."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\n")
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            # No codex-spark-* directory should exist under .worktrees
+            worktrees_dir = repo / ".worktrees"
+            if worktrees_dir.exists():
+                spark_entries = list(worktrees_dir.glob("codex-spark-*"))
+                self.assertEqual(
+                    spark_entries, [],
+                    "direct mode should not create permanent directories, found: {}".format(spark_entries),
+                )
+
+    def test_direct_temp_cwd_is_writable_and_removed_after_exit(self):
+        """Direct mode: temp cwd is outside source, writable, and removed after exit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\n")
+
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "pwd > \"$CODEX_FAKE_CWD\"\n"
+                "touch \"$(pwd)/writable-test\"\n"
+                "echo 'temp cwd ok'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            cwd_file = tmp_path / "cwd.txt"
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_FAKE_CWD"] = bash_path(cwd_file)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            # Cwd should be captured and outside source tree
+            cwd_text = cwd_file.read_text(encoding="utf-8").strip()
+            cwd_text = cwd_text.replace("\\", "/")
+            repo_str = str(repo).replace("\\", "/")
+            self.assertFalse(
+                cwd_text.startswith(repo_str),
+                "temp cwd should be outside source tree, got: {}".format(cwd_text),
+            )
+            # Temp dir should be removed after exit
+            self.assertFalse(
+                pathlib.Path(cwd_text).exists(),
+                "temp cwd should be cleaned up after exit, still exists: {}".format(cwd_text),
+            )
+
+    def test_direct_availability_failure_exits_0_stderr_no_report(self):
+        """Direct mode availability failure: exits 0, writes reason to stderr, no permanent report."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\n")
+
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo 'quota exceeded for requested model' >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("auto-disabled", result.stderr)
+            # No permanent report directory
+            worktrees_dir = repo / ".worktrees"
+            if worktrees_dir.exists():
+                spark_entries = list(worktrees_dir.glob("codex-spark-*"))
+                self.assertEqual(spark_entries, [])
+
+    # --- Minimal result mode tests ---
+
+    def test_implicit_output_selects_minimal(self):
+        """Implicit --output (no explicit --result-mode) selects minimal mode."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\n")
+            output_dir = repo / ".worktrees" / "spark-minimal"
+            fake_codex = self._make_fake_codex(tmp_path)
+            result = self._run_spark(task_card, output_dir, fake_codex)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("| Result mode | minimal |", report)
+
+    def test_minimal_stdout_is_exactly_fake_result_report_path_on_stderr(self):
+        """Minimal mode: stdout is exactly fake result; report path is on stderr only."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\n")
+            output_dir = repo / ".worktrees" / "spark-minimal"
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\necho 'minimal result line'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--output", bash_path(output_dir)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            # stdout is exactly the fake result
+            self.assertEqual(result.stdout.strip(), "minimal result line")
+            # report path is on stderr, not stdout
+            self.assertIn("Codex Spark report:", result.stderr)
+            self.assertNotIn("Codex Spark report:", result.stdout)
+
+    def test_minimal_directory_contains_exactly_report(self):
+        """Minimal mode: output directory contains exactly codex-spark.report.md."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\n")
+            output_dir = repo / ".worktrees" / "spark-minimal"
+            fake_codex = self._make_fake_codex(tmp_path)
+            result = self._run_spark(task_card, output_dir, fake_codex)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            # Directory should contain exactly one file
+            entries = sorted(p.name for p in output_dir.iterdir())
+            self.assertEqual(entries, ["codex-spark.report.md"],
+                             "minimal output dir should contain only the report, found: {}".format(entries))
+
+    def test_minimal_report_contains_result_mode_no_transient_paths(self):
+        """Minimal mode: report contains result mode and no retained transient paths."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\n")
+            output_dir = repo / ".worktrees" / "spark-minimal"
+            fake_codex = self._make_fake_codex(tmp_path)
+            result = self._run_spark(task_card, output_dir, fake_codex)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("| Result mode | minimal |", report)
+            # Transient paths should be replaced with placeholders
+            self.assertNotIn("codex-spark.prompt.md", report)
+            self.assertNotIn("codex-spark.result.txt", report)
+            self.assertNotIn("codex-spark.stderr.log", report)
+            self.assertIn("(transient, cleaned up)", report)
+
+    def test_minimal_availability_failure_compact_classification_no_stderr_log(self):
+        """Minimal mode availability failure: persists compact classification, no stderr log."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\n")
+            output_dir = repo / ".worktrees" / "spark-minimal"
+
+            fake_codex = tmp_path / "codex.sh"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo 'quota exceeded for requested model' >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--output", bash_path(output_dir)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("| Spark auto-disabled? | yes |", report)
+            self.assertIn("helper exits 0", report)
+            # No stderr log in output directory (transient, cleaned up)
+            self.assertFalse(
+                (output_dir / "codex-spark.stderr.log").exists(),
+                "stderr log should not persist in minimal mode output directory",
+            )
+
+    # --- Usage error: --output + --result-mode direct ---
+
+    def test_output_with_result_mode_direct_errors(self):
+        """--output with --result-mode direct returns a clear usage error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\n")
+            output_dir = repo / ".worktrees" / "spark-test"
+            fake_codex = self._make_fake_codex(tmp_path)
+
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--output", bash_path(output_dir), "--result-mode", "direct"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("incompatible", result.stderr.lower())
+            # Output directory should not be created
+            self.assertFalse(output_dir.exists(),
+                             "output directory should not be created on usage error")
 
 
 if __name__ == "__main__":

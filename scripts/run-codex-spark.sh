@@ -416,6 +416,11 @@ else
     fi
 fi
 
+if [ "$EXPLICIT_OUTPUT" = "yes" ] && [ "$RESULT_MODE" = "direct" ]; then
+    echo "Error: --output is incompatible with --result-mode direct. Use --result-mode minimal or full when specifying --output." >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Create working directory based on resolved result mode.
 #   direct  → mktemp only; no permanent OUTPUT_DIR created
@@ -806,7 +811,7 @@ auto_disable_spark() {
         echo "Strong-model fallback is disabled by this helper; re-run explicitly with another model only after human approval."
     } >> "$REPORT_FILE"
     echo "Codex Spark auto-disabled: ${reason}" >&2
-    echo "Codex Spark report: $REPORT_FILE"
+    echo "Codex Spark report: $REPORT_FILE" >&2
     exit "$HELPER_EXIT_STATUS"
 }
 
@@ -1310,7 +1315,7 @@ case "$RESULT_MODE" in
                 fi
             fi
         } >> "$REPORT_FILE"
-        echo "Codex Spark report: $REPORT_FILE"
+        echo "Codex Spark report: $REPORT_FILE" >&2
         exit "$HELPER_EXIT_STATUS"
         ;;
     full)
