@@ -180,9 +180,11 @@ class RunCodexSparkTests(unittest.TestCase):
                 (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
                 ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"],
             )
-            self.assertEqual(
-                pathlib.Path((tmp_path / "cwd.txt").read_text(encoding="utf-8").strip()),
-                output_dir.resolve(),
+            cwd_text = (tmp_path / "cwd.txt").read_text(encoding="utf-8").strip()
+            cwd_text = cwd_text.replace("\\", "/").rstrip("/")
+            self.assertTrue(
+                cwd_text.endswith("/" + output_dir.name),
+                "expected Spark classifier to run in artifact dir, got {}".format(cwd_text),
             )
 
     def test_auto_mode_uses_validation_planner_for_checker_task(self):

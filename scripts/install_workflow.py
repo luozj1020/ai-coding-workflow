@@ -421,7 +421,14 @@ def git_info_exclude_path(repo_path):
         if root_result.returncode != 0:
             return None
         git_root = os.path.abspath(root_result.stdout.strip())
-        if git_root != os.path.abspath(repo_path):
+        repo_abs = os.path.abspath(repo_path)
+        try:
+            same_root = os.path.samefile(git_root, repo_abs)
+        except OSError:
+            same_root = os.path.normcase(os.path.realpath(git_root)) == os.path.normcase(
+                os.path.realpath(repo_abs)
+            )
+        if not same_root:
             return None
         result = subprocess.run(
             ["git", "-C", repo_path, "rev-parse", "--git-path", "info/exclude"],
