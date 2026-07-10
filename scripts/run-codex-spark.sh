@@ -2,7 +2,7 @@
 # run-codex-spark.sh  -  Optional Codex Spark auxiliary execution for the workflow.
 #
 # Usage:
-#   bash ai/run-codex-spark.sh <task-card> [--mode auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder]
+#   bash ai/run-codex-spark.sh <task-card> [--mode auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner]
 #       [--model gpt-5.3-codex-spark] [--sandbox read-only|workspace-write]
 #       [--artifact .worktrees/claude-....report.md] [--output .worktrees/codex-spark-...]
 #
@@ -21,7 +21,7 @@ Usage: run-codex-spark.sh <task-card> [options]
 Options:
   --mode MODE       auto, task-size-classifier, review-only, task-card-audit,
                     plan-splitter, validation-planner, failure-triage,
-                    evidence-checker, or micro-builder
+                    evidence-checker, micro-builder, or parallel-planner
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
   --sandbox MODE    read-only or workspace-write (default: read-only)
   --artifact PATH   Add a bounded artifact excerpt to the Spark prompt.
@@ -66,6 +66,7 @@ while [ $# -gt 0 ]; do
         --mode)
             [ $# -ge 2 ] || { echo "Error: --mode requires a value." >&2; exit 1; }
             MODE="$2"
+            REQUESTED_MODE="$MODE"
             shift 2
             ;;
         --model)
@@ -123,7 +124,7 @@ if [ -z "$TASK_CARD" ]; then
 fi
 
 case "$MODE" in
-    auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder) ;;
+    auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner) ;;
     *)
         echo "Error: invalid --mode: $MODE" >&2
         exit 1
@@ -484,6 +485,7 @@ Mode contract:
 - failure-triage: inspect provided artifacts for likely stall/failure attribution and recommend wait/re-dispatch/narrow/takeover; do not edit files.
 - evidence-checker: inspect evidence artifacts and run only narrow, task-card-allowed checks; do not edit files.
 - micro-builder: only when the task card explicitly authorizes tiny isolated work. Touch no more than one or two small files, avoid public API/data/security/migration/permission/concurrency/cross-module contracts, keep the diff minimal, and report narrow validation evidence.
+- parallel-planner: produce an advisory parallel scheduling proposal as strict JSON. Do not edit files. Do not dispatch or execute any tasks. Output exactly one JSON object in a fenced code block matching this schema: {"schema_version":1,"group_id":"<group-slug>","max_concurrency":<int>,"failure_policy":"skip-dependents","tasks":[{"id":"<task-id>","task_card":"<path>","depends_on":["<task-id>"]}]}. After the JSON block, end with these reconciliation fields exactly: accepted_suggestions=<none or comma-separated>; ignored_suggestions=<none or comma-separated>; conflicts_with_claude=<none or short note>; conflicts_with_local_evidence=<none or short note>; acceptance_satisfied_by_spark=no. The proposal is advisory only; Codex or a human must review and save the plan before any dispatch.
 
 ## Task Card
 
