@@ -250,30 +250,10 @@ fi
 REPO_ROOT="$(git -C "$(dirname "$TASK_CARD")" rev-parse --show-toplevel 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 
-if [ -z "$OUTPUT_DIR" ]; then
-    OUTPUT_DIR="${REPO_ROOT}/.worktrees/codex-spark-${TIMESTAMP}"
-fi
-mkdir -p "$OUTPUT_DIR"
-OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
-
-PROMPT_FILE="${OUTPUT_DIR}/codex-spark.prompt.md"
-REPORT_FILE="${OUTPUT_DIR}/codex-spark.report.md"
-RESULT_FILE="${OUTPUT_DIR}/codex-spark.result.txt"
-STDERR_FILE="${OUTPUT_DIR}/codex-spark.stderr.log"
-DIFF_FILE="${OUTPUT_DIR}/codex-spark.diff"
-DIFFSTAT_FILE="${OUTPUT_DIR}/codex-spark.diffstat.txt"
-STATUS_FILE="${OUTPUT_DIR}/codex-spark.worktree-status.txt"
-TASK_CARD_COPY="${OUTPUT_DIR}/TASK_CARD.md"
-ARTIFACT_MANIFEST="${OUTPUT_DIR}/codex-spark.artifacts.txt"
-WORKTREE_DIR=""
-RUN_DIR="$REPO_ROOT"
-CODEX_STATUS=0
-
-cp "$TASK_CARD" "$TASK_CARD_COPY"
-: > "$ARTIFACT_MANIFEST"
-for artifact in "${ARTIFACTS[@]}"; do
-    printf '%s\n' "$artifact" >> "$ARTIFACT_MANIFEST"
-done
+# ---------------------------------------------------------------------------
+# Helper functions that read $TASK_CARD (not $TASK_CARD_COPY) so they can be
+# called before the output directory exists.
+# ---------------------------------------------------------------------------
 
 artifact_failure_signals() {
     [ "${#ARTIFACTS[@]}" -gt 0 ] || return 1
@@ -303,7 +283,14 @@ is_read_only_synthesis_mode() {
 }
 
 is_checker_task() {
-    grep -Eiq 'checker-test|Validation Contract|Local validation allowed|Test-First / TDD|TDD mode' "$TASK_CARD_COPY"
+    grep -Eiq 'checker-test|Validation Contract|Local validation allowed|Test-First / TDD|TDD mode' "$TASK_CARD"
+}
+
+is_source_writing_mode() {
+    case "$MODE" in
+        micro-builder|controlled-builder) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 resolve_auto_mode() {
@@ -312,7 +299,6 @@ resolve_auto_mode() {
     fi
     case "$BUDGET_MODE" in
         conservative)
-            # Preserve old routing behavior
             if [ "${#ARTIFACTS[@]}" -gt 0 ]; then
                 if artifact_failure_signals; then
                     MODE="failure-triage"
@@ -354,8 +340,6 @@ resolve_auto_mode() {
     esac
 }
 
-resolve_auto_mode
-
 resolve_pipeline_stage() {
     case "$MODE" in
         preflight-bundle|observe-synthesizer|task-card-drafter|context-packet-builder)
@@ -396,6 +380,11 @@ resolve_roles_executed() {
     esac
 }
 
+# ---------------------------------------------------------------------------
+# Resolve mode, pipeline, and result mode BEFORE any directory creation.
+# ---------------------------------------------------------------------------
+
+resolve_auto_mode
 resolve_pipeline_stage
 resolve_roles_executed
 SPARK_CALLS_USED=0
@@ -408,22 +397,127 @@ case "$MODE" in
         SPARK_PROVISIONAL_ACCEPTANCE="not applicable" ;;
 esac
 
+# Resolve result mode
+# - source-writing modes always force full
+# - advisory/read-only modes default to direct
+# - explicit --output upgrades implicit direct to minimal
+if is_source_writing_mode; then
+    if [ "$EXPLICIT_RESULT_MODE" = "yes" ] && [ "$RESULT_MODE" != "full" ]; then
+        echo "Error: source-writing mode '$MODE' requires --result-mode full." >&2
+        exit 1
+    fi
+    RESULT_MODE="full"
+else
+    if [ -z "$RESULT_MODE" ]; then
+        RESULT_MODE="direct"
+    fi
+    if [ "$EXPLICIT_OUTPUT" = "yes" ] && [ "$RESULT_MODE" = "direct" ] && [ "$EXPLICIT_RESULT_MODE" = "no" ]; then
+        RESULT_MODE="minimal"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Create working directory based on resolved result mode.
+#   direct  → mktemp only; no permanent OUTPUT_DIR created
+#   minimal → OUTPUT_DIR for report only; all working files in mktemp
+#   full    → everything in OUTPUT_DIR
+# ---------------------------------------------------------------------------
+
+TEMP_WORK_DIR=""
+
+if [ "$RESULT_MODE" = "direct" ]; then
+    # Direct mode: only a transient temp dir; cleaned up on exit
+    TEMP_WORK_DIR="$(mktemp -d)"
+    cleanup_temp() {
+        if [ -n "$TEMP_WORK_DIR" ] && [ -d "$TEMP_WORK_DIR" ]; then
+            rm -rf "$TEMP_WORK_DIR"
+        fi
+    }
+    trap cleanup_temp EXIT
+
+    PROMPT_FILE="${TEMP_WORK_DIR}/codex-spark.prompt.md"
+    REPORT_FILE="${TEMP_WORK_DIR}/codex-spark.report.md"
+    RESULT_FILE="${TEMP_WORK_DIR}/codex-spark.result.txt"
+    STDERR_FILE="${TEMP_WORK_DIR}/codex-spark.stderr.log"
+    DIFF_FILE="${TEMP_WORK_DIR}/codex-spark.diff"
+    DIFFSTAT_FILE="${TEMP_WORK_DIR}/codex-spark.diffstat.txt"
+    STATUS_FILE="${TEMP_WORK_DIR}/codex-spark.worktree-status.txt"
+    TASK_CARD_COPY="${TEMP_WORK_DIR}/TASK_CARD.md"
+    ARTIFACT_MANIFEST="${TEMP_WORK_DIR}/codex-spark.artifacts.txt"
+elif [ "$RESULT_MODE" = "minimal" ]; then
+    # Minimal mode: OUTPUT_DIR holds only the report; working files are transient
+    if [ -z "$OUTPUT_DIR" ]; then
+        OUTPUT_DIR="${REPO_ROOT}/.worktrees/codex-spark-${TIMESTAMP}"
+    fi
+    mkdir -p "$OUTPUT_DIR"
+    OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+
+    TEMP_WORK_DIR="$(mktemp -d)"
+    cleanup_temp() {
+        if [ -n "$TEMP_WORK_DIR" ] && [ -d "$TEMP_WORK_DIR" ]; then
+            rm -rf "$TEMP_WORK_DIR"
+        fi
+    }
+    trap cleanup_temp EXIT
+
+    PROMPT_FILE="${TEMP_WORK_DIR}/codex-spark.prompt.md"
+    RESULT_FILE="${TEMP_WORK_DIR}/codex-spark.result.txt"
+    STDERR_FILE="${TEMP_WORK_DIR}/codex-spark.stderr.log"
+    DIFF_FILE="${TEMP_WORK_DIR}/codex-spark.diff"
+    DIFFSTAT_FILE="${TEMP_WORK_DIR}/codex-spark.diffstat.txt"
+    STATUS_FILE="${TEMP_WORK_DIR}/codex-spark.worktree-status.txt"
+    TASK_CARD_COPY="${TEMP_WORK_DIR}/TASK_CARD.md"
+    ARTIFACT_MANIFEST="${TEMP_WORK_DIR}/codex-spark.artifacts.txt"
+    REPORT_FILE="${OUTPUT_DIR}/codex-spark.report.md"
+else
+    # Full mode: everything in OUTPUT_DIR
+    if [ -z "$OUTPUT_DIR" ]; then
+        OUTPUT_DIR="${REPO_ROOT}/.worktrees/codex-spark-${TIMESTAMP}"
+    fi
+    mkdir -p "$OUTPUT_DIR"
+    OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+
+    PROMPT_FILE="${OUTPUT_DIR}/codex-spark.prompt.md"
+    REPORT_FILE="${OUTPUT_DIR}/codex-spark.report.md"
+    RESULT_FILE="${OUTPUT_DIR}/codex-spark.result.txt"
+    STDERR_FILE="${OUTPUT_DIR}/codex-spark.stderr.log"
+    DIFF_FILE="${OUTPUT_DIR}/codex-spark.diff"
+    DIFFSTAT_FILE="${OUTPUT_DIR}/codex-spark.diffstat.txt"
+    STATUS_FILE="${OUTPUT_DIR}/codex-spark.worktree-status.txt"
+    TASK_CARD_COPY="${OUTPUT_DIR}/TASK_CARD.md"
+    ARTIFACT_MANIFEST="${OUTPUT_DIR}/codex-spark.artifacts.txt"
+fi
+
+WORKTREE_DIR=""
+RUN_DIR="$REPO_ROOT"
+CODEX_STATUS=0
+
+cp "$TASK_CARD" "$TASK_CARD_COPY"
+: > "$ARTIFACT_MANIFEST"
+for artifact in "${ARTIFACTS[@]}"; do
+    printf '%s\n' "$artifact" >> "$ARTIFACT_MANIFEST"
+done
+
 # Read-only synthesis/bundle modes run from artifact dir with workspace-write
-# when the requested sandbox is read-only, like the existing classifier isolation.
-# This gives local Codex initialization a writable directory without giving Spark
-# write access to the source repository.
+# when the requested sandbox is read-only.  In direct/minimal modes the temp
+# dir serves as the writable cwd; in full mode OUTPUT_DIR is used.
 if is_read_only_synthesis_mode && [ "$SANDBOX" = "read-only" ]; then
     SANDBOX="workspace-write"
-    RUN_DIR="$OUTPUT_DIR"
+    if [ "$RESULT_MODE" = "direct" ] || [ "$RESULT_MODE" = "minimal" ]; then
+        RUN_DIR="$TEMP_WORK_DIR"
+    else
+        RUN_DIR="$OUTPUT_DIR"
+    fi
     SPARK_CHECKS_RUN="codex exec (${MODE} in artifact dir)"
 fi
 
 if [ "$MODE" = "task-size-classifier" ] && [ "$SANDBOX" = "read-only" ]; then
-    # Codex Spark task-size classification only needs the rendered prompt. Running
-    # from the artifact directory with workspace-write prevents source-repo writes
-    # and gives local helper initialization a writable working directory.
     SANDBOX="workspace-write"
-    RUN_DIR="$OUTPUT_DIR"
+    if [ "$RESULT_MODE" = "direct" ] || [ "$RESULT_MODE" = "minimal" ]; then
+        RUN_DIR="$TEMP_WORK_DIR"
+    else
+        RUN_DIR="$OUTPUT_DIR"
+    fi
     SPARK_CHECKS_RUN="codex exec (classifier in artifact dir)"
 fi
 
@@ -437,22 +531,30 @@ if [ "$MODE" = "controlled-builder" ] && [ "$SANDBOX" != "workspace-write" ]; th
     exit 1
 fi
 
-# Validate controlled-builder allow-write path
+# Validate controlled-builder allow-write path (hardened)
 validate_allow_write_path() {
     local path="$1"
-    if [[ "$path" = /* ]]; then
-        echo "Error: --allow-write path must be repo-relative, not absolute: $path" >&2
-        return 1
-    fi
-    if [[ "$path" = *".."* ]]; then
-        echo "Error: --allow-write path must not contain '..': $path" >&2
-        return 1
-    fi
+    # Reject empty paths
     if [ -z "$path" ]; then
         echo "Error: --allow-write path must not be empty." >&2
         return 1
     fi
-    # Reject directory-wide wildcards and empty/glob patterns
+    # Reject control characters (C0 + DEL)
+    if printf '%s' "$path" | LC_ALL=C grep -q '[\x00-\x1f\x7f]' 2>/dev/null; then
+        echo "Error: --allow-write path contains control characters: $path" >&2
+        return 1
+    fi
+    # Reject absolute paths
+    if [[ "$path" = /* ]]; then
+        echo "Error: --allow-write path must be repo-relative, not absolute: $path" >&2
+        return 1
+    fi
+    # Reject traversal components
+    if [[ "$path" = *".."* ]]; then
+        echo "Error: --allow-write path must not contain '..': $path" >&2
+        return 1
+    fi
+    # Reject directory-wide wildcards, globs, and trailing slash
     if [[ "$path" = */ || "$path" = *"*"* ]]; then
         echo "Error: --allow-write path must be a specific file, not a directory or glob: $path" >&2
         return 1
@@ -463,6 +565,17 @@ validate_allow_write_path() {
         echo "Error: --allow-write path is outside the repository: $path" >&2
         return 1
     fi
+    # Reject symlinks in path or any existing parent component
+    local check_path="$REPO_ROOT"
+    IFS='/' read -ra _path_parts <<< "$path"
+    for _part in "${_path_parts[@]}"; do
+        [ -n "$_part" ] || continue
+        check_path="${check_path}/${_part}"
+        if [ -L "$check_path" ]; then
+            echo "Error: --allow-write path crosses a symlink: $check_path" >&2
+            return 1
+        fi
+    done
     return 0
 }
 
@@ -486,64 +599,6 @@ if [ "$MODE" = "controlled-builder" ]; then
         echo "Error: --allow-write paths must be unique." >&2
         exit 1
     fi
-fi
-
-# Determine if mode writes to source repository
-is_source_writing_mode() {
-    case "$MODE" in
-        micro-builder|controlled-builder) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# Resolve result mode
-# - source-writing modes always force full
-# - advisory/read-only modes default to direct
-# - explicit --output upgrades implicit direct to minimal
-# - explicit --result-mode with explicit --output: reject contradictory combinations
-if is_source_writing_mode; then
-    if [ "$EXPLICIT_RESULT_MODE" = "yes" ] && [ "$RESULT_MODE" != "full" ]; then
-        echo "Error: source-writing mode '$MODE' requires --result-mode full." >&2
-        exit 1
-    fi
-    RESULT_MODE="full"
-else
-    # Advisory/read-only mode
-    if [ -z "$RESULT_MODE" ]; then
-        RESULT_MODE="direct"
-    fi
-    # --output upgrades implicit direct to minimal
-    if [ "$EXPLICIT_OUTPUT" = "yes" ] && [ "$RESULT_MODE" = "direct" ] && [ "$EXPLICIT_RESULT_MODE" = "no" ]; then
-        RESULT_MODE="minimal"
-    fi
-fi
-
-# Direct mode: use temp dir for transient files, cleaned up on exit
-TEMP_WORK_DIR=""
-if [ "$RESULT_MODE" = "direct" ]; then
-    TEMP_WORK_DIR="$(mktemp -d)"
-    cleanup_direct_temp() {
-        if [ -n "$TEMP_WORK_DIR" ] && [ -d "$TEMP_WORK_DIR" ]; then
-            rm -rf "$TEMP_WORK_DIR"
-        fi
-    }
-    trap cleanup_direct_temp EXIT
-    # Redirect artifact paths to temp dir for direct mode
-    PROMPT_FILE="${TEMP_WORK_DIR}/codex-spark.prompt.md"
-    REPORT_FILE="${TEMP_WORK_DIR}/codex-spark.report.md"
-    RESULT_FILE="${TEMP_WORK_DIR}/codex-spark.result.txt"
-    STDERR_FILE="${TEMP_WORK_DIR}/codex-spark.stderr.log"
-    DIFF_FILE="${TEMP_WORK_DIR}/codex-spark.diff"
-    DIFFSTAT_FILE="${TEMP_WORK_DIR}/codex-spark.diffstat.txt"
-    STATUS_FILE="${TEMP_WORK_DIR}/codex-spark.worktree-status.txt"
-    TASK_CARD_COPY="${TEMP_WORK_DIR}/TASK_CARD.md"
-    ARTIFACT_MANIFEST="${TEMP_WORK_DIR}/codex-spark.artifacts.txt"
-    # Copy task card and manifest to temp dir
-    cp "$TASK_CARD" "$TASK_CARD_COPY"
-    : > "$ARTIFACT_MANIFEST"
-    for artifact in "${ARTIFACTS[@]}"; do
-        printf '%s\n' "$artifact" >> "$ARTIFACT_MANIFEST"
-    done
 fi
 
 micro_builder_contract_missing() {
@@ -615,12 +670,45 @@ controlled_builder_contract_missing() {
         echo "task card does not provide narrow validation for Spark controlled-builder"
         return 0
     fi
+    # Require Existing pattern or Source-of-truth reference with a non-empty value
+    if ! grep -Eiq 'Existing pattern|Source-of-truth reference' "$TASK_CARD_COPY"; then
+        echo "task card does not provide an existing pattern or source-of-truth reference"
+        return 0
+    fi
+    local _ref_line
+    _ref_line="$(grep -Ei 'Existing pattern|Source-of-truth reference' "$TASK_CARD_COPY" | head -1)"
+    local _ref_value
+    _ref_value="$(printf '%s' "$_ref_line" | sed 's/.*|//' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    case "$_ref_value" in
+        ''|none|None|NONE|n/a|N/A|'-')
+            echo "task card existing-pattern or source-of-truth reference field is empty or none"
+            return 0
+            ;;
+    esac
+    # Require Controlled-builder allowed paths row
+    if ! grep -Eiq 'Controlled-builder allowed paths' "$TASK_CARD_COPY"; then
+        echo "task card does not provide a Controlled-builder allowed paths row"
+        return 0
+    fi
     return 1
 }
 
 write_report_header() {
     local exit_value="${1:-pending}"
     local diff_value="${2:-pending}"
+    # For minimal mode, transient paths are cleaned up — do not reference them
+    local invocation_artifact="$PROMPT_FILE"
+    local task_card_ref="$TASK_CARD_COPY"
+    local artifact_dir_ref="$OUTPUT_DIR"
+    local manifest_ref="${ARTIFACT_MANIFEST}"
+    if [ "$RESULT_MODE" = "minimal" ]; then
+        invocation_artifact="(transient, cleaned up)"
+        task_card_ref="(transient, cleaned up)"
+        manifest_ref="$([ "${#ARTIFACTS[@]}" -gt 0 ] && echo "(transient, cleaned up)" || echo none)"
+    fi
+    if [ -z "$artifact_dir_ref" ]; then
+        artifact_dir_ref="(none, direct mode)"
+    fi
     {
         echo "# Codex Spark Report"
         echo ""
@@ -645,7 +733,7 @@ write_report_header() {
         echo "| Task size classification | $([ "$MODE" = "task-size-classifier" ] && echo "see Spark output" || echo "not used") |"
         echo "| Spark routing recommendation | $([ "$MODE" = "task-size-classifier" ] && echo "see Spark output" || echo "not used") |"
         echo "| Spark classification confidence | $([ "$MODE" = "task-size-classifier" ] && echo "see Spark output" || echo "not used") |"
-        echo "| Invocation command or artifact | ${PROMPT_FILE} |"
+        echo "| Invocation command or artifact | ${invocation_artifact} |"
         echo "| Sandbox used | ${SANDBOX} |"
         echo "| Isolated worktree used? | $([ -n "$WORKTREE_DIR" ] && echo yes || echo no) |"
         echo "| Source diff produced? | ${diff_value} |"
@@ -663,9 +751,9 @@ write_report_header() {
         echo "| conflicts_with_local_evidence | pending review |"
         echo "| acceptance_satisfied_by_spark | no |"
         echo "| Remaining Spark-related risk | pending review |"
-        echo "| Artifact directory | ${OUTPUT_DIR} |"
-        echo "| Task card copy | ${TASK_CARD_COPY} |"
-        echo "| Artifact inputs | $([ "${#ARTIFACTS[@]}" -gt 0 ] && echo "${ARTIFACT_MANIFEST}" || echo none) |"
+        echo "| Artifact directory | ${artifact_dir_ref} |"
+        echo "| Task card copy | ${task_card_ref} |"
+        echo "| Artifact inputs | ${manifest_ref} |"
         if [ -n "$WORKTREE_DIR" ]; then
             echo "| Worktree | ${WORKTREE_DIR} |"
         fi
@@ -704,7 +792,6 @@ auto_disable_spark() {
     SPARK_CHECKS_RUN="not run"
     HELPER_EXIT_STATUS=0
     if [ "$RESULT_MODE" = "direct" ]; then
-        # Direct mode: report to stderr only, no permanent report
         echo "Codex Spark auto-disabled: ${reason}" >&2
         exit "$HELPER_EXIT_STATUS"
     fi
@@ -847,11 +934,39 @@ if [ "$MODE" = "controlled-builder" ]; then
             echo ""
             echo "Missing contract: ${CONTROLLED_BUILDER_MISSING}."
             echo ""
-            echo "Required task-card evidence: controlled-builder authorization, source edits allowed, at most three files, no public API/data model/security/migration/permission/concurrency/cross-module contract risk, existing-pattern reference, and narrow validation."
+            echo "Required task-card evidence: controlled-builder authorization, source edits allowed, at most three files, no public API/data model/security/migration/permission/concurrency/cross-module contract risk, existing-pattern reference, controlled-builder allowed paths row, and narrow validation."
         } >> "$REPORT_FILE"
         echo "Error: controlled-builder contract missing: ${CONTROLLED_BUILDER_MISSING}" >&2
         exit 2
     fi
+
+    # Compare CLI --allow-write with task-card Controlled-builder allowed paths
+    TC_ALLOWED_LINE="$(grep -Ei 'Controlled-builder allowed paths' "$TASK_CARD_COPY" | head -1)"
+    TC_ALLOWED_RAW="${TC_ALLOWED_LINE#*|}"
+    TC_ALLOWED_PATHS=()
+    IFS=',' read -ra _tc_parts <<< "$TC_ALLOWED_RAW"
+    for _tp in "${_tc_parts[@]}"; do
+        _tp="$(printf '%s' "$_tp" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [ -n "$_tp" ] && TC_ALLOWED_PATHS+=("$_tp")
+    done
+
+    # Reject duplicates in task-card paths
+    _tc_unique=$(printf '%s\n' "${TC_ALLOWED_PATHS[@]}" | sort -u | wc -l)
+    if [ "$_tc_unique" -ne "${#TC_ALLOWED_PATHS[@]}" ]; then
+        echo "Error: task card Controlled-builder allowed paths contains duplicates." >&2
+        exit 2
+    fi
+
+    # Exact set match between CLI and task-card allowlists
+    _cli_sorted="$(printf '%s\n' "${ALLOWED_WRITES[@]}" | sort)"
+    _tc_sorted="$(printf '%s\n' "${TC_ALLOWED_PATHS[@]}" | sort)"
+    if [ "$_cli_sorted" != "$_tc_sorted" ]; then
+        echo "Error: --allow-write paths do not match task card Controlled-builder allowed paths." >&2
+        echo "  CLI: ${ALLOWED_WRITES[*]}" >&2
+        echo "  Task card: ${TC_ALLOWED_PATHS[*]}" >&2
+        exit 2
+    fi
+
     SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
     if [ -n "$SOURCE_STATUS" ] && [ "$ALLOW_DIRTY_SOURCE" != "1" ]; then
         if [ "$RESULT_MODE" = "direct" ]; then
@@ -981,50 +1096,113 @@ else
     : > "$DIFFSTAT_FILE"
 fi
 
-# Controlled-builder boundary validation
+# Controlled-builder boundary validation (hardened: NUL-safe, binary-aware)
 CONTROLLED_BOUNDARY_FAILURE=""
 if [ "$MODE" = "controlled-builder" ] && [ "$CODEX_STATUS" -eq 0 ]; then
-    # Collect all changed and untracked paths in the worktree
-    CHANGED_PATHS=()
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        # Extract path from porcelain status (skip first 3 chars of status, trim leading space)
-        path="${line#??}"
-        path="${path# }"
-        CHANGED_PATHS+=("$path")
-    done < "$STATUS_FILE"
+    # Collect tracked changes (modifications, deletions, staged adds)
+    TRACKED_PATHS=()
+    while IFS= read -r -d '' _line; do
+        [ -n "$_line" ] || continue
+        TRACKED_PATHS+=("$_line")
+    done < <(git -C "$RUN_DIR" diff --no-renames --name-only -z HEAD 2>/dev/null || true)
 
-    # Check file count
-    if [ "${#CHANGED_PATHS[@]}" -gt 3 ]; then
-        CONTROLLED_BOUNDARY_FAILURE="too many changed files: ${#CHANGED_PATHS[@]} (max 3)"
+    # Collect untracked files
+    UNTRACKED_PATHS=()
+    while IFS= read -r -d '' _line; do
+        [ -n "$_line" ] || continue
+        UNTRACKED_PATHS+=("$_line")
+    done < <(git -C "$RUN_DIR" ls-files --others --exclude-standard -z 2>/dev/null || true)
+
+    # Deduplicate all changed paths (temp-file approach for portability)
+    ALL_CHANGED_PATHS=()
+    _seen_tmp="$(mktemp)"
+    for _p in "${TRACKED_PATHS[@]}" "${UNTRACKED_PATHS[@]}"; do
+        if ! grep -qxF "$_p" "$_seen_tmp" 2>/dev/null; then
+            printf '%s\n' "$_p" >> "$_seen_tmp"
+            ALL_CHANGED_PATHS+=("$_p")
+        fi
+    done
+    rm -f "$_seen_tmp"
+
+    # Check file count (max 3)
+    if [ "${#ALL_CHANGED_PATHS[@]}" -gt 3 ]; then
+        CONTROLLED_BOUNDARY_FAILURE="too many changed files: ${#ALL_CHANGED_PATHS[@]} (max 3)"
     fi
 
     # Check each path is in the allowlist
     if [ -z "$CONTROLLED_BOUNDARY_FAILURE" ]; then
-        for changed_path in "${CHANGED_PATHS[@]}"; do
-            found="no"
-            for aw_path in "${ALLOWED_WRITES[@]}"; do
-                if [ "$changed_path" = "$aw_path" ]; then
-                    found="yes"
+        for _changed in "${ALL_CHANGED_PATHS[@]}"; do
+            _found="no"
+            for _aw in "${ALLOWED_WRITES[@]}"; do
+                if [ "$_changed" = "$_aw" ]; then
+                    _found="yes"
                     break
                 fi
             done
-            if [ "$found" = "no" ]; then
-                CONTROLLED_BOUNDARY_FAILURE="changed path not in allowlist: ${changed_path}"
+            if [ "$_found" = "no" ]; then
+                CONTROLLED_BOUNDARY_FAILURE="changed path not in allowlist: ${_changed}"
                 break
             fi
         done
     fi
 
-    # Check diff line cap
-    if [ -z "$CONTROLLED_BOUNDARY_FAILURE" ] && [ -s "$DIFF_FILE" ]; then
-        diff_add_del=$(git -C "$RUN_DIR" diff --numstat | awk '{add+=$1; del+=$2} END {print add+del}')
-        if [ "$diff_add_del" -gt "$MAX_DIFF_LINES" ]; then
-            CONTROLLED_BOUNDARY_FAILURE="diff too large: ${diff_add_del} added+deleted lines (max ${MAX_DIFF_LINES})"
+    # Check for binary content and count added+deleted lines
+    if [ -z "$CONTROLLED_BOUNDARY_FAILURE" ]; then
+        TOTAL_ADD_DEL=0
+
+        # Count tracked changes via numstat; reject binary (shown as "-")
+        if [ "${#TRACKED_PATHS[@]}" -gt 0 ]; then
+            while IFS=$'\t' read -r _add _del _rest; do
+                [ -n "$_add" ] || continue
+                if [ "$_add" = "-" ] || [ "$_del" = "-" ]; then
+                    CONTROLLED_BOUNDARY_FAILURE="binary content detected in tracked changes"
+                    break
+                fi
+                TOTAL_ADD_DEL=$((TOTAL_ADD_DEL + _add + _del))
+            done < <(git -C "$RUN_DIR" diff --no-renames --numstat HEAD 2>/dev/null || true)
+        fi
+
+        # Count untracked files; reject binary content
+        if [ -z "$CONTROLLED_BOUNDARY_FAILURE" ] && [ "${#UNTRACKED_PATHS[@]}" -gt 0 ]; then
+            for _up in "${UNTRACKED_PATHS[@]}"; do
+                if [ -f "${RUN_DIR}/${_up}" ]; then
+                    # Reject binary: compare byte counts with and without NUL
+                    _file_bytes=$(wc -c < "${RUN_DIR}/${_up}" 2>/dev/null || echo 0)
+                    _text_bytes=$(tr -d '\0' < "${RUN_DIR}/${_up}" 2>/dev/null | wc -c || echo 0)
+                    if [ "${_file_bytes:-0}" -ne "${_text_bytes:-0}" ]; then
+                        CONTROLLED_BOUNDARY_FAILURE="binary content detected in untracked file: ${_up}"
+                        break
+                    fi
+                    _lines=$(wc -l < "${RUN_DIR}/${_up}" 2>/dev/null || echo 0)
+                    TOTAL_ADD_DEL=$((TOTAL_ADD_DEL + _lines))
+                fi
+            done
+        fi
+
+        # Enforce max diff lines against combined total
+        if [ -z "$CONTROLLED_BOUNDARY_FAILURE" ] && [ "$TOTAL_ADD_DEL" -gt "$MAX_DIFF_LINES" ]; then
+            CONTROLLED_BOUNDARY_FAILURE="diff too large: ${TOTAL_ADD_DEL} added+deleted lines (max ${MAX_DIFF_LINES})"
         fi
     fi
 
-    # On boundary failure, report and exit non-zero
+    # Produce full patch evidence (tracked + untracked)
+    PATCH_EVIDENCE=""
+    if [ "${#TRACKED_PATHS[@]}" -gt 0 ]; then
+        PATCH_EVIDENCE="$(git -C "$RUN_DIR" diff --no-renames --binary HEAD 2>/dev/null || true)"
+    fi
+    if [ "${#UNTRACKED_PATHS[@]}" -gt 0 ]; then
+        for _up in "${UNTRACKED_PATHS[@]}"; do
+            if [ -f "${RUN_DIR}/${_up}" ]; then
+                _untracked_patch="$(git -C "$RUN_DIR" diff --no-index -- "/dev/null" "$_up" 2>/dev/null)" || true
+                if [ -n "$_untracked_patch" ]; then
+                    PATCH_EVIDENCE="${PATCH_EVIDENCE}
+${_untracked_patch}"
+                fi
+            fi
+        done
+    fi
+
+    # On boundary failure, report and exit non-zero with full isolated evidence
     if [ -n "$CONTROLLED_BOUNDARY_FAILURE" ]; then
         HELPER_EXIT_STATUS=2
         write_report_header "2" "boundary-violation"
@@ -1033,15 +1211,23 @@ if [ "$MODE" = "controlled-builder" ] && [ "$CODEX_STATUS" -eq 0 ]; then
             echo ""
             echo "Boundary violation: ${CONTROLLED_BOUNDARY_FAILURE}"
             echo ""
-            echo "Changed paths:"
-            for cp in "${CHANGED_PATHS[@]}"; do
-                echo "- ${cp}"
+            echo "Changed paths (${#ALL_CHANGED_PATHS[@]}):"
+            for _cp in "${ALL_CHANGED_PATHS[@]}"; do
+                echo "- ${_cp}"
             done
             echo ""
             echo "Allowlisted paths:"
-            for aw in "${ALLOWED_WRITES[@]}"; do
-                echo "- ${aw}"
+            for _aw in "${ALLOWED_WRITES[@]}"; do
+                echo "- ${_aw}"
             done
+            echo ""
+            echo "Total added+deleted lines: ${TOTAL_ADD_DEL} (max ${MAX_DIFF_LINES})"
+            echo ""
+            echo "## Patch Evidence"
+            echo ""
+            echo '```diff'
+            echo "$PATCH_EVIDENCE"
+            echo '```'
             echo ""
             echo "The isolated worktree and evidence are preserved for review. The source repository was not modified."
             echo ""
@@ -1061,7 +1247,11 @@ fi
 
 DIFF_VALUE="no"
 if ([ "$MODE" = "micro-builder" ] || [ "$MODE" = "controlled-builder" ]) && [ -s "$DIFF_FILE" ]; then
-    DIFF_VALUE="yes: ${DIFF_FILE}"
+    if [ "$RESULT_MODE" = "minimal" ]; then
+        DIFF_VALUE="yes (transient)"
+    else
+        DIFF_VALUE="yes: ${DIFF_FILE}"
+    fi
 fi
 if [ "$CODEX_STATUS" -ne 0 ] && [ "$REQUIRE_SPARK" != "1" ] && spark_unavailable_failure; then
     SPARK_AUTO_DISABLED="yes"
@@ -1091,7 +1281,7 @@ case "$RESULT_MODE" in
         exit "$HELPER_EXIT_STATUS"
         ;;
     minimal)
-        # Minimal mode: emit raw result to stdout, write compact report
+        # Minimal mode: emit raw result to stdout, write compact report (no transient paths)
         if [ -s "$RESULT_FILE" ]; then
             cat "$RESULT_FILE"
         fi
@@ -1102,7 +1292,13 @@ case "$RESULT_MODE" in
             echo "| Field | Value |"
             echo "|-------|-------|"
             echo "| Codex exit code | ${CODEX_STATUS} |"
+            echo "| Result mode | ${RESULT_MODE} |"
             echo "| Strong-model fallback used | no |"
+            if [ -n "$CONTROLLED_BOUNDARY_FAILURE" ]; then
+                echo "| Boundary outcome | fail: ${CONTROLLED_BOUNDARY_FAILURE} |"
+            elif [ "$MODE" = "controlled-builder" ]; then
+                echo "| Boundary outcome | pass |"
+            fi
             if [ "$CODEX_STATUS" -ne 0 ]; then
                 echo ""
                 echo "## Failure Handling"
@@ -1126,6 +1322,7 @@ case "$RESULT_MODE" in
             echo "| Field | Value |"
             echo "|-------|-------|"
             echo "| Codex exit code | ${CODEX_STATUS} |"
+            echo "| Result mode | ${RESULT_MODE} |"
             echo "| Prompt | ${PROMPT_FILE} |"
             echo "| Raw output | ${RESULT_FILE} |"
             echo "| Stderr log | ${STDERR_FILE} |"
@@ -1133,6 +1330,11 @@ case "$RESULT_MODE" in
             echo "| Diff | ${DIFF_FILE} |"
             echo "| Diffstat | ${DIFFSTAT_FILE} |"
             echo "| Strong-model fallback used | no |"
+            if [ -n "$CONTROLLED_BOUNDARY_FAILURE" ]; then
+                echo "| Boundary outcome | fail: ${CONTROLLED_BOUNDARY_FAILURE} |"
+            elif [ "$MODE" = "controlled-builder" ]; then
+                echo "| Boundary outcome | pass |"
+            fi
             echo ""
             echo "## Codex Spark Output"
             echo ""
