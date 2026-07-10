@@ -1062,9 +1062,14 @@ class InstallWorkflowTests(unittest.TestCase):
         self.assertIn("minimal", readme_cn)
         self.assertIn("full", readme_cn)
 
-        # No model-tier routing in either README
-        self.assertNotIn("model-tier routing", readme.lower())
-        self.assertNotIn("model-tier routing", readme_cn.lower())
+        # Negative guarantee: both READMEs explicitly state no model-tier routing
+        self.assertIn("no model-tier routing in this change", readme)
+        self.assertIn("无模型层级路由", readme_cn)
+
+        # No Sol/Terra/Luna routing names in either README
+        for name in ("Sol", "Terra", "Luna"):
+            self.assertNotIn(name, readme)
+            self.assertNotIn(name, readme_cn)
 
     def test_installed_templates_preserve_micro_builder_parallel_planner_and_stage_bundles(self):
         """Required test 6: preserve micro-builder, parallel-planner, stage bundles,
