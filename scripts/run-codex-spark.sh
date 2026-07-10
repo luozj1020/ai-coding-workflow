@@ -22,13 +22,21 @@ Usage: run-codex-spark.sh <task-card> [options]
 Options:
   --mode MODE       auto, task-size-classifier, review-only, task-card-audit,
                     plan-splitter, validation-planner, failure-triage,
-                    evidence-checker, micro-builder, parallel-planner,
-                    observe-synthesizer, task-card-drafter, context-packet-builder,
-                    preflight-bundle, direction-precheck, acceptance-matrix,
-                    postflight-bundle, revision-drafter, or lesson-extractor
+                    evidence-checker, micro-builder, controlled-builder,
+                    parallel-planner, observe-synthesizer, task-card-drafter,
+                    context-packet-builder, preflight-bundle, direction-precheck,
+                    acceptance-matrix, postflight-bundle, revision-drafter,
+                    or lesson-extractor
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
   --sandbox MODE    read-only or workspace-write (default: read-only)
   --budget-mode     aggressive, balanced, or conservative (default: balanced)
+  --result-mode MODE
+                    direct, minimal, or full (default: auto-resolved per mode)
+  --allow-write PATH
+                    Allow controlled-builder to write REPO_RELATIVE_PATH.
+                    May be passed 1-3 times for controlled-builder mode.
+  --max-diff-lines N
+                    Maximum added+deleted lines for controlled-builder (1-200)
   --artifact PATH   Add a bounded artifact excerpt to the Spark prompt.
                     May be passed more than once.
   --output DIR      Artifact directory (default: .worktrees/codex-spark-<timestamp>)
@@ -43,6 +51,7 @@ Environment:
   CODEX_SPARK_MODE
   CODEX_SPARK_SANDBOX
   CODEX_SPARK_OUTPUT_DIR
+  CODEX_SPARK_RESULT_MODE=direct|minimal|full
   CODEX_SPARK_ARTIFACT_LINES=160
   CODEX_SPARK_ALLOW_DIRTY_SOURCE=1
   CODEX_SPARK_REQUIRED=1
@@ -72,6 +81,11 @@ SPARK_ROLES_EXECUTED=""
 SPARK_CALLS_USED=0
 SPARK_PROVISIONAL_ACCEPTANCE="not applicable"
 ARTIFACTS=()
+RESULT_MODE="${CODEX_SPARK_RESULT_MODE:-}"
+EXPLICIT_RESULT_MODE="no"
+ALLOWED_WRITES=()
+MAX_DIFF_LINES=""
+EXPLICIT_OUTPUT="no"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -102,9 +116,26 @@ while [ $# -gt 0 ]; do
             ARTIFACTS+=("$2")
             shift 2
             ;;
+        --result-mode)
+            [ $# -ge 2 ] || { echo "Error: --result-mode requires a value." >&2; exit 1; }
+            RESULT_MODE="$2"
+            EXPLICIT_RESULT_MODE="yes"
+            shift 2
+            ;;
+        --allow-write)
+            [ $# -ge 2 ] || { echo "Error: --allow-write requires a value." >&2; exit 1; }
+            ALLOWED_WRITES+=("$2")
+            shift 2
+            ;;
+        --max-diff-lines)
+            [ $# -ge 2 ] || { echo "Error: --max-diff-lines requires a value." >&2; exit 1; }
+            MAX_DIFF_LINES="$2"
+            shift 2
+            ;;
         --output)
             [ $# -ge 2 ] || { echo "Error: --output requires a value." >&2; exit 1; }
             OUTPUT_DIR="$2"
+            EXPLICIT_OUTPUT="yes"
             shift 2
             ;;
         --allow-dirty-source)
@@ -142,7 +173,7 @@ if [ -z "$TASK_CARD" ]; then
 fi
 
 case "$MODE" in
-    auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor) ;;
+    auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|controlled-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor) ;;
     *)
         echo "Error: invalid --mode: $MODE" >&2
         exit 1
@@ -171,6 +202,33 @@ case "$SANDBOX" in
         exit 1
         ;;
 esac
+
+if [ -n "$RESULT_MODE" ]; then
+    case "$RESULT_MODE" in
+        direct|minimal|full) ;;
+        *)
+            echo "Error: invalid --result-mode: $RESULT_MODE (expected direct, minimal, or full)" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+if [ -n "$MAX_DIFF_LINES" ]; then
+    case "$MAX_DIFF_LINES" in
+        ''|*[!0-9]*)
+            echo "Error: --max-diff-lines must be a positive integer." >&2
+            exit 1
+            ;;
+        0)
+            echo "Error: --max-diff-lines must be at least 1." >&2
+            exit 1
+            ;;
+    esac
+    if [ "$MAX_DIFF_LINES" -gt 200 ]; then
+        echo "Error: --max-diff-lines must be at most 200." >&2
+        exit 1
+    fi
+fi
 
 if [ ! -f "$TASK_CARD" ]; then
     echo "Error: task card not found: $TASK_CARD" >&2
@@ -310,7 +368,7 @@ resolve_pipeline_stage() {
             SPARK_PIPELINE_STAGE="planning" ;;
         validation-planner)
             SPARK_PIPELINE_STAGE="validation" ;;
-        micro-builder)
+        micro-builder|controlled-builder)
             SPARK_PIPELINE_STAGE="builder" ;;
         lesson-extractor)
             SPARK_PIPELINE_STAGE="learning" ;;
@@ -374,6 +432,120 @@ if [ "$MODE" = "micro-builder" ] && [ "$SANDBOX" != "workspace-write" ]; then
     exit 1
 fi
 
+if [ "$MODE" = "controlled-builder" ] && [ "$SANDBOX" != "workspace-write" ]; then
+    echo "Error: controlled-builder mode requires --sandbox workspace-write." >&2
+    exit 1
+fi
+
+# Validate controlled-builder allow-write path
+validate_allow_write_path() {
+    local path="$1"
+    if [[ "$path" = /* ]]; then
+        echo "Error: --allow-write path must be repo-relative, not absolute: $path" >&2
+        return 1
+    fi
+    if [[ "$path" = *".."* ]]; then
+        echo "Error: --allow-write path must not contain '..': $path" >&2
+        return 1
+    fi
+    if [ -z "$path" ]; then
+        echo "Error: --allow-write path must not be empty." >&2
+        return 1
+    fi
+    # Reject directory-wide wildcards and empty/glob patterns
+    if [[ "$path" = */ || "$path" = *"*"* ]]; then
+        echo "Error: --allow-write path must be a specific file, not a directory or glob: $path" >&2
+        return 1
+    fi
+    # Verify path is within the repository
+    local resolved="${REPO_ROOT}/${path}"
+    if [[ "$resolved" != "${REPO_ROOT}"/* ]]; then
+        echo "Error: --allow-write path is outside the repository: $path" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Controlled-builder requires specific arguments
+if [ "$MODE" = "controlled-builder" ]; then
+    if [ "${#ALLOWED_WRITES[@]}" -lt 1 ] || [ "${#ALLOWED_WRITES[@]}" -gt 3 ]; then
+        echo "Error: controlled-builder requires 1-3 --allow-write arguments." >&2
+        exit 1
+    fi
+    if [ -z "$MAX_DIFF_LINES" ]; then
+        echo "Error: controlled-builder requires --max-diff-lines (1-200)." >&2
+        exit 1
+    fi
+    # Validate each allow-write path
+    for aw_path in "${ALLOWED_WRITES[@]}"; do
+        validate_allow_write_path "$aw_path" || exit 1
+    done
+    # Check for duplicate paths
+    unique_writes=$(printf '%s\n' "${ALLOWED_WRITES[@]}" | sort -u | wc -l)
+    if [ "$unique_writes" -ne "${#ALLOWED_WRITES[@]}" ]; then
+        echo "Error: --allow-write paths must be unique." >&2
+        exit 1
+    fi
+fi
+
+# Determine if mode writes to source repository
+is_source_writing_mode() {
+    case "$MODE" in
+        micro-builder|controlled-builder) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Resolve result mode
+# - source-writing modes always force full
+# - advisory/read-only modes default to direct
+# - explicit --output upgrades implicit direct to minimal
+# - explicit --result-mode with explicit --output: reject contradictory combinations
+if is_source_writing_mode; then
+    if [ "$EXPLICIT_RESULT_MODE" = "yes" ] && [ "$RESULT_MODE" != "full" ]; then
+        echo "Error: source-writing mode '$MODE' requires --result-mode full." >&2
+        exit 1
+    fi
+    RESULT_MODE="full"
+else
+    # Advisory/read-only mode
+    if [ -z "$RESULT_MODE" ]; then
+        RESULT_MODE="direct"
+    fi
+    # --output upgrades implicit direct to minimal
+    if [ "$EXPLICIT_OUTPUT" = "yes" ] && [ "$RESULT_MODE" = "direct" ] && [ "$EXPLICIT_RESULT_MODE" = "no" ]; then
+        RESULT_MODE="minimal"
+    fi
+fi
+
+# Direct mode: use temp dir for transient files, cleaned up on exit
+TEMP_WORK_DIR=""
+if [ "$RESULT_MODE" = "direct" ]; then
+    TEMP_WORK_DIR="$(mktemp -d)"
+    cleanup_direct_temp() {
+        if [ -n "$TEMP_WORK_DIR" ] && [ -d "$TEMP_WORK_DIR" ]; then
+            rm -rf "$TEMP_WORK_DIR"
+        fi
+    }
+    trap cleanup_direct_temp EXIT
+    # Redirect artifact paths to temp dir for direct mode
+    PROMPT_FILE="${TEMP_WORK_DIR}/codex-spark.prompt.md"
+    REPORT_FILE="${TEMP_WORK_DIR}/codex-spark.report.md"
+    RESULT_FILE="${TEMP_WORK_DIR}/codex-spark.result.txt"
+    STDERR_FILE="${TEMP_WORK_DIR}/codex-spark.stderr.log"
+    DIFF_FILE="${TEMP_WORK_DIR}/codex-spark.diff"
+    DIFFSTAT_FILE="${TEMP_WORK_DIR}/codex-spark.diffstat.txt"
+    STATUS_FILE="${TEMP_WORK_DIR}/codex-spark.worktree-status.txt"
+    TASK_CARD_COPY="${TEMP_WORK_DIR}/TASK_CARD.md"
+    ARTIFACT_MANIFEST="${TEMP_WORK_DIR}/codex-spark.artifacts.txt"
+    # Copy task card and manifest to temp dir
+    cp "$TASK_CARD" "$TASK_CARD_COPY"
+    : > "$ARTIFACT_MANIFEST"
+    for artifact in "${ARTIFACTS[@]}"; do
+        printf '%s\n' "$artifact" >> "$ARTIFACT_MANIFEST"
+    done
+fi
+
 micro_builder_contract_missing() {
     if ! grep -Eiq 'micro-builder' "$TASK_CARD_COPY"; then
         echo "micro-builder mode is not explicitly authorized in the task card"
@@ -398,6 +570,54 @@ micro_builder_contract_missing() {
     return 1
 }
 
+controlled_builder_contract_missing() {
+    if ! grep -Eiq 'controlled-builder' "$TASK_CARD_COPY"; then
+        echo "controlled-builder mode is not explicitly authorized in the task card"
+        return 0
+    fi
+    if ! grep -Eiq 'Source edits allowed\?[[:space:]]*\|[[:space:]]*yes|Source edits allowed[[:space:]]*\|[[:space:]]*yes' "$TASK_CARD_COPY"; then
+        echo "task card does not explicitly allow Spark source edits"
+        return 0
+    fi
+    if ! grep -Eiq 'maximum 3 files|max files[[:space:]]*\|[[:space:]]*3|max files[[:space:]]*\|[[:space:]]*1-3' "$TASK_CARD_COPY"; then
+        echo "task card does not limit Spark controlled-builder scope to at most three files"
+        return 0
+    fi
+    if ! grep -Eiq 'public API[[:space:]/_-]*(risk)?[[:space:]]*\|[[:space:]]*no|no public API|no API contract' "$TASK_CARD_COPY"; then
+        echo "task card does not rule out public API or contract risk"
+        return 0
+    fi
+    if ! grep -Eiq 'data model[[:space:]]*(risk)?[[:space:]]*\|[[:space:]]*no|no data model' "$TASK_CARD_COPY"; then
+        echo "task card does not rule out data model risk"
+        return 0
+    fi
+    if ! grep -Eiq 'security[[:space:]]*(risk)?[[:space:]]*\|[[:space:]]*no|no security' "$TASK_CARD_COPY"; then
+        echo "task card does not rule out security risk"
+        return 0
+    fi
+    if ! grep -Eiq 'migration[[:space:]]*(risk)?[[:space:]]*\|[[:space:]]*no|no migration' "$TASK_CARD_COPY"; then
+        echo "task card does not rule out migration risk"
+        return 0
+    fi
+    if ! grep -Eiq 'permission[[:space:]]*(risk)?[[:space:]]*\|[[:space:]]*no|no permission' "$TASK_CARD_COPY"; then
+        echo "task card does not rule out permission risk"
+        return 0
+    fi
+    if ! grep -Eiq 'concurrency[[:space:]]*(risk)?[[:space:]]*\|[[:space:]]*no|no concurrency' "$TASK_CARD_COPY"; then
+        echo "task card does not rule out concurrency risk"
+        return 0
+    fi
+    if ! grep -Eiq 'cross-module[[:space:]]*(risk)?[[:space:]]*\|[[:space:]]*no|no cross-module' "$TASK_CARD_COPY"; then
+        echo "task card does not rule out cross-module contract risk"
+        return 0
+    fi
+    if ! grep -Eiq 'narrow validation|focused validation|exact validation|Validation command' "$TASK_CARD_COPY"; then
+        echo "task card does not provide narrow validation for Spark controlled-builder"
+        return 0
+    fi
+    return 1
+}
+
 write_report_header() {
     local exit_value="${1:-pending}"
     local diff_value="${2:-pending}"
@@ -412,6 +632,7 @@ write_report_header() {
         echo "| Spark invoked? | ${SPARK_INVOKED} |"
         echo "| Spark purpose used | ${MODE} |"
         echo "| Spark requested mode | ${REQUESTED_MODE} |"
+        echo "| Result mode | ${RESULT_MODE} |"
         echo "| Spark model used | ${MODEL} |"
         echo "| Spark budget mode requested | ${REQUESTED_BUDGET_MODE} |"
         echo "| Spark budget mode effective | ${BUDGET_MODE} |"
@@ -457,6 +678,10 @@ write_report_header
 if [ "$MODE" = "micro-builder" ]; then
     MICRO_BUILDER_MISSING="$(micro_builder_contract_missing || true)"
     if [ -n "$MICRO_BUILDER_MISSING" ]; then
+        if [ "$RESULT_MODE" = "direct" ]; then
+            echo "Error: micro-builder contract missing: ${MICRO_BUILDER_MISSING}" >&2
+            exit 2
+        fi
         {
             echo "## Result"
             echo ""
@@ -478,6 +703,11 @@ auto_disable_spark() {
     SPARK_DISABLE_REASON="$reason"
     SPARK_CHECKS_RUN="not run"
     HELPER_EXIT_STATUS=0
+    if [ "$RESULT_MODE" = "direct" ]; then
+        # Direct mode: report to stderr only, no permanent report
+        echo "Codex Spark auto-disabled: ${reason}" >&2
+        exit "$HELPER_EXIT_STATUS"
+    fi
     write_report_header "$codex_exit" "no"
     {
         echo "## Result"
@@ -518,6 +748,10 @@ if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
     SPARK_INVOKED="no"
     SPARK_CHECKS_RUN="not run"
     if [ "$REQUIRE_SPARK" = "1" ]; then
+        if [ "$RESULT_MODE" = "direct" ]; then
+            echo "Error: codex CLI is not installed or not in PATH." >&2
+            exit 127
+        fi
         write_report_header "127" "no"
         {
             echo "## Result"
@@ -574,6 +808,10 @@ append_artifact_excerpts() {
 if [ "$MODE" = "micro-builder" ]; then
     SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
     if [ -n "$SOURCE_STATUS" ] && [ "$ALLOW_DIRTY_SOURCE" != "1" ]; then
+        if [ "$RESULT_MODE" = "direct" ]; then
+            echo "Error: dirty source repository blocks micro-builder mode." >&2
+            exit 2
+        fi
         {
             echo "## Result"
             echo ""
@@ -585,6 +823,52 @@ if [ "$MODE" = "micro-builder" ]; then
             echo '```'
         } >> "$REPORT_FILE"
         echo "Error: dirty source repository blocks micro-builder mode." >&2
+        exit 2
+    fi
+    WORKTREE_DIR="${OUTPUT_DIR}/worktree"
+    BRANCH="codex-spark/${TIMESTAMP}"
+    git -C "$REPO_ROOT" worktree add -b "$BRANCH" "$WORKTREE_DIR" HEAD >/dev/null
+    RUN_DIR="$WORKTREE_DIR"
+    cp "$TASK_CARD_COPY" "${WORKTREE_DIR}/CODEX_SPARK_TASK_CARD.md"
+    write_report_header
+fi
+
+if [ "$MODE" = "controlled-builder" ]; then
+    CONTROLLED_BUILDER_MISSING="$(controlled_builder_contract_missing || true)"
+    if [ -n "$CONTROLLED_BUILDER_MISSING" ]; then
+        if [ "$RESULT_MODE" = "direct" ]; then
+            echo "Error: controlled-builder contract missing: ${CONTROLLED_BUILDER_MISSING}" >&2
+            exit 2
+        fi
+        {
+            echo "## Result"
+            echo ""
+            echo "Blocked: Spark controlled-builder requires explicit tiny-scope authorization."
+            echo ""
+            echo "Missing contract: ${CONTROLLED_BUILDER_MISSING}."
+            echo ""
+            echo "Required task-card evidence: controlled-builder authorization, source edits allowed, at most three files, no public API/data model/security/migration/permission/concurrency/cross-module contract risk, existing-pattern reference, and narrow validation."
+        } >> "$REPORT_FILE"
+        echo "Error: controlled-builder contract missing: ${CONTROLLED_BUILDER_MISSING}" >&2
+        exit 2
+    fi
+    SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
+    if [ -n "$SOURCE_STATUS" ] && [ "$ALLOW_DIRTY_SOURCE" != "1" ]; then
+        if [ "$RESULT_MODE" = "direct" ]; then
+            echo "Error: dirty source repository blocks controlled-builder mode." >&2
+            exit 2
+        fi
+        {
+            echo "## Result"
+            echo ""
+            echo "Blocked: source repository is dirty. Commit, stash, or pass --allow-dirty-source before controlled-builder mode."
+            echo ""
+            echo "## Source Status"
+            echo '```'
+            echo "$SOURCE_STATUS"
+            echo '```'
+        } >> "$REPORT_FILE"
+        echo "Error: dirty source repository blocks controlled-builder mode." >&2
         exit 2
     fi
     WORKTREE_DIR="${OUTPUT_DIR}/worktree"
@@ -627,6 +911,7 @@ Mode contract:
 - failure-triage: inspect provided artifacts for likely stall/failure attribution and recommend wait/re-dispatch/narrow/takeover; do not edit files.
 - evidence-checker: inspect evidence artifacts and run only narrow, task-card-allowed checks; do not edit files.
 - micro-builder: only when the task card explicitly authorizes tiny isolated work. Touch no more than one or two small files, avoid public API/data/security/migration/permission/concurrency/cross-module contracts, keep the diff minimal, and report narrow validation evidence.
+- controlled-builder: only when the task card explicitly authorizes exact-path isolated work. Write ONLY to the explicitly allowlisted paths (see --allow-write in the prompt). Touch no more than three files total. Avoid public API/data/security/migration/permission/concurrency/cross-module contracts. Keep diff within --max-diff-lines cap. Report narrow validation evidence including all changed/untracked paths.
 - parallel-planner: produce an advisory parallel scheduling proposal as strict JSON. Do not edit files. Do not dispatch or execute any tasks. Output exactly one JSON object in a fenced code block matching this schema: {"schema_version":1,"group_id":"<group-slug>","max_concurrency":<int>,"failure_policy":"skip-dependents","tasks":[{"id":"<task-id>","task_card":"<path>","depends_on":["<task-id>"]}]}. After the JSON block, end with these reconciliation fields exactly: accepted_suggestions=<none or comma-separated>; ignored_suggestions=<none or comma-separated>; conflicts_with_claude=<none or short note>; conflicts_with_local_evidence=<none or short note>; acceptance_satisfied_by_spark=no. The proposal is advisory only; Codex or a human must review and save the plan before any dispatch.
 - observe-synthesizer: read-only synthesis of provided artifacts. Compress observations into structured findings. Do not edit files. Output structured observations with evidence citations.
 - task-card-drafter: draft a task card from the provided context and artifacts. Do not edit files. Output a structured task card proposal.
@@ -657,6 +942,23 @@ cat >> "$PROMPT_FILE" <<'TASK_EOF'
 TASK_EOF
 cat "$TASK_CARD_COPY" >> "$PROMPT_FILE"
 
+# Add controlled-builder specific constraints to prompt
+if [ "$MODE" = "controlled-builder" ]; then
+    {
+        echo ""
+        echo "## Controlled-Builder Constraints"
+        echo ""
+        echo "Allowed write paths (repo-relative):"
+        for aw_path in "${ALLOWED_WRITES[@]}"; do
+            echo "- ${aw_path}"
+        done
+        echo ""
+        echo "Maximum diff lines (added+deleted): ${MAX_DIFF_LINES}"
+        echo ""
+        echo "IMPORTANT: You may ONLY modify the files listed above. Any changes to paths outside this allowlist will be rejected. Total changed files must not exceed 3. Total added+deleted lines must not exceed ${MAX_DIFF_LINES}."
+    } >> "$PROMPT_FILE"
+fi
+
 append_artifact_excerpts
 
 set +e
@@ -669,7 +971,7 @@ set -e
 HELPER_EXIT_STATUS="$CODEX_STATUS"
 SPARK_CALLS_USED=1
 
-if [ "$MODE" = "micro-builder" ]; then
+if [ "$MODE" = "micro-builder" ] || [ "$MODE" = "controlled-builder" ]; then
     git -C "$RUN_DIR" status --porcelain --untracked-files=all > "$STATUS_FILE" || true
     git -C "$RUN_DIR" diff --binary > "$DIFF_FILE" || true
     git -C "$RUN_DIR" diff --stat > "$DIFFSTAT_FILE" || true
@@ -679,8 +981,86 @@ else
     : > "$DIFFSTAT_FILE"
 fi
 
+# Controlled-builder boundary validation
+CONTROLLED_BOUNDARY_FAILURE=""
+if [ "$MODE" = "controlled-builder" ] && [ "$CODEX_STATUS" -eq 0 ]; then
+    # Collect all changed and untracked paths in the worktree
+    CHANGED_PATHS=()
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        # Extract path from porcelain status (skip first 3 chars of status, trim leading space)
+        path="${line#??}"
+        path="${path# }"
+        CHANGED_PATHS+=("$path")
+    done < "$STATUS_FILE"
+
+    # Check file count
+    if [ "${#CHANGED_PATHS[@]}" -gt 3 ]; then
+        CONTROLLED_BOUNDARY_FAILURE="too many changed files: ${#CHANGED_PATHS[@]} (max 3)"
+    fi
+
+    # Check each path is in the allowlist
+    if [ -z "$CONTROLLED_BOUNDARY_FAILURE" ]; then
+        for changed_path in "${CHANGED_PATHS[@]}"; do
+            found="no"
+            for aw_path in "${ALLOWED_WRITES[@]}"; do
+                if [ "$changed_path" = "$aw_path" ]; then
+                    found="yes"
+                    break
+                fi
+            done
+            if [ "$found" = "no" ]; then
+                CONTROLLED_BOUNDARY_FAILURE="changed path not in allowlist: ${changed_path}"
+                break
+            fi
+        done
+    fi
+
+    # Check diff line cap
+    if [ -z "$CONTROLLED_BOUNDARY_FAILURE" ] && [ -s "$DIFF_FILE" ]; then
+        diff_add_del=$(git -C "$RUN_DIR" diff --numstat | awk '{add+=$1; del+=$2} END {print add+del}')
+        if [ "$diff_add_del" -gt "$MAX_DIFF_LINES" ]; then
+            CONTROLLED_BOUNDARY_FAILURE="diff too large: ${diff_add_del} added+deleted lines (max ${MAX_DIFF_LINES})"
+        fi
+    fi
+
+    # On boundary failure, report and exit non-zero
+    if [ -n "$CONTROLLED_BOUNDARY_FAILURE" ]; then
+        HELPER_EXIT_STATUS=2
+        write_report_header "2" "boundary-violation"
+        {
+            echo "## Result"
+            echo ""
+            echo "Boundary violation: ${CONTROLLED_BOUNDARY_FAILURE}"
+            echo ""
+            echo "Changed paths:"
+            for cp in "${CHANGED_PATHS[@]}"; do
+                echo "- ${cp}"
+            done
+            echo ""
+            echo "Allowlisted paths:"
+            for aw in "${ALLOWED_WRITES[@]}"; do
+                echo "- ${aw}"
+            done
+            echo ""
+            echo "The isolated worktree and evidence are preserved for review. The source repository was not modified."
+            echo ""
+            echo "## Codex Spark Output"
+            echo ""
+            if [ -s "$RESULT_FILE" ]; then
+                cat "$RESULT_FILE"
+            else
+                echo "No stdout output captured."
+            fi
+        } >> "$REPORT_FILE"
+        echo "Error: controlled-builder boundary violation: ${CONTROLLED_BOUNDARY_FAILURE}" >&2
+        echo "Codex Spark report: $REPORT_FILE"
+        exit 2
+    fi
+fi
+
 DIFF_VALUE="no"
-if [ "$MODE" = "micro-builder" ] && [ -s "$DIFF_FILE" ]; then
+if ([ "$MODE" = "micro-builder" ] || [ "$MODE" = "controlled-builder" ]) && [ -s "$DIFF_FILE" ]; then
     DIFF_VALUE="yes: ${DIFF_FILE}"
 fi
 if [ "$CODEX_STATUS" -ne 0 ] && [ "$REQUIRE_SPARK" != "1" ] && spark_unavailable_failure; then
@@ -688,40 +1068,91 @@ if [ "$CODEX_STATUS" -ne 0 ] && [ "$REQUIRE_SPARK" != "1" ] && spark_unavailable
     SPARK_DISABLE_REASON="$(spark_failure_auto_disable_reason)"
     HELPER_EXIT_STATUS=0
 fi
-write_report_header "$CODEX_STATUS" "$DIFF_VALUE"
 
-{
-    echo "## Result"
-    echo ""
-    echo "| Field | Value |"
-    echo "|-------|-------|"
-    echo "| Codex exit code | ${CODEX_STATUS} |"
-    echo "| Prompt | ${PROMPT_FILE} |"
-    echo "| Raw output | ${RESULT_FILE} |"
-    echo "| Stderr log | ${STDERR_FILE} |"
-    echo "| Worktree status | ${STATUS_FILE} |"
-    echo "| Diff | ${DIFF_FILE} |"
-    echo "| Diffstat | ${DIFFSTAT_FILE} |"
-    echo "| Strong-model fallback used | no |"
-    echo ""
-    echo "## Codex Spark Output"
-    echo ""
-    if [ -s "$RESULT_FILE" ]; then
-        cat "$RESULT_FILE"
-    else
-        echo "No stdout output captured."
-    fi
-    if [ "$CODEX_STATUS" -ne 0 ]; then
-        echo ""
-        echo "## Failure Handling"
-        echo ""
-        if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
-            echo "Spark exited non-zero with an availability-style failure and was auto-disabled because it is auxiliary. The helper exits 0 so the main workflow may continue."
-        else
-            echo "Spark exited non-zero. Strong-model fallback was not used. Re-run explicitly with another model only after human approval."
+# Emit result based on result mode
+case "$RESULT_MODE" in
+    direct)
+        # Direct mode: emit raw result to stdout, diagnostics to stderr
+        if [ -s "$RESULT_FILE" ]; then
+            cat "$RESULT_FILE"
         fi
-    fi
-} >> "$REPORT_FILE"
-
-echo "Codex Spark report: $REPORT_FILE"
-exit "$HELPER_EXIT_STATUS"
+        # On failure, report reason to stderr only (no permanent report)
+        if [ "$CODEX_STATUS" -ne 0 ]; then
+            if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+                echo "Codex Spark auto-disabled: ${SPARK_DISABLE_REASON}" >&2
+            else
+                echo "Codex Spark exited with code ${CODEX_STATUS}. See stderr for details." >&2
+            fi
+        fi
+        # Auto-disable reporting goes to stderr for direct mode
+        if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+            echo "Codex Spark report: (direct mode, no permanent report)" >&2
+        fi
+        exit "$HELPER_EXIT_STATUS"
+        ;;
+    minimal)
+        # Minimal mode: emit raw result to stdout, write compact report
+        if [ -s "$RESULT_FILE" ]; then
+            cat "$RESULT_FILE"
+        fi
+        write_report_header "$CODEX_STATUS" "$DIFF_VALUE"
+        {
+            echo "## Result"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Codex exit code | ${CODEX_STATUS} |"
+            echo "| Strong-model fallback used | no |"
+            if [ "$CODEX_STATUS" -ne 0 ]; then
+                echo ""
+                echo "## Failure Handling"
+                echo ""
+                if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+                    echo "Spark exited non-zero with an availability-style failure and was auto-disabled because it is auxiliary. The helper exits 0 so the main workflow may continue."
+                else
+                    echo "Spark exited non-zero. Strong-model fallback was not used. Re-run explicitly with another model only after human approval."
+                fi
+            fi
+        } >> "$REPORT_FILE"
+        echo "Codex Spark report: $REPORT_FILE"
+        exit "$HELPER_EXIT_STATUS"
+        ;;
+    full)
+        # Full mode: current behavior with all artifacts
+        write_report_header "$CODEX_STATUS" "$DIFF_VALUE"
+        {
+            echo "## Result"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Codex exit code | ${CODEX_STATUS} |"
+            echo "| Prompt | ${PROMPT_FILE} |"
+            echo "| Raw output | ${RESULT_FILE} |"
+            echo "| Stderr log | ${STDERR_FILE} |"
+            echo "| Worktree status | ${STATUS_FILE} |"
+            echo "| Diff | ${DIFF_FILE} |"
+            echo "| Diffstat | ${DIFFSTAT_FILE} |"
+            echo "| Strong-model fallback used | no |"
+            echo ""
+            echo "## Codex Spark Output"
+            echo ""
+            if [ -s "$RESULT_FILE" ]; then
+                cat "$RESULT_FILE"
+            else
+                echo "No stdout output captured."
+            fi
+            if [ "$CODEX_STATUS" -ne 0 ]; then
+                echo ""
+                echo "## Failure Handling"
+                echo ""
+                if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+                    echo "Spark exited non-zero with an availability-style failure and was auto-disabled because it is auxiliary. The helper exits 0 so the main workflow may continue."
+                else
+                    echo "Spark exited non-zero. Strong-model fallback was not used. Re-run explicitly with another model only after human approval."
+                fi
+            fi
+        } >> "$REPORT_FILE"
+        echo "Codex Spark report: $REPORT_FILE"
+        exit "$HELPER_EXIT_STATUS"
+        ;;
+esac
