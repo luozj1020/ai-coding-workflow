@@ -300,11 +300,9 @@ resolve_auto_mode
 
 resolve_pipeline_stage() {
     case "$MODE" in
-        preflight-bundle|observe-synthesizer|task-card-drafter|context-packet-builder|direction-precheck)
+        preflight-bundle|observe-synthesizer|task-card-drafter|context-packet-builder)
             SPARK_PIPELINE_STAGE="preflight" ;;
-        postflight-bundle)
-            SPARK_PIPELINE_STAGE="postflight" ;;
-        acceptance-matrix)
+        postflight-bundle|direction-precheck|acceptance-matrix)
             SPARK_PIPELINE_STAGE="postflight" ;;
         failure-triage|revision-drafter)
             SPARK_PIPELINE_STAGE="failure" ;;
@@ -327,6 +325,12 @@ resolve_roles_executed() {
             SPARK_ROLES_EXECUTED="risk-classifier,evidence-synthesizer,task-card-drafter,context-packet-builder,unknown-extractor,split-advisor" ;;
         postflight-bundle)
             SPARK_ROLES_EXECUTED="direction-checker,boundary-checker,acceptance-mapper,evidence-conflict-detector,validation-advisor,acceptance-advisor" ;;
+        failure-triage)
+            if [ "$BUDGET_MODE" = "aggressive" ]; then
+                SPARK_ROLES_EXECUTED="failure-triage,revision-drafter"
+            else
+                SPARK_ROLES_EXECUTED="$MODE"
+            fi ;;
         observe-synthesizer|task-card-drafter|context-packet-builder|direction-precheck|acceptance-matrix|revision-drafter|lesson-extractor)
             SPARK_ROLES_EXECUTED="$MODE" ;;
         *)
@@ -336,7 +340,7 @@ resolve_roles_executed() {
 
 resolve_pipeline_stage
 resolve_roles_executed
-SPARK_CALLS_USED=1
+SPARK_CALLS_USED=0
 
 # Provisional acceptance: pending output only for acceptance/postflight roles
 case "$MODE" in
@@ -663,6 +667,7 @@ set +e
 CODEX_STATUS=$?
 set -e
 HELPER_EXIT_STATUS="$CODEX_STATUS"
+SPARK_CALLS_USED=1
 
 if [ "$MODE" = "micro-builder" ]; then
     git -C "$RUN_DIR" status --porcelain --untracked-files=all > "$STATUS_FILE" || true
