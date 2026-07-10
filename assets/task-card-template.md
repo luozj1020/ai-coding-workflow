@@ -255,7 +255,7 @@ Advisor timing rules:
 | Field | Value |
 |-------|-------|
 | Spark enabled? | auto / no / yes |
-| Spark purpose | explicit mode preferred / auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / parallel-planner / micro-builder / observe-synthesizer / task-card-drafter / context-packet-builder / preflight-bundle / direction-precheck / acceptance-matrix / postflight-bundle / revision-drafter / lesson-extractor / none |
+| Spark purpose | explicit mode preferred / auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / parallel-planner / micro-builder / controlled-builder / observe-synthesizer / task-card-drafter / context-packet-builder / preflight-bundle / direction-precheck / acceptance-matrix / postflight-bundle / revision-drafter / lesson-extractor / none |
 | Spark model | gpt-5.3-codex-spark |
 | Budget mode | balanced (default) / aggressive / conservative |
 | Pipeline stage | auto / preflight / midflight / postflight |
@@ -265,9 +265,17 @@ Advisor timing rules:
 | Invocation helper | ai/run-codex-spark.sh |
 | Sandbox | read-only / workspace-write |
 | Isolated worktree required? | yes/no/not applicable |
-| Source edits allowed? | no / yes, only in micro-builder worktree |
+| Source edits allowed? | no / yes, only in micro-builder or controlled-builder worktree |
 | Allowed files/modules | |
 | Validation commands allowed | none / exact commands |
+| Result mode | direct (advisory default) / minimal (stdout + report) / full (all evidence) |
+| Controlled-builder authorized? | no / yes |
+| Controlled-builder allowed paths | exact 1–3 `--allow-write` paths |
+| Controlled-builder max files | not allowed / 3 |
+| Controlled-builder max diff lines | not allowed / 1–200 |
+| Controlled-builder risk exclusions | public API / data model / security / migration / permission / concurrency / cross-module (one row each) |
+| Controlled-builder existing pattern | file or pattern reference / not applicable |
+| Controlled-builder narrow validation | not allowed / exact command |
 | Micro-builder max files | not allowed / 1-2 small files |
 | Micro-builder public API or contract risk? | not allowed / no |
 | Micro-builder narrow validation | not allowed / exact command |
@@ -297,6 +305,8 @@ Spark rules:
 - Use `validation-planner` to propose exact low-noise checks without running broad suites.
 - Use `failure-triage` with explicit `--artifact` inputs after a stalled/failed run to attribute the failure before spending stronger-model context.
 - Run `micro-builder` only when the task card explicitly authorizes Spark source edits, limits scope to one or two small files, rules out public API/data/security/migration/permission/concurrency/cross-module contract risk, names exact narrow validation, and uses `--sandbox workspace-write` in the helper-created isolated worktree.
+- Run `controlled-builder` only when the task card authorizes it with exact `--allow-write` paths (1–3), required `--max-diff-lines` (1–200), all public API/data/security/migration/permission/concurrency/cross-module risks excluded, existing pattern/source-of-truth identified, narrow validation specified, and `--sandbox workspace-write` in the helper-created isolated worktree. Source-writing modes force `full` result mode and isolated worktree. After the run, tracked and untracked paths, line counts, and binary evidence are checked. Violations exit non-zero, remain isolated, never modify source, merge, or satisfy acceptance.
+- Spark result delivery modes: `direct` (default for advisory/read-only, no permanent Spark directory), `minimal` (stdout + compact `codex-spark.report.md`), `full` (prompt/result/stderr/status/diff/task-card/manifest evidence). `--output` without explicit `--result-mode` selects `minimal`; `--output --result-mode direct` is invalid. Source-writing modes (`controlled-builder`, `micro-builder`) force `full`. Choose `minimal` or `full` when persistent metrics or audit evidence is required; `direct` intentionally has no file-backed metrics.
 - Spark evidence can inform Codex review, but it does not override Claude reports, task-card ownership, or required validation. Spark output cannot independently satisfy acceptance; Codex must verify and record acceptance separately.
 - Treat Spark as default-on optional support. If Spark is unavailable or quota-exhausted, record the auto-disable report and continue the main Claude/Codex workflow.
 - Do not consume GPT-5.5/strong-model quota as an implicit fallback. If Spark is unavailable or insufficient, report the gap and let Codex or the human decide the next model.

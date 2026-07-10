@@ -70,7 +70,7 @@ Task cards can require **Direction / Boundary Acknowledgement** before editing. 
 
 Use `ai/init-spec.py` for ambiguous feature, UX, API, or data-model work, then fill `Spec Gate` in the task card. `ai/init-plan.py` creates `task_plan.md` with `### Task N: ...` sections; use `ai/plan-to-task-cards.py` to turn reviewed task sections into scoped task cards. Use `Root Cause Gate` before bugfixes/regressions, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work is ready for human merge.
 
-Leave `Codex Spark Gate` at `auto` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Prefer Spark for uncertain task-size routing before spending stronger Codex/Claude context, but pass an explicit `--mode` when the support role is already known. `--mode auto` resolves to an applicable stage bundle: ordinary pre-Builder use resolves to `preflight-bundle`, diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility. Budget mode (`AI_SPARK_BUDGET_MODE` / `--budget-mode`): `balanced` (default), `aggressive` (enables additional revision drafting on failure), `conservative` (legacy single-role routing). Recommend at most three short Spark helper invocations per task — a preflight call, an optional targeted or failure role call, and a postflight call — as a workflow recommendation, not cross-process daemon or state enforcement. New explicit read-only modes: `observe-synthesizer`, `task-card-drafter`, `context-packet-builder`, `preflight-bundle`, `direction-precheck`, `acceptance-matrix`, `postflight-bundle`, `revision-drafter`, `lesson-extractor`. Bundle output uses seven compressed headings: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action. Prefer read-only modes: `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, `evidence-checker`, or `parallel-planner`; use `micro-builder` only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and gives exact narrow validation in the helper-created isolated worktree. Spark evidence is auxiliary, auto-disables when unavailable or quota-exhausted, must not silently fall back to GPT-5.5 or another stronger model, cannot independently satisfy acceptance, cannot authorize merge, and requires strong Codex review. No implicit strong-model fallback. No model-tier routing in this change. For summary/benchmark aggregation across multiple reports, record: helper invocation count, total Spark calls, unique modes/stages/roles, budget modes, provisional status, strong-review required, merge authorization status, and auto-disable occurrences/reasons.
+Leave `Codex Spark Gate` at `auto` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Prefer Spark for uncertain task-size routing before spending stronger Codex/Claude context, but pass an explicit `--mode` when the support role is already known. `--mode auto` resolves to an applicable stage bundle: ordinary pre-Builder use resolves to `preflight-bundle`, diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility. Budget mode (`AI_SPARK_BUDGET_MODE` / `--budget-mode`): `balanced` (default), `aggressive` (enables additional revision drafting on failure), `conservative` (legacy single-role routing). Recommend at most three short Spark helper invocations per task — a preflight call, an optional targeted or failure role call, and a postflight call — as a workflow recommendation, not cross-process daemon or state enforcement. New explicit read-only modes: `observe-synthesizer`, `task-card-drafter`, `context-packet-builder`, `preflight-bundle`, `direction-precheck`, `acceptance-matrix`, `postflight-bundle`, `revision-drafter`, `lesson-extractor`. Bundle output uses seven compressed headings: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action. Prefer read-only modes: `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, `evidence-checker`, or `parallel-planner`; use `micro-builder` only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and gives exact narrow validation in the helper-created isolated worktree; use `controlled-builder` for narrow auditable source-write work with explicit `--allow-write` paths (1–3), required `--max-diff-lines` (1–200), all public API/data/security/migration/permission/concurrency/cross-module risks excluded, existing pattern/source-of-truth required, forced full artifacts and isolated worktree, and tracked/untracked path/line/binary evidence checked after run — violations exit non-zero, remain isolated, never modify source, merge, or satisfy acceptance. Spark result delivery modes: `direct` (advisory default, no permanent directory), `minimal` (stdout + compact report), `full` (all evidence preserved). `--output` without `--result-mode` selects `minimal`; `--output --result-mode direct` is invalid. Source-writing modes force `full`. Spark evidence is auxiliary, auto-disables when unavailable or quota-exhausted, must not silently fall back to GPT-5.5 or another stronger model, cannot independently satisfy acceptance, cannot authorize merge, and requires strong Codex review. No implicit strong-model fallback. No model-tier routing in this change. For summary/benchmark aggregation across multiple reports, record: helper invocation count, total Spark calls, unique modes/stages/roles, budget modes, provisional status, strong-review required, merge authorization status, and auto-disable occurrences/reasons.
 
 Phase ownership is explicit:
 
@@ -262,6 +262,45 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 Spark artifacts include `codex-spark.report.md`, `codex-spark.prompt.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.artifacts.txt`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. Spark does not silently fall back to GPT-5.5 or another stronger model. Use `--require-spark` only when Spark availability should become a hard failure.
 
 Spark output is advisory. Record `accepted_suggestions`, `ignored_suggestions`, `conflicts_with_claude`, `conflicts_with_local_evidence`, and `acceptance_satisfied_by_spark` in the Spark follow-up table, but do not let Spark replace Claude Builder ownership, Codex final review, or independent acceptance verification. Spark never authorizes merge; strong Codex review remains required; no implicit strong-model fallback; no model-tier routing in this change. For summary/benchmark aggregation across multiple reports, record: helper invocation count, total Spark calls, unique modes/stages/roles, budget modes, provisional status, strong-review required, merge authorization status, and auto-disable occurrences/reasons.
+
+**Spark result delivery modes** control how results are returned and persisted via `--result-mode`:
+
+- **`direct`** (default for advisory/read-only runs): sends raw result on stdout, uses a cleaned temporary workspace, creates no permanent Spark directory. No `codex-spark.report.md` or other files are written. Choose `direct` when only the inline result matters and file-backed metrics are not needed.
+- **`minimal`**: sends raw result on stdout and persists only a compact `codex-spark.report.md`. Use when persistent metrics or benchmark aggregation is required but full evidence is unnecessary.
+- **`full`**: preserves prompt, result, stderr, status, diff, task-card, and manifest evidence. Use when complete audit trails are required.
+
+When `--output` is passed without an explicit `--result-mode`, the helper selects `minimal`. Combining `--output` with `--result-mode direct` is invalid — `direct` creates no persistent artifacts. Source-writing modes (`controlled-builder`, `micro-builder`) force `full` artifacts.
+
+**Observability tradeoff:** `direct` mode intentionally has no file-backed metrics — no `codex-spark.report.md`, no artifact directory, no manifest. This is by design for lightweight advisory calls. When benchmark aggregation, quality tracking, or audit evidence is needed across multiple Spark invocations, choose `minimal` or `full` so `ai/benchmark-loop-runs.py` and `ai/summarize-loop-run.py` can aggregate results.
+
+**Controlled-builder permission mode** provides narrow, auditable source-write permission for Spark:
+
+- The task card must specify 1–3 exact `--allow-write` paths with a matching `Controlled-builder allowed paths` row.
+- `--max-diff-lines` is required, range 1–200.
+- All public API, data model, security, migration, permission, concurrency, and cross-module contract risks are excluded by policy.
+- An existing pattern or source-of-truth must be identified.
+- Narrow validation is required — no broad test suites.
+- After the run, tracked and untracked paths, line counts, and binary evidence are checked.
+- Violations exit non-zero, remain isolated in the worktree, never modify the source, never merge, and never satisfy acceptance criteria.
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode controlled-builder \
+  --allow-write src/module.py --allow-write tests/test_module.py \
+  --max-diff-lines 150 --sandbox workspace-write
+```
+
+The task card for `controlled-builder` must include:
+
+| Field | Value |
+|-------|-------|
+| Result mode | `full` (forced) |
+| Controlled-builder authorized? | yes |
+| Controlled-builder allowed paths | exact 1–3 paths |
+| Max files | 3 |
+| Max diff lines | <=200 |
+| Risk exclusions | one row per: public API, data model, security, migration, permission, concurrency, cross-module |
+| Existing pattern / source-of-truth | file or pattern reference |
+| Narrow validation | exact command |
 
 ### Large Repositories / Slow Filesystems
 

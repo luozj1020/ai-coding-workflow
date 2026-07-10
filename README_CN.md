@@ -11,7 +11,7 @@ ai-coding-workflow 可以为仓库自动配置：
 - `CLAUDE.md` - Claude Code 执行规则
 - 任务卡和证据包模板
 - Codex + Claude Code 工作流的安全调度/审查/循环脚本
-- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做任务规模分类、任务卡审查、计划拆分、验证规划、失败归因、证据检查、并行 DAG 规划或极小范围隔离 micro-builder 工作
+- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做任务规模分类、任务卡审查、计划拆分、验证规划、失败归因、证据检查、并行 DAG 规划、极小范围隔离 micro-builder 或窄范围可审计 controlled-builder 工作
 - Execution profiles：默认省 token 的 balanced、完整上下文的 safe，以及显式大仓加速的 fast-large-repo
 - 大型仓库调度选项：受管 worktree 复用，以及减少昂贵的未跟踪文件扫描
 - 本地验证 gate，以及从任务卡 validation fenced block 自动抽取命令
@@ -376,6 +376,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 - `evidence-checker`：已有 artifacts 后快速检查证据质量。
 - `parallel-planner`：为独立任务卡生成经过审查的 DAG 调度计划。Spark 只产出严格 schema-v1 JSON，不执行、不派发。Codex/人工必须审查并保存 JSON 计划后，再运行 `bash ai/run-parallel-loop.sh --plan <json>`。
 - `micro-builder`：仅用于任务卡明确允许的极小范围修改，并在 helper 创建的隔离 worktree 中执行；任务卡必须允许 Spark 修改源码、限制为一两个小文件、排除公共 API/契约风险，并给出精确窄验证。
+- `controlled-builder`：窄范围可审计的源码写入模式，需显式 `--allow-write` 路径（1–3 个）、必填 `--max-diff-lines`（1–200）、排除所有 public API/数据/安全/迁移/权限/并发/跨模块风险、需要已有 pattern/source-of-truth、强制 full artifacts 和隔离 worktree，运行后检查 tracked/untracked 路径/行数/二进制证据。违规时以非零退出码退出，保持隔离，不修改源码，不合并，不满足验收。Spark 结果交付模式：`direct`（advisory 默认，无永久目录）、`minimal`（stdout + 紧凑 report）、`full`（保留全部证据）。`--output` 不指定 `--result-mode` 时选 `minimal`；`--output --result-mode direct` 无效。源码写入模式强制 `full`。
 - `observe-synthesizer`：只读模式，用于综合观察证据。
 - `task-card-drafter`：只读模式，用于起草任务卡内容。
 - `context-packet-builder`：只读模式，用于构建上下文包。
@@ -436,6 +437,45 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.prompt.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.artifacts.txt`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型。Spark 永远不授权合并；强 Codex review 仍然必须；无隐式强模型回退；本次变更无模型层级路由。只有当 Spark 不可用也应该成为硬失败时，才使用 `--require-spark`。
 
 Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`conflicts_with_claude`、`conflicts_with_local_evidence` 和 `acceptance_satisfied_by_spark` 写入 Spark follow-up 表。Spark 不能独立满足验收，不能替代 Claude Builder 责任，不能批准 Codex 最终 review，也不能授权合并。强 Codex review 仍然必须。无隐式强模型回退。本次变更无模型层级路由。对于多次报告的汇总/benchmark 聚合，记录：helper 调用次数、Spark 总调用次数、唯一 modes/stages/roles、预算模式、临时状态、强 review 要求、合并授权状态，以及 auto-disable 出现次数/原因。
+
+**Spark 结果交付模式** 通过 `--result-mode` 控制结果的返回和持久化方式：
+
+- **`direct`**（advisory/read-only 默认）：将原始结果发送到 stdout，使用清理后的临时工作区，不创建永久 Spark 目录。不会写入 `codex-spark.report.md` 或其他文件。只需要内联结果且不需要文件级指标时选择 `direct`。
+- **`minimal`**：将原始结果发送到 stdout，仅持久化紧凑的 `codex-spark.report.md`。需要持久化指标或 benchmark 聚合但不需要完整证据时使用。
+- **`full`**：保留 prompt、result、stderr、status、diff、task-card 和 manifest 证据。需要完整审计追踪时使用。
+
+传入 `--output` 但未显式指定 `--result-mode` 时，helper 选择 `minimal`。`--output` 与 `--result-mode direct` 组合无效——`direct` 不创建持久化产物。源码写入模式（`controlled-builder`、`micro-builder`）强制使用 `full`。
+
+**可观测性取舍：** `direct` 模式有意不提供文件级指标——没有 `codex-spark.report.md`、没有产物目录、没有 manifest。这是为轻量级 advisory 调用设计的。当需要跨多次 Spark 调用进行 benchmark 聚合、质量追踪或审计时，选择 `minimal` 或 `full`，以便 `ai/benchmark-loop-runs.py` 和 `ai/summarize-loop-run.py` 可以聚合结果。
+
+**Controlled-builder 权限模式** 为 Spark 提供窄范围、可审计的源码写入权限：
+
+- 任务卡必须指定 1–3 个精确的 `--allow-write` 路径，并有对应的 `Controlled-builder allowed paths` 行。
+- `--max-diff-lines` 为必填项，范围 1–200。
+- 策略排除所有 public API、数据模型、安全、迁移、权限、并发和跨模块契约风险。
+- 必须识别已有 pattern 或 source-of-truth。
+- 需要窄验证——不运行大型测试套件。
+- 运行后检查 tracked/untracked 路径、行数和二进制证据。
+- 违规时以非零退出码退出，保持 worktree 隔离，不修改源码，不合并，不满足验收标准。
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode controlled-builder \
+  --allow-write src/module.py --allow-write tests/test_module.py \
+  --max-diff-lines 150 --sandbox workspace-write
+```
+
+`controlled-builder` 任务卡必须包含：
+
+| 字段 | 值 |
+|------|-----|
+| Result mode | `full`（强制） |
+| Controlled-builder 授权？ | yes |
+| Controlled-builder 允许路径 | 精确 1–3 个路径 |
+| 最大文件数 | 3 |
+| 最大 diff 行数 | <=200 |
+| 风险排除 | 每项一行：public API、数据模型、安全、迁移、权限、并发、跨模块 |
+| 已有 pattern / source-of-truth | 文件或 pattern 引用 |
+| 窄验证 | 精确命令 |
 
 **大型仓库 / 慢文件系统**
 

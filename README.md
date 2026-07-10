@@ -11,7 +11,7 @@ ai-coding-workflow bootstraps repositories with:
 - `CLAUDE.md` - Claude Code execution rules
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
-- Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` task-size classification, task-card audits, plan splitting, validation planning, failure triage, review/evidence checks, parallel DAG planning, and tiny isolated micro-builder work
+- Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` task-size classification, task-card audits, plan splitting, validation planning, failure triage, review/evidence checks, parallel DAG planning, tiny isolated micro-builder work, and narrow auditable controlled-builder work
 - Execution profiles for token-saving balanced dispatch, safe full-context dispatch, and explicit fast large-repository dispatch
 - Large-repository dispatch options for managed worktree reuse and reduced expensive untracked-file scans
 - Local-validation gates and task-card validation command extraction
@@ -395,6 +395,7 @@ If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave 
 - `evidence-checker`: quick evidence sanity check after artifacts exist.
 - `parallel-planner`: propose a reviewed DAG scheduling plan for independent task cards. Spark produces strict schema-v1 JSON only — it does not execute or dispatch. Codex/human must review and save the plan before running `bash ai/run-parallel-loop.sh --plan <json>`.
 - `micro-builder`: tiny scoped edits only, in the helper-created isolated worktree, and only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and names exact narrow validation.
+- `controlled-builder`: narrow auditable source-write mode with explicit `--allow-write` paths (1–3), required `--max-diff-lines` (1–200), risk exclusions for public API/data/security/migration/permission/concurrency/cross-module, forced full artifacts and isolated worktree, and tracked/untracked path/line/binary evidence checked after run. Violations exit non-zero, remain isolated, never modify source, merge, or satisfy acceptance.
 - `observe-synthesizer`: read-only mode for synthesizing observation evidence.
 - `task-card-drafter`: read-only mode for drafting task card content.
 - `context-packet-builder`: read-only mode for building context packets.
@@ -455,6 +456,45 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.prompt.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.artifacts.txt`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model. If local helper initialization fails, for example due to an app-server write requirement, the helper marks Spark auto-disabled and exits 0 unless `--require-spark` was used.
 
 Spark output is advisory. Record `accepted_suggestions`, `ignored_suggestions`, `conflicts_with_claude`, `conflicts_with_local_evidence`, and `acceptance_satisfied_by_spark` in the Spark follow-up table. Spark cannot independently satisfy acceptance, replace Claude Builder ownership, or approve Codex final review. Spark never authorizes merge; strong Codex review remains required; no implicit strong-model fallback; no model-tier routing in this change. For summary/benchmark aggregation across multiple reports, record: helper invocation count, total Spark calls, unique modes/stages/roles, budget modes, provisional status, strong-review required, merge authorization status, and auto-disable occurrences/reasons.
+
+**Spark result delivery modes** control how results are returned and persisted via `--result-mode`:
+
+- **`direct`** (default for advisory/read-only runs): sends raw result on stdout, uses a cleaned temporary workspace, creates no permanent Spark directory. No `codex-spark.report.md` or other files are written. Choose `direct` when only the inline result matters and file-backed metrics are not needed.
+- **`minimal`**: sends raw result on stdout and persists only a compact `codex-spark.report.md`. Use when persistent metrics or benchmark aggregation is required but full evidence is unnecessary.
+- **`full`**: preserves prompt, result, stderr, status, diff, task-card, and manifest evidence. Use when complete audit trails are required.
+
+When `--output` is passed without an explicit `--result-mode`, the helper selects `minimal`. Combining `--output` with `--result-mode direct` is invalid — `direct` creates no persistent artifacts. Source-writing modes (`controlled-builder`, `micro-builder`) force `full` artifacts.
+
+**Observability tradeoff:** `direct` mode intentionally has no file-backed metrics — no `codex-spark.report.md`, no artifact directory, no manifest. This is by design for lightweight advisory calls. When benchmark aggregation, quality tracking, or audit evidence is needed across multiple Spark invocations, choose `minimal` or `full` so `ai/benchmark-loop-runs.py` and `ai/summarize-loop-run.py` can aggregate results.
+
+**Controlled-builder permission mode** provides narrow, auditable source-write permission for Spark:
+
+- The task card must specify 1–3 exact `--allow-write` paths with a matching `Controlled-builder allowed paths` row.
+- `--max-diff-lines` is required, range 1–200.
+- All public API, data model, security, migration, permission, concurrency, and cross-module contract risks are excluded by policy.
+- An existing pattern or source-of-truth must be identified.
+- Narrow validation is required — no broad test suites.
+- After the run, tracked and untracked paths, line counts, and binary evidence are checked.
+- Violations exit non-zero, remain isolated in the worktree, never modify the source, never merge, and never satisfy acceptance criteria.
+
+```bash
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode controlled-builder \
+  --allow-write src/module.py --allow-write tests/test_module.py \
+  --max-diff-lines 150 --sandbox workspace-write
+```
+
+The task card for `controlled-builder` must include:
+
+| Field | Value |
+|-------|-------|
+| Result mode | `full` (forced) |
+| Controlled-builder authorized? | yes |
+| Controlled-builder allowed paths | exact 1–3 paths |
+| Max files | 3 |
+| Max diff lines | <=200 |
+| Risk exclusions | one row per: public API, data model, security, migration, permission, concurrency, cross-module |
+| Existing pattern / source-of-truth | file or pattern reference |
+| Narrow validation | exact command |
 
 **Large repositories / slow filesystems**
 
