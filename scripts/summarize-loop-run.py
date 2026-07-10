@@ -544,12 +544,16 @@ def summarize(path: Path) -> dict:
     advisor_gate = parse_first_table(artifacts["task_card"], ["Advisor Gate"])
     advisor_followup = parse_first_table(artifacts["report"], ["Advisor Follow-up", "Advisor Result"])
     codex_spark_gate = parse_first_table(artifacts["task_card"], ["Codex Spark Gate"])
+    # Deduplicate: spark_report files also match *.report.md glob.
+    combined_spark_paths = list(dict.fromkeys(
+        artifacts["spark_report"] + artifacts["report"]
+    ))
     codex_spark_followup = parse_first_table(
-        artifacts["spark_report"] + artifacts["report"],
+        combined_spark_paths,
         ["Codex Spark Follow-up"],
     )
     codex_spark_followups = parse_all_tables(
-        artifacts["spark_report"] + artifacts["report"],
+        combined_spark_paths,
         ["Codex Spark Follow-up"],
     )
     if not codex_spark_followups and codex_spark_followup:
