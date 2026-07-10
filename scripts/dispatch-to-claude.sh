@@ -162,15 +162,27 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 
+# Generate a collision-resistant suffix for task identity.
+# Even outside DAG mode, two flat dispatches started in the same second
+# must not share task IDs, worktree paths, branch names, or artifact paths.
+RAND_SUFFIX="${AI_CODING_WORKFLOW_RAND_SUFFIX:-}"
+if [ -z "$RAND_SUFFIX" ]; then
+    if [ -r /dev/urandom ]; then
+        RAND_SUFFIX="$(od -An -tx1 -N4 /dev/urandom | tr -d ' ')"
+    else
+        RAND_SUFFIX="$$"
+    fi
+fi
+
 # DAG mode: use caller-provided task ID for collision-resistant identity
 # When AI_CODING_WORKFLOW_DAG_TASK_ID is set, build TASK_ID from the DAG
 # task identifier rather than just the timestamp, so concurrent dispatches
 # in the same second cannot collide.
 if [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
     DAG_GROUP="${AI_CODING_WORKFLOW_DAG_GROUP_ID:-dag}"
-    TASK_ID="${DAG_GROUP}-${AI_CODING_WORKFLOW_DAG_TASK_ID}-${TIMESTAMP}"
+    TASK_ID="${DAG_GROUP}-${AI_CODING_WORKFLOW_DAG_TASK_ID}-${TIMESTAMP}-${RAND_SUFFIX}"
 else
-    TASK_ID="claude-${TIMESTAMP}"
+    TASK_ID="claude-${TIMESTAMP}-${RAND_SUFFIX}"
 fi
 
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
@@ -320,7 +332,7 @@ elif [ -n "${AI_CODING_WORKFLOW_DAG_BRANCH_NAME:-}" ]; then
     # from group_id + task_id + timestamp + random suffix.
     BRANCH_NAME="$AI_CODING_WORKFLOW_DAG_BRANCH_NAME"
 else
-    BRANCH_NAME="claude-task-${TIMESTAMP}"
+    BRANCH_NAME="claude-task-${TIMESTAMP}-${RAND_SUFFIX}"
 fi
 create_dispatch_worktree "$BRANCH_NAME"
 

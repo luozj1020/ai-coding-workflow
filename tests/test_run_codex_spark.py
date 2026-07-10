@@ -511,6 +511,93 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn("local app-server/helper initialization", report)
             self.assertIn("Read-only file system", stderr_log)
 
+    def test_help_mentions_parallel_planner(self):
+        """Test 9a: Spark help accepts parallel-planner mode."""
+        result = subprocess.run(
+            [bash_exe(), bash_path(SCRIPT), "--help"],
+            cwd=str(ROOT),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("parallel-planner", result.stderr)
+
+    def test_parallel_planner_records_requested_mode_and_schema(self):
+        """Test 9b: A fake Codex invocation with --mode parallel-planner
+        records explicit requested mode in the report, and the prompt contains
+        the schema and advisory/no-dispatch rules."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            task_card = repo / "task-card.md"
+            task_card.write_text(
+                "# Task\n\n## Codex Spark Gate\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark enabled? | yes |\n"
+                "| Spark purpose | parallel-planner |\n",
+                encoding="utf-8",
+            )
+
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"$@\" > \"$CODEX_FAKE_ARGS\"\n"
+                "cat > \"$CODEX_FAKE_STDIN\"\n"
+                "echo 'parallel planner ok'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            output_dir = repo / ".worktrees" / "spark-planner-test"
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_FAKE_ARGS"] = bash_path(tmp_path / "args.txt")
+            env["CODEX_FAKE_STDIN"] = bash_path(tmp_path / "stdin.md")
+
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--mode",
+                    "parallel-planner",
+                    "--output",
+                    bash_path(output_dir),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            prompt = (output_dir / "codex-spark.prompt.md").read_text(encoding="utf-8")
+
+            # Report records requested mode explicitly
+            self.assertIn("| Spark purpose used | parallel-planner |", report)
+            self.assertIn("| Spark requested mode | parallel-planner |", report)
+
+            # Prompt contains schema, advisory, and no-dispatch rules
+            self.assertIn("parallel-planner", prompt)
+            self.assertIn("schema_version", prompt)
+            self.assertIn("advisory", prompt.lower())
+            self.assertIn("Do not dispatch or execute any tasks", prompt)
+            self.assertIn("Do not edit files", prompt)
+            self.assertIn("accepted_suggestions", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

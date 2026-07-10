@@ -32,12 +32,26 @@ DEFAULT_MAX_CONCURRENCY = 2
 
 
 def has_control_chars(s: str) -> bool:
-    """Return True if *s* contains ASCII control characters (other than normal text)."""
+    """Return True if *s* contains ASCII control characters."""
     for ch in s:
         code = ord(ch)
         if code < 0x20 and ch not in ("\t", "\n", "\r"):
             return True
         if code == 0x7F:
+            return True
+    return False
+
+
+def has_tsv_unsafe_chars(s: str) -> bool:
+    """Return True if *s* contains characters that would corrupt TSV transport.
+
+    Tabs, newlines, and carriage returns break field boundaries in TSV output.
+    """
+    for ch in s:
+        code = ord(ch)
+        if ch in ("\t", "\n", "\r"):
+            return True
+        if code < 0x20 or code == 0x7F:
             return True
     return False
 
@@ -87,15 +101,15 @@ def validate_plan(plan_path: str) -> tuple[dict, list[str]]:
         errors.append("group_id must be a string")
     elif not group_id:
         errors.append("group_id must not be empty")
-    elif has_control_chars(group_id):
-        errors.append("group_id contains control characters")
+    elif has_tsv_unsafe_chars(group_id):
+        errors.append("group_id contains control characters or TSV-unsafe characters (tab/newline)")
     elif not VALID_ID_RE.match(group_id):
         errors.append(f"group_id contains invalid characters: {group_id!r}")
 
     # --- max_concurrency ---
     max_concurrency = raw.get("max_concurrency", DEFAULT_MAX_CONCURRENCY)
-    if not isinstance(max_concurrency, int):
-        errors.append("max_concurrency must be an integer")
+    if isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int):
+        errors.append("max_concurrency must be an integer (not a boolean)")
     elif max_concurrency < 1:
         errors.append(f"max_concurrency must be >= 1, got {max_concurrency}")
 
@@ -143,8 +157,8 @@ def validate_plan(plan_path: str) -> tuple[dict, list[str]]:
             errors.append(f"{prefix}: id must be a string")
         elif not task_id:
             errors.append(f"{prefix}: id must not be empty")
-        elif has_control_chars(task_id):
-            errors.append(f"{prefix}: id contains control characters")
+        elif has_tsv_unsafe_chars(task_id):
+            errors.append(f"{prefix}: id contains control characters or TSV-unsafe characters (tab/newline)")
         elif not VALID_ID_RE.match(task_id):
             errors.append(f"{prefix}: id contains invalid characters: {task_id!r}")
         elif task_id in seen_ids:
@@ -161,8 +175,8 @@ def validate_plan(plan_path: str) -> tuple[dict, list[str]]:
             errors.append(f"{prefix}: task_card must be a string")
         elif not task_card:
             errors.append(f"{prefix}: task_card must not be empty")
-        elif has_control_chars(task_card):
-            errors.append(f"{prefix}: task_card contains control characters")
+        elif has_tsv_unsafe_chars(task_card):
+            errors.append(f"{prefix}: task_card contains control characters or TSV-unsafe characters (tab/newline)")
         else:
             resolved = str(Path(plan_dir, task_card).resolve())
             if not Path(resolved).is_file():
@@ -178,6 +192,7 @@ def validate_plan(plan_path: str) -> tuple[dict, list[str]]:
         if not isinstance(depends_on, list):
             errors.append(f"{prefix}: depends_on must be an array")
         else:
+            seen_deps: set[str] = set()
             for dep_idx, dep in enumerate(depends_on):
                 if not isinstance(dep, str):
                     errors.append(f"{prefix}: depends_on[{dep_idx}] must be a string")
@@ -185,6 +200,10 @@ def validate_plan(plan_path: str) -> tuple[dict, list[str]]:
                     errors.append(f"{prefix}: depends_on[{dep_idx}] must not be empty")
                 elif task_id is not None and dep == task_id:
                     errors.append(f"{prefix}: self-dependency: {dep}")
+                elif dep in seen_deps:
+                    errors.append(f"{prefix}: duplicate dependency: {dep!r}")
+                else:
+                    seen_deps.add(dep)
 
         tasks.append({
             "id": task_id or "",
