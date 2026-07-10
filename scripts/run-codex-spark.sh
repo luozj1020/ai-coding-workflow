@@ -2,9 +2,10 @@
 # run-codex-spark.sh  -  Optional Codex Spark auxiliary execution for the workflow.
 #
 # Usage:
-#   bash ai/run-codex-spark.sh <task-card> [--mode auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor]
+#   bash ai/run-codex-spark.sh <task-card> [--mode auto|task-size-classifier|execution-cost-estimator|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor]
 #       [--model gpt-5.3-codex-spark] [--sandbox read-only|workspace-write]
 #       [--budget-mode aggressive|balanced|conservative]
+#       [--fast-path-max-diff-lines N]
 #       [--artifact .worktrees/claude-....report.md] [--output .worktrees/codex-spark-...]
 #
 # Defaults are intentionally conservative: auto-selected auxiliary role,
@@ -20,13 +21,17 @@ usage() {
 Usage: run-codex-spark.sh <task-card> [options]
 
 Options:
-  --mode MODE       auto, task-size-classifier, review-only, task-card-audit,
-                    plan-splitter, validation-planner, failure-triage,
-                    evidence-checker, micro-builder, controlled-builder,
-                    parallel-planner, observe-synthesizer, task-card-drafter,
+  --mode MODE       auto, task-size-classifier, execution-cost-estimator,
+                    review-only, task-card-audit, plan-splitter,
+                    validation-planner, failure-triage, evidence-checker,
+                    micro-builder, controlled-builder, parallel-planner,
+                    observe-synthesizer, task-card-drafter,
                     context-packet-builder, preflight-bundle, direction-precheck,
                     acceptance-matrix, postflight-bundle, revision-drafter,
                     or lesson-extractor
+  --fast-path-max-diff-lines N
+                    Upper diff threshold for codex-fast-path safety (1-200,
+                    default 60)
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
   --sandbox MODE    read-only or workspace-write (default: read-only)
   --budget-mode     aggressive, balanced, or conservative (default: balanced)
@@ -56,6 +61,7 @@ Environment:
   CODEX_SPARK_ALLOW_DIRTY_SOURCE=1
   CODEX_SPARK_REQUIRED=1
   AI_SPARK_BUDGET_MODE=aggressive|balanced|conservative
+  CODEX_FAST_PATH_MAX_DIFF_LINES=60
 EOF
 }
 
@@ -85,6 +91,7 @@ RESULT_MODE="${CODEX_SPARK_RESULT_MODE:-}"
 EXPLICIT_RESULT_MODE="no"
 ALLOWED_WRITES=()
 MAX_DIFF_LINES=""
+FAST_PATH_MAX_DIFF_LINES="${CODEX_FAST_PATH_MAX_DIFF_LINES:-60}"
 EXPLICIT_OUTPUT="no"
 
 while [ $# -gt 0 ]; do
@@ -132,6 +139,11 @@ while [ $# -gt 0 ]; do
             MAX_DIFF_LINES="$2"
             shift 2
             ;;
+        --fast-path-max-diff-lines)
+            [ $# -ge 2 ] || { echo "Error: --fast-path-max-diff-lines requires a value." >&2; exit 1; }
+            FAST_PATH_MAX_DIFF_LINES="$2"
+            shift 2
+            ;;
         --output)
             [ $# -ge 2 ] || { echo "Error: --output requires a value." >&2; exit 1; }
             OUTPUT_DIR="$2"
@@ -173,7 +185,7 @@ if [ -z "$TASK_CARD" ]; then
 fi
 
 case "$MODE" in
-    auto|task-size-classifier|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|controlled-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor) ;;
+    auto|task-size-classifier|execution-cost-estimator|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|controlled-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor) ;;
     *)
         echo "Error: invalid --mode: $MODE" >&2
         exit 1
@@ -230,6 +242,22 @@ if [ -n "$MAX_DIFF_LINES" ]; then
     fi
 fi
 
+# Validate FAST_PATH_MAX_DIFF_LINES (1..200, integer)
+case "$FAST_PATH_MAX_DIFF_LINES" in
+    ''|*[!0-9]*)
+        echo "Error: --fast-path-max-diff-lines must be a positive integer." >&2
+        exit 1
+        ;;
+    0)
+        echo "Error: --fast-path-max-diff-lines must be at least 1." >&2
+        exit 1
+        ;;
+esac
+if [ "$FAST_PATH_MAX_DIFF_LINES" -gt 200 ]; then
+    echo "Error: --fast-path-max-diff-lines must be at most 200." >&2
+    exit 1
+fi
+
 if [ ! -f "$TASK_CARD" ]; then
     echo "Error: task card not found: $TASK_CARD" >&2
     exit 1
@@ -276,7 +304,7 @@ artifact_name_matches() {
 
 is_read_only_synthesis_mode() {
     case "$MODE" in
-        observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor)
+        observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor|execution-cost-estimator)
             return 0 ;;
         *)
             return 1 ;;
@@ -349,7 +377,7 @@ resolve_pipeline_stage() {
             SPARK_PIPELINE_STAGE="postflight" ;;
         failure-triage|revision-drafter)
             SPARK_PIPELINE_STAGE="failure" ;;
-        task-size-classifier|plan-splitter)
+        task-size-classifier|execution-cost-estimator|plan-splitter)
             SPARK_PIPELINE_STAGE="planning" ;;
         validation-planner)
             SPARK_PIPELINE_STAGE="validation" ;;
@@ -365,7 +393,7 @@ resolve_pipeline_stage() {
 resolve_roles_executed() {
     case "$MODE" in
         preflight-bundle)
-            SPARK_ROLES_EXECUTED="risk-classifier,evidence-synthesizer,task-card-drafter,context-packet-builder,unknown-extractor,split-advisor" ;;
+            SPARK_ROLES_EXECUTED="risk-classifier,evidence-synthesizer,task-card-drafter,context-packet-builder,unknown-extractor,split-advisor,execution-cost-estimator" ;;
         postflight-bundle)
             SPARK_ROLES_EXECUTED="direction-checker,boundary-checker,acceptance-mapper,evidence-conflict-detector,validation-advisor,acceptance-advisor" ;;
         failure-triage)
@@ -1048,7 +1076,8 @@ Operating rules:
 - End your output with these fields exactly: accepted_suggestions=<none or comma-separated>; ignored_suggestions=<none or comma-separated>; conflicts_with_claude=<none or short note>; conflicts_with_local_evidence=<none or short note>; acceptance_satisfied_by_spark=no.
 
 Mode contract:
-- task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output exactly these fields: size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown; risk_flags=none or comma-separated public-api,data-model,security,migration,permission,concurrency,cross-module,broad-context,validation-complexity; reason=one short paragraph; stop_condition=one sentence.
+- task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output exactly these fields: size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown; risk_flags=none or comma-separated public-api,data-model,security,migration,permission,concurrency,cross-module,broad-context,validation-complexity; reason=one short paragraph; stop_condition=one sentence; predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification. Work units are relative estimates, not actual/billable token measurements.
+- execution-cost-estimator: read-only mode. Estimate direct Codex editing cost versus Claude delegation overhead. Do not edit files. Output exactly these machine-readable fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short paragraph>; stop_condition=<one sentence>. Work units are relative estimates, not actual/billable token measurements. Safety rule: recommend codex-fast-path only when all are true: predicted upper diff <= configured fast-path threshold; predicted files <= 2; context scope is local; validation complexity is none or low; confidence is high; risk flags are none. If economic recommendation is codex-fast-path but safety eligibility is no, final recommended owner must be claude-builder, spec-first, or human-clarification — never codex-fast-path.
 - review-only: inspect the task card and available repository context, do not edit files.
 - task-card-audit: inspect the task card for missing gates, mixed responsibilities, unclear acceptance criteria, unsafe scope, and likely Claude stall risks; do not edit files.
 - plan-splitter: propose smaller Builder/Checker task cards or independent parallelizable slices; do not edit files.
@@ -1061,7 +1090,7 @@ Mode contract:
 - observe-synthesizer: read-only synthesis of provided artifacts. Compress observations into structured findings. Do not edit files. Output structured observations with evidence citations.
 - task-card-drafter: draft a task card from the provided context and artifacts. Do not edit files. Output a structured task card proposal.
 - context-packet-builder: build a Context Packet draft from the task card and any provided artifacts. Do not edit files. Output a structured Context Packet with bounded excerpts.
-- preflight-bundle: combined preflight analysis in one invocation. Perform risk classification, bounded evidence synthesis, task-card drafting, Context Packet drafting, unknown/risk extraction, and split/parallel recommendation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
+- preflight-bundle: combined preflight analysis in one invocation. Perform risk classification, bounded evidence synthesis, task-card drafting, Context Packet drafting, unknown/risk extraction, split/parallel recommendation, and execution cost estimation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action. The Decision Summary must include execution cost fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; confidence=high|medium|low; risk_flags=none|comma-separated flags. Work units are relative estimates, not actual/billable token measurements.
 - direction-precheck: check direction and boundary against the task card and provided artifacts. Do not edit files. Output direction/boundary assessment with specific risks.
 - acceptance-matrix: produce an acceptance criteria matrix from the task card. Do not edit files. Map each acceptance criterion to verification method, evidence source, and pass/fail status.
 - postflight-bundle: combined postflight analysis in one invocation. Perform direction/boundary/omission checks, acceptance mapping, evidence conflict detection, validation recommendations, and provisional accept/revise/split/escalate recommendation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
@@ -1297,6 +1326,142 @@ if [ "$CODEX_STATUS" -ne 0 ] && [ "$REQUIRE_SPARK" != "1" ] && spark_unavailable
     HELPER_EXIT_STATUS=0
 fi
 
+# ---------------------------------------------------------------------------
+# Parse execution-cost-estimator fields from Codex output.
+# Each known key is read from at most one exact line. Values are validated
+# against allowed enums or numeric forms. Missing or invalid values become
+# "not recorded". No eval, source, command substitution, or dynamic variable
+# names are used on model-provided text.
+# ---------------------------------------------------------------------------
+
+COST_PREDICTED_DIFF_LOW="not recorded"
+COST_PREDICTED_DIFF_HIGH="not recorded"
+COST_PREDICTED_FILES="not recorded"
+COST_CONTEXT_SCOPE="not recorded"
+COST_VALIDATION_COMPLEXITY="not recorded"
+COST_DELEGATION_OVERHEAD="not recorded"
+COST_DIRECT_WORK_UNITS="not recorded"
+COST_DELEGATED_WORK_UNITS="not recorded"
+COST_RATIO="not recorded"
+COST_ECONOMIC_RECOMMENDATION="not recorded"
+COST_SAFETY_ELIGIBLE="not recorded"
+COST_RECOMMENDED_OWNER="not recorded"
+COST_CONFIDENCE="not recorded"
+COST_RISK_FLAGS="not recorded"
+
+if [ -s "$RESULT_FILE" ]; then
+    # Helper: extract the value from a key=value line, exactly one match.
+    _cost_val="$(grep -m1 '^predicted_diff_lines_low=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#predicted_diff_lines_low=}"
+    case "$_cost_val" in
+        ''|*[!0-9]*) COST_PREDICTED_DIFF_LOW="not recorded" ;;
+        *) COST_PREDICTED_DIFF_LOW="$_cost_val" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^predicted_diff_lines_high=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#predicted_diff_lines_high=}"
+    case "$_cost_val" in
+        ''|*[!0-9]*) COST_PREDICTED_DIFF_HIGH="not recorded" ;;
+        *) COST_PREDICTED_DIFF_HIGH="$_cost_val" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^predicted_files=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#predicted_files=}"
+    case "$_cost_val" in
+        unknown) COST_PREDICTED_FILES="unknown" ;;
+        ''|*[!0-9]*) COST_PREDICTED_FILES="not recorded" ;;
+        *) COST_PREDICTED_FILES="$_cost_val" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^context_scope=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#context_scope=}"
+    case "$_cost_val" in
+        local|bounded|broad|unknown) COST_CONTEXT_SCOPE="$_cost_val" ;;
+        *) COST_CONTEXT_SCOPE="not recorded" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^validation_complexity=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#validation_complexity=}"
+    case "$_cost_val" in
+        none|low|medium|high|unknown) COST_VALIDATION_COMPLEXITY="$_cost_val" ;;
+        *) COST_VALIDATION_COMPLEXITY="not recorded" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^delegation_overhead=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#delegation_overhead=}"
+    case "$_cost_val" in
+        low|medium|high) COST_DELEGATION_OVERHEAD="$_cost_val" ;;
+        *) COST_DELEGATION_OVERHEAD="not recorded" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^estimated_direct_work_units=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#estimated_direct_work_units=}"
+    case "$_cost_val" in
+        ''|*[!0-9]*|0) COST_DIRECT_WORK_UNITS="not recorded" ;;
+        *) COST_DIRECT_WORK_UNITS="$_cost_val" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^estimated_delegated_work_units=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#estimated_delegated_work_units=}"
+    case "$_cost_val" in
+        ''|*[!0-9]*|0) COST_DELEGATED_WORK_UNITS="not recorded" ;;
+        *) COST_DELEGATED_WORK_UNITS="$_cost_val" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^delegation_to_direct_ratio=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#delegation_to_direct_ratio=}"
+    # Validate decimal form: digits.digits or integer
+    case "$_cost_val" in
+        ''|*[!0-9.]*) COST_RATIO="not recorded" ;;
+        *.*) COST_RATIO="$_cost_val" ;;
+        *[0-9]) COST_RATIO="$_cost_val" ;;
+        *) COST_RATIO="not recorded" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^economic_recommendation=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#economic_recommendation=}"
+    case "$_cost_val" in
+        codex-fast-path|claude-builder) COST_ECONOMIC_RECOMMENDATION="$_cost_val" ;;
+        *) COST_ECONOMIC_RECOMMENDATION="not recorded" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^safety_eligible=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#safety_eligible=}"
+    case "$_cost_val" in
+        yes|no) COST_SAFETY_ELIGIBLE="$_cost_val" ;;
+        *) COST_SAFETY_ELIGIBLE="not recorded" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^recommended_owner=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#recommended_owner=}"
+    case "$_cost_val" in
+        codex-fast-path|claude-builder|spec-first|human-clarification) COST_RECOMMENDED_OWNER="$_cost_val" ;;
+        *) COST_RECOMMENDED_OWNER="not recorded" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^confidence=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#confidence=}"
+    case "$_cost_val" in
+        high|medium|low) COST_CONFIDENCE="$_cost_val" ;;
+        *) COST_CONFIDENCE="not recorded" ;;
+    esac
+
+    _cost_val="$(grep -m1 '^risk_flags=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#risk_flags=}"
+    case "$_cost_val" in
+        '') COST_RISK_FLAGS="not recorded" ;;
+        *) COST_RISK_FLAGS="$_cost_val" ;;
+    esac
+fi
+
+# Safety gate override: if economic recommendation is codex-fast-path but
+# safety eligibility is no, force recommended owner away from codex-fast-path.
+if [ "$COST_ECONOMIC_RECOMMENDATION" = "codex-fast-path" ] && [ "$COST_SAFETY_ELIGIBLE" = "no" ]; then
+    if [ "$COST_RECOMMENDED_OWNER" = "codex-fast-path" ]; then
+        COST_RECOMMENDED_OWNER="claude-builder"
+    fi
+fi
+
 # Emit result based on result mode
 case "$RESULT_MODE" in
     direct)
@@ -1332,6 +1497,21 @@ case "$RESULT_MODE" in
             echo "| Codex exit code | ${CODEX_STATUS} |"
             echo "| Result mode | ${RESULT_MODE} |"
             echo "| Strong-model fallback used | no |"
+            echo "| Predicted diff lines (low) | ${COST_PREDICTED_DIFF_LOW} |"
+            echo "| Predicted diff lines (high) | ${COST_PREDICTED_DIFF_HIGH} |"
+            echo "| Predicted files | ${COST_PREDICTED_FILES} |"
+            echo "| Context scope | ${COST_CONTEXT_SCOPE} |"
+            echo "| Validation complexity | ${COST_VALIDATION_COMPLEXITY} |"
+            echo "| Delegation overhead | ${COST_DELEGATION_OVERHEAD} |"
+            echo "| Direct work units | ${COST_DIRECT_WORK_UNITS} |"
+            echo "| Delegated work units | ${COST_DELEGATED_WORK_UNITS} |"
+            echo "| Delegation-to-direct ratio | ${COST_RATIO} |"
+            echo "| Economic recommendation | ${COST_ECONOMIC_RECOMMENDATION} |"
+            echo "| Safety eligible | ${COST_SAFETY_ELIGIBLE} |"
+            echo "| Recommended owner | ${COST_RECOMMENDED_OWNER} |"
+            echo "| Cost confidence | ${COST_CONFIDENCE} |"
+            echo "| Risk flags | ${COST_RISK_FLAGS} |"
+            echo "| Codex fast path approved? | pending Codex review |"
             if [ -n "$CONTROLLED_BOUNDARY_FAILURE" ]; then
                 echo "| Boundary outcome | fail: ${CONTROLLED_BOUNDARY_FAILURE} |"
             elif [ "$MODE" = "controlled-builder" ]; then
@@ -1368,6 +1548,21 @@ case "$RESULT_MODE" in
             echo "| Diff | ${DIFF_FILE} |"
             echo "| Diffstat | ${DIFFSTAT_FILE} |"
             echo "| Strong-model fallback used | no |"
+            echo "| Predicted diff lines (low) | ${COST_PREDICTED_DIFF_LOW} |"
+            echo "| Predicted diff lines (high) | ${COST_PREDICTED_DIFF_HIGH} |"
+            echo "| Predicted files | ${COST_PREDICTED_FILES} |"
+            echo "| Context scope | ${COST_CONTEXT_SCOPE} |"
+            echo "| Validation complexity | ${COST_VALIDATION_COMPLEXITY} |"
+            echo "| Delegation overhead | ${COST_DELEGATION_OVERHEAD} |"
+            echo "| Direct work units | ${COST_DIRECT_WORK_UNITS} |"
+            echo "| Delegated work units | ${COST_DELEGATED_WORK_UNITS} |"
+            echo "| Delegation-to-direct ratio | ${COST_RATIO} |"
+            echo "| Economic recommendation | ${COST_ECONOMIC_RECOMMENDATION} |"
+            echo "| Safety eligible | ${COST_SAFETY_ELIGIBLE} |"
+            echo "| Recommended owner | ${COST_RECOMMENDED_OWNER} |"
+            echo "| Cost confidence | ${COST_CONFIDENCE} |"
+            echo "| Risk flags | ${COST_RISK_FLAGS} |"
+            echo "| Codex fast path approved? | pending Codex review |"
             if [ -n "$CONTROLLED_BOUNDARY_FAILURE" ]; then
                 echo "| Boundary outcome | fail: ${CONTROLLED_BOUNDARY_FAILURE} |"
             elif [ "$MODE" = "controlled-builder" ]; then
