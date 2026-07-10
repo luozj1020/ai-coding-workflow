@@ -159,6 +159,39 @@ Fast path rules:
 - Spark is optional on obvious fast path edits. When task size is unclear, prefer Spark `task-size-classifier` before spending stronger Codex/Claude context.
 - Record the reason Claude was not dispatched and preserve narrow validation evidence or an explicit validation-skip reason.
 
+## Execution Cost / Fast Path Gate
+
+<!-- Fill before dispatch when Spark `execution-cost-estimator` or `task-size-classifier` is used. This gate captures the machine-readable cost estimate and the deterministic safety gate result. The Codex fast path is allowed only when the economic recommendation favors it AND the safety gate passes. -->
+
+| Field | Value |
+|-------|-------|
+| Predicted diff lines (low) | <!-- integer --> |
+| Predicted diff lines (high) | <!-- integer --> |
+| Predicted files | <!-- integer or unknown --> |
+| Estimated direct work units | <!-- positive integer; relative, not token accounting --> |
+| Estimated delegated work units | <!-- positive integer; relative, not token accounting --> |
+| Delegation-to-direct ratio | <!-- decimal --> |
+| Context scope | local / bounded / broad / unknown |
+| Validation complexity | none / low / medium / high / unknown |
+| Delegation overhead | low / medium / high |
+| Economic recommendation | codex-fast-path / claude-builder |
+| Safety eligible | yes / no |
+| Safety reasons | <!-- e.g., <=2 files, local context, low validation, high confidence, no risk flags, upper diff within threshold --> |
+| Risk flags | none / comma-separated flags |
+| Spark confidence | high / medium / low |
+| Final owner decision | codex-fast-path / claude-builder / spec-first / human-clarification |
+| Final owner rationale | <!-- why Codex or Claude was chosen --> |
+| Fast-path max diff lines | <!-- configured threshold, default 60 --> |
+| Escalation condition | <!-- when to abandon fast path and dispatch Claude --> |
+
+Execution cost rules:
+- This is a pre-dispatch fast-path decision, not a post-Claude takeover.
+- Codex fast path is allowed only when the economic recommendation favors it AND the deterministic safety gate passes: <=2 files, local context, low/none validation, high confidence, no risk flags, upper diff within threshold.
+- Work units are relative estimates, not claimed token-accounting measurements.
+- If economic recommendation is Codex but safety eligibility is no, final owner is Claude/spec/human, never Codex fast path.
+- Spark recommendation is advisory; Codex reviews and makes the final owner decision.
+- Configure the fast-path threshold with `--fast-path-max-diff-lines N` or `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 60, valid 1..200).
+
 ## Task Card Views
 
 <!-- Codex owns this full planning card. Dispatch scripts derive `CLAUDE_TASK_CARD.md` from it and omit Codex-only budget/planning/control sections before prompting Claude. Do not maintain a second hand-written Claude card. -->
