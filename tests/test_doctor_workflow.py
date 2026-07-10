@@ -308,7 +308,7 @@ class DoctorWorkflowTests(unittest.TestCase):
         self.assertIn("Claude Context Packet", text)
         self.assertIn("task-size-classifier", text)
         self.assertIn("CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed", text)
-        self.assertIn("CodeGraph queries to concrete files/symbols", text)
+        self.assertIn("prefer ai/locate-code.py", text)
 
     def test_doctor_recommends_reuse_and_local_only_for_very_large_repositories(self):
         module = load_module()

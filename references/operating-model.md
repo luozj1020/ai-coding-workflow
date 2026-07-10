@@ -8,7 +8,7 @@ This is the default operating principle for all work in this workflow:
 
 1. Codex/GPT is responsible for top-level design, planning, and review.
 2. Claude Code is responsible for concrete file modifications.
-3. LSP, codegraph, and MCP tools are used before broad file reads or repository scans to reduce token consumption.
+3. LSP, bounded locator search, CodeGraph, and MCP tools are used before broad file reads or repository scans to reduce token consumption and wall-clock stalls.
 
 ## Agent Roles
 
@@ -17,7 +17,7 @@ This is the default operating principle for all work in this workflow:
 - Decomposes large features into task cards with clear acceptance criteria.
 - Reviews execution evidence and returns structured accept / revise / split / reject decisions with explicit next-loop instructions.
 - Evaluates architectural intent, regression risk, and design coherence.
-- Gathers context using low-token tools (LSP, codegraph, MCP) during the OBSERVE phase.
+- Gathers context using low-token tools (LSP, `ai/locate-code.py`, bounded CodeGraph, MCP) during the OBSERVE phase.
 - Does NOT write production code directly  -  delegates all implementation to Claude Code.
 - Does NOT implement fixes during review  -  only evaluates and decides.
 
@@ -28,7 +28,7 @@ This is the default operating principle for all work in this workflow:
 - Runs mechanical checks: tests, lint, type checks, build verification.
 - Produces evidence packets documenting what changed, why, and how it was verified.
 - Records assumptions, attempted commands, failed checks, and lessons learned.
-- Works within the LSP/codegraph/MCP evidence hierarchy to minimize unnecessary file reads.
+- Works within the LSP/locator/CodeGraph/MCP evidence hierarchy to minimize unnecessary file reads.
 - Handles all high-token work: whole-file reads > 200 lines, multi-file implementation, long log analysis, exhaustive scans.
 - Returns compressed evidence: summaries and artifact paths, not pasted large logs or full files.
 
@@ -38,9 +38,9 @@ This is the default operating principle for all work in this workflow:
 - Useful for tasks that require processing large amounts of text or code.
 - Optional  -  invoked when the task warrants the token cost.
 
-### LSP / Codegraph / MCP  -  Low-Token Project Intelligence
+### LSP / Locator / Codegraph / MCP  -  Low-Token Project Intelligence
 
-- First-choice information source before reading files or scanning repositories.
+- First-choice information source before reading files or scanning repositories, with `ai/locate-code.py` preferred for initial large-repository code location.
 - Provides definitions, references, diagnostics, callers, callees, and impact analysis.
 - Dramatically reduces token consumption compared to whole-file reads.
 - See `mcp-policy.md` for the retrieval order.
@@ -80,12 +80,12 @@ Fields:
 - **Context**  -  background, related work, constraints
 - **Acceptance criteria**  -  how to verify the work is complete
 - **Files / modules**  -  the scope of changes expected
-- **Codex context budget**  -  estimated token budget for Codex context gathering; 0 if LSP/codegraph is sufficient
-- **LSP / codegraph evidence**  -  structured low-token evidence gathered before implementation
+- **Codex context budget**  -  estimated token budget for Codex context gathering; 0 if LSP/locator/CodeGraph evidence is sufficient
+- **LSP / locator / CodeGraph evidence**  -  structured low-token evidence gathered before implementation
 - **High-token delegation gate**  -  checklist of what must be delegated to Claude (reads > 200 lines, multi-file work, long logs, full scans)
 - **Evidence compression requirements**  -  instructions for Claude to return summaries + artifact paths, not pasted logs
 - **Dependencies**  -  other task cards, external services, data requirements
-- **Evidence**  -  LSP/codegraph/MCP data gathered before implementation
+- **Evidence**  -  LSP/locator/CodeGraph/MCP data gathered before implementation
 - **Loop context**  -  parent task ID, iteration, prior decision, revision instructions, budget/stop conditions, required evidence
 
 Template: `ai/task-card-template.md`
@@ -147,10 +147,11 @@ Human or Codex/GPT
 Before reading files or scanning repositories, agents must follow this order:
 
 1. LSP definitions/references/diagnostics
-2. Codegraph callers/callees/dependencies/impact radius
-3. Targeted search (grep, ripgrep)
-4. Targeted snippet reads
-5. Whole-file reads only when necessary
-6. Full repository scan only with explicit human approval
+2. Bounded locator search with `ai/locate-code.py` for large-repository code location
+3. CodeGraph callers/callees/dependencies/impact radius for concrete files or symbols
+4. Targeted search (grep, ripgrep)
+5. Targeted snippet reads
+6. Whole-file reads only when necessary
+7. Full repository scan only with explicit human approval
 
 This applies to both Codex (during OBSERVE) and Claude Code (during EXECUTE).

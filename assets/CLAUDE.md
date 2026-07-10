@@ -17,7 +17,7 @@ You are the execution agent in a Codex / Claude Code workflow.
 4. Read Spec Gate; if a required spec is missing, unreviewed, or contradicted by the task card, stop and report.
 5. Read Goal Loop Contract; use its success signal, max attempts, stop rules, required evidence, and benchmark tags as the outer loop contract.
 6. Read Advisor Gate; if advisor consultation is required, complete read-only orientation before consulting and before state-changing edits.
-7. Read Codex Spark Gate when present. Codex Spark evidence may be available as auxiliary Codex evidence, but it does not change your assignment unless the task card explicitly says so.
+7. Read Codex Spark Gate when present. Codex Spark evidence may be available as auxiliary Codex evidence, but it cannot change your Claude assignment, replace your report, or satisfy acceptance without separate Codex verification.
 8. Read Parallel Execution Gate when present. It may explain that sibling task cards are running elsewhere, but you still own only this task card and current isolated worktree.
 9. Treat the Handoff Contract as the primary executor contract.
 10. Read Unknowns and Decision Gates, plus Root Cause Gate; do not cross stop-and-report gates silently.

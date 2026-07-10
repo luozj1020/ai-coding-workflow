@@ -57,7 +57,7 @@ This repository has been set up with a multi-agent AI coding workflow. The workf
 - **Codex Spark**  -  default-on optional `gpt-5.3-codex-spark` auxiliary for task-size classification, task-card audits, plan splitting, validation planning, failure triage, evidence checks, or tiny isolated micro-builder work
 - **Large-repo mode**  -  optional managed worktree reuse and reduced untracked-file scans for slow filesystems
 - **MiMo / DeepSeek**  -  optional exhaustive review helper
-- **LSP / Codegraph / MCP**  -  low-token code intelligence (used first, before broad reads)
+- **LSP / Locator / CodeGraph / MCP**  -  low-token code intelligence with bounded large-repo lookup before broad reads
 
 **Core principle:** Codex designs and reviews. Claude edits. Tools gather low-token evidence first.
 
@@ -70,7 +70,7 @@ Task cards can require **Direction / Boundary Acknowledgement** before editing. 
 
 Use `ai/init-spec.py` for ambiguous feature, UX, API, or data-model work, then fill `Spec Gate` in the task card. `ai/init-plan.py` creates `task_plan.md` with `### Task N: ...` sections; use `ai/plan-to-task-cards.py` to turn reviewed task sections into scoped task cards. Use `Root Cause Gate` before bugfixes/regressions, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work is ready for human merge.
 
-Leave `Codex Spark Gate` at `auto` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Prefer Spark for uncertain task-size routing before spending stronger Codex/Claude context. Prefer read-only modes: `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, or `evidence-checker`; use `micro-builder` only for tiny scoped edits in the helper-created isolated worktree. Spark evidence is auxiliary, auto-disables when unavailable or quota-exhausted, and must not silently fall back to GPT-5.5 or another stronger model.
+Leave `Codex Spark Gate` at `auto` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Prefer Spark for uncertain task-size routing before spending stronger Codex/Claude context, but pass an explicit `--mode` when the support role is already known. Prefer read-only modes: `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, or `evidence-checker`; use `micro-builder` only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and gives exact narrow validation in the helper-created isolated worktree. Spark evidence is auxiliary, auto-disables when unavailable or quota-exhausted, must not silently fall back to GPT-5.5 or another stronger model, and cannot independently satisfy acceptance.
 
 Phase ownership is explicit:
 
@@ -102,6 +102,7 @@ ai/
   plan-progress-template.md   # Persistent progress template
   dispatch-to-claude.sh       # Dispatches task cards to Claude Code
   check-worktree.sh           # Runs checker-only validation and writes a report
+  locate-code.py              # Low-token code locator with bounded CodeGraph fallback
   review-with-codex.sh        # Sends evidence to Codex/GPT for review
   run-codex-spark.sh          # Optional gpt-5.3-codex-spark auxiliary runner
   run-parallel-loop.sh        # Experimental parallel dispatch helper
@@ -112,6 +113,7 @@ ai/
   cleanup-worktree.sh         # Remove stopped Claude worktrees safely
   pwsh-utf8.ps1                # Configure PowerShell UTF-8 session defaults
   doctor_workflow.py          # Read-only readiness check for dispatch/review loop
+  code-search-service.py      # Optional Zoekt/Sourcegraph setup and diagnostics
   clean_runtime.py            # Preview/remove ignored runtime artifacts
   install_context_tools.py    # Check/install context tools (LSP, linting)
   summarize-loop-run.py       # Summarize workflow quality, speed, cost, and stability
@@ -138,7 +140,7 @@ cp ai/task-card-template.md ai/task-cards/PROJ-123.md
 # Edit ai/task-cards/PROJ-123.md
 ```
 
-For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Leave `Codex Spark Gate` at `auto` when Spark should perform low-cost task-size classification, task-card audit, plan splitting, validation planning, failure triage, review/evidence checking, or tiny isolated micro-builder work, with auto-disable on Spark unavailability. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
+For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Leave `Codex Spark Gate` at `auto` when Spark should perform low-cost task-size classification, task-card audit, plan splitting, validation planning, failure triage, or review/evidence checking, with auto-disable on Spark unavailability. Use micro-builder only after explicit tiny-scope authorization. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 
 For longer tasks, create persistent planning files:
 
@@ -234,7 +236,7 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode failure-triage \
   --artifact .worktrees/claude-<id>.progress.log
 ```
 
-For tiny scoped edits only, use micro-builder mode. The helper creates an isolated worktree and refuses dirty source repositories unless explicitly overridden:
+For tiny scoped edits only, use micro-builder mode. The task card must authorize Spark source edits, limit scope to one or two small files, rule out public API/contract risk, and provide exact narrow validation. The helper creates an isolated worktree and refuses dirty source repositories unless explicitly overridden:
 
 ```bash
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sandbox workspace-write
@@ -242,13 +244,21 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 
 Spark artifacts include `codex-spark.report.md`, `codex-spark.prompt.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.artifacts.txt`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. Spark does not silently fall back to GPT-5.5 or another stronger model. Use `--require-spark` only when Spark availability should become a hard failure.
 
-Spark output is advisory. Record accepted and ignored suggestions in the Spark follow-up table, but do not let Spark replace Claude Builder ownership or Codex final review.
+Spark output is advisory. Record `accepted_suggestions`, `ignored_suggestions`, `conflicts_with_claude`, `conflicts_with_local_evidence`, and `acceptance_satisfied_by_spark` in the Spark follow-up table, but do not let Spark replace Claude Builder ownership, Codex final review, or independent acceptance verification.
 
 ### Large Repositories / Slow Filesystems
 
 Fill `Worktree / Large Repo Strategy Gate` before dispatch when `git worktree add`, filesystem reads, or dispatcher status/diff collection are materially slow. Defaults keep complete evidence. Prefer the explicit fast profile when the gate accepts managed reuse and summary evidence:
 
-Keep CodeGraph queries narrow in large repositories. If a broad query times out, record the timeout as context evidence, narrow once to concrete files/symbols, then fall back to `rg --files` plus targeted line reads instead of repeatedly issuing broad CodeGraph queries.
+Use `python ai/locate-code.py "symbol or behavior" --path src --max-files 12` before dispatch to build the `Claude Context Packet` cheaply. It ranks candidate files from path hints and lexical matches, prints short snippets, and suggests exact line reads. If Zoekt is installed and indexed, `--backend auto` uses it before lexical fallback. Sourcegraph can be used when `SOURCEGRAPH_URL` is configured. CodeGraph is bounded: `auto` skips graph search in large tracked-file repos, while `--codegraph try --codegraph-timeout 12` is reserved for specific file/symbol/call-path questions. If CodeGraph times out, record it once and continue with locator output plus targeted line reads instead of repeating broad graph queries.
+
+For optional indexed search setup:
+
+```bash
+python ai/code-search-service.py doctor
+python ai/code-search-service.py install-zoekt --yes
+python ai/code-search-service.py index-zoekt --repo . --yes
+```
 
 Fill `Claude Context Packet` before dispatch in large repositories. Keep it small and execution-facing: target files/modules, relevant symbols, source-of-truth examples, paths Claude must not read or modify, known constraints, and narrow validation commands. If the packet is incomplete, Claude should stop-and-report instead of rediscovering the repository with broad searches.
 

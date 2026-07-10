@@ -44,8 +44,10 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/kill-claude.sh",
     "ai/cleanup-worktree.sh",
     "ai/doctor_workflow.py",
+    "ai/code-search-service.py",
     "ai/clean_runtime.py",
     "ai/install_context_tools.py",
+    "ai/locate-code.py",
     "ai/summarize-loop-run.py",
     "ai/benchmark-loop-runs.py",
     "ai/init-spec.py",
@@ -75,8 +77,10 @@ WORKFLOW_PLAIN_FILE_SOURCES = [
     ("scripts/cleanup-worktree.sh", "ai/cleanup-worktree.sh"),
     ("scripts/pwsh-utf8.ps1", "ai/pwsh-utf8.ps1"),
     ("scripts/doctor_workflow.py", "ai/doctor_workflow.py"),
+    ("scripts/code-search-service.py", "ai/code-search-service.py"),
     ("scripts/clean_runtime.py", "ai/clean_runtime.py"),
     ("scripts/install_context_tools.py", "ai/install_context_tools.py"),
+    ("scripts/locate-code.py", "ai/locate-code.py"),
     ("scripts/summarize-loop-run.py", "ai/summarize-loop-run.py"),
     ("scripts/benchmark-loop-runs.py", "ai/benchmark-loop-runs.py"),
     ("scripts/init-spec.py", "ai/init-spec.py"),
@@ -468,6 +472,36 @@ def _check_context_tools():
     return results
 
 
+def _zoekt_index_path():
+    return os.environ.get(
+        "AI_CODE_ZOEKT_INDEX",
+        os.path.join(os.path.expanduser("~"), ".cache", "ai-coding-workflow", "zoekt"),
+    )
+
+
+def _check_code_search_services():
+    """Return informational code-search backend availability rows."""
+    rows = []
+    zoekt_bins = ["zoekt-git-index", "zoekt-index", "zoekt-query"]
+    missing_zoekt = [name for name in zoekt_bins if not shutil.which(name)]
+    if missing_zoekt:
+        rows.append(("code-search", "Zoekt CLI missing: {}".format(", ".join(missing_zoekt))))
+    else:
+        rows.append(("code-search", "Zoekt CLI available"))
+    index = _zoekt_index_path()
+    rows.append((
+        "code-search",
+        "Zoekt index {}: {}".format(index, "present" if os.path.isdir(index) else "missing"),
+    ))
+    sourcegraph_url = os.environ.get("SOURCEGRAPH_URL", "")
+    if sourcegraph_url:
+        rows.append(("code-search", "Sourcegraph URL configured: {}".format(sourcegraph_url)))
+    else:
+        rows.append(("code-search", "Sourcegraph URL not configured"))
+    rows.append(("code-search", "Docker: {}".format(shutil.which("docker") or "missing")))
+    return rows
+
+
 def run_doctor(repo_path=None):
     """Run all checks. Returns (findings, has_error).
 
@@ -543,10 +577,10 @@ def run_doctor(repo_path=None):
         if tracked_count >= 10000:
             findings.append((WARN, "large-repo", "{} tracked files; dispatch worktree creation may be slow. Fill Worktree / Large Repo Strategy Gate before dispatch.".format(tracked_count)))
             findings.append((INFO, "large-repo", "Recommended fast dispatch when the evidence tradeoff is acceptable: CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo bash ai/dispatch-to-claude.sh <task-card>"))
-            findings.append((INFO, "large-repo", "Before dispatch, fill Claude Context Packet with target files, relevant symbols, source-of-truth examples, forbidden paths, constraints, and narrow validation commands."))
+            findings.append((INFO, "large-repo", "Before dispatch, run ai/locate-code.py for low-token candidates when targets are unclear, then fill Claude Context Packet with target files, relevant symbols, source-of-truth examples, forbidden paths, constraints, and narrow validation commands."))
             findings.append((INFO, "large-repo", "Use Spark task-size-classifier for uncertain scope before spending stronger-model context: bash ai/run-codex-spark.sh <task-card>"))
             findings.append((INFO, "large-repo", "Manual knobs: CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed and CLAUDE_CODE_LARGE_REPO_MODE=1; reset only .worktrees/reuse/claude-managed with CLAUDE_CODE_REUSE_WORKTREE_RESET=1 after preserving evidence."))
-            findings.append((INFO, "codegraph", "For large repositories, keep CodeGraph queries to concrete files/symbols. If a broad query times out, record the timeout, narrow once, then fall back to rg --files plus targeted line reads."))
+            findings.append((INFO, "codegraph", "For large repositories, prefer ai/locate-code.py. Use CodeGraph only for concrete files/symbols with a short timeout; if it times out, record it once and continue with locator output plus targeted line reads."))
             if tracked_count >= 50000:
                 findings.append((WARN, "large-repo", "{} tracked files is very large; prefer local-only workflow bootstrap and managed worktree reuse for repeated dispatches.".format(tracked_count)))
                 findings.append((INFO, "large-repo", "Suggested local-only bootstrap for business repositories: python scripts/install_workflow.py . --local-only"))
@@ -603,6 +637,11 @@ def run_doctor(repo_path=None):
         findings.append((INFO, "context-tools",
                          "All checked context tools are available. "
                          "Note: installing binaries does NOT guarantee Codex LSP/codegraph exposure."))
+
+    # 9. Optional indexed code-search backends
+    for label, message in _check_code_search_services():
+        findings.append((INFO, label, message))
+    findings.append((INFO, "code-search", "Run 'python ai/code-search-service.py doctor' for Zoekt/Sourcegraph setup details."))
 
     return findings, has_error
 

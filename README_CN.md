@@ -65,11 +65,13 @@ ai-coding-workflow/
     update_skill.py     ← 便捷更新 Skill，并可选更新当前项目 workflow
     dispatch-to-claude.sh← 向 Claude Code 分发任务卡
     check-worktree.sh   ← 运行只检查不修改的验证并写入 checker report
+    locate-code.py      ← 低 token 代码定位器，带有受限 CodeGraph 回退
     review-with-codex.sh← 向 Codex/GPT 发送证据审查
     run-codex-spark.sh  ← 可选 gpt-5.3-codex-spark 辅助运行器
     run-parallel-loop.sh← 实验性并行派发辅助脚本
     run-loop.sh         ← 可选循环运行器（调度 + 审查）
     doctor_workflow.py  ← 调度/审查循环就绪检查（只读）
+    code-search-service.py ← 可选 Zoekt/Sourcegraph 设置和诊断
     clean_runtime.py    ← 预览/清理已忽略的运行时产物
     install_context_tools.py ← 检查/安装上下文工具（LSP、代码检查）
     summarize-loop-run.py ← 汇总 workflow 质量、速度、成本和稳定性
@@ -153,10 +155,36 @@ python ~/.codex/skills/ai-coding-workflow/scripts/update_skill.py \
 - LSP 工具，例如 `pyright`、`typescript-language-server`、`gopls`、`rust-analyzer`。
 - CodeGraph CLI 是否可用。
 - 使用 `--bootstrap-current` 或 `--bootstrap-repo` 时，目标仓库是否已经有 `.codegraph/` 索引目录。
+- 可选 Zoekt / Sourcegraph 代码搜索服务是否可用。
 
 安装器只打印建议，不会自动安装 LSP 工具，也不会自动运行 `codegraph init`。如需查看 LSP 安装建议，可运行 `python ~/.codex/skills/ai-coding-workflow/scripts/install_context_tools.py`；如需为某个仓库启用 CodeGraph，请在目标仓库内显式运行 `codegraph init`。
 
-大型仓库里应尽量缩窄 CodeGraph 查询，只问具体文件、符号或调用路径。如果宽查询超时，把 timeout 记录为任务证据，缩窄一次后回退到 `rg --files` 加精确行读取，不要反复提交宽查询。
+交互式安装 skill 时，安装器会询问是否配置可选代码搜索服务。非交互安装会跳过提示。也可以显式控制：
+
+```bash
+python scripts/install_for_codex.py --code-search-services ask
+python scripts/install_for_codex.py --code-search-services skip
+python scripts/install_for_codex.py --code-search-services check
+```
+
+大型仓库里应先使用有边界的代码定位器，而不是把宽问题直接交给 CodeGraph：
+
+```bash
+python ai/locate-code.py "需要修改的符号或行为" --path src --max-files 12
+```
+
+`locate-code.py` 使用 `git ls-files` 加 `rg`/`git grep` 生成候选文件、短 snippet 和精确读取命令。CodeGraph 仍适合具体符号和调用路径，但不再作为大型仓库的默认宽定位器。如果 Zoekt 已安装并完成索引，`--backend auto` 会先使用 Zoekt，再回退到 lexical search。已有 Sourcegraph 服务时，可通过 `SOURCEGRAPH_URL` 接入。CodeGraph 的 `auto` 模式会在 tracked file 数量超过阈值时跳过 CodeGraph；只有具体文件/符号查询才使用 `--codegraph try --codegraph-timeout 12`。
+
+可选索引搜索设置：
+
+```bash
+python ai/code-search-service.py doctor
+python ai/code-search-service.py install-zoekt --yes
+python ai/code-search-service.py index-zoekt --repo . --yes
+AI_CODE_LOCATOR_BACKEND=auto python ai/locate-code.py "需要修改的符号或行为"
+```
+
+Sourcegraph 被视为外部/自托管服务，不是默认本地依赖。运行 `python ai/code-search-service.py sourcegraph-plan` 查看 Docker Compose 指南；服务可用后设置 `SOURCEGRAPH_URL`，需要鉴权时再设置 `SOURCEGRAPH_TOKEN`。
 
 **测试是否生效：**
 
@@ -199,6 +227,8 @@ ai/plan-progress-template.md
 ai/README.md
 ai/dispatch-to-claude.sh
 ai/check-worktree.sh
+ai/code-search-service.py
+ai/locate-code.py
 ai/review-with-codex.sh
 ai/run-codex-spark.sh
 ai/run-parallel-loop.sh
@@ -326,7 +356,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 **默认可选开启：在执行规划中使用 Codex Spark**
 
-如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；优先用更便宜的 Spark 额度判断任务规模和路由，再消耗更贵的 Codex/Claude 强模型上下文。如果 CLI、模型权限、auth、网络、Spark 额度不可用，或本地 helper 因 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
+如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；优先用更便宜的 Spark 额度判断任务规模和路由，再消耗更贵的 Codex/Claude 强模型上下文。已经知道所需辅助角色时，优先显式传 `--mode`；只有需要低风险自动路由时才用 `auto`。如果 CLI、模型权限、auth、网络、Spark 额度不可用，或本地 helper 因 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
 
 - `auto`：默认角色选择。普通派发前解析为 `task-size-classifier`，Checker/Test 任务解析为 `validation-planner`，失败/无报告 artifacts 解析为 `failure-triage`，diff artifacts 解析为 `review-only`，report/evidence artifacts 解析为 `evidence-checker`。
 - `task-size-classifier`：判断任务是 tiny/small/medium/large/unknown，并建议 `codex-fast-path`、`spark-review-only`、`spark-micro-builder`、`claude-builder`、`checker-test`、`spec-first` 或 `human-clarification`。
@@ -336,7 +366,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 - `validation-planner`：给出精确、低噪音验证命令，不运行广域测试。
 - `failure-triage`：在 Claude 卡住/失败后读取有界 artifact 摘要，建议 wait / re-dispatch / narrow / takeover。
 - `evidence-checker`：已有 artifacts 后快速检查证据质量。
-- `micro-builder`：仅用于任务卡明确允许的极小范围修改，并在 helper 创建的隔离 worktree 中执行。
+- `micro-builder`：仅用于任务卡明确允许的极小范围修改，并在 helper 创建的隔离 worktree 中执行；任务卡必须允许 Spark 修改源码、限制为一两个小文件、排除公共 API/契约风险，并给出精确窄验证。
 
 默认 auto 选择只读辅助角色：
 
@@ -377,7 +407,7 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 
 Spark artifacts 会写入 `.worktrees/codex-spark-*`，包括 `codex-spark.report.md`、`codex-spark.prompt.md`、`codex-spark.result.txt`、`codex-spark.stderr.log`、`codex-spark.artifacts.txt`、`codex-spark.worktree-status.txt`，以及可选的 `codex-spark.diff`。helper 不会静默回退到 GPT-5.5 或其他强模型。只有当 Spark 不可用也应该成为硬失败时，才使用 `--require-spark`。
 
-Spark 输出是建议。把采纳和忽略的建议写入 Spark follow-up 表，但不要让 Spark 替代 Claude Builder 责任或 Codex 最终 review。
+Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`conflicts_with_claude`、`conflicts_with_local_evidence` 和 `acceptance_satisfied_by_spark` 写入 Spark follow-up 表。Spark 不能独立满足验收，不能替代 Claude Builder 责任，也不能批准 Codex 最终 review。
 
 **大型仓库 / 慢文件系统**
 

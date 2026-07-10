@@ -301,15 +301,30 @@ def spark_status(
     auto_disable_reason = followup.get("auto_disable_reason") or "not recorded"
     fallback = (
         followup.get("strong_model_fallback_used")
-        or followup.get("strong_model_fallback_used?")
         or "no"
     )
     sandbox = followup.get("sandbox_used") or gate.get("sandbox") or "not recorded"
     task_size = followup.get("task_size_classification") or "not recorded"
     route = followup.get("spark_routing_recommendation") or "not recorded"
     confidence = followup.get("spark_classification_confidence") or "not recorded"
-    accepted = followup.get("spark_suggestions_accepted") or followup.get("spark_result_accepted_by_codex") or "not recorded"
-    ignored = followup.get("spark_suggestions_ignored") or "not recorded"
+    accepted = (
+        followup.get("accepted_suggestions")
+        or followup.get("spark_suggestions_accepted")
+        or followup.get("spark_result_accepted_by_codex")
+        or "not recorded"
+    )
+    ignored = (
+        followup.get("ignored_suggestions")
+        or followup.get("spark_suggestions_ignored")
+        or "not recorded"
+    )
+    conflicts_with_claude = followup.get("conflicts_with_claude") or "not recorded"
+    conflicts_with_local_evidence = followup.get("conflicts_with_local_evidence") or "not recorded"
+    acceptance_satisfied = (
+        followup.get("acceptance_satisfied_by_spark")
+        or followup.get("spark_output_can_satisfy_acceptance")
+        or "no"
+    )
     return {
         "enabled": enabled,
         "invoked": invoked,
@@ -327,6 +342,9 @@ def spark_status(
         "classification_confidence": confidence,
         "accepted_suggestions": accepted,
         "ignored_suggestions": ignored,
+        "conflicts_with_claude": conflicts_with_claude,
+        "conflicts_with_local_evidence": conflicts_with_local_evidence,
+        "acceptance_satisfied_by_spark": acceptance_satisfied,
     }
 
 

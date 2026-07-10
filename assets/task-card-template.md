@@ -180,6 +180,9 @@ Fast path rules:
 
 | Field | Value |
 |-------|-------|
+| Locator command / artifact | `python ai/locate-code.py ...` / artifact path / not needed |
+| Locator backend | auto / lexical / Zoekt / Sourcegraph |
+| CodeGraph status | skipped / not indexed / timed out once / used for concrete symbol |
 | Target files/modules | |
 | Relevant symbols/functions | |
 | Reference examples / source of truth | |
@@ -252,7 +255,7 @@ Advisor timing rules:
 | Field | Value |
 |-------|-------|
 | Spark enabled? | auto / no / yes |
-| Spark purpose | auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
+| Spark purpose | explicit mode preferred / auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / micro-builder / none |
 | Spark model | gpt-5.3-codex-spark |
 | Quota rationale | separate Spark quota / latency / cost / not applicable |
 | Invocation helper | ai/run-codex-spark.sh |
@@ -261,17 +264,21 @@ Advisor timing rules:
 | Source edits allowed? | no / yes, only in micro-builder worktree |
 | Allowed files/modules | |
 | Validation commands allowed | none / exact commands |
+| Micro-builder max files | not allowed / 1-2 small files |
+| Micro-builder public API or contract risk? | not allowed / no |
+| Micro-builder narrow validation | not allowed / exact command |
 | Auto-disable when unavailable? | yes |
 | Auto-disable conditions | missing CLI / model access denied / auth or network blocker / Spark quota exhausted |
 | Strong-model fallback allowed? | no / yes, explicit human approval required |
 | Required Spark artifact | .worktrees/.../codex-spark.report.md |
 | Spark artifact inputs | none / specific `.worktrees/...` files via `--artifact` |
-| Spark result can satisfy acceptance? | no / yes, only for: |
+| Spark result can satisfy acceptance? | no, advisory input only |
 | Spark can replace Claude Builder? | no |
 | Spark can approve final review? | no |
 | Stop conditions | unclear scope / non-availability helper failure / explicit require-spark failure |
 
 Spark rules:
+- Prefer an explicit `Spark purpose` when Codex already knows the needed support role. Use `auto` only for low-risk helper routing when task size or artifact type is uncertain.
 - When `Spark purpose` is `auto`, use `task-size-classifier` before normal dispatch, `validation-planner` before Checker/Test work, `failure-triage` after failed/no-report artifacts, `review-only` for diff review, and `evidence-checker` for report/evidence review.
 - Use `task-size-classifier` to cheaply route work before Codex spends stronger-model tokens: `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`.
 - Prefer `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, or `evidence-checker` before `micro-builder`.
@@ -279,10 +286,11 @@ Spark rules:
 - Use `plan-splitter` to propose Builder/Checker slices or independent parallelizable task cards.
 - Use `validation-planner` to propose exact low-noise checks without running broad suites.
 - Use `failure-triage` with explicit `--artifact` inputs after a stalled/failed run to attribute the failure before spending stronger-model context.
-- Run `micro-builder` only for tiny, explicitly scoped edits and only with `--sandbox workspace-write` in the helper-created isolated worktree.
-- Spark evidence can inform Codex review, but it does not override Claude reports, task-card ownership, or required validation.
+- Run `micro-builder` only when the task card explicitly authorizes Spark source edits, limits scope to one or two small files, rules out public API/data/security/migration/permission/concurrency/cross-module contract risk, names exact narrow validation, and uses `--sandbox workspace-write` in the helper-created isolated worktree.
+- Spark evidence can inform Codex review, but it does not override Claude reports, task-card ownership, or required validation. Spark output cannot independently satisfy acceptance; Codex must verify and record acceptance separately.
 - Treat Spark as default-on optional support. If Spark is unavailable or quota-exhausted, record the auto-disable report and continue the main Claude/Codex workflow.
 - Do not consume GPT-5.5/strong-model quota as an implicit fallback. If Spark is unavailable or insufficient, report the gap and let Codex or the human decide the next model.
+- Final evidence must record `accepted_suggestions`, `ignored_suggestions`, `conflicts_with_claude`, `conflicts_with_local_evidence`, and `acceptance_satisfied_by_spark`.
 
 ## Parallel Execution Gate
 
@@ -532,26 +540,27 @@ Finish rule: do not claim completion from stale evidence, seeded/fallback report
 
 ## Files / Modules
 
-<!-- List the files or modules expected to be modified. Include LSP/codegraph evidence if available. -->
+<!-- List the files or modules expected to be modified. Include LSP/locator/CodeGraph evidence if available. -->
 
 ## Codex Context Budget
 
-<!-- Estimated token budget Codex should spend on context gathering before dispatch. Set to 0 if LSP/codegraph evidence is sufficient. Claude Code handles high-token reads by default. -->
+<!-- Estimated token budget Codex should spend on context gathering before dispatch. Set to 0 if LSP/locator/CodeGraph evidence is sufficient. Claude Code handles high-token reads by default. -->
 
 | Metric | Target |
 |--------|--------|
 | Max Codex context tokens | |
-| LSP/codegraph queries planned | |
+| LSP/locator/CodeGraph queries planned | |
 | Whole-file reads planned (Codex) | |
 
-## LSP / Codegraph Evidence
+## LSP / Locator / CodeGraph Evidence
 
-<!-- Structured low-token evidence gathered before implementation. Attach definitions, references, callers, callees, impact analysis. Prefer this over whole-file reads. -->
+<!-- Structured low-token evidence gathered before implementation. Attach definitions, locator reports, references, callers, callees, impact analysis. Prefer this over whole-file reads. -->
 
 | Query Type | Symbol / File | Result Summary |
 |-----------|---------------|----------------|
 | LSP definition | | |
 | LSP references | | |
+| Locator report | | |
 | Codegraph callers | | |
 | Codegraph impact | | |
 
@@ -580,7 +589,7 @@ Finish rule: do not claim completion from stale evidence, seeded/fallback report
 
 ## Evidence
 
-<!-- LSP/codegraph/MCP data gathered before implementation. Attach definitions, references, callers, callees, impact analysis. -->
+<!-- LSP/locator/CodeGraph/MCP data gathered before implementation. Attach definitions, locator reports, references, callers, callees, impact analysis. -->
 
 ## Execution Rules
 

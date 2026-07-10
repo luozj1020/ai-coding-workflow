@@ -342,6 +342,48 @@ class RunCodexSparkTests(unittest.TestCase):
                 ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "read-only", "-"],
             )
 
+    def test_micro_builder_requires_explicit_tiny_scope_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            task_card = repo / "task-card.md"
+            task_card.write_text(
+                "# Task\n\n## Codex Spark Gate\n\n"
+                "| Field | Value |\n"
+                "|-------|-------|\n"
+                "| Spark enabled? | yes |\n"
+                "| Spark purpose | micro-builder |\n",
+                encoding="utf-8",
+            )
+
+            output_dir = repo / ".worktrees" / "spark-test"
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--mode",
+                    "micro-builder",
+                    "--sandbox",
+                    "workspace-write",
+                    "--output",
+                    bash_path(output_dir),
+                ],
+                cwd=str(repo),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("micro-builder contract missing", result.stderr)
+            self.assertIn("Blocked: Spark micro-builder requires explicit tiny-scope authorization", report)
+            self.assertIn("at most one or two files", report)
+
     def test_missing_codex_auto_disables_without_failing_workflow(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)

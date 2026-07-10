@@ -76,8 +76,10 @@ def write_loop_run(run: pathlib.Path, decision: str, cost: str = "0.10"):
         "| Spark exit code | 0 |\n"
         "| Spark auto-disabled? | no |\n"
         "| Strong-model fallback used? | no |\n"
-        "| Spark suggestions accepted | failure attribution |\n"
-        "| Spark suggestions ignored | none |\n"
+        "| accepted_suggestions | failure attribution |\n"
+        "| ignored_suggestions | none |\n"
+        "| conflicts_with_claude | none |\n"
+        "| acceptance_satisfied_by_spark | no |\n"
         "\n"
         "## Test-First / TDD Follow-up\n\n"
         "| Field | Value |\n"
@@ -168,6 +170,8 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertEqual(report["runs"][0]["spark_confidence"], "medium")
             self.assertEqual(report["runs"][0]["spark_accepted_suggestions"], "failure attribution")
             self.assertEqual(report["runs"][0]["spark_ignored_suggestions"], "none")
+            self.assertEqual(report["runs"][0]["spark_conflicts_with_claude"], "none")
+            self.assertEqual(report["runs"][0]["spark_acceptance_satisfied"], "no")
             self.assertEqual(report["runs"][0]["claude_startup_seconds"], 1)
             self.assertEqual(report["runs"][0]["claude_execution_seconds"], 7)
             self.assertEqual(report["runs"][0]["checker_seconds"], 1)

@@ -91,6 +91,13 @@ def build_context_tools_command(installed_skill_dir):
     return "{} {}".format(quote_cmd_arg(python_cmd), quote_cmd_arg(helper))
 
 
+def build_code_search_command(installed_skill_dir):
+    """Return the optional code-search service helper command."""
+    helper = os.path.join(installed_skill_dir, "scripts", "code-search-service.py")
+    python_cmd = sys.executable or "python"
+    return "{} {}".format(quote_cmd_arg(python_cmd), quote_cmd_arg(helper))
+
+
 def detect_context_tools(repo_path=None):
     """Return read-only LSP/CodeGraph availability information."""
     lsp = []
@@ -153,6 +160,53 @@ def print_context_tool_guidance(installed_skill_dir, repo_path=None):
         print("  CodeGraph init: run `codegraph init` inside each target repository when you want it indexed.")
 
 
+def prompt_yes_no(question, default=False):
+    """Ask a yes/no question on an interactive terminal."""
+    suffix = " [Y/n] " if default else " [y/N] "
+    answer = input(question + suffix).strip().lower()
+    if not answer:
+        return default
+    return answer in {"y", "yes"}
+
+
+def maybe_offer_code_search_services(installed_skill_dir, mode):
+    """Optionally offer Zoekt/Sourcegraph setup after skill installation."""
+    helper = os.path.join(installed_skill_dir, "scripts", "code-search-service.py")
+    if not os.path.isfile(helper):
+        print("\nOptional code-search services: helper not installed; skipping.")
+        return
+
+    print("\nOptional code-search services:")
+    print("  Zoekt: local indexed search for repeated work in large repositories.")
+    print("  Sourcegraph: external/self-hosted service integration; not a default dependency.")
+    print("  Readiness check:")
+    print("    {} doctor".format(build_code_search_command(installed_skill_dir)))
+
+    if mode == "skip":
+        print("  Skipped by --code-search-services=skip.")
+        return
+    if mode == "check":
+        subprocess.run([sys.executable, helper, "doctor"], check=False)
+        return
+    if mode == "ask" and not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("  Non-interactive install; skipping service prompt.")
+        print("  Re-run with --code-search-services=check for diagnostics, or run the helper manually.")
+        return
+
+    if mode == "ask":
+        if not prompt_yes_no("Configure optional code-search services now?", default=False):
+            print("  Skipped optional code-search services.")
+            return
+
+    subprocess.run([sys.executable, helper, "doctor"], check=False)
+    if prompt_yes_no("Install Zoekt CLI tools with `go install` if Go is available?", default=False):
+        subprocess.run([sys.executable, helper, "install-zoekt", "--yes"], check=False)
+    else:
+        print("  Zoekt install skipped.")
+    print("  Sourcegraph setup is not started automatically. To inspect the Docker Compose plan:")
+    print("    {} sourcegraph-plan".format(build_code_search_command(installed_skill_dir)))
+
+
 def should_exclude(name, full_path):
     """Check if a file or directory should be excluded."""
     if name in EXCLUDE_DIRS:
@@ -209,6 +263,12 @@ def parse_args(argv=None):
         "--bootstrap-repo",
         metavar="PATH",
         help="After installing the skill, bootstrap the given repository path.",
+    )
+    parser.add_argument(
+        "--code-search-services",
+        choices=["ask", "skip", "check"],
+        default="ask",
+        help="Ask about optional Zoekt/Sourcegraph services after install, skip, or run a read-only check.",
     )
     args = parser.parse_args(argv)
     if args.bootstrap_current and args.bootstrap_repo:
@@ -298,6 +358,7 @@ def main(argv=None):
         print_context_tool_guidance(dest, bootstrap_repo)
     else:
         print_context_tool_guidance(dest)
+    maybe_offer_code_search_services(dest, args.code_search_services)
 
 
 if __name__ == "__main__":

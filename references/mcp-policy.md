@@ -1,6 +1,6 @@
 # MCP Policy  -  Information Retrieval Order
 
-When gathering information about a codebase, follow this order from cheapest to most expensive. Always start at the top and only move down when the current level is insufficient.
+When gathering information about a codebase, follow this order from cheapest to most expensive. Always start at the top and only move down when the current level is insufficient. In very large repositories, "cheapest" is measured by bounded wall time as well as token volume; a 300 second graph query is not cheap.
 
 ## 1. LSP Definitions, References, Diagnostics
 
@@ -12,7 +12,17 @@ Use the Language Server Protocol to find:
 
 This is the cheapest and most precise form of code intelligence. Use it first for any question about "where is X defined" or "what uses X."
 
-## 2. Codegraph Callers, Callees, Dependencies, Impact Radius
+## 2. Bounded Locator / Codegraph Intelligence
+
+In large repositories, first run the bounded lexical locator:
+
+```bash
+python ai/locate-code.py "symbol or behavior" --path <area> --max-files 12
+```
+
+Use its candidate files, snippets, and suggested line reads to seed the task card's Claude Context Packet. It uses `git ls-files` plus `rg`/`git grep`, which is often cheaper and more predictable than a broad graph query.
+
+Use CodeGraph for concrete files, symbols, callers, callees, dependencies, and impact radius when the query is narrow and bounded by a short timeout. Do not run repeated broad CodeGraph queries in large repositories.
 
 Use codegraph tools to find:
 
@@ -21,7 +31,7 @@ Use codegraph tools to find:
 - Module-level dependency graphs
 - Impact radius of a change  -  what would break if this module changes
 
-Use this when LSP references are not enough  -  for example, when you need to understand the blast radius of a change across modules.
+Use this when LSP references or locator output are not enough  -  for example, when you need to understand the blast radius of a concrete change across modules. If CodeGraph times out once, record the timeout and fall back to targeted search plus line reads.
 
 ## 3. Targeted Search
 
@@ -32,7 +42,7 @@ Use grep, ripgrep, or similar tools to search for:
 - Error messages
 - Documentation references
 
-Use this when LSP and codegraph cannot answer the question  -  for example, searching for a string that appears in comments, configs, or logs.
+Use this when LSP, locator output, and bounded CodeGraph cannot answer the question  -  for example, searching for a string that appears in comments, configs, or logs.
 
 ## 4. Targeted Snippet Reads
 
@@ -48,7 +58,7 @@ Read an entire file when:
 - You need to understand the overall structure
 - Multiple scattered references need to be understood in context
 
-Use this sparingly. If you find yourself reading many whole files, reconsider whether a codegraph or search query would be more efficient.
+Use this sparingly. If you find yourself reading many whole files, reconsider whether `ai/locate-code.py`, a narrower CodeGraph query, or a more focused search would be more efficient.
 
 ## 6. Full Repository Scan
 
@@ -67,7 +77,7 @@ This policy applies to both Codex (during OBSERVE/PLAN) and Claude Code (during 
 ### Codex budget gate
 
 Codex should stop reading and dispatch to Claude when:
-- A file exceeds 200 lines and LSP/codegraph cannot answer the question.
+- A file exceeds 200 lines and LSP/locator/CodeGraph cannot answer the question.
 - More than 3 whole-file reads would be needed to plan the task.
 - A full repository scan is required.
 - Long test logs or CI output need analysis.
@@ -88,4 +98,4 @@ Every task card should include a `## High-Token Delegation Gate` section listing
 
 ## Principle
 
-**Read less, query more.** Every file read costs tokens. LSP and codegraph queries return structured data at a fraction of the cost. Prefer them.
+**Read less, query with budgets.** Every file read costs tokens, but every tool call also costs wall time. Prefer LSP, `ai/locate-code.py`, bounded CodeGraph, and targeted snippets over broad repository reads or repeated graph queries.

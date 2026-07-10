@@ -185,9 +185,11 @@
 | Helper exit behavior | optional-spark / require-spark |
 | Strong-model fallback used? | no / yes + explicit approval artifact |
 | Spark result accepted by Codex? | yes/no/partial |
-| Spark suggestions accepted | none / concise list |
-| Spark suggestions ignored | none / concise list + reason |
-| Conflict with Claude or local evidence? | yes/no + reconciliation |
+| accepted_suggestions | none / concise list |
+| ignored_suggestions | none / concise list + reason |
+| conflicts_with_claude | none / short reconciliation |
+| conflicts_with_local_evidence | none / short reconciliation |
+| acceptance_satisfied_by_spark | no |
 | Remaining Spark-related risk | |
 
 ## Claude Evidence Classification
@@ -345,6 +347,9 @@
 | Untracked scans skipped? | yes/no |
 | Untracked patch evidence skipped? | yes/no |
 | Evidence tradeoff accepted in task card? | yes/no |
+| Locator used? | no / `ai/locate-code.py` artifact path |
+| Locator backend used | auto / lexical / Zoekt / Sourcegraph |
+| CodeGraph status | skipped / not indexed / timed out once / used for concrete symbol |
 | Claude Context Packet provided? | yes/no |
 | Context packet sufficient? | yes/no + gap |
 | Broad repository search avoided? | yes/no |
@@ -470,7 +475,7 @@
 | Metric | Task Card Target | Actual |
 |--------|-----------------|--------|
 | Codex context tokens | | |
-| LSP/codegraph queries run | | |
+| LSP/locator/CodeGraph queries run | | |
 | Whole-file reads (Codex) | | |
 
 ## High-Token Work Delegated

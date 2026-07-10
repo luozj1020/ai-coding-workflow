@@ -65,6 +65,7 @@ ai-coding-workflow/
     update_skill.py      -> Convenience updater for skill + optional repo bootstrap
     dispatch-to-claude.sh -> Dispatch task cards to Claude Code
     check-worktree.sh    -> Run checker-only validation and write a checker report
+    locate-code.py       -> Low-token code locator with bounded CodeGraph fallback
     review-with-codex.sh -> Send evidence to Codex/GPT for review
     run-codex-spark.sh   -> Optional gpt-5.3-codex-spark auxiliary runner
     run-parallel-loop.sh -> Experimental parallel dispatch helper
@@ -75,6 +76,7 @@ ai-coding-workflow/
     cleanup-worktree.sh  -> Remove stopped worktrees while preserving evidence
     pwsh-utf8.ps1        -> Configure PowerShell UTF-8 sessions
     doctor_workflow.py   -> Read-only readiness check for dispatch/review loop
+    code-search-service.py -> Optional Zoekt/Sourcegraph setup and diagnostics
     clean_runtime.py     -> Preview/remove ignored runtime artifacts
     install_context_tools.py -> Check/install context tools (LSP, linting)
     summarize-loop-run.py -> Summarize workflow quality, speed, cost, and stability
@@ -163,10 +165,36 @@ During Skill installation, the installer performs a read-only context intelligen
 - LSP tools such as `pyright`, `typescript-language-server`, `gopls`, and `rust-analyzer`.
 - CodeGraph CLI availability.
 - CodeGraph repository initialization when `--bootstrap-current` or `--bootstrap-repo` is used.
+- Optional code-search service readiness for Zoekt and Sourcegraph.
 
 It only prints suggestions. It does not install LSP tools and does not run `codegraph init` automatically. Use `python ~/.codex/skills/ai-coding-workflow/scripts/install_context_tools.py` to inspect LSP install suggestions, and run `codegraph init` inside a target repository when you want that repository indexed.
 
-In large repositories, keep CodeGraph queries narrow. If a broad query times out, record that timeout in the task evidence, narrow once to concrete files/symbols, then fall back to `rg --files` plus targeted line reads instead of repeatedly issuing broad CodeGraph queries.
+When run from an interactive terminal, the installer asks whether to configure optional code-search services. Non-interactive installs skip the prompt. To control it explicitly:
+
+```bash
+python scripts/install_for_codex.py --code-search-services ask
+python scripts/install_for_codex.py --code-search-services skip
+python scripts/install_for_codex.py --code-search-services check
+```
+
+In large repositories, prefer the bounded locator before spending CodeGraph time:
+
+```bash
+python ai/locate-code.py "symbol or behavior to change" --path src --max-files 12
+```
+
+`locate-code.py` uses `git ls-files` plus `rg`/`git grep` to produce candidate files, short snippets, and targeted read commands. CodeGraph is still useful for concrete symbols and call paths, but it is no longer the default broad locator in large repositories. If Zoekt is installed and indexed, `--backend auto` uses it before lexical fallback. Sourcegraph can be used when `SOURCEGRAPH_URL` is configured. In `auto` CodeGraph mode, the helper skips CodeGraph above a tracked-file threshold; use `--codegraph try --codegraph-timeout 12` only for a specific file/symbol query.
+
+Optional indexed search setup:
+
+```bash
+python ai/code-search-service.py doctor
+python ai/code-search-service.py install-zoekt --yes
+python ai/code-search-service.py index-zoekt --repo . --yes
+AI_CODE_LOCATOR_BACKEND=auto python ai/locate-code.py "symbol or behavior"
+```
+
+Sourcegraph is treated as an external/self-hosted service, not a default local dependency. Use `python ai/code-search-service.py sourcegraph-plan` for Docker Compose guidance, then set `SOURCEGRAPH_URL` and optionally `SOURCEGRAPH_TOKEN` when a service is available.
 
 **Test it works:**
 
@@ -213,6 +241,8 @@ ai/plan-progress-template.md
 ai/README.md
 ai/dispatch-to-claude.sh
 ai/check-worktree.sh
+ai/code-search-service.py
+ai/locate-code.py
 ai/review-with-codex.sh
 ai/run-codex-spark.sh
 ai/run-parallel-loop.sh
@@ -341,11 +371,11 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 `fast-large-repo` uses the managed reuse worktree, skips unrelated untracked scans, and writes summary diff evidence instead of full patch text. It never resets the source repository. If `.worktrees/reuse/claude-managed` already exists, preserve or review its evidence first, then explicitly add `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` to reset only that managed worktree.
 
-For large repositories, fill `Claude Context Packet` before dispatch. Keep it execution-facing and small: target files/modules, relevant symbols, source-of-truth examples, paths Claude must not read or modify, known constraints, and narrow validation commands. If this packet is incomplete, Claude should stop and report instead of rediscovering the whole repository.
+For large repositories, fill `Claude Context Packet` before dispatch. Keep it execution-facing and small: target files/modules, relevant symbols, source-of-truth examples, paths Claude must not read or modify, known constraints, and narrow validation commands. Use `python ai/locate-code.py "symbol or behavior" --path src --max-files 12` to build this packet cheaply. If this packet is incomplete, Claude should stop and report instead of rediscovering the whole repository.
 
 **Default-on optional: use Codex Spark during execution planning**
 
-If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave `Codex Spark Gate` at `auto` for eligible tasks. Spark is auxiliary, not a default Claude replacement; use its cheaper quota for uncertain task-size routing before spending stronger Codex/Claude context. If the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue:
+If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave `Codex Spark Gate` at `auto` for eligible tasks. Spark is auxiliary, not a default Claude replacement; use its cheaper quota for uncertain task-size routing before spending stronger Codex/Claude context. Prefer an explicit `--mode` when you already know the needed support role, and use `auto` when routing is the point. If the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue:
 
 - `auto`: default role selection. It resolves to `task-size-classifier` before normal dispatch, `validation-planner` for Checker/Test tasks, `failure-triage` for failed/no-report artifacts, `review-only` for diff artifacts, and `evidence-checker` for report/evidence artifacts.
 - `task-size-classifier`: classify tiny/small/medium/large/unknown and recommend `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`.
@@ -355,7 +385,7 @@ If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave 
 - `validation-planner`: propose exact low-noise validation commands without running broad suites.
 - `failure-triage`: inspect bounded artifacts after a stalled/failed run and recommend wait/re-dispatch/narrow/takeover.
 - `evidence-checker`: quick evidence sanity check after artifacts exist.
-- `micro-builder`: tiny scoped edits only, in the helper-created isolated worktree.
+- `micro-builder`: tiny scoped edits only, in the helper-created isolated worktree, and only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and names exact narrow validation.
 
 Run the default auto-selected read-only helper:
 
@@ -396,7 +426,7 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode micro-builder --sand
 
 Spark artifacts are written under `.worktrees/codex-spark-*`, including `codex-spark.report.md`, `codex-spark.prompt.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.artifacts.txt`, `codex-spark.worktree-status.txt`, and optional `codex-spark.diff`. The helper does not silently fall back to GPT-5.5 or another stronger model. If local helper initialization fails, for example due to an app-server write requirement, the helper marks Spark auto-disabled and exits 0 unless `--require-spark` was used.
 
-Spark output is advisory. Record accepted and ignored suggestions in the Spark follow-up table, but do not let Spark replace Claude Builder ownership or Codex final review.
+Spark output is advisory. Record `accepted_suggestions`, `ignored_suggestions`, `conflicts_with_claude`, `conflicts_with_local_evidence`, and `acceptance_satisfied_by_spark` in the Spark follow-up table. Spark cannot independently satisfy acceptance, replace Claude Builder ownership, or approve Codex final review.
 
 **Large repositories / slow filesystems**
 

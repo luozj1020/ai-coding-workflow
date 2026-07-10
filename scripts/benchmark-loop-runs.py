@@ -95,6 +95,8 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "spark_confidence": spark_status.get("classification_confidence", ""),
                 "spark_accepted_suggestions": spark_status.get("accepted_suggestions", ""),
                 "spark_ignored_suggestions": spark_status.get("ignored_suggestions", ""),
+                "spark_conflicts_with_claude": spark_status.get("conflicts_with_claude", ""),
+                "spark_acceptance_satisfied": spark_status.get("acceptance_satisfied_by_spark", ""),
                 "spark_strong_fallback_used": spark_status.get(
                     "strong_model_fallback",
                     codex_spark_followup.get("strong_model_fallback_used", ""),
@@ -179,8 +181,8 @@ def render_markdown(report: dict) -> str:
         "",
         "## Runs",
         "",
-        "| Run | Decision | Quality | Seconds | Claude Startup | Claude Exec | Checker | Finalize | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Mode | Spark Size | Spark Route | Spark Confidence | Spark Model | Spark Accepted | Spark Ignored | Parallel | Spec | TDD | Stability |",
-        "|-----|----------|---------|---------|----------------|-------------|---------|----------|-------|--------|------|------|------|---------|---------------|-------|------------|------------|-------------|------------------|-------------|----------------|---------------|----------|------|-----|-----------|",
+        "| Run | Decision | Quality | Seconds | Claude Startup | Claude Exec | Checker | Finalize | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Mode | Spark Size | Spark Route | Spark Confidence | Spark Model | Spark Accepted | Spark Ignored | Spark Conflicts | Spark Acceptance | Parallel | Spec | TDD | Stability |",
+        "|-----|----------|---------|---------|----------------|-------------|---------|----------|-------|--------|------|------|------|---------|---------------|-------|------------|------------|-------------|------------------|-------------|----------------|---------------|-----------------|------------------|----------|------|-----|-----------|",
     ]
     if report["runs"]:
         for run in report["runs"]:
@@ -190,7 +192,8 @@ def render_markdown(report: dict) -> str:
                 "{output_tokens} | {total_cost_usd} | {loop_type} | {benchmark_tags} | {advisor_model} | "
                 "{advisor_calls} | {spark_invoked} | {spark_purpose} | {spark_task_size} | {spark_route} | "
                 "{spark_confidence} | {spark_model} | {spark_accepted_suggestions} | "
-                "{spark_ignored_suggestions} | {parallel_helper_invoked} | {spec_matched} | {tdd_mode} | {stability_findings} |".format(
+                "{spark_ignored_suggestions} | {spark_conflicts_with_claude} | {spark_acceptance_satisfied} | "
+                "{parallel_helper_invoked} | {spec_matched} | {tdd_mode} | {stability_findings} |".format(
                     **{key: format_value(value) for key, value in run.items()}
                 )
             )

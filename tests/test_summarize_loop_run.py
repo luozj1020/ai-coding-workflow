@@ -71,8 +71,11 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "| Spark exit code | 0 |\n"
                 "| Spark auto-disabled? | no |\n"
                 "| Strong-model fallback used? | no |\n"
-                "| Spark suggestions accepted | validation file placement |\n"
-                "| Spark suggestions ignored | none |\n"
+                "| accepted_suggestions | validation file placement |\n"
+                "| ignored_suggestions | none |\n"
+                "| conflicts_with_claude | none |\n"
+                "| conflicts_with_local_evidence | none |\n"
+                "| acceptance_satisfied_by_spark | no |\n"
                 "\n"
                 "## Parallel Execution Follow-up\n\n"
                 "| Field | Value |\n"
@@ -196,6 +199,9 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["spark_status"]["auto_disabled"], "no")
             self.assertEqual(summary["spark_status"]["accepted_suggestions"], "validation file placement")
             self.assertEqual(summary["spark_status"]["ignored_suggestions"], "none")
+            self.assertEqual(summary["spark_status"]["conflicts_with_claude"], "none")
+            self.assertEqual(summary["spark_status"]["conflicts_with_local_evidence"], "none")
+            self.assertEqual(summary["spark_status"]["acceptance_satisfied_by_spark"], "no")
             self.assertEqual(summary["claude_evidence"]["evidence_state"], "valid report without diff")
             self.assertEqual(summary["claude_evidence"]["valid_report"], "yes")
             self.assertEqual(summary["parallel_execution_gate"]["parallel_allowed"], "yes")
@@ -220,6 +226,8 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertIn("| routing_recommendation | codex-fast-path |", markdown)
             self.assertIn("| invoked | yes |", markdown)
             self.assertIn("| accepted_suggestions | validation file placement |", markdown)
+            self.assertIn("| conflicts_with_claude | none |", markdown)
+            self.assertIn("| acceptance_satisfied_by_spark | no |", markdown)
             self.assertIn("## Claude Evidence Classification", markdown)
             self.assertIn("| evidence_state | valid report without diff |", markdown)
 

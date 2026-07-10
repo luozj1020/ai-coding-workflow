@@ -243,6 +243,30 @@ if [ "$MODE" = "micro-builder" ] && [ "$SANDBOX" != "workspace-write" ]; then
     exit 1
 fi
 
+micro_builder_contract_missing() {
+    if ! grep -Eiq 'micro-builder' "$TASK_CARD_COPY"; then
+        echo "micro-builder mode is not explicitly authorized in the task card"
+        return 0
+    fi
+    if ! grep -Eiq 'Source edits allowed\?[[:space:]]*\|[[:space:]]*yes|Source edits allowed[[:space:]]*\|[[:space:]]*yes' "$TASK_CARD_COPY"; then
+        echo "task card does not explicitly allow Spark source edits"
+        return 0
+    fi
+    if ! grep -Eiq '1-2 files|1 or 2 files|one or two files|no more than two files|max files[[:space:]]*\|[[:space:]]*1-2' "$TASK_CARD_COPY"; then
+        echo "task card does not limit Spark micro-builder scope to one or two files"
+        return 0
+    fi
+    if ! grep -Eiq 'public API[[:space:]/_-]*(risk)?[[:space:]]*\|[[:space:]]*no|no public API|no API contract' "$TASK_CARD_COPY"; then
+        echo "task card does not rule out public API or contract risk"
+        return 0
+    fi
+    if ! grep -Eiq 'narrow validation|focused validation|exact validation|Validation command' "$TASK_CARD_COPY"; then
+        echo "task card does not provide narrow validation for Spark micro-builder"
+        return 0
+    fi
+    return 1
+}
+
 write_report_header() {
     local exit_value="${1:-pending}"
     local diff_value="${2:-pending}"
@@ -271,10 +295,13 @@ write_report_header() {
         echo "| Auto-disable reason | ${SPARK_DISABLE_REASON} |"
         echo "| Helper exit behavior | $([ "$REQUIRE_SPARK" = "1" ] && echo require-spark || echo optional-spark) |"
         echo "| Strong-model fallback used | no |"
+        echo "| Spark output can satisfy acceptance? | no, advisory only unless Codex separately verifies and records acceptance |"
         echo "| Spark result accepted by Codex? | pending review |"
-        echo "| Spark suggestions accepted | pending Codex review |"
-        echo "| Spark suggestions ignored | pending Codex review |"
-        echo "| Conflict with Claude or local evidence? | pending review |"
+        echo "| accepted_suggestions | pending Codex review |"
+        echo "| ignored_suggestions | pending Codex review |"
+        echo "| conflicts_with_claude | pending review |"
+        echo "| conflicts_with_local_evidence | pending review |"
+        echo "| acceptance_satisfied_by_spark | no |"
         echo "| Remaining Spark-related risk | pending review |"
         echo "| Artifact directory | ${OUTPUT_DIR} |"
         echo "| Task card copy | ${TASK_CARD_COPY} |"
@@ -389,6 +416,20 @@ append_artifact_excerpts() {
 }
 
 if [ "$MODE" = "micro-builder" ]; then
+    MICRO_BUILDER_MISSING="$(micro_builder_contract_missing || true)"
+    if [ -n "$MICRO_BUILDER_MISSING" ]; then
+        {
+            echo "## Result"
+            echo ""
+            echo "Blocked: Spark micro-builder requires explicit tiny-scope authorization."
+            echo ""
+            echo "Missing contract: ${MICRO_BUILDER_MISSING}."
+            echo ""
+            echo "Required task-card evidence: micro-builder authorization, source edits allowed, at most one or two files, no public API/contract risk, and narrow validation."
+        } >> "$REPORT_FILE"
+        echo "Error: micro-builder contract missing: ${MICRO_BUILDER_MISSING}" >&2
+        exit 2
+    fi
     SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
     if [ -n "$SOURCE_STATUS" ] && [ "$ALLOW_DIRTY_SOURCE" != "1" ]; then
         {
@@ -428,6 +469,8 @@ Operating rules:
 - Treat Claude-owned implementation as Claude-owned unless this task card explicitly authorizes Spark micro-builder work.
 - Do not claim completion from prose alone. Cite artifacts, commands, or diffs.
 - If blocked by missing context, permissions, model access, network, or auth, report the blocker instead of guessing.
+- Spark output is advisory input to Codex review. It cannot replace Claude Builder ownership, cannot approve final review, and cannot by itself satisfy acceptance criteria.
+- End your output with these fields exactly: accepted_suggestions=<none or comma-separated>; ignored_suggestions=<none or comma-separated>; conflicts_with_claude=<none or short note>; conflicts_with_local_evidence=<none or short note>; acceptance_satisfied_by_spark=no.
 
 Mode contract:
 - task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output exactly these fields: size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown; risk_flags=none or comma-separated public-api,data-model,security,migration,permission,concurrency,cross-module,broad-context,validation-complexity; reason=one short paragraph; stop_condition=one sentence.
@@ -437,7 +480,7 @@ Mode contract:
 - validation-planner: propose exact low-noise validation commands and state whether local validation should be skipped; do not run commands unless the task card explicitly allows it.
 - failure-triage: inspect provided artifacts for likely stall/failure attribution and recommend wait/re-dispatch/narrow/takeover; do not edit files.
 - evidence-checker: inspect evidence artifacts and run only narrow, task-card-allowed checks; do not edit files.
-- micro-builder: make only the explicitly scoped source edits in this isolated worktree, keep the diff minimal, and report validation evidence.
+- micro-builder: only when the task card explicitly authorizes tiny isolated work. Touch no more than one or two small files, avoid public API/data/security/migration/permission/concurrency/cross-module contracts, keep the diff minimal, and report narrow validation evidence.
 
 ## Task Card
 

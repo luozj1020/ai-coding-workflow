@@ -71,8 +71,10 @@ POWERSHELL_SCRIPTS = [
 # Python helpers to install (source relative to scripts/, dest relative to repo root)
 PYTHON_SCRIPTS = [
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
+    ("code-search-service.py", "ai/code-search-service.py"),
     ("clean_runtime.py", "ai/clean_runtime.py"),
     ("install_context_tools.py", "ai/install_context_tools.py"),
+    ("locate-code.py", "ai/locate-code.py"),
     ("summarize-loop-run.py", "ai/summarize-loop-run.py"),
     ("benchmark-loop-runs.py", "ai/benchmark-loop-runs.py"),
     ("init-spec.py", "ai/init-spec.py"),

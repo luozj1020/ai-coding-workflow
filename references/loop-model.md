@@ -6,7 +6,7 @@ The AI coding workflow is an explicit observe/plan/execute/verify/review/learn l
 
 Core principle:
 
-**Codex designs and reviews. Claude Code edits. LSP/codegraph/MCP tools gather low-token evidence first.**
+**Codex designs and reviews. Claude Code edits. LSP/locator/CodeGraph/MCP tools gather low-token evidence first.**
 
 ## State Machine
 
@@ -126,7 +126,7 @@ Each handoff should be directly checkable:
 **Actions:**
 
 - Read the task card fully before editing.
-- Prefer LSP/codegraph/MCP evidence before broad file reads.
+- Prefer LSP/locator/CodeGraph/MCP evidence before broad file reads.
 - Check Task Mode, Testing Responsibility, and Stall / Ambiguity Triage before editing.
 - If one task card mixes Builder and Checker/Test responsibilities without `mixed-exception`, stop-and-report with a split recommendation.
 - Record permission/tool approval blockers explicitly instead of waiting silently.

@@ -129,6 +129,9 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn("CodeGraph CLI:", output)
             self.assertIn("CodeGraph init:", output)
             self.assertIn("install_context_tools.py", output)
+            self.assertIn("Optional code-search services", output)
+            self.assertIn("code-search-service.py", output)
+            self.assertIn("Non-interactive install; skipping service prompt", output)
             self.assertTrue((skills_dir / "ai-coding-workflow" / "SKILL.md").exists())
 
     def test_main_bootstrap_repo_installs_workflow_directory(self):
@@ -141,7 +144,7 @@ class InstallForCodexTests(unittest.TestCase):
             try:
                 stdout = io.StringIO()
                 with contextlib.redirect_stdout(stdout):
-                    self.module.main(["--bootstrap-repo", str(repo)])
+                    self.module.main(["--bootstrap-repo", str(repo), "--code-search-services", "skip"])
             finally:
                 self.module.get_codex_skills_dir = old_get
 
@@ -149,8 +152,14 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertTrue((repo / "CLAUDE.md").exists())
             self.assertTrue((repo / "ai" / "dispatch-to-claude.sh").exists())
             self.assertTrue((repo / "ai" / "doctor_workflow.py").exists())
+            self.assertTrue((repo / "ai" / "code-search-service.py").exists())
             self.assertIn("Context intelligence check", stdout.getvalue())
             self.assertIn("CodeGraph index for", stdout.getvalue())
+            self.assertIn("Skipped by --code-search-services=skip", stdout.getvalue())
+
+    def test_parse_args_accepts_code_search_services_skip(self):
+        args = self.module.parse_args(["--code-search-services", "skip"])
+        self.assertEqual(args.code_search_services, "skip")
 
     def test_detect_context_tools_reports_codegraph_initialization(self):
         with tempfile.TemporaryDirectory() as tmp:
