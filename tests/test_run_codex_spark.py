@@ -1805,6 +1805,32 @@ stop_condition=scope expands"""
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("fast-path-max-diff-lines", result.stderr)
 
+    def test_fast_path_threshold_environment_is_enforced(self):
+        result, output_dir, prompt_path = self._run(
+            self.SAFE_OUTPUT, env_extra={"CODEX_FAST_PATH_MAX_DIFF_LINES": "12"}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("predicted upper diff <= 12 lines", prompt_path.read_text(encoding="utf-8"))
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Safety eligible | no |", report)
+        self.assertIn("diff-high-exceeds-12", report)
+
+    def test_cost_confidence_precedes_classifier_confidence(self):
+        result, output_dir, _ = self._run(self.SAFE_OUTPUT + "\nconfidence=low")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Cost confidence | high |", report)
+        self.assertIn("| Safety eligible | yes |", report)
+
+    def test_missing_cost_field_is_never_fast_path_eligible(self):
+        output = self.SAFE_OUTPUT.replace("delegation_to_direct_ratio=2.67\n", "")
+        result, output_dir, _ = self._run(output)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Delegation-to-direct ratio | not recorded |", report)
+        self.assertIn("| Safety eligible | no |", report)
+        self.assertIn("| Recommended owner | claude-builder |", report)
+
     def test_direct_estimator_returns_only_model_result_and_no_artifacts(self):
         result, output_dir, _ = self._run(self.SAFE_OUTPUT, result_mode="direct")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
