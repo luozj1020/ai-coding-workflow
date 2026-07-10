@@ -616,6 +616,7 @@ class RunCodexSparkTests(unittest.TestCase):
         fake_codex.write_text(
             "#!/usr/bin/env bash\n"
             "printf '%s\\n' \"$@\" > \"$CODEX_FAKE_ARGS\"\n"
+            "if [ -n \"${CODEX_FAKE_CWD:-}\" ]; then pwd > \"$CODEX_FAKE_CWD\"; fi\n"
             "cat > \"$CODEX_FAKE_STDIN\"\n"
             "echo '" + output_text + "'\n",
             encoding="utf-8",
