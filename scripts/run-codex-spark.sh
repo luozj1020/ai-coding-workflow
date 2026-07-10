@@ -315,6 +315,23 @@ write_report_header() {
 
 write_report_header
 
+if [ "$MODE" = "micro-builder" ]; then
+    MICRO_BUILDER_MISSING="$(micro_builder_contract_missing || true)"
+    if [ -n "$MICRO_BUILDER_MISSING" ]; then
+        {
+            echo "## Result"
+            echo ""
+            echo "Blocked: Spark micro-builder requires explicit tiny-scope authorization."
+            echo ""
+            echo "Missing contract: ${MICRO_BUILDER_MISSING}."
+            echo ""
+            echo "Required task-card evidence: micro-builder authorization, source edits allowed, at most one or two files, no public API/contract risk, and narrow validation."
+        } >> "$REPORT_FILE"
+        echo "Error: micro-builder contract missing: ${MICRO_BUILDER_MISSING}" >&2
+        exit 2
+    fi
+fi
+
 auto_disable_spark() {
     local reason="$1"
     local codex_exit="${2:-not-run}"
@@ -416,20 +433,6 @@ append_artifact_excerpts() {
 }
 
 if [ "$MODE" = "micro-builder" ]; then
-    MICRO_BUILDER_MISSING="$(micro_builder_contract_missing || true)"
-    if [ -n "$MICRO_BUILDER_MISSING" ]; then
-        {
-            echo "## Result"
-            echo ""
-            echo "Blocked: Spark micro-builder requires explicit tiny-scope authorization."
-            echo ""
-            echo "Missing contract: ${MICRO_BUILDER_MISSING}."
-            echo ""
-            echo "Required task-card evidence: micro-builder authorization, source edits allowed, at most one or two files, no public API/contract risk, and narrow validation."
-        } >> "$REPORT_FILE"
-        echo "Error: micro-builder contract missing: ${MICRO_BUILDER_MISSING}" >&2
-        exit 2
-    fi
     SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
     if [ -n "$SOURCE_STATUS" ] && [ "$ALLOW_DIRTY_SOURCE" != "1" ]; then
         {
