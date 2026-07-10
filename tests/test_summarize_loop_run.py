@@ -341,10 +341,10 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "| Spark pipeline stage | preflight |\n"
                 "| Spark calls used | 1 |\n"
                 "| Spark roles executed | reviewer, auditor |\n"
-                "| Spark budget mode requested | standard |\n"
-                "| Spark budget mode effective | standard |\n"
-                "| Spark provisional acceptance | yes |\n"
-                "| Strong review required | no |\n"
+                "| Spark budget mode requested | balanced |\n"
+                "| Spark budget mode effective | balanced |\n"
+                "| Spark provisional acceptance | not applicable |\n"
+                "| Strong review required | yes |\n"
                 "| Merge authorized | no |\n"
                 "| Task size classification | tiny |\n"
                 "| Spark routing recommendation | codex-fast-path |\n"
@@ -372,11 +372,11 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "| Spark pipeline stage | postflight |\n"
                 "| Spark calls used | 1 |\n"
                 "| Spark roles executed | triage, fixer |\n"
-                "| Spark budget mode requested | extended |\n"
-                "| Spark budget mode effective | extended |\n"
-                "| Spark provisional acceptance | no |\n"
+                "| Spark budget mode requested | aggressive |\n"
+                "| Spark budget mode effective | aggressive |\n"
+                "| Spark provisional acceptance | pending output |\n"
                 "| Strong review required | yes |\n"
-                "| Merge authorized | yes |\n"
+                "| Merge authorized | no |\n"
                 "| Task size classification | small |\n"
                 "| Spark routing recommendation | claude-builder |\n"
                 "| Spark classification confidence | medium |\n"
@@ -406,11 +406,11 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 spark["unique_roles_executed"],
                 ["reviewer", "auditor", "triage", "fixer"],
             )
-            self.assertEqual(spark["unique_budget_requested"], ["standard", "extended"])
-            self.assertEqual(spark["unique_budget_effective"], ["standard", "extended"])
-            self.assertEqual(spark["unique_provisional_acceptance"], ["yes", "no"])
-            self.assertEqual(spark["unique_strong_review_required"], ["no", "yes"])
-            self.assertEqual(spark["unique_merge_authorized"], ["no", "yes"])
+            self.assertEqual(spark["unique_budget_requested"], ["balanced", "aggressive"])
+            self.assertEqual(spark["unique_budget_effective"], ["balanced", "aggressive"])
+            self.assertEqual(spark["unique_provisional_acceptance"], ["not applicable", "pending output"])
+            self.assertEqual(spark["unique_strong_review_required"], ["yes"])
+            self.assertEqual(spark["unique_merge_authorized"], ["no"])
 
             markdown = module.render_markdown(summary)
             self.assertIn("| helper_invocation_count | 2 |", markdown)
@@ -533,7 +533,7 @@ class SummarizeLoopRunTests(unittest.TestCase):
             summary = module.summarize(run)
             spark = summary["spark_status"]
 
-            self.assertEqual(spark["enabled"], "no")
+            self.assertEqual(spark["enabled"], "not recorded")
             self.assertEqual(spark["invoked"], "no")
             self.assertEqual(spark["helper_invocation_count"], 0)
             self.assertEqual(spark["total_spark_calls"], 0)

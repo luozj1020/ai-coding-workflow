@@ -241,10 +241,10 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
                 "| Spark pipeline stage | preflight |\n"
                 "| Spark calls used | 1 |\n"
                 "| Spark roles executed | reviewer |\n"
-                "| Spark budget mode requested | standard |\n"
-                "| Spark budget mode effective | standard |\n"
-                "| Spark provisional acceptance | yes |\n"
-                "| Strong review required | no |\n"
+                "| Spark budget mode requested | balanced |\n"
+                "| Spark budget mode effective | balanced |\n"
+                "| Spark provisional acceptance | not applicable |\n"
+                "| Strong review required | yes |\n"
                 "| Merge authorized | no |\n"
                 "| Spark auto-disabled? | no |\n",
                 encoding="utf-8",
@@ -260,11 +260,11 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
                 "| Spark pipeline stage | postflight |\n"
                 "| Spark calls used | 1 |\n"
                 "| Spark roles executed | triage |\n"
-                "| Spark budget mode requested | extended |\n"
-                "| Spark budget mode effective | extended |\n"
-                "| Spark provisional acceptance | no |\n"
+                "| Spark budget mode requested | aggressive |\n"
+                "| Spark budget mode effective | aggressive |\n"
+                "| Spark provisional acceptance | pending output |\n"
                 "| Strong review required | yes |\n"
-                "| Merge authorized | yes |\n"
+                "| Merge authorized | no |\n"
                 "| Spark auto-disabled? | no |\n",
                 encoding="utf-8",
             )
@@ -316,11 +316,11 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertEqual(r1["spark_unique_modes"], ["review-only", "failure-triage"])
             self.assertEqual(r1["spark_unique_pipeline_stages"], ["preflight", "postflight"])
             self.assertEqual(r1["spark_unique_roles"], ["reviewer", "triage"])
-            self.assertEqual(r1["spark_budget_requested"], ["standard", "extended"])
-            self.assertEqual(r1["spark_budget_effective"], ["standard", "extended"])
-            self.assertEqual(r1["spark_provisional_acceptance"], ["yes", "no"])
-            self.assertEqual(r1["spark_strong_review_required"], ["no", "yes"])
-            self.assertEqual(r1["spark_merge_authorized"], ["no", "yes"])
+            self.assertEqual(r1["spark_budget_requested"], ["balanced", "aggressive"])
+            self.assertEqual(r1["spark_budget_effective"], ["balanced", "aggressive"])
+            self.assertEqual(r1["spark_provisional_acceptance"], ["not applicable", "pending output"])
+            self.assertEqual(r1["spark_strong_review_required"], ["yes"])
+            self.assertEqual(r1["spark_merge_authorized"], ["no"])
 
             # Per-run staged fields for run2 (single followup, no spark_calls_used)
             r2 = report["runs"][1]
