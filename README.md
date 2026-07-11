@@ -68,6 +68,8 @@ The control loop is **OBSERVE → PLAN → DISPATCH → EXECUTE → VERIFY → R
 | **Update Skill** | After pulling a newer checkout | `python scripts/update_skill.py --bootstrap-current` |
 | **Bootstrap project** | Once per repository | `python scripts/install_workflow.py .` |
 | **Bootstrap local-only** | Repositories that should not commit workflow control-plane files | `python scripts/install_workflow.py . --local-only` |
+| **Auto-setup repo** | Detect profiles and plan LSP/CodeGraph/Zoekt | `python scripts/install_for_codex.py --auto-setup /path/to/repo` |
+| **Auto-setup apply** | Install missing LSP tools and init CodeGraph/Zoekt | `python scripts/install_for_codex.py --auto-setup /path/to/repo --apply` |
 | **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
 
 These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create or refresh the target repository's `ai/` directory. Already bootstrapped projects keep local copies of `ai/dispatch-to-claude.sh`, `ai/task-card-template.md`, and other workflow files. Use `update_skill.py --bootstrap-current` or `install_workflow.py . --update-workflow-files` to refresh those local copies after updating the Skill.
@@ -1006,6 +1008,43 @@ flags: `--apply PROFILE`, `--manager MANAGER`, and `--yes`.
 Note: installing context tool binaries does NOT automatically expose them as
 Codex LSP/codegraph tools. The Codex agent must be configured separately to
 use them.
+
+### Auto-setup a repository
+
+The `--auto-setup` flag detects the repository's language profiles and plans
+or configures workflow files, installs LSP tools, initializes CodeGraph, and
+installs the Zoekt CLI:
+
+```bash
+# Preview: show what would be done (read-only, no mutation)
+python scripts/install_for_codex.py --auto-setup /path/to/repo
+
+# Apply: actually install missing tools
+python scripts/install_for_codex.py --auto-setup /path/to/repo --apply
+```
+
+**Language detection** scans tracked file extensions. Supported profiles:
+`python` (`.py`), `node` (`.ts`, `.tsx`, `.js`, `.jsx`), `go` (`.go`),
+`rust` (`.rs`).
+
+**Scale classification** uses git tracked file count:
+- `small` (≤ 500 files): CodeGraph and Zoekt are skipped.
+- `medium` (501–5000 files): CodeGraph is eligible; Zoekt is skipped.
+- `large` (> 5000 files): both CodeGraph and Zoekt are eligible.
+
+**Manager selection** prefers user-level managers that do not require
+privileged OS mutation. Preference order: pip, npm, cargo, go, rustup,
+brew, scoop. If no safe manager is available for a tool, it is reported as
+`manual/blocked` — this is guidance, not an error.
+
+**CodeGraph** is reused if `.codegraph/` already exists. It is initialized
+only when the CLI is on PATH, `--apply` is set, and the repository is at
+least medium scale.
+
+**Zoekt** is only for large repositories. If all required binaries exist they
+are reused. If missing and `--apply` is set, the `code-search-service.py`
+helper installs them via `go install`. Sourcegraph remains guidance-only and
+is never auto-deployed.
 
 ---
 

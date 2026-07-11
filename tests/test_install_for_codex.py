@@ -1,9 +1,13 @@
 import contextlib
 import importlib.util
 import io
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -197,6 +201,316 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn(str(installer), cmd)
             self.assertIn("--bootstrap-repo", cmd)
             self.assertIn("/tmp/repo", cmd)
+
+
+class TestParseArgsAutoSetup(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def test_auto_setup_accepted(self):
+        args = self.module.parse_args(["--auto-setup", "/tmp/repo"])
+        self.assertEqual(args.auto_setup, "/tmp/repo")
+        self.assertFalse(args.apply)
+
+    def test_auto_setup_with_apply(self):
+        args = self.module.parse_args(["--auto-setup", "/tmp/repo", "--apply"])
+        self.assertEqual(args.auto_setup, "/tmp/repo")
+        self.assertTrue(args.apply)
+
+    def test_apply_without_auto_setup_errors(self):
+        with self.assertRaises(SystemExit):
+            self.module.parse_args(["--apply"])
+
+
+class TestDetectRepoProfiles(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def _track_all(self, repo):
+        subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+        subprocess.run(["git", "add", "."], cwd=repo, capture_output=True, check=True)
+
+    def test_detects_python(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / "main.py").write_text("pass\n")
+            self._track_all(tmp)
+            profiles = self.module.detect_repo_profiles(tmp)
+            self.assertEqual(profiles, {"python"})
+
+    def test_detects_multiple_languages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / "main.py").write_text("pass\n")
+            (pathlib.Path(tmp) / "index.ts").write_text("const x = 1;\n")
+            (pathlib.Path(tmp) / "lib.go").write_text("package lib\n")
+            (pathlib.Path(tmp) / "lib.rs").write_text("fn main() {}\n")
+            self._track_all(tmp)
+            profiles = self.module.detect_repo_profiles(tmp)
+            self.assertEqual(profiles, {"python", "node", "go", "rust"})
+
+    def test_empty_repo_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profiles = self.module.detect_repo_profiles(tmp)
+            self.assertEqual(profiles, set())
+
+    def test_ignores_untracked_vendor_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / "node_modules" / "pkg").mkdir(parents=True)
+            (pathlib.Path(tmp) / "node_modules" / "pkg" / "index.js").write_text("x\n")
+            (pathlib.Path(tmp) / "main.py").write_text("pass\n")
+            subprocess.run(["git", "init"], cwd=tmp, capture_output=True, check=True)
+            subprocess.run(["git", "add", "main.py"], cwd=tmp, capture_output=True, check=True)
+            profiles = self.module.detect_repo_profiles(tmp)
+            self.assertEqual(profiles, {"python"})
+
+
+class TestClassifyRepoScale(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def test_negative_is_unknown(self):
+        self.assertEqual(self.module.classify_repo_scale(-1), "unknown")
+
+    def test_small(self):
+        self.assertEqual(self.module.classify_repo_scale(0), "small")
+        self.assertEqual(self.module.classify_repo_scale(100), "small")
+        self.assertEqual(self.module.classify_repo_scale(500), "small")
+
+    def test_medium(self):
+        self.assertEqual(self.module.classify_repo_scale(501), "medium")
+        self.assertEqual(self.module.classify_repo_scale(5000), "medium")
+
+    def test_large(self):
+        self.assertEqual(self.module.classify_repo_scale(5001), "large")
+
+
+class TestCountTrackedFiles(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def test_counts_tracked_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init"], cwd=tmp, capture_output=True, check=True)
+            (pathlib.Path(tmp) / "a.txt").write_text("a\n")
+            subprocess.run(["git", "add", "a.txt"], cwd=tmp, capture_output=True, check=True)
+            count = self.module.count_tracked_files(tmp)
+            self.assertEqual(count, 1)
+
+    def test_returns_negative_for_non_git(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.module.count_tracked_files(tmp), -1)
+
+
+class TestSelectInstallPlan(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def _make_ctx(self, tools, available=False):
+        ctx = MagicMock()
+        ctx.SUGGESTIONS = {"test": tools}
+        ctx._is_available = MagicMock(return_value=available)
+        return ctx
+
+    def test_prefers_pip_over_apt(self):
+        tool = {"name": "tool-a", "check": ["tool-a"],
+                "commands": {"pip": ["pip", "install", "tool-a"],
+                             "apt": ["apt", "install", "-y", "tool-a"]}}
+        ctx = self._make_ctx([tool])
+        with patch("shutil.which") as mock:
+            mock.side_effect=lambda c: "/usr/bin/" + c if c == "pip" else None
+            plan, manual = self.module.select_install_plan("test", ctx)
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0][1], ["pip", "install", "tool-a"])
+        self.assertEqual(manual, [])
+
+    def test_reports_manual_when_no_manager(self):
+        tool = {"name": "tool-a", "check": ["tool-a"],
+                "commands": {"apt": ["apt", "install", "-y", "tool-a"]}}
+        ctx = self._make_ctx([tool])
+        with patch("shutil.which", return_value=None):
+            plan, manual = self.module.select_install_plan("test", ctx)
+        self.assertEqual(plan, [])
+        self.assertEqual(manual, ["tool-a"])
+
+    def test_skips_available_tools(self):
+        tool = {"name": "tool-a", "check": ["tool-a"],
+                "commands": {"pip": ["pip", "install", "tool-a"]}}
+        ctx = self._make_ctx([tool], available=True)
+        plan, manual = self.module.select_install_plan("test", ctx)
+        self.assertEqual(plan, [])
+        self.assertEqual(manual, [])
+
+
+class TestPlanCodegraph(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def test_reuse_when_initialized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / ".codegraph").mkdir()
+            result = self.module.plan_codegraph(tmp, False, "large", 5000)
+            self.assertEqual(result["status"], "reuse")
+
+    def test_skip_small_repos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.module.plan_codegraph(tmp, False, "small", 50)
+            self.assertEqual(result["status"], "skip")
+
+    def test_manual_when_cli_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("shutil.which", return_value=None):
+                result = self.module.plan_codegraph(tmp, False, "large", 5000)
+            self.assertEqual(result["status"], "manual")
+
+    def test_preview_plan_when_cli_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("shutil.which", return_value="/usr/bin/codegraph"):
+                result = self.module.plan_codegraph(tmp, False, "large", 5000)
+            self.assertEqual(result["status"], "plan")
+            self.assertIsNone(result.get("argv"))
+
+    def test_apply_sets_argv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("shutil.which", return_value="/usr/bin/codegraph"):
+                result = self.module.plan_codegraph(tmp, True, "large", 5000)
+            self.assertEqual(result["status"], "install")
+            self.assertEqual(result["argv"], ["codegraph", "init"])
+
+
+class TestPlanZoekt(unittest.TestCase):
+    """Zoekt routing tests mock shutil.which to be machine-independent."""
+
+    def setUp(self):
+        self.module = load_module()
+
+    def test_skip_non_large(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.module.plan_zoekt(tmp, tmp, False, "medium")
+            self.assertEqual(result["status"], "skip")
+            self.assertIn("large", result["detail"])
+
+    def test_reuse_when_binaries_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("shutil.which", return_value="/usr/bin/zoekt"):
+                result = self.module.plan_zoekt(tmp, tmp, False, "large")
+            self.assertEqual(result["status"], "reuse")
+
+    def test_plan_when_binaries_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("shutil.which", return_value=None):
+                result = self.module.plan_zoekt(tmp, tmp, False, "large")
+            self.assertEqual(result["status"], "plan")
+            self.assertIn("missing", result["detail"])
+
+    def test_apply_invokes_helper_argv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = pathlib.Path(tmp) / "skill"
+            (skill / "scripts").mkdir(parents=True)
+            helper = skill / "scripts" / "code-search-service.py"
+            helper.write_text("# stub\n")
+            with patch("shutil.which", return_value=None):
+                result = self.module.plan_zoekt(tmp, str(skill), True, "large")
+            self.assertEqual(result["status"], "install")
+            self.assertEqual(result["argv"][0], sys.executable)
+            self.assertEqual(result["argv"][-2:], ["install-zoekt", "--yes"])
+
+    def test_apply_blocked_when_helper_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("shutil.which", return_value=None):
+                result = self.module.plan_zoekt(tmp, "/nonexistent/skill", True, "large")
+            self.assertEqual(result["status"], "blocked")
+
+
+class TestRunAutoSetup(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def _make_repo(self, tmp):
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("pass\n")
+        subprocess.run(["git", "init"], cwd=str(repo),
+                       capture_output=True, check=True)
+        subprocess.run(["git", "add", "."], cwd=str(repo),
+                       capture_output=True, check=True)
+        return repo
+
+    def _make_skill(self, tmp):
+        skill = pathlib.Path(tmp) / "skill"
+        (skill / "scripts").mkdir(parents=True)
+        (skill / "scripts" / "install_context_tools.py").write_text(
+            "SUGGESTIONS = {}\nALL_MANAGERS = []\n"
+            "def _is_available(c): return True\n",
+            encoding="utf-8",
+        )
+        return skill
+
+    def test_preview_no_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            skill = self._make_skill(tmp)
+            with patch("shutil.which", return_value=None):
+                result = self.module.run_auto_setup(str(repo), str(skill), apply=False)
+            self.assertFalse(result["apply"])
+            self.assertFalse(result["workflow_ready"])
+            self.assertIsNone(result["workflow_result"])
+            self.assertEqual(result["lsp_results"], {})
+            self.assertIsNone(result["codegraph_result"])
+            self.assertIsNone(result["zoekt_result"])
+
+    def test_cli_preview_does_not_install_skill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            home = pathlib.Path(tmp) / "home"
+            home.mkdir()
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--auto-setup", str(repo)],
+                cwd=str(ROOT), env=env, text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((home / ".codex").exists())
+
+    def test_apply_bootstraps_missing_project_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            skill = self._make_skill(tmp)
+            with patch.object(self.module, "run_bootstrap") as bootstrap, \
+                 patch("shutil.which", return_value=None):
+                result = self.module.run_auto_setup(str(repo), str(skill), apply=True)
+            bootstrap.assert_called_once_with(str(skill), str(repo.resolve()))
+            self.assertTrue(result["workflow_result"])
+
+    def test_apply_runs_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            skill = self._make_skill(tmp)
+            with patch("shutil.which", return_value=None):
+                result = self.module.run_auto_setup(str(repo), str(skill), apply=True)
+            self.assertTrue(result["apply"])
+
+    def test_report_is_deterministic(self):
+        result = {
+            "repo": "/tmp/repo", "file_count": 100, "scale": "small",
+            "profiles": ["python"],
+            "lsp_plans": {"python": ([("pyright", ["pip", "install", "pyright"])], [])},
+            "lsp_results": {},
+            "codegraph": {"component": "codegraph", "status": "skip",
+                          "detail": "small repository (100 files)"},
+            "codegraph_result": None,
+            "zoekt": {"component": "zoekt", "status": "skip",
+                      "detail": "small repository"},
+            "zoekt_result": None,
+            "apply": False,
+        }
+        report = self.module.format_auto_setup_report(result)
+        self.assertIn("Auto-setup for: /tmp/repo", report)
+        self.assertIn("Repository scale: small", report)
+        self.assertIn("CodeGraph: skip", report)
+        self.assertIn("Zoekt: skip", report)
+        # Preview mode shows the command, not a status
+        self.assertIn("pip install pyright", report)
 
 
 if __name__ == "__main__":

@@ -41,7 +41,27 @@ From a cloned copy, install the skill and bootstrap a repository:
 python scripts/install_for_codex.py --bootstrap-repo /path/to/repo
 ```
 
-After skill installation, `install_for_codex.py` performs a read-only context intelligence check for common LSP tools, CodeGraph CLI availability, `.codegraph/` initialization for bootstrapped repositories, and optional Zoekt/Sourcegraph code-search service readiness. In an interactive terminal it asks whether to configure optional code-search services; non-interactive installs skip the prompt. Use `--code-search-services skip` or `--code-search-services check` for deterministic automation. It does not install LSP tools or run `codegraph init` automatically.
+Auto-detect language profiles and plan LSP/CodeGraph/Zoekt setup for a
+repository (preview only):
+
+```bash
+python scripts/install_for_codex.py --auto-setup /path/to/repo
+```
+
+Apply the auto-setup plan (install missing tools, initialize CodeGraph, and install Zoekt when warranted):
+
+```bash
+python scripts/install_for_codex.py --auto-setup /path/to/repo --apply
+```
+
+`--auto-setup` scans tracked file extensions to detect profiles (python, node,
+go, rust), classifies repository scale from the git file count, selects the
+best user-level package manager for missing LSP tools, and plans CodeGraph
+(initialized for medium/large repos) and Zoekt (large repos only). Without
+`--apply` it is a read-only preview. When no safe manager exists, tools are
+reported as `manual/blocked` — this is guidance, not an error.
+
+After skill installation, `install_for_codex.py` also performs a read-only context intelligence check for common LSP tools, CodeGraph CLI availability, `.codegraph/` initialization for bootstrapped repositories, and optional Zoekt/Sourcegraph code-search service readiness. In an interactive terminal it asks whether to configure optional code-search services; non-interactive installs skip the prompt. Use `--code-search-services skip` or `--code-search-services check` for deterministic automation. It does not install LSP tools or run `codegraph init` automatically.
 
 ## Modes
 
