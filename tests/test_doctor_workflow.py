@@ -737,5 +737,448 @@ class InventoryTests(unittest.TestCase):
         self.assertLess(result["approximate_bytes"], 5000)
 
 
+class HashPathCLITests(unittest.TestCase):
+    """CLI tests for --hash-path: positional compat, repeated flags, >20 rejection."""
+
+    def _make_repo(self, tmp):
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+        return repo
+
+    def _commit(self, repo):
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(repo), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=str(repo), capture_output=True, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=str(repo), capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True, check=True)
+
+    def test_positional_repo_invocation_with_hash_path(self):
+        """Positional repo-path arg works together with --hash-path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            (repo / "a.txt").write_text("a", encoding="utf-8")
+            self._commit(repo)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(repo), "--hash-path", "a.txt"],
+                cwd=str(ROOT), text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+            self.assertIn("hash-check", result.stdout)
+
+    def test_repeated_hash_path_accepted(self):
+        """Multiple --hash-path flags are accepted and all paths are checked."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            (repo / "a.txt").write_text("a", encoding="utf-8")
+            (repo / "b.txt").write_text("b", encoding="utf-8")
+            self._commit(repo)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(repo),
+                 "--hash-path", "a.txt", "--hash-path", "b.txt"],
+                cwd=str(ROOT), text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+            self.assertIn("2 path(s)", result.stdout)
+            self.assertIn("a.txt", result.stdout)
+            self.assertIn("b.txt", result.stdout)
+
+    def test_rejects_more_than_20_hash_paths(self):
+        """CLI rejects --hash-path repeated more than 20 times."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            (repo / "f.txt").write_text("x", encoding="utf-8")
+            args = [sys.executable, str(SCRIPT), str(repo)]
+            for _ in range(21):
+                args.extend(["--hash-path", "f.txt"])
+            result = subprocess.run(
+                args, cwd=str(ROOT), text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("21", result.stdout)
+            self.assertIn("maximum", result.stdout.lower())
+
+
+class HashPathValidationTests(unittest.TestCase):
+    """Unit tests for _validate_hash_path bounds, traversal, and rejection."""
+
+    def _make_repo_with_file(self, tmp):
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+        f = repo / "test.txt"
+        f.write_text("hello", encoding="utf-8")
+        return repo
+
+    def test_rejects_absolute_path(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo_with_file(tmp)
+            ok, err = module._validate_hash_path("/etc/passwd", str(repo))
+            self.assertFalse(ok)
+            self.assertIn("absolute", err)
+
+    def test_rejects_traversal_path(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo_with_file(tmp)
+            ok, err = module._validate_hash_path("../outside/file.txt", str(repo))
+            self.assertFalse(ok)
+            self.assertIn("traversal", err)
+
+    def test_rejects_missing_path(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo_with_file(tmp)
+            ok, err = module._validate_hash_path("nonexistent.txt", str(repo))
+            self.assertFalse(ok)
+            self.assertIn("does not exist", err)
+
+    def test_rejects_directory_path(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo_with_file(tmp)
+            (repo / "subdir").mkdir()
+            ok, err = module._validate_hash_path("subdir", str(repo))
+            self.assertFalse(ok)
+            self.assertIn("directory", err)
+
+    def test_rejects_outside_symlink(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo_with_file(tmp)
+            outside = pathlib.Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "secret.txt").write_text("secret", encoding="utf-8")
+            link = repo / "link.txt"
+            os.symlink(str(outside / "secret.txt"), str(link))
+            ok, err = module._validate_hash_path("link.txt", str(repo))
+            self.assertFalse(ok)
+            self.assertIn("outside", err)
+
+    def test_accepts_valid_relative_file(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo_with_file(tmp)
+            ok, err = module._validate_hash_path("test.txt", str(repo))
+            self.assertTrue(ok)
+            self.assertIsNone(err)
+
+    def test_cli_rejects_absolute_hash_path(self):
+        """CLI exits nonzero for absolute --hash-path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(repo), "--hash-path", "/etc/passwd"],
+                cwd=str(ROOT), text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("absolute", result.stdout)
+
+    def test_cli_rejects_traversal_hash_path(self):
+        """CLI exits nonzero for traversal --hash-path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(repo), "--hash-path", "../outside"],
+                cwd=str(ROOT), text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("traversal", result.stdout)
+
+    def test_cli_rejects_missing_hash_path(self):
+        """CLI exits nonzero for nonexistent --hash-path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(repo), "--hash-path", "nope.txt"],
+                cwd=str(ROOT), text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("does not exist", result.stdout)
+
+    def test_cli_rejects_directory_hash_path(self):
+        """CLI exits nonzero for directory --hash-path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / "subdir").mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(repo), "--hash-path", "subdir"],
+                cwd=str(ROOT), text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("directory", result.stdout)
+
+
+class HashPathDiagnosticsTests(unittest.TestCase):
+    """Tests for _hash_path_diagnostics: matching, mismatch, read-only guarantee."""
+
+    def _make_committed_repo(self, tmp):
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(repo), capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=str(repo), capture_output=True, check=True)
+        return repo
+
+    def test_matching_hash_reports_target_only_match(self):
+        """Committed file with unchanged content reports hash match and target-only scope."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_committed_repo(tmp)
+            (repo / "file.txt").write_text("content", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo), capture_output=True, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True, check=True)
+            findings = module._hash_path_diagnostics(str(repo), ["file.txt"])
+            text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+            self.assertIn("target-only", text)
+            self.assertIn("does not prove global", text)
+            self.assertIn("match", text.lower())
+
+    def test_mismatch_clean_status_reports_stat_cache_mismatch(self):
+        """Hash mismatch with clean status reports possible stat-cache/index mismatch."""
+        module = load_module()
+        real_run = subprocess.run
+
+        def mock_run(cmd, *args, **kwargs):
+            if len(cmd) >= 2 and cmd[0] == "git" and cmd[1] == "status":
+                # Return clean status regardless of actual state
+                class _R:
+                    returncode = 0
+                    stdout = ""
+                return _R()
+            return real_run(cmd, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_committed_repo(tmp)
+            (repo / "file.txt").write_text("original", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo), capture_output=True, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True, check=True)
+            # Modify file so filesystem hash differs from index hash
+            (repo / "file.txt").write_text("modified", encoding="utf-8")
+
+            old_run = subprocess.run
+            subprocess.run = mock_run
+            try:
+                findings = module._hash_path_diagnostics(str(repo), ["file.txt"])
+            finally:
+                subprocess.run = old_run
+
+            text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+            self.assertIn("stat-cache/index mismatch", text)
+            self.assertIn("possible", text)
+
+    def test_hash_diagnostics_never_invokes_mutating_commands(self):
+        """_hash_path_diagnostics only calls read-only git commands."""
+        module = load_module()
+        real_run = subprocess.run
+        call_log = []
+
+        def tracking_run(cmd, *args, **kwargs):
+            call_log.append(list(cmd))
+            return real_run(cmd, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_committed_repo(tmp)
+            (repo / "file.txt").write_text("content", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo), capture_output=True, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True, check=True)
+
+            old_run = subprocess.run
+            subprocess.run = tracking_run
+            try:
+                module._hash_path_diagnostics(str(repo), ["file.txt"])
+            finally:
+                subprocess.run = old_run
+
+            mutating = {"add", "commit", "reset", "checkout", "clean", "push", "merge", "rebase", "revert"}
+            for call in call_log:
+                if len(call) >= 2 and call[0] == "git":
+                    self.assertNotIn(call[1], mutating,
+                                     "Mutating git command invoked: {}".format(call))
+
+    def test_read_only_wording_in_hash_findings(self):
+        """Hash diagnostics include read-only wording (never automatic, human judgment)."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_committed_repo(tmp)
+            (repo / "file.txt").write_text("content", encoding="utf-8")
+            subprocess.run(["git", "add", "file.txt"], cwd=str(repo), capture_output=True, check=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True, check=True)
+            findings = module._hash_path_diagnostics(str(repo), ["file.txt"])
+            text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+            self.assertIn("never automatic", text)
+            self.assertIn("human judgment", text)
+
+
+class RuntimeHelperTests(unittest.TestCase):
+    """Tests that missing runtime helpers are reported in workflow-helpers category."""
+
+    def test_missing_runtime_helpers_reported_separately(self):
+        """Unbootstrapped repo reports runtime helpers in workflow-helpers category."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            findings, has_error = module.run_doctor(str(repo))
+
+        self.assertTrue(has_error)
+        categories = [f[1] for f in findings]
+        self.assertIn("workflow-helpers", categories)
+
+    def test_runtime_helpers_include_dispatch_status_watch(self):
+        """Missing helpers include dispatcher, status, and watch scripts."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            findings, has_error = module.run_doctor(str(repo))
+
+        helper_findings = [f for f in findings if f[1] == "workflow-helpers"]
+        self.assertTrue(len(helper_findings) > 0)
+        text = "\n".join("{} [{}] {}".format(*f) for f in helper_findings)
+        self.assertIn("dispatch-to-claude.sh", text)
+        self.assertIn("status-claude.sh", text)
+        self.assertIn("watch-claude.sh", text)
+
+    def test_runtime_helpers_include_checker_spark_parallel(self):
+        """Missing helpers include checker, Spark, and parallel scripts."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            findings, has_error = module.run_doctor(str(repo))
+
+        helper_findings = [f for f in findings if f[1] == "workflow-helpers"]
+        text = "\n".join("{} [{}] {}".format(*f) for f in helper_findings)
+        self.assertIn("check-worktree.sh", text)
+        self.assertIn("run-codex-spark.sh", text)
+        self.assertIn("run-parallel-loop.sh", text)
+
+    def test_bootstrap_command_still_shown(self):
+        """Bootstrap/refresh command is still reported for unbootstrapped repos."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            findings, has_error = module.run_doctor(str(repo))
+
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("Bootstrap/refresh command", text)
+        self.assertIn("install_workflow.py", text)
+
+
+class LargeRepoMessagingTests(unittest.TestCase):
+    """Tests for large-repo messaging: conditional, execution-only/retry variables."""
+
+    def test_large_repo_messaging_is_conditional(self):
+        """Large-repo warnings do not appear for repos below threshold."""
+        module = load_module()
+        old_count = module._tracked_file_count
+        try:
+            module._tracked_file_count = lambda repo_root: 5000
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = pathlib.Path(tmp) / "repo"
+                repo.mkdir()
+                subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+                findings, has_error = module.run_doctor(str(repo))
+        finally:
+            module._tracked_file_count = old_count
+
+        large_repo = [f for f in findings if f[1] == "large-repo"]
+        # Below 10000 should have only an INFO entry, no WARN
+        for level, cat, msg in large_repo:
+            self.assertEqual(level, "INFO",
+                             msg="Unexpected non-INFO large-repo finding: {}".format(msg))
+
+    def test_large_repo_messaging_includes_execution_only_variable(self):
+        """Large-repo messaging includes CLAUDE_CODE_BUILDER_MODE=execution-only."""
+        module = load_module()
+        old_count = module._tracked_file_count
+        try:
+            module._tracked_file_count = lambda repo_root: 20000
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = pathlib.Path(tmp) / "repo"
+                repo.mkdir()
+                subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+                findings, has_error = module.run_doctor(str(repo))
+        finally:
+            module._tracked_file_count = old_count
+
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("CLAUDE_CODE_BUILDER_MODE=execution-only", text)
+
+    def test_large_repo_messaging_includes_retry_variable(self):
+        """Large-repo messaging includes CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID."""
+        module = load_module()
+        old_count = module._tracked_file_count
+        try:
+            module._tracked_file_count = lambda repo_root: 20000
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = pathlib.Path(tmp) / "repo"
+                repo.mkdir()
+                subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+                findings, has_error = module.run_doctor(str(repo))
+        finally:
+            module._tracked_file_count = old_count
+
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID", text)
+
+    def test_large_repo_messaging_mentions_conditional_gate(self):
+        """Large-repo messaging mentions the conditional gate for reuse/fast dispatch."""
+        module = load_module()
+        old_count = module._tracked_file_count
+        try:
+            module._tracked_file_count = lambda repo_root: 20000
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = pathlib.Path(tmp) / "repo"
+                repo.mkdir()
+                subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+                findings, has_error = module.run_doctor(str(repo))
+        finally:
+            module._tracked_file_count = old_count
+
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("low risk", text)
+        self.assertIn("exact targets", text)
+        self.assertIn("serial safety", text)
+
+    def test_very_large_repo_still_reports_evidence_mode(self):
+        """Very large repos (>=50000) still report CLAUDE_CODE_EVIDENCE_MODE=summary."""
+        module = load_module()
+        old_count = module._tracked_file_count
+        try:
+            module._tracked_file_count = lambda repo_root: 50000
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = pathlib.Path(tmp) / "repo"
+                repo.mkdir()
+                subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+                findings, has_error = module.run_doctor(str(repo))
+        finally:
+            module._tracked_file_count = old_count
+
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("CLAUDE_CODE_EVIDENCE_MODE=summary", text)
+
+
 if __name__ == "__main__":
     unittest.main()
