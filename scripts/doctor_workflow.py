@@ -164,10 +164,13 @@ def _count_runtime_artifacts(repo_root):
     worktrees_dir = os.path.join(repo_root, ".worktrees")
     worktree_count = 0
     if os.path.isdir(worktrees_dir):
-        for entry in os.listdir(worktrees_dir):
-            if entry == ".gitkeep":
-                continue
-            worktree_count += 1
+        try:
+            for entry in os.listdir(worktrees_dir):
+                if entry == ".gitkeep":
+                    continue
+                worktree_count += 1
+        except OSError:
+            pass
 
     tmp_count = 0
     for entry in glob.glob(os.path.join(repo_root, "tmp-*")):
