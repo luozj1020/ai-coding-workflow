@@ -1573,6 +1573,16 @@ progress_log "Claude child exited: pid=${CLAUDE_PID}, exit_status=${CLAUDE_STATU
 
 END_EPOCH="$(date +%s)"
 ELAPSED=$((END_EPOCH - START_EPOCH))
+# Git Bash can lose visibility of a background wrapper PID while its script
+# descendant is still running.  If that makes the monitor leave its loop, use
+# the completed run's elapsed time to preserve the first-progress contract.
+if [ "$CLAUDE_FIRST_PROGRESS_TIMED_OUT" -eq 0 ] && \
+   [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && \
+   [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
+   [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ]; then
+    CLAUDE_FIRST_PROGRESS_TIMED_OUT=1
+    progress_log "First-progress timeout reconciled after child exit: elapsed_seconds=${ELAPSED}, timeout_seconds=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}"
+fi
 progress_log "Claude subprocess ended; dispatcher finalizing artifacts: pid=${CLAUDE_PID}, wait_status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
 FINAL_NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" 0)"
 progress_log "Final network snapshot: ${FINAL_NETWORK_SUMMARY}"

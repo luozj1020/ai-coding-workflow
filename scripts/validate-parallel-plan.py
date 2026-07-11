@@ -169,6 +169,7 @@ def validate_plan(plan_path: str) -> tuple[dict, list[str]]:
 
         # task_card
         task_card = task.get("task_card")
+        resolved_task_card = ""
         if task_card is None:
             errors.append(f"{prefix}: missing required key: task_card")
         elif not isinstance(task_card, str):
@@ -179,6 +180,7 @@ def validate_plan(plan_path: str) -> tuple[dict, list[str]]:
             errors.append(f"{prefix}: task_card contains control characters or TSV-unsafe characters (tab/newline)")
         else:
             resolved = str(Path(plan_dir, task_card).resolve())
+            resolved_task_card = resolved
             if not Path(resolved).is_file():
                 errors.append(f"{prefix}: task_card not found: {task_card} (resolved: {resolved})")
             norm_card = os.path.normpath(task_card)
@@ -209,7 +211,9 @@ def validate_plan(plan_path: str) -> tuple[dict, list[str]]:
             "id": task_id or "",
             "task_card": task_card or "",
             "depends_on": depends_on if isinstance(depends_on, list) else [],
-            "resolved_task_card": str(Path(plan_dir, task_card).resolve()) if task_card and isinstance(task_card, str) else "",
+            # Resolve only after validation.  On Windows, pathlib raises before
+            # the accumulated TSV-safety error can be reported for tabs/newlines.
+            "resolved_task_card": resolved_task_card,
         })
 
     # Cross-task dependency validation (unknown deps, cycles)
