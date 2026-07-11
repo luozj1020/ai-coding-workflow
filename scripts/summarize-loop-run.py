@@ -22,6 +22,21 @@ ACK_RE = re.compile(
     re.I,
 )
 
+# Patterns for detecting approval/permission-blocked validation
+APPROVAL_BLOCKED_RE = re.compile(
+    r"blocked\s+by\s+(approval|permission)|"
+    r"(approval|permission)\s+blocked|"
+    r"waiting\s+for\s+(approval|permission)|"
+    r"needs?\s+(approval|permission)|"
+    r"requires?\s+(approval|permission)|"
+    r"pending\s+(approval|permission)|"
+    r"(approval|permission)\s+required|"
+    r"cannot\s+proceed\s+without\s+(approval|permission)|"
+    r"validation\s+blocked|"
+    r"blocked\s+validation",
+    re.I,
+)
+
 
 def read_text(path: Path) -> str:
     try:
@@ -233,6 +248,88 @@ def classify_claude_evidence(artifacts: dict[str, list[Path]], decision: str) ->
         "accepted_without_valid_report": "yes" if state == "no report but diff accepted" else "no",
         "claude_report_count": str(len(claude_reports)),
     }
+
+
+def parse_claude_validation_state(
+    artifacts: dict[str, list[Path]],
+    claude_evidence: dict[str, str],
+) -> str:
+    """Parse Claude validation state conservatively from report/progress/status evidence.
+
+    Returns one of: 'passed', 'failed', 'blocked_by_approval', 'blocked_by_permission', 'unknown'.
+    """
+    # Combine evidence from progress, report (non-spark), and status files
+    evidence_paths = (
+        artifacts["progress"]
+        + [p for p in artifacts["report"] if not is_spark_report(p)]
+        + artifacts["status"]
+    )
+    evidence_text = "\n".join(read_text(path) for path in evidence_paths)
+    lowered = evidence_text.lower()
+
+    # Check for approval/permission blocking (conservative: require explicit evidence)
+    if APPROVAL_BLOCKED_RE.search(evidence_text):
+        # Distinguish between approval and permission blocking
+        if re.search(r"blocked\s+by\s+permission|permission\s+blocked|waiting\s+for\s+permission|needs?\s+permission|requires?\s+permission|pending\s+permission|permission\s+required|cannot\s+proceed\s+without\s+permission", evidence_text, re.I):
+            return "blocked_by_permission"
+        return "blocked_by_approval"
+
+    # Check for explicit validation failure evidence
+    if re.search(r"validation\s+failed|validation\s+error|failed\s+validation", lowered):
+        return "failed"
+
+    # Check for explicit validation success evidence
+    if re.search(r"validation\s+(passed|succeeded|complete|successful)|validated\s+successfully", lowered):
+        return "passed"
+
+    # Infer from evidence state
+    evidence_state = claude_evidence.get("evidence_state", "")
+    if evidence_state in ("diff + valid report", "no report but diff accepted"):
+        return "passed"
+    if evidence_state in ("acknowledgement only", "no useful progress"):
+        return "unknown"
+    if evidence_state == "fallback report":
+        return "unknown"
+
+    # Default: unknown
+    return "unknown"
+
+
+def compute_final_validation_state(
+    claude_state: str,
+    checker_results: list[str],
+) -> tuple[str, str]:
+    """Compute authoritative final validation state with precedence.
+
+    Precedence rules:
+    - checker FAILED -> ('failed', 'checker_failed')
+    - checker ALL GREEN -> ('passed', 'checker_passed')
+    - checker skipped/missing -> ('skipped', 'checker_skipped') if no checker data
+    - otherwise retain Claude state or unknown
+
+    Returns (final_state, reason).
+    """
+    # Check for checker failures first (highest precedence)
+    if any(result == "FAILED" for result in checker_results):
+        return "failed", "checker_failed"
+
+    # Check for checker success
+    if any(result == "ALL GREEN" for result in checker_results):
+        return "passed", "checker_passed"
+
+    # No checker results at all -> skipped/policy
+    if not checker_results or all(result == "MISSING" for result in checker_results):
+        # If Claude state is definitive, retain it; otherwise mark as skipped
+        if claude_state in ("passed", "failed"):
+            return claude_state, "claude_only"
+        return "skipped", "checker_skipped"
+
+    # Checker has unknown status; retain Claude state if available
+    if claude_state in ("passed", "failed", "blocked_by_approval", "blocked_by_permission"):
+        return claude_state, "claude_retained"
+
+    # Fallback
+    return "unknown", "insufficient_evidence"
 
 
 def parse_markdown_table_fields(text: str, heading: str) -> dict[str, str]:
@@ -578,6 +675,10 @@ def summarize(path: Path) -> dict:
     )
 
     claude_evidence = classify_claude_evidence(artifacts, decision)
+    claude_validation_state = parse_claude_validation_state(artifacts, claude_evidence)
+    final_validation_state, final_validation_reason = compute_final_validation_state(
+        claude_validation_state, checker_results,
+    )
     normalized_spark_status = spark_status(
         codex_spark_gate,
         codex_spark_followups,
@@ -616,7 +717,10 @@ def summarize(path: Path) -> dict:
         },
         "artifacts": {key: len(value) for key, value in artifacts.items()},
         "claude_evidence": claude_evidence,
+        "claude_validation_state": claude_validation_state,
         "checker_results": checker_results,
+        "final_validation_state": final_validation_state,
+        "final_validation_reason": final_validation_reason,
     }
 
 
@@ -771,6 +875,11 @@ def render_markdown(summary: dict) -> str:
             lines.append(f"- Checker {idx}: {result}")
     else:
         lines.append("- No checker reports found.")
+
+    lines.extend(["", "## Validation State", "", "| Field | Value |", "|-------|-------|"])
+    lines.append(f"| claude_validation_state | {summary['claude_validation_state']} |")
+    lines.append(f"| final_validation_state | {summary['final_validation_state']} |")
+    lines.append(f"| final_validation_reason | {summary['final_validation_reason']} |")
 
     lines.extend(["", "## Stability Findings", ""])
     if summary["stability"]["findings"]:
