@@ -342,7 +342,7 @@ class TestDispatchConstraints(unittest.TestCase):
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/auth",
                     "Owned contracts": "",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t1",
                     "Validation command": "pytest tests/t1",
                 }},
@@ -350,7 +350,7 @@ class TestDispatchConstraints(unittest.TestCase):
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/auth/login.py",
                     "Owned contracts": "",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t2",
                     "Validation command": "pytest tests/t2",
                 }},
@@ -367,14 +367,14 @@ class TestDispatchConstraints(unittest.TestCase):
                 {"id": "t1", "gate": {
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/shared.py",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t1",
                     "Validation command": "pytest",
                 }},
                 {"id": "t2", "gate": {
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/shared.py",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t2",
                     "Validation command": "pytest",
                 }},
@@ -390,14 +390,14 @@ class TestDispatchConstraints(unittest.TestCase):
                 {"id": "t1", "gate": {
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/auth",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t1",
                     "Validation command": "pytest tests/t1",
                 }},
                 {"id": "t2", "gate": {
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/api",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t2",
                     "Validation command": "pytest tests/t2",
                 }},
@@ -413,7 +413,7 @@ class TestDispatchConstraints(unittest.TestCase):
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/a",
                     "Owned contracts": "user-auth-api",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t1",
                     "Validation command": "pytest",
                 }},
@@ -421,7 +421,7 @@ class TestDispatchConstraints(unittest.TestCase):
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/b",
                     "Owned contracts": "user-auth-api",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t2",
                     "Validation command": "pytest",
                 }},
@@ -485,13 +485,13 @@ class TestDispatchConstraints(unittest.TestCase):
                 {"id": "t1", "gate": {
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/a",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     # No Validation owner or command
                 }},
                 {"id": "t2", "gate": {
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/b",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t2",
                     "Validation command": "pytest",
                 }},
@@ -506,11 +506,11 @@ class TestDispatchConstraints(unittest.TestCase):
             plan_path = self._make_plan_with_cards(tmp_path, [
                 {"id": "task-a", "gate": {
                     "Allowed files/modules": "src/shared",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                 }},
                 {"id": "task-b", "depends_on": ["task-a"], "gate": {
                     "Allowed files/modules": "src/shared/sub",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                 }},
             ])
             result = self._run_dispatch_validation(plan_path)
@@ -529,7 +529,7 @@ class TestDispatchConstraints(unittest.TestCase):
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/a",
                     "Owned contracts": "",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t1",
                     "Validation command": "pytest",
                 }},
@@ -537,7 +537,7 @@ class TestDispatchConstraints(unittest.TestCase):
                     "Parallel allowed?": "yes",
                     "Allowed files/modules": "src/b",
                     "Owned contracts": "",
-                    "Base commit": "abc123",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
                     "Validation owner": "t2",
                     "Validation command": "pytest",
                 }},
@@ -545,6 +545,311 @@ class TestDispatchConstraints(unittest.TestCase):
             result = self._run_dispatch_validation(plan_path)
             self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
             self.assertNotIn("owned contract overlap", result.stderr)
+
+    def test_missing_base_commit_rejected(self):
+        """Every parallel card must declare a non-placeholder base commit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/a",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                    # No Base commit
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/b",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("missing Base commit", result.stderr)
+
+    def test_placeholder_base_commit_rejected(self):
+        """Placeholder base commits like abc123 must be rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/a",
+                    "Base commit": "abc123",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/b",
+                    "Base commit": "abc123",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("placeholder Base commit", result.stderr)
+
+    def test_topological_serial_fallback_when_order_reversed(self):
+        """Serial fallback must list prerequisites before dependents even when
+        the JSON task order puts a dependent first."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            # Plan with task-b (depends on task-a) listed FIRST
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "task-b", "depends_on": ["task-a"], "gate": {
+                    "Allowed files/modules": "src/shared/sub",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                }},
+                {"id": "task-a", "gate": {
+                    "Allowed files/modules": "src/shared",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            stderr = result.stderr[result.stderr.index("Serial fallback recommended"):]
+            # Topological order: task-a must come before task-b
+            pos_a = stderr.index("task-a")
+            pos_b = stderr.index("task-b")
+            self.assertLess(pos_a, pos_b,
+                            "task-a (prerequisite) should appear before task-b in fallback")
+
+    def test_empty_write_scope_rejected(self):
+        """Empty write scopes must be rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("empty Allowed files/modules", result.stderr)
+
+    def test_placeholder_scope_rejected(self):
+        """Placeholder scopes like TBD must be rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "TBD",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("placeholder write scope", result.stderr)
+
+    def test_broad_glob_scope_rejected(self):
+        """Overly broad scopes like 'src' must be rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src",
+                    "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("overly broad write scope", result.stderr)
+
+    def test_expected_base_commit_mismatch_via_dispatch(self):
+        """Current HEAD mismatch must be rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/a",
+                    "Base commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(
+                plan_path, base_commit="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("base commit mismatch", result.stderr)
+            self.assertIn("expected", result.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Test: Flat card dispatch validation
+# ---------------------------------------------------------------------------
+
+class TestFlatCardValidation(unittest.TestCase):
+    """Test --validate-flat mode for flat positional task cards."""
+
+    def _make_task_card(self, path: pathlib.Path, gate_fields: dict):
+        """Write a task card with given Parallel Execution Gate fields."""
+        rows = ["| Field | Value |", "|-------|-------|"]
+        for k, v in gate_fields.items():
+            rows.append(f"| {k} | {v} |")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "# Task\n\n## Parallel Execution Gate\n\n" + "\n".join(rows) + "\n",
+            encoding="utf-8",
+        )
+
+    def _run_flat_validation(self, card_paths: list, base_commit: str = None):
+        """Run validate_flat_dispatch_constraints via subprocess."""
+        cmd = [python_exe(), str(SCRIPT), "--validate-flat"]
+        for p in card_paths:
+            cmd.extend(["--flat-card", str(p)])
+        if base_commit:
+            cmd.extend(["--expected-base-commit", base_commit])
+        return subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+
+    def test_flat_valid_cards_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            card_a = tmp_path / "task-a.md"
+            card_b = tmp_path / "task-b.md"
+            self._make_task_card(card_a, {
+                "Parallel allowed?": "yes",
+                "Allowed files/modules": "src/auth",
+                "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "Validation owner": "t1",
+                "Validation command": "pytest tests/t1",
+            })
+            self._make_task_card(card_b, {
+                "Parallel allowed?": "yes",
+                "Allowed files/modules": "src/api",
+                "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "Validation owner": "t2",
+                "Validation command": "pytest tests/t2",
+            })
+            result = self._run_flat_validation([card_a, card_b])
+            self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
+
+    def test_flat_missing_base_commit_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            card_a = tmp_path / "task-a.md"
+            card_b = tmp_path / "task-b.md"
+            self._make_task_card(card_a, {
+                "Allowed files/modules": "src/auth",
+                "Validation owner": "t1",
+                "Validation command": "pytest",
+            })
+            self._make_task_card(card_b, {
+                "Allowed files/modules": "src/api",
+                "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "Validation owner": "t2",
+                "Validation command": "pytest",
+            })
+            result = self._run_flat_validation([card_a, card_b])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("missing Base commit", result.stderr)
+
+    def test_flat_parent_child_overlap_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            card_a = tmp_path / "task-a.md"
+            card_b = tmp_path / "task-b.md"
+            self._make_task_card(card_a, {
+                "Allowed files/modules": "src/auth",
+                "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "Validation owner": "t1",
+                "Validation command": "pytest",
+            })
+            self._make_task_card(card_b, {
+                "Allowed files/modules": "src/auth/login.py",
+                "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "Validation owner": "t2",
+                "Validation command": "pytest",
+            })
+            result = self._run_flat_validation([card_a, card_b])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("write scope overlap", result.stderr)
+
+    def test_flat_contract_overlap_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            card_a = tmp_path / "task-a.md"
+            card_b = tmp_path / "task-b.md"
+            self._make_task_card(card_a, {
+                "Allowed files/modules": "src/a",
+                "Owned contracts": "user-api",
+                "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "Validation owner": "t1",
+                "Validation command": "pytest",
+            })
+            self._make_task_card(card_b, {
+                "Allowed files/modules": "src/b",
+                "Owned contracts": "user-api",
+                "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "Validation owner": "t2",
+                "Validation command": "pytest",
+            })
+            result = self._run_flat_validation([card_a, card_b])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("owned contract overlap", result.stderr)
+
+    def test_flat_missing_validation_owner_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            card_a = tmp_path / "task-a.md"
+            self._make_task_card(card_a, {
+                "Allowed files/modules": "src/a",
+                "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            })
+            result = self._run_flat_validation([card_a])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("missing validation owner", result.stderr)
+
+    def test_flat_base_commit_mismatch_with_head(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            card_a = tmp_path / "task-a.md"
+            self._make_task_card(card_a, {
+                "Allowed files/modules": "src/a",
+                "Base commit": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "Validation owner": "t1",
+                "Validation command": "pytest",
+            })
+            result = self._run_flat_validation(
+                [card_a], base_commit="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("base commit mismatch", result.stderr)
+
+    def test_flat_empty_scope_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            card_a = tmp_path / "task-a.md"
+            self._make_task_card(card_a, {
+                "Allowed files/modules": "",
+                "Base commit": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "Validation owner": "t1",
+                "Validation command": "pytest",
+            })
+            result = self._run_flat_validation([card_a])
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("empty Allowed files/modules", result.stderr)
 
 
 # ---------------------------------------------------------------------------

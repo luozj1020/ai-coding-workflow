@@ -31,7 +31,31 @@ def bash_path(path: pathlib.Path) -> str:
     return value
 
 
-def write_task(path: pathlib.Path, scope: str, parallel: str = "yes"):
+def ensure_repo_head(path: pathlib.Path) -> str:
+    """Return a real HEAD for the fixture repository, creating one if needed."""
+    repo = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=str(path.parent),
+        check=True, text=True, capture_output=True,
+    ).stdout.strip()
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True, capture_output=True,
+    )
+    if head.returncode != 0:
+        subprocess.run(
+            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+             "commit", "--allow-empty", "-m", "fixture base"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+            text=True, capture_output=True,
+        )
+    return head.stdout.strip()
+
+
+def write_task(path: pathlib.Path, scope: str, parallel: str = "yes",
+               base_commit: str | None = None):
+    base_commit = base_commit or ensure_repo_head(path)
     path.write_text(
         "# Task\n\n"
         "## Parallel Execution Gate\n\n"
@@ -39,7 +63,10 @@ def write_task(path: pathlib.Path, scope: str, parallel: str = "yes"):
         "|-------|-------|\n"
         f"| Parallel allowed? | {parallel} |\n"
         "| Parallel group id | fixture |\n"
-        f"| Allowed files/modules | {scope} |\n",
+        f"| Allowed files/modules | {scope} |\n"
+        f"| Base commit | {base_commit} |\n"
+        "| Validation owner | checker |\n"
+        "| Validation command | echo ok |\n",
         encoding="utf-8",
     )
 
@@ -170,6 +197,7 @@ class RunParallelLoopTests(unittest.TestCase):
 
 def write_dag_task(path: pathlib.Path, scope: str, parallel: str = "yes"):
     """Write a task card file with a Parallel Execution Gate section."""
+    base_commit = ensure_repo_head(path)
     path.write_text(
         "# Task\n\n"
         "## Parallel Execution Gate\n\n"
@@ -178,7 +206,7 @@ def write_dag_task(path: pathlib.Path, scope: str, parallel: str = "yes"):
         f"| Parallel allowed? | {parallel} |\n"
         "| Parallel group id | fixture |\n"
         f"| Allowed files/modules | {scope} |\n"
-        "| Base commit | abc123 |\n"
+        f"| Base commit | {base_commit} |\n"
         "| Validation owner | checker |\n"
         "| Validation command | echo ok |\n",
         encoding="utf-8",
@@ -495,6 +523,74 @@ class TestDAGParallelGate(unittest.TestCase):
     """Test 6: Plan cards still require the parallel gate and reject scope overlap
     before dispatch."""
 
+    def test_dag_rejects_base_commit_mismatch_with_head(self):
+        """DAG mode must reject cards whose base commit does not match HEAD (exit 4)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            subprocess.run(["git", "commit", "--allow-empty", "-m", "init"],
+                           cwd=str(repo), check=True, capture_output=True,
+                           env={**os.environ, "GIT_AUTHOR_NAME": "test",
+                                "GIT_AUTHOR_EMAIL": "test@test.com",
+                                "GIT_COMMITTER_NAME": "test",
+                                "GIT_COMMITTER_EMAIL": "test@test.com"})
+
+            plan = {
+                "schema_version": 1,
+                "group_id": "base-test",
+                "max_concurrency": 2,
+                "failure_policy": "skip-dependents",
+                "tasks": [
+                    {"id": "task-a", "task_card": "cards/task-a.md", "depends_on": []},
+                    {"id": "task-b", "task_card": "cards/task-b.md", "depends_on": []},
+                ],
+            }
+            plan_path = write_plan(repo, plan)
+            # Write cards with a base commit that won't match HEAD
+            for task in plan["tasks"]:
+                card = repo / task["task_card"]
+                card.write_text(
+                    "# Task\n\n## Parallel Execution Gate\n\n"
+                    "| Field | Value |\n|-------|-------|\n"
+                    "| Parallel allowed? | yes |\n"
+                    f"| Allowed files/modules | src/{task['id']}.py |\n"
+                    "| Base commit | deadbeefdeadbeefdeadbeefdeadbeefdeadbeef |\n"
+                    "| Validation owner | checker |\n"
+                    "| Validation command | echo ok |\n",
+                    encoding="utf-8",
+                )
+
+            fake_dispatch = tmp_path / "fake-dispatch.sh"
+            fake_dispatch.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_dispatch.chmod(fake_dispatch.stat().st_mode | stat.S_IXUSR)
+
+            output_dir = repo / ".worktrees" / "dag-base-test"
+            env = os.environ.copy()
+            env["AI_CODING_WORKFLOW_DISPATCH_BIN"] = bash_path(fake_dispatch)
+
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    "--plan",
+                    bash_path(plan_path),
+                    "--output",
+                    bash_path(output_dir),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                timeout=30,
+            )
+
+            self.assertEqual(result.returncode, 4, result.stderr + result.stdout)
+            self.assertIn("base commit mismatch", result.stderr)
+
     def test_dag_rejects_ungated_task_card(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
@@ -603,6 +699,62 @@ class TestDAGParallelGate(unittest.TestCase):
 class TestFlatDispatchCollisionResistance(unittest.TestCase):
     """Test 8: Two flat dispatches started in the same second do not share
     task IDs, artifact paths, worktree paths, or branch names."""
+
+    def test_flat_mode_dispatch_validation_rejects_missing_base_commit(self):
+        """Flat mode must reject cards without base commit via Python validator (exit 4)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            # Write cards WITHOUT base commit
+            task_a = repo / "task-a.md"
+            task_b = repo / "task-b.md"
+            task_a.write_text(
+                "# Task\n\n## Parallel Execution Gate\n\n"
+                "| Field | Value |\n|-------|-------|\n"
+                "| Parallel allowed? | yes |\n"
+                "| Allowed files/modules | src/a.py |\n"
+                "| Validation owner | t1 |\n"
+                "| Validation command | echo ok |\n",
+                encoding="utf-8",
+            )
+            task_b.write_text(
+                "# Task\n\n## Parallel Execution Gate\n\n"
+                "| Field | Value |\n|-------|-------|\n"
+                "| Parallel allowed? | yes |\n"
+                "| Allowed files/modules | src/b.py |\n"
+                "| Validation owner | t2 |\n"
+                "| Validation command | echo ok |\n",
+                encoding="utf-8",
+            )
+
+            fake_dispatch = tmp_path / "fake-dispatch.sh"
+            fake_dispatch.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            fake_dispatch.chmod(fake_dispatch.stat().st_mode | stat.S_IXUSR)
+
+            output_dir = repo / ".worktrees" / "parallel-test"
+            env = os.environ.copy()
+            env["AI_CODING_WORKFLOW_DISPATCH_BIN"] = bash_path(fake_dispatch)
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    "--max-concurrency", "2",
+                    "--output", bash_path(output_dir),
+                    bash_path(task_a),
+                    bash_path(task_b),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 4, result.stderr + result.stdout)
+            self.assertIn("missing Base commit", result.stderr)
 
     def test_two_flat_dispatches_same_second_different_identity(self):
         with tempfile.TemporaryDirectory() as tmp:

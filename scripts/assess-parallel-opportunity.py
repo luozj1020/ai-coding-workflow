@@ -19,6 +19,32 @@ import json
 import sys
 
 
+def validate_hints(hints: object) -> str:
+    """Validate hints input types and ranges. Returns error message or empty string."""
+    if not isinstance(hints, dict):
+        return "hints must be a JSON object"
+
+    int_fields = ["work_units", "estimated_minutes", "validation_count"]
+    for field in int_fields:
+        val = hints.get(field)
+        if val is None:
+            continue
+        if isinstance(val, bool) or not isinstance(val, int):
+            return f"{field} must be an integer"
+        if val < 0:
+            return f"{field} must be nonnegative"
+
+    list_fields = ["write_scopes", "hard_risk_flags"]
+    for field in list_fields:
+        val = hints.get(field)
+        if val is None:
+            continue
+        if not isinstance(val, list):
+            return f"{field} must be an array"
+
+    return ""
+
+
 def classify(hints: dict) -> dict:
     """Classify hints into serial-obvious or parallel-candidate.
 
@@ -136,6 +162,12 @@ def main() -> None:
             "validation_count": args.validation_count,
             "hard_risk_flags": flags,
         }
+
+    # Validate input types before classifying
+    validation_error = validate_hints(hints)
+    if validation_error:
+        print(f"Error: {validation_error}", file=sys.stderr)
+        sys.exit(2)
 
     result = classify(hints)
 

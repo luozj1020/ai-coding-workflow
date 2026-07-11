@@ -625,11 +625,20 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 **Experimental: parallel dispatch**
 
+Parallel remains opt-in. Ordinary serial tasks incur no extra model call. The workflow is:
+
+1. **Classifier** (local, zero-token): `python scripts/assess-parallel-opportunity.py --json ...` classifies a task brief as `serial-obvious` or `parallel-candidate` from structured hints, without reading the repository or invoking any model.
+2. **Planner** (optional, one bounded Spark call): only for `parallel-candidate` results, invoke Spark `parallel-planner` mode to produce a reviewed DAG plan. Spark never executes or dispatches.
+3. **Review**: Codex/human reviews and saves the task cards and plan JSON.
+4. **Validation** (deterministic): `run-parallel-loop.sh` validates base commit agreement (must match current `HEAD`), write scope overlap, owned contract overlap, and validation ownership before any dispatch.
+5. **Dispatch**: max concurrency is explicitly capped at 2.
+6. **Review**: review and merge remain serial.
+
 Two compatible paths exist:
 
 *Path 1: Flat independent cards (positional arguments)*
 
-For independent task cards with non-overlapping file/module scopes, fill `Parallel Execution Gate` in each task card and run:
+For independent task cards with non-overlapping file/module scopes, fill `Parallel Execution Gate` in each task card (including Base commit, Validation owner, Validation command) and run:
 
 ```bash
 bash ai/run-parallel-loop.sh --max-concurrency 2 \
@@ -637,7 +646,7 @@ bash ai/run-parallel-loop.sh --max-concurrency 2 \
   ai/task-cards/PROJ-123-b.md
 ```
 
-The helper runs multiple `dispatch-to-claude.sh` jobs concurrently and writes `.worktrees/parallel-*/parallel-summary.md`, `parallel-events.jsonl`, `parallel-manifest.tsv`, and per-task dispatch logs. It refuses task cards that do not say `Parallel allowed? | yes` unless `--allow-ungated` is passed, and it refuses overlapping `Allowed files/modules` unless `--allow-overlap` is passed.
+The helper validates parallel gate, exact scope overlap (exit 3), then deterministic dispatch constraints via the Python validator — parent/child overlap, owned contracts, base commit agreement with current HEAD, and validation ownership (exit 4). It refuses task cards that do not say `Parallel allowed? | yes` unless `--allow-ungated` is passed, and it refuses overlapping `Allowed files/modules` unless `--allow-overlap` is passed. `--allow-overlap` is an explicit manual-reconcile escape hatch; it does not bypass contract, base commit, or validation checks.
 
 *Path 2: Reviewed DAG plan (`--plan`)*
 
@@ -653,9 +662,9 @@ Spark produces strict schema-v1 JSON — it only proposes and never executes. Co
 bash ai/run-parallel-loop.sh --plan ai/plans/PROJ-123/parallel-plan.json
 ```
 
-Schema fields: `schema_version` (must be `1`), `group_id`, `max_concurrency`, `failure_policy` (currently `skip-dependents`), and `tasks` containing `id`, `task_card`, `depends_on` per task. Task-card paths resolve relative to the plan file. An explicit CLI `--max-concurrency` overrides the plan's cap.
+Schema fields: `schema_version` (must be `1`), `group_id`, `max_concurrency`, `failure_policy` (currently `skip-dependents`), and `tasks` containing `id`, `task_card`, `depends_on` per task. Task-card paths resolve relative to the plan file. An explicit CLI `--max-concurrency` overrides the plan's cap. Every task card must declare a non-placeholder Base commit, and all cards must agree; `run-parallel-loop.sh` passes the repository's current `git rev-parse HEAD` as the expected base, so a mismatch stops before any dispatch.
 
-Scheduling semantics: the scheduler starts only dependency-ready tasks up to the concurrency cap. With `skip-dependents`, a failed prerequisite prevents all transitive dependents from dispatching while unrelated branches continue. All cards still require scope-gate and overlap checks.
+Scheduling semantics: the scheduler starts only dependency-ready tasks up to the concurrency cap. With `skip-dependents`, a failed prerequisite prevents all transitive dependents from dispatching while unrelated branches continue. Serial fallback uses a stable topological order (prerequisites first, peers sorted by id). All cards still require scope-gate and overlap checks.
 
 This is dispatch parallelism only. It does not merge worktrees, does not replace Codex review, and does not make conflicting implementation safe. Review each diff serially; shared API/data model/config changes should use a normal single-task flow or a manual reconcile task.
 

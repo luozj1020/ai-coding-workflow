@@ -369,7 +369,15 @@ Two compatible paths exist for parallel dispatch:
 
 **Path 1: Flat independent cards (positional arguments)**
 
-When task cards have `Parallel Execution Gate` filled and independent file/module scopes, run:
+Parallel remains opt-in. First use the local zero-token classifier; ordinary serial tasks do not call Spark:
+
+```bash
+python ai/assess-parallel-opportunity.py --json \
+  --work-units 3 --write-scopes src/a,src/b,src/c \
+  --estimated-minutes 30 --validation-count 3
+```
+
+Only a `parallel-candidate` result should proceed to one bounded Spark `parallel-planner` call and reviewed task cards. When cards declare independent scopes, owned contracts, validation responsibility, and a common Base commit matching current `HEAD`, run:
 
 ```bash
 bash ai/run-parallel-loop.sh --max-concurrency 2 \

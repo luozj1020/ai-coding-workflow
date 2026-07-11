@@ -331,6 +331,52 @@ run_flat_mode() {
         done
     fi
 
+    # --- Deterministic dispatch constraint validation (after legacy scope check) ---
+    # Validates parent/child overlap, contracts, base commit, validation ownership.
+    # Reuses the Python validator to avoid duplicating rules in bash.
+    FLAT_VALIDATOR="${SCRIPT_DIR}/validate-parallel-plan.py"
+    if [ ! -f "$FLAT_VALIDATOR" ]; then
+        echo "Error: validator not found: $FLAT_VALIDATOR" >&2
+        exit 1
+    fi
+    FLAT_VALIDATOR_PYTHON=""
+    if command -v python3 >/dev/null 2>&1; then
+        FLAT_VALIDATOR_PYTHON="python3"
+    elif command -v python >/dev/null 2>&1; then
+        FLAT_VALIDATOR_PYTHON="python"
+    fi
+    if [ -z "$FLAT_VALIDATOR_PYTHON" ]; then
+        echo "Error: python3 or python is required for deterministic parallel validation." >&2
+        exit 1
+    fi
+            set +e
+            CURRENT_HEAD="$(git rev-parse HEAD 2>/dev/null)"
+            set -e
+            FLAT_CARD_ARGS=()
+            for task in "${TASK_CARDS[@]}"; do
+                FLAT_CARD_ARGS+=("--flat-card" "$task")
+            done
+            FLAT_VALIDATION_CMD=("$FLAT_VALIDATOR_PYTHON" "$FLAT_VALIDATOR" --validate-flat "${FLAT_CARD_ARGS[@]}")
+            if [ -n "$CURRENT_HEAD" ]; then
+                FLAT_VALIDATION_CMD+=(--expected-base-commit "$CURRENT_HEAD")
+            fi
+            if [ "$ALLOW_OVERLAP" = "1" ]; then
+                FLAT_VALIDATION_CMD+=(--allow-write-overlap)
+            fi
+            set +e
+            "${FLAT_VALIDATION_CMD[@]}" \
+                2>"${OUTPUT_DIR}/.flat-validation-errors.txt"
+            FLAT_VALIDATION_EXIT=$?
+            set -e
+
+            if [ "$FLAT_VALIDATION_EXIT" -ne 0 ]; then
+                echo "Error: flat dispatch constraint validation failed (exit=$FLAT_VALIDATION_EXIT)." >&2
+                if [ -s "${OUTPUT_DIR}/.flat-validation-errors.txt" ]; then
+                    cat "${OUTPUT_DIR}/.flat-validation-errors.txt" >&2
+                fi
+                exit 4
+            fi
+
     : > "$EVENTS_FILE"
     {
         echo -e "task\tallowed\tscope"
@@ -499,21 +545,6 @@ run_dag_mode() {
         exit 1
     fi
 
-    # --- Deterministic dispatch constraint validation ---
-    set +e
-    "$PYTHON_CMD" "$VALIDATOR" --plan "$PLAN_FILE" --validate-dispatch \
-        2>"${OUTPUT_DIR}/.dispatch-validation-errors.txt"
-    DISPATCH_VALIDATION_EXIT=$?
-    set -e
-
-    if [ "$DISPATCH_VALIDATION_EXIT" -ne 0 ]; then
-        echo "Error: dispatch constraint validation failed (exit=$DISPATCH_VALIDATION_EXIT)." >&2
-        if [ -s "${OUTPUT_DIR}/.dispatch-validation-errors.txt" ]; then
-            cat "${OUTPUT_DIR}/.dispatch-validation-errors.txt" >&2
-        fi
-        exit 4
-    fi
-
     # --- Parse META records ---
     PLAN_GROUP_ID=""
     PLAN_MAX_CONCURRENCY=""
@@ -598,6 +629,31 @@ run_dag_mode() {
                 fi
             done
         done
+    fi
+
+    # --- Deterministic dispatch constraint validation (after legacy scope check) ---
+    set +e
+    CURRENT_HEAD="$(git rev-parse HEAD 2>/dev/null)"
+    set -e
+    DISPATCH_VALIDATION_CMD=("$PYTHON_CMD" "$VALIDATOR" --plan "$PLAN_FILE" --validate-dispatch)
+    if [ -n "$CURRENT_HEAD" ]; then
+        DISPATCH_VALIDATION_CMD+=(--expected-base-commit "$CURRENT_HEAD")
+    fi
+    if [ "$ALLOW_OVERLAP" = "1" ]; then
+        DISPATCH_VALIDATION_CMD+=(--allow-write-overlap)
+    fi
+    set +e
+    "${DISPATCH_VALIDATION_CMD[@]}" \
+        2>"${OUTPUT_DIR}/.dispatch-validation-errors.txt"
+    DISPATCH_VALIDATION_EXIT=$?
+    set -e
+
+    if [ "$DISPATCH_VALIDATION_EXIT" -ne 0 ]; then
+        echo "Error: dispatch constraint validation failed (exit=$DISPATCH_VALIDATION_EXIT)." >&2
+        if [ -s "${OUTPUT_DIR}/.dispatch-validation-errors.txt" ]; then
+            cat "${OUTPUT_DIR}/.dispatch-validation-errors.txt" >&2
+        fi
+        exit 4
     fi
 
     # --- Initialize DAG state ---

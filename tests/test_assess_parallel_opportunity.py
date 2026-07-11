@@ -186,5 +186,97 @@ class TestDeterministicNoSubprocess(unittest.TestCase):
         self.assertEqual(r1.returncode, r2.returncode)
 
 
+# ---------------------------------------------------------------------------
+# Test: JSON input validation (exit 2 on invalid types)
+# ---------------------------------------------------------------------------
+
+class TestJsonInputValidation(unittest.TestCase):
+    """Invalid JSON hints must return exit 2 with concise error, not traceback."""
+
+    def test_string_work_units_exits_2(self):
+        """work_units as string must exit 2."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"work_units": "three", "write_scopes": ["a", "b"]}, f)
+            f.flush()
+            try:
+                result = run_classifier("--hints", f.name)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("work_units must be an integer", result.stderr)
+            finally:
+                os.unlink(f.name)
+
+    def test_negative_work_units_exits_2(self):
+        """Negative work_units must exit 2."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"work_units": -1, "write_scopes": ["a", "b"]}, f)
+            f.flush()
+            try:
+                result = run_classifier("--hints", f.name)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("work_units must be nonnegative", result.stderr)
+            finally:
+                os.unlink(f.name)
+
+    def test_bool_work_units_exits_2(self):
+        """Boolean work_units must exit 2 (isinstance(True, int) is True)."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"work_units": True, "write_scopes": ["a", "b"]}, f)
+            f.flush()
+            try:
+                result = run_classifier("--hints", f.name)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("work_units must be an integer", result.stderr)
+            finally:
+                os.unlink(f.name)
+
+    def test_string_write_scopes_exits_2(self):
+        """write_scopes as string instead of list must exit 2."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"work_units": 2, "write_scopes": "a,b"}, f)
+            f.flush()
+            try:
+                result = run_classifier("--hints", f.name)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("write_scopes must be an array", result.stderr)
+            finally:
+                os.unlink(f.name)
+
+    def test_non_dict_root_exits_2(self):
+        """Non-object JSON root must exit 2."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump([1, 2, 3], f)
+            f.flush()
+            try:
+                result = run_classifier("--hints", f.name)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("hints must be a JSON object", result.stderr)
+            finally:
+                os.unlink(f.name)
+
+    def test_negative_estimated_minutes_exits_2(self):
+        """Negative estimated_minutes must exit 2."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"work_units": 2, "write_scopes": ["a", "b"], "estimated_minutes": -5}, f)
+            f.flush()
+            try:
+                result = run_classifier("--hints", f.name)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("estimated_minutes must be nonnegative", result.stderr)
+            finally:
+                os.unlink(f.name)
+
+    def test_valid_input_still_works(self):
+        """Valid input should still produce classification."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"work_units": 3, "write_scopes": ["src/a", "src/b"], "estimated_minutes": 20}, f)
+            f.flush()
+            try:
+                result, data = run_classifier_json("--hints", f.name)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(data["decision"], "parallel-candidate")
+            finally:
+                os.unlink(f.name)
+
+
 if __name__ == "__main__":
     unittest.main()
