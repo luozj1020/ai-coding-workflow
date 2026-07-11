@@ -276,5 +276,323 @@ class TestValidatorRejectsInvalid(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Test: Dispatch constraint validation
+# ---------------------------------------------------------------------------
+
+class TestDispatchConstraints(unittest.TestCase):
+    """Test deterministic dispatch constraints: write scope overlap, owned
+    contracts, base commit, and validation ownership."""
+
+    def _make_task_card(self, path: pathlib.Path, gate_fields: dict):
+        """Write a task card with given Parallel Execution Gate fields."""
+        rows = ["| Field | Value |", "|-------|-------|"]
+        for k, v in gate_fields.items():
+            rows.append(f"| {k} | {v} |")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "# Task\n\n## Parallel Execution Gate\n\n" + "\n".join(rows) + "\n",
+            encoding="utf-8",
+        )
+
+    def _make_plan_with_cards(self, tmp: pathlib.Path, tasks_config: list[dict]) -> pathlib.Path:
+        """Create a plan JSON and task card files from a list of task configs.
+
+        Each config: {"id": str, "depends_on": list, "gate": dict}
+        """
+        plan = {
+            "schema_version": 1,
+            "group_id": "dispatch-test",
+            "max_concurrency": 2,
+            "failure_policy": "skip-dependents",
+            "tasks": [],
+        }
+        for tc in tasks_config:
+            card_name = f"cards/{tc['id']}.md"
+            plan["tasks"].append({
+                "id": tc["id"],
+                "task_card": card_name,
+                "depends_on": tc.get("depends_on", []),
+            })
+            self._make_task_card(tmp / card_name, tc.get("gate", {}))
+
+        plan_path = tmp / "plan.json"
+        plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+        return plan_path
+
+    def _run_dispatch_validation(self, plan_path: pathlib.Path, base_commit: str = None):
+        """Run validate_dispatch_constraints via subprocess."""
+        cmd = [python_exe(), str(SCRIPT), "--plan", str(plan_path), "--validate-dispatch"]
+        if base_commit:
+            cmd.extend(["--expected-base-commit", base_commit])
+        return subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+
+    def test_parent_child_write_scope_overlap_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/auth",
+                    "Owned contracts": "",
+                    "Base commit": "abc123",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest tests/t1",
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/auth/login.py",
+                    "Owned contracts": "",
+                    "Base commit": "abc123",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest tests/t2",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1, f"expected failure\nstdout: {result.stdout}\nstderr: {result.stderr}")
+            self.assertIn("write scope overlap", result.stderr)
+            self.assertIn("Serial fallback recommended", result.stderr)
+
+    def test_exact_write_scope_overlap_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/shared.py",
+                    "Base commit": "abc123",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/shared.py",
+                    "Base commit": "abc123",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("write scope overlap", result.stderr)
+
+    def test_non_overlapping_scopes_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/auth",
+                    "Base commit": "abc123",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest tests/t1",
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/api",
+                    "Base commit": "abc123",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest tests/t2",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 0, f"expected pass\nstderr: {result.stderr}")
+
+    def test_owned_contract_overlap_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/a",
+                    "Owned contracts": "user-auth-api",
+                    "Base commit": "abc123",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/b",
+                    "Owned contracts": "user-auth-api",
+                    "Base commit": "abc123",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("owned contract overlap", result.stderr)
+            self.assertIn("user-auth-api", result.stderr)
+
+    def test_base_commit_mismatch_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/a",
+                    "Base commit": "aaa111",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/b",
+                    "Base commit": "bbb222",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("base commit mismatch", result.stderr)
+
+    def test_expected_base_commit_mismatch_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/a",
+                    "Base commit": "aaa111",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/b",
+                    "Base commit": "aaa111",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path, base_commit="expected999")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("base commit mismatch", result.stderr)
+            self.assertIn("expected999", result.stderr)
+
+    def test_missing_validation_owner_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/a",
+                    "Base commit": "abc123",
+                    # No Validation owner or command
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/b",
+                    "Base commit": "abc123",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("missing validation owner", result.stderr)
+
+    def test_serial_fallback_contains_deterministic_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "task-a", "gate": {
+                    "Allowed files/modules": "src/shared",
+                    "Base commit": "abc123",
+                }},
+                {"id": "task-b", "depends_on": ["task-a"], "gate": {
+                    "Allowed files/modules": "src/shared/sub",
+                    "Base commit": "abc123",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 1)
+            # Serial fallback should list task order
+            self.assertIn("task-a", result.stderr)
+            self.assertIn("task-b", result.stderr)
+            self.assertIn("Serial fallback recommended", result.stderr)
+
+    def test_empty_contracts_no_overlap_error(self):
+        """Empty owned contracts should not trigger overlap errors."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            plan_path = self._make_plan_with_cards(tmp_path, [
+                {"id": "t1", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/a",
+                    "Owned contracts": "",
+                    "Base commit": "abc123",
+                    "Validation owner": "t1",
+                    "Validation command": "pytest",
+                }},
+                {"id": "t2", "gate": {
+                    "Parallel allowed?": "yes",
+                    "Allowed files/modules": "src/b",
+                    "Owned contracts": "",
+                    "Base commit": "abc123",
+                    "Validation owner": "t2",
+                    "Validation command": "pytest",
+                }},
+            ])
+            result = self._run_dispatch_validation(plan_path)
+            self.assertEqual(result.returncode, 0, f"stderr: {result.stderr}")
+            self.assertNotIn("owned contract overlap", result.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Test: Extract gate field helper
+# ---------------------------------------------------------------------------
+
+class TestExtractGateField(unittest.TestCase):
+    """Test the gate field extraction from markdown task cards."""
+
+    def test_extract_allowed_files(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("vpp", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        content = (
+            "# Task\n\n"
+            "## Parallel Execution Gate\n\n"
+            "| Field | Value |\n"
+            "|-------|-------|\n"
+            "| Parallel allowed? | yes |\n"
+            "| Allowed files/modules | src/auth, src/api |\n"
+        )
+        result = mod.extract_gate_field(content, "Parallel Execution Gate", "Allowed files/modules")
+        self.assertEqual(result, "src/auth, src/api")
+
+    def test_extract_missing_field_returns_empty(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("vpp", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        content = "# Task\n\n## Parallel Execution Gate\n\n| Field | Value |\n|-------|-------|\n"
+        result = mod.extract_gate_field(content, "Parallel Execution Gate", "Nonexistent field")
+        self.assertEqual(result, "")
+
+    def test_is_parent_or_child(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("vpp", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        self.assertTrue(mod.is_parent_or_child("src/auth", "src/auth/login.py"))
+        self.assertTrue(mod.is_parent_or_child("src/auth/login.py", "src/auth"))
+        self.assertTrue(mod.is_parent_or_child("src/auth", "src/auth"))
+        self.assertFalse(mod.is_parent_or_child("src/auth", "src/api"))
+        self.assertFalse(mod.is_parent_or_child("src/a", "src/abc"))  # not prefix match
+
+
 if __name__ == "__main__":
     unittest.main()

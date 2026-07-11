@@ -177,7 +177,10 @@ def write_dag_task(path: pathlib.Path, scope: str, parallel: str = "yes"):
         "|-------|-------|\n"
         f"| Parallel allowed? | {parallel} |\n"
         "| Parallel group id | fixture |\n"
-        f"| Allowed files/modules | {scope} |\n",
+        f"| Allowed files/modules | {scope} |\n"
+        "| Base commit | abc123 |\n"
+        "| Validation owner | checker |\n"
+        "| Validation command | echo ok |\n",
         encoding="utf-8",
     )
 

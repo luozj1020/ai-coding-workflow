@@ -499,6 +499,21 @@ run_dag_mode() {
         exit 1
     fi
 
+    # --- Deterministic dispatch constraint validation ---
+    set +e
+    "$PYTHON_CMD" "$VALIDATOR" --plan "$PLAN_FILE" --validate-dispatch \
+        2>"${OUTPUT_DIR}/.dispatch-validation-errors.txt"
+    DISPATCH_VALIDATION_EXIT=$?
+    set -e
+
+    if [ "$DISPATCH_VALIDATION_EXIT" -ne 0 ]; then
+        echo "Error: dispatch constraint validation failed (exit=$DISPATCH_VALIDATION_EXIT)." >&2
+        if [ -s "${OUTPUT_DIR}/.dispatch-validation-errors.txt" ]; then
+            cat "${OUTPUT_DIR}/.dispatch-validation-errors.txt" >&2
+        fi
+        exit 4
+    fi
+
     # --- Parse META records ---
     PLAN_GROUP_ID=""
     PLAN_MAX_CONCURRENCY=""

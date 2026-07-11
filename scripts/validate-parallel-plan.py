@@ -19,6 +19,75 @@ import re
 import sys
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Parallel Execution Gate field extraction from task-card markdown tables
+# ---------------------------------------------------------------------------
+
+def _normalize_field_name(name: str) -> str:
+    """Normalize a markdown table field name for lookup."""
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+
+def extract_gate_field(content: str, section: str, field: str) -> str:
+    """Extract a value from a markdown table inside a named section.
+
+    Looks for ``## <section>`` then a ``| Field | Value |`` table and returns
+    the value for the row whose Field normalizes to *field*.
+    """
+    normalized_field = _normalize_field_name(field)
+    lines = content.split("\n")
+    in_section = False
+    for line in lines:
+        # Detect section heading
+        if line.startswith("##"):
+            heading = line.lstrip("#").strip()
+            in_section = _normalize_field_name(heading) == _normalize_field_name(section)
+            continue
+        if in_section and line.startswith("|") and "---" not in line:
+            parts = [p.strip() for p in line.split("|")]
+            # parts[0] is empty (before first |), parts[1] is key, parts[2] is value
+            if len(parts) >= 3:
+                key = _normalize_field_name(parts[1])
+                if key == normalized_field:
+                    return parts[2].strip()
+    return ""
+
+
+def extract_scopes(raw: str) -> list[str]:
+    """Split a comma/semicolon-delimited scope string into a normalized list."""
+    tokens = re.split(r"[,;]+", raw)
+    scopes = []
+    seen: set[str] = set()
+    for tok in tokens:
+        s = tok.strip().strip("`*\"'")
+        if s and s not in seen:
+            seen.add(s)
+            scopes.append(s)
+    return scopes
+
+
+def normalize_path(p: str) -> str:
+    """Normalize a file/directory path for overlap comparison."""
+    # Strip leading/trailing whitespace and quotes
+    p = p.strip().strip("`*\"'")
+    # Normalize separators and remove trailing slash
+    p = p.replace("\\", "/").rstrip("/")
+    # Normalize path components
+    return os.path.normpath(p).replace("\\", "/")
+
+
+def is_parent_or_child(a: str, b: str) -> bool:
+    """Return True if path *a* is a parent of *b*, or *b* is a parent of *a*, or they are equal."""
+    na = normalize_path(a)
+    nb = normalize_path(b)
+    if na == nb:
+        return True
+    # Check if one is a prefix (directory containment)
+    # Add "/" to avoid "src/a" matching "src/abc"
+    if na.startswith(nb + "/") or nb.startswith(na + "/"):
+        return True
+    return False
+
 ALLOWED_META_KEYS = frozenset({
     "schema_version", "group_id", "max_concurrency", "failure_policy", "tasks",
 })
@@ -274,6 +343,141 @@ def validate_plan(plan_path: str) -> tuple[dict, list[str]]:
     return meta, tasks
 
 
+def validate_dispatch_constraints(
+    plan_path: str,
+    expected_base_commit: str | None = None,
+) -> tuple[dict, list[dict], list[str]]:
+    """Validate deterministic dispatch constraints on a plan and its task cards.
+
+    Checks:
+    - Write scope normalization: reject exact and parent/child overlap.
+    - Owned contract overlap: reject non-empty contracts that collide.
+    - Base commit: require a common explicit base commit; verify against expected if given.
+    - Validation ownership: require explicit validation owner/command per card.
+    - DAG cycle/dependency checks (delegated to validate_plan).
+
+    Returns (meta, tasks_with_gate_fields, errors) where errors is empty on success.
+    """
+    errors: list[str] = []
+
+    # First run the standard plan validation
+    try:
+        meta, tasks = validate_plan(plan_path)
+    except SystemExit:
+        # validate_plan already printed errors to stderr.
+        # Re-raise so the caller sees the failure; no dispatch checks possible.
+        raise
+
+    # Extract gate fields from each task card
+    task_gates: list[dict] = []
+    for task in tasks:
+        card_path = task["resolved_task_card"]
+        if not card_path or not Path(card_path).is_file():
+            errors.append(f"task {task['id']}: task card not found: {card_path}")
+            task_gates.append({"id": task["id"], "scopes": [], "contracts": [], "base_commit": "", "validation_owner": "", "validation_command": ""})
+            continue
+
+        content = Path(card_path).read_text(encoding="utf-8", errors="replace")
+
+        allowed = extract_gate_field(content, "Parallel Execution Gate", "Allowed files/modules")
+        if not allowed:
+            allowed = extract_gate_field(content, "Parallel Execution Gate", "Conflict files/modules")
+        scopes = extract_scopes(allowed)
+
+        contracts_raw = extract_gate_field(content, "Parallel Execution Gate", "Owned contracts")
+        contracts = [c.strip() for c in re.split(r"[,;]+", contracts_raw) if c.strip()]
+
+        base_commit = extract_gate_field(content, "Parallel Execution Gate", "Base commit").strip()
+        validation_owner = extract_gate_field(content, "Parallel Execution Gate", "Validation owner").strip()
+        validation_command = extract_gate_field(content, "Parallel Execution Gate", "Validation command").strip()
+
+        task_gates.append({
+            "id": task["id"],
+            "scopes": scopes,
+            "contracts": contracts,
+            "base_commit": base_commit,
+            "validation_owner": validation_owner,
+            "validation_command": validation_command,
+        })
+
+    if errors:
+        return meta, task_gates, errors
+
+    # --- Check 1: Write scope parent/child overlap ---
+    for i in range(len(task_gates)):
+        for j in range(i + 1, len(task_gates)):
+            ti = task_gates[i]
+            tj = task_gates[j]
+            for si in ti["scopes"]:
+                for sj in tj["scopes"]:
+                    if is_parent_or_child(si, sj):
+                        errors.append(
+                            f"write scope overlap: task {ti['id']} scope '{si}' "
+                            f"overlaps with task {tj['id']} scope '{sj}'"
+                        )
+
+    # --- Check 2: Owned contract overlap ---
+    all_contracts: dict[str, str] = {}  # contract -> task_id
+    for tg in task_gates:
+        for contract in tg["contracts"]:
+            if contract in all_contracts:
+                errors.append(
+                    f"owned contract overlap: contract '{contract}' is owned by "
+                    f"both {all_contracts[contract]} and {tg['id']}"
+                )
+            else:
+                all_contracts[contract] = tg["id"]
+
+    # --- Check 3: Base commit consistency ---
+    declared_commits: list[tuple[str, str]] = []  # (task_id, commit)
+    for tg in task_gates:
+        if tg["base_commit"]:
+            declared_commits.append((tg["id"], tg["base_commit"]))
+
+    if declared_commits:
+        unique_commits = set(c for _, c in declared_commits)
+        if len(unique_commits) > 1:
+            details = ", ".join(f"{tid}={c}" for tid, c in declared_commits)
+            errors.append(f"base commit mismatch across tasks: {details}")
+        elif expected_base_commit:
+            actual = declared_commits[0][1]
+            if actual != expected_base_commit:
+                errors.append(
+                    f"base commit mismatch: declared {actual} but expected {expected_base_commit}"
+                )
+    else:
+        # No base commit declared — warn but don't fail (backward compat)
+        pass
+
+    # --- Check 4: Validation ownership ---
+    for tg in task_gates:
+        if not tg["validation_owner"] and not tg["validation_command"]:
+            errors.append(
+                f"task {tg['id']}: missing validation owner and validation command "
+                f"in Parallel Execution Gate"
+            )
+
+    return meta, task_gates, errors
+
+
+def build_serial_fallback(meta: dict, tasks: list[dict], task_gates: list[dict]) -> str:
+    """Build a serial fallback recommendation from plan metadata and task gates.
+
+    Returns a concise human-readable recommendation with deterministic task order.
+    """
+    lines = ["Serial fallback recommended. Deterministic task order:"]
+    # Topological order: tasks with no deps first, then by dependency
+    # Use the order from the plan (already validated as DAG)
+    for i, task in enumerate(tasks):
+        deps = task.get("depends_on", [])
+        dep_str = f" (after {', '.join(deps)})" if deps else ""
+        lines.append(f"  {i + 1}. {task['id']}{dep_str}")
+    lines.append("")
+    lines.append("Run tasks serially in the order above. Each task must complete "
+                 "and be reviewed before starting the next.")
+    return "\n".join(lines)
+
+
 def _fail(errors: list[str]) -> None:
     """Print errors and exit with code 1."""
     for err in errors:
@@ -302,7 +506,28 @@ def main() -> None:
     parser.add_argument("--plan", required=True, help="Path to the JSON plan file.")
     parser.add_argument("--output-mode", default="tsv", choices=["tsv"],
                         help="Output format (default: tsv).")
+    parser.add_argument("--validate-dispatch", action="store_true",
+                        help="Validate deterministic dispatch constraints (write scope overlap, "
+                             "owned contracts, base commit, validation ownership).")
+    parser.add_argument("--expected-base-commit", default=None,
+                        help="Expected base commit SHA for dispatch validation.")
     args = parser.parse_args()
+
+    if args.validate_dispatch:
+        meta, task_gates, errors = validate_dispatch_constraints(
+            args.plan, args.expected_base_commit
+        )
+        if errors:
+            for err in errors:
+                print(f"Error: {err}", file=sys.stderr)
+            # Build and print serial fallback
+            _, tasks = validate_plan(args.plan)
+            fallback = build_serial_fallback(meta, tasks, task_gates)
+            print(fallback, file=sys.stderr)
+            sys.exit(1)
+        else:
+            print("Dispatch validation passed.", file=sys.stderr)
+            sys.exit(0)
 
     meta, tasks = validate_plan(args.plan)
     emit_tsv(meta, tasks)

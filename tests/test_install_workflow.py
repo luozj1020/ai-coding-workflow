@@ -66,6 +66,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "init-plan.py").exists())
             self.assertTrue((repo / "ai" / "session-catchup.py").exists())
             self.assertTrue((repo / "ai" / "validate-parallel-plan.py").exists())
+            self.assertTrue((repo / "ai" / "assess-parallel-opportunity.py").exists())
             self.assertTrue((repo / ".worktrees" / ".gitkeep").exists())
             gitignore = (repo / ".gitignore").read_text(encoding="utf-8")
             self.assertIn("/.worktrees/*", gitignore)

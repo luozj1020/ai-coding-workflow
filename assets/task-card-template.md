@@ -446,6 +446,8 @@ Spark rules:
 | Field | Value |
 |-------|-------|
 | Parallel allowed? | no / yes |
+| Pre-task-card decision | serial-obvious / parallel-candidate / not assessed |
+| Pre-task-card evidence | helper command or classification reason |
 | Parallel group id | |
 | Parallel helper | ai/run-parallel-loop.sh |
 | Dispatch path | flat positional / reviewed DAG plan (`--plan <json>`) |
@@ -455,10 +457,17 @@ Spark rules:
 | Failure policy | not applicable / skip-dependents |
 | Max concurrency | 2 / exact cap |
 | Dependency order | independent / after task ID / blocks task ID |
+| Base commit | <!-- common base commit SHA for all parallel cards --> |
 | Allowed files/modules | |
 | Conflict files/modules | |
+| Owned contracts | <!-- comma-separated contracts owned exclusively by this card --> |
+| Shared read-only paths | <!-- paths that all cards may read but none may write --> |
 | Shared API/data model touched? | yes/no |
 | Shared validation resource touched? | yes/no |
+| Validation owner | <!-- task ID or role responsible for running validation --> |
+| Validation command | <!-- exact validation command to run --> |
+| Serial fallback order | <!-- deterministic task order if parallel dispatch fails --> |
+| Expected token/overhead rationale | <!-- why parallel was chosen over serial --> |
 | Merge strategy | serial review / accept one / merge all after review / choose best / manual reconcile |
 | Review order | per-task / aggregate summary first / checker after merge |
 | Stop if scope overlap detected? | yes/no |
