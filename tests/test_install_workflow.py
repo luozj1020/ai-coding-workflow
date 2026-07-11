@@ -1202,6 +1202,24 @@ class InstallWorkflowTests(unittest.TestCase):
         self.assertIn("stage routing / bundle selection", readme)
         self.assertIn("阶段路由 / 包选择", readme_cn)
 
+    def test_english_and_chinese_readmes_share_recent_workflow_entrypoints(self):
+        """Keep recently added setup and parallel-routing entry points bilingual."""
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_cn = (ROOT / "README_CN.md").read_text(encoding="utf-8")
+        shared_markers = [
+            "--setup-current",
+            "--setup-repo",
+            "--auto-setup",
+            "assess-parallel-opportunity.py",
+            "serial-obvious",
+            "parallel-candidate",
+            "--max-concurrency 2",
+        ]
+        for marker in shared_markers:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, readme)
+                self.assertIn(marker, readme_cn)
+
     def test_installed_task_card_template_has_exact_controlled_builder_rows(self):
         """Required test 3: installed task-card-template.md contains every exact
         controlled-builder row with the correct field labels and example values."""

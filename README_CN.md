@@ -23,10 +23,16 @@ ai-coding-workflow 可以为仓库自动配置：
 
 | 动作 | 时机 | 命令 |
 |------|------|------|
+| **引导式配置（预览）** | 查看 Skill、项目、工具和 doctor 四阶段计划 | `python scripts/update_skill.py --setup-current` |
+| **引导式配置（执行）** | 一键更新 Skill、刷新项目、配置工具并检查 | `python scripts/update_skill.py --setup-current --apply` |
+| **指定仓库配置（预览）** | 预览其他仓库的配置计划 | `python scripts/update_skill.py --setup-repo /path/to/repo` |
+| **指定仓库配置（执行）** | 对其他仓库执行完整配置 | `python scripts/update_skill.py --setup-repo /path/to/repo --apply` |
 | **安装 Skill** | 每台电脑一次 | `python scripts/install_for_codex.py` |
 | **更新 Skill** | 拉取新版本后 | `python scripts/update_skill.py --bootstrap-current` |
 | **引导项目** | 每个仓库一次 | `python scripts/install_workflow.py .` |
 | **本地控制面引导** | 不希望提交 workflow 控制面文件的仓库 | `python scripts/install_workflow.py . --local-only` |
+| **自动配置仓库（预览）** | 检测语言、规模以及 LSP/CodeGraph/Zoekt 计划 | `python scripts/install_for_codex.py --auto-setup /path/to/repo` |
+| **自动配置仓库（执行）** | 安装缺失工具并初始化适用索引 | `python scripts/install_for_codex.py --auto-setup /path/to/repo --apply` |
 | **刷新项目 workflow** | 已经引导过的仓库 | `python scripts/install_workflow.py . --update-workflow-files` |
 
 安装 Skill 只会让 Codex 发现该 workflow，不会自动在目标仓库创建或刷新 `ai/` 目录。已经引导过的项目会保留本地的 `ai/dispatch-to-claude.sh`、`ai/task-card-template.md` 等 workflow 副本。更新 Skill 后，需要使用 `update_skill.py --bootstrap-current` 或 `install_workflow.py . --update-workflow-files` 刷新这些本地副本。
@@ -143,6 +149,24 @@ python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
 `python scripts/update_skill.py` 只更新用户级 Codex Skill。`--bootstrap-current` 和 `--bootstrap-repo` 会额外使用 `--update-workflow-files` 刷新目标仓库本地 workflow 文件，因此旧项目也能拿到新的 dispatcher、review prompt、模板和辅助脚本行为。
+
+### 一键引导式配置
+
+新版更新器可以把 Skill 更新、项目 workflow 刷新、环境感知工具配置和最终 doctor 检查串成一个流程。默认只预览，不写入任何内容：
+
+```bash
+python scripts/update_skill.py --setup-current
+python scripts/update_skill.py --setup-repo /path/to/repo
+```
+
+确认四阶段计划后，显式添加 `--apply`：
+
+```bash
+python scripts/update_skill.py --setup-current --apply
+python scripts/update_skill.py --setup-repo /path/to/repo --apply
+```
+
+执行顺序固定为：更新用户级 Skill、引导或刷新目标项目、根据仓库规模和已有工具配置 LSP/CodeGraph/Zoekt、运行 doctor。任一阶段失败都会立即停止并显示失败命令。Sourcegraph仍然只提供配置指引，不会自动部署。
 
 如果从已安装的 Skill 入口运行，但希望用另一个克隆目录作为更新源：
 
@@ -538,6 +562,15 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 3. Codex/人工审查任务卡和计划后，再显式运行并行器；默认最大并发为 2。
 4. 派发前使用零 Token 的确定性校验检查写入范围、owned contracts、共同 Base commit（必须匹配当前 `HEAD`）和验证责任。
 5. 每个结果仍然串行审查和合并。
+
+| 判断器或 Gate 结果 | 下一步 | 额外模型调用 |
+|--------------------|--------|--------------|
+| `serial-obvious` | 创建一张普通串行任务卡 | 无 |
+| `parallel-candidate` | 最多调用一次受限的 Spark `parallel-planner`，然后审查提案 | 一次 Spark 调用 |
+| 候选被确定性校验拒绝 | 使用输出的串行回退顺序，不自动重新规划 | 无 |
+| 候选通过 | 显式运行 `run-parallel-loop.sh`，通常设置 `--max-concurrency 2` | 每个就绪任务一次 Claude 派发 |
+
+候选发现有意保持宽松，实际派发则严格检查写入范围、contracts、Base commit和验证责任。这样普通串行任务不会承担额外判断成本，同时避免并行条件严苛到永远无法触发。
 
 有两种兼容路径：
 
