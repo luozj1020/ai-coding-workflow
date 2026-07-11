@@ -19,6 +19,47 @@ ai-coding-workflow bootstraps repositories with:
 - Direction / boundary acknowledgement gates with anti-loop rules
 - Managed blocks for idempotent updates
 
+## Workflow at a glance
+
+```mermaid
+flowchart TD
+    U[Human goal] --> O[OBSERVE<br/>LSP · locator · bounded CodeGraph · local evidence]
+    O --> S{Scope and risk clear?}
+    S -- Uncertain --> SP[Spark auxiliary pass<br/>size/cost estimate · audit · split · validation plan]
+    SP --> P
+    S -- Yes --> P[Codex PLAN<br/>spec · task card · acceptance · ownership]
+
+    P --> F{Small Change Fast Path?}
+    F -- Safe local change --> C[Codex scoped edit]
+    F -- Delegated work --> D[DISPATCH]
+    D --> W{Worktree strategy gate}
+    W -- Normal/high risk --> FW[Fresh worktree<br/>full evidence]
+    W -- Exact low-risk serial task --> RW[Managed reuse or safe retry-in-place<br/>explicit reduced-evidence tradeoff]
+
+    FW --> B[Claude Builder<br/>scoped implementation]
+    RW --> B
+    B --> R1[Codex direction review]
+    R1 -- Revise or split --> P
+    R1 -- Direction accepted --> K[Claude Checker/Test<br/>assigned tests and exact validation]
+    C --> V[Deterministic verification]
+    K --> V
+
+    V --> E[Evidence packet<br/>runtime identity · role PIDs · diff · reports · checks]
+    E --> R2{Codex final review}
+    R2 -- Accept --> H[Human review / merge]
+    R2 -- Revise --> P
+    R2 -- Stop condition --> X[Preserve artifacts and escalate]
+
+    classDef auxiliary fill:#eef6ff,stroke:#3973ac,color:#102a43;
+    classDef execution fill:#fff7e6,stroke:#b7791f,color:#4a2c00;
+    classDef decision fill:#f3e8ff,stroke:#805ad5,color:#2d1b4e;
+    class SP auxiliary;
+    class B,K,C,V execution;
+    class S,F,W,R1,R2 decision;
+```
+
+The control loop is **OBSERVE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**. Spark is optional advisory support and does not authorize merge. Codex owns planning and review; Claude Builder owns delegated implementation; Claude Checker/Test owns assigned test work and validation. Runtime identity, progress, role PID, diff, and checker artifacts keep interrupted or partially completed runs recoverable. Human review and merge remain separate from automated dispatch.
+
 ## Common actions
 
 | Action | When | Command |
