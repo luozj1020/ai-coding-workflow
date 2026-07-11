@@ -314,6 +314,9 @@ USAGE_FILE="${WORKTREE_ROOT}/${TASK_ID}.usage.txt"
 REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
 CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
 PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
+DISPATCHER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.pid"
+CLAUDE_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude.pid"
+CHECKER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker.pid"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 NETWORK_FILE="${WORKTREE_ROOT}/${TASK_ID}.network.log"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
@@ -322,9 +325,13 @@ FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
 
 for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
          "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
-         "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$PROGRESS_FILE" "$NETWORK_FILE"; do
+         "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$DISPATCHER_PID_FILE" "$CLAUDE_PID_FILE" "$CHECKER_PID_FILE" \
+         "$PROGRESS_FILE" "$NETWORK_FILE"; do
     mkdir -p "$(dirname "$f")"
 done
+
+# Spec item 3: write dispatcher PID as soon as artifact paths exist.
+echo "$$" > "$DISPATCHER_PID_FILE"
 
 
 TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
@@ -1097,6 +1104,7 @@ set +e
 run_claude &
 CLAUDE_PID=$!
 echo "$CLAUDE_PID" > "$PID_FILE"
+echo "$CLAUDE_PID" > "$CLAUDE_PID_FILE"
 progress_log "Claude process started: pid=${CLAUDE_PID}"
 
 START_EPOCH="$(date +%s)"
@@ -1338,7 +1346,11 @@ $CLAUDE_CODE_CHECKER_COMMANDS
 EOF_CHECKER_COMMANDS
     fi
     set +e
-    bash "$CHECK_SCRIPT" "${CHECK_ARGS[@]}" >> "$STATUS_FILE" 2>&1
+    bash "$CHECK_SCRIPT" "${CHECK_ARGS[@]}" >> "$STATUS_FILE" 2>&1 &
+    CHECKER_PID=$!
+    echo "$CHECKER_PID" > "$CHECKER_PID_FILE"
+    progress_log "Checker helper started: pid=${CHECKER_PID}"
+    wait "$CHECKER_PID"
     CHECKER_STATUS=$?
     set -e
     if [ "$CHECKER_STATUS" -eq 0 ]; then
@@ -1648,6 +1660,9 @@ echo "Usage Summary:   $USAGE_FILE"
 echo "Claude Progress: $CLAUDE_PROGRESS_FILE"
 echo "Report:          $REPORT_FILE"
 echo "Claude PID:      $PID_FILE"
+echo "Dispatcher PID:  $DISPATCHER_PID_FILE"
+echo "Claude Role PID: $CLAUDE_PID_FILE"
+echo "Checker PID:     $CHECKER_PID_FILE"
 echo "Progress Log:    $PROGRESS_FILE"
 echo "Watch Progress:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\""
 echo "Watch Details:   bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"

@@ -153,6 +153,36 @@ is_running() {
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
+role_state() {
+    local pid_file="$1"
+    if [ ! -f "$pid_file" ]; then
+        echo "missing"
+        return
+    fi
+    local pid
+    pid="$(tr -d '[:space:]' < "$pid_file")"
+    if [ -z "$pid" ]; then
+        echo "missing"
+    elif kill -0 "$pid" 2>/dev/null; then
+        echo "running"
+    else
+        echo "not-running"
+    fi
+}
+
+# Loop exit check: stay alive as long as any role (dispatcher/Claude/checker) is active.
+# Falls back to legacy .pid file when new PID files don't exist.
+any_role_is_running() {
+    if [ -f "$DISPATCHER_PID_FILE" ] && is_running "$DISPATCHER_PID_FILE"; then return 0; fi
+    if [ -f "$CLAUDE_PID_FILE" ]; then
+        if is_running "$CLAUDE_PID_FILE"; then return 0; fi
+    elif is_running "$PID_FILE"; then
+        return 0
+    fi
+    if [ -f "$CHECKER_PID_FILE" ] && is_running "$CHECKER_PID_FILE"; then return 0; fi
+    return 1
+}
+
 field_from_line() {
     local line="$1"
     local key="$2"
@@ -243,6 +273,9 @@ fi
 PREFIX="${WORKTREE_ROOT}/${TASK_ID}"
 WORKTREE_DIR="${WORKTREE_ROOT}/${TASK_ID}"
 PID_FILE="${PREFIX}.pid"
+DISPATCHER_PID_FILE="${PREFIX}.dispatcher.pid"
+CLAUDE_PID_FILE="${PREFIX}.claude.pid"
+CHECKER_PID_FILE="${PREFIX}.checker.pid"
 PROGRESS_FILE="${PREFIX}.progress.log"
 ARCHIVED_CLAUDE_PROGRESS_FILE="${PREFIX}.claude-progress.md"
 LIVE_CLAUDE_PROGRESS_FILE="${WORKTREE_DIR}/CLAUDE_PROGRESS.md"
@@ -607,10 +640,26 @@ print_details_if_needed() {
 print_snapshot() {
     print_header
 
-    local claude_progress_source report_source running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor level digest show_details
+    local claude_progress_source report_source running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor level digest show_details dispatcher_running claude_running checker_running
     claude_progress_source="$(select_claude_progress_file)"
     report_source="$(select_report_file)"
-    if is_running "$PID_FILE"; then running="yes"; else running="no"; fi
+
+    # Spec item 3/4: role-aware running state
+    dispatcher_running="$(role_state "$DISPATCHER_PID_FILE")"
+    if [ -f "$CLAUDE_PID_FILE" ]; then
+        claude_running="$(role_state "$CLAUDE_PID_FILE")"
+    elif is_running "$PID_FILE"; then
+        claude_running="running"
+    else
+        claude_running="not-running"
+    fi
+    checker_running="$(role_state "$CHECKER_PID_FILE")"
+    # Overall: Claude or Checker active (dispatcher alone = finalizing, not running)
+    if [ "$claude_running" = "running" ] || [ "$checker_running" = "running" ]; then
+        running="yes"
+    else
+        running="no"
+    fi
     last_line="$(last_dispatch_line)"
     elapsed="$(field_from_line "$last_line" "elapsed_seconds")"; elapsed="${elapsed:-0}"
     quiet="$(field_from_line "$last_line" "quiet_seconds")"; quiet="${quiet:-0}"
@@ -639,10 +688,14 @@ print_snapshot() {
     monitor="$(monitor_plan "$running" "$elapsed" "$quiet" "$worktree_changes" "$action" "$monitor_suspect_count")"
     level="$(monitor_level "$running" "$elapsed" "$quiet" "$worktree_changes" "$monitor_suspect_count")"
 
-    digest="${running}|${elapsed}|${quiet}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${reason}|${action}|${monitor}|${level}|${monitor_suspect_count}"
+    digest="${running}|${elapsed}|${quiet}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${reason}|${action}|${monitor}|${level}|${monitor_suspect_count}|${dispatcher_running}|${claude_running}|${checker_running}"
     if [ "$digest" != "$last_digest" ]; then
         if [ "$running" = "yes" ]; then
-            state="RUNNING"
+            if [ "$checker_running" = "running" ]; then
+                state="CHECKER"
+            else
+                state="RUNNING"
+            fi
         elif [ "$evidence" = "acknowledgement only" ]; then
             state="ACK_ONLY"
         elif [ "$evidence" = "diff without report" ]; then
@@ -664,7 +717,7 @@ print_snapshot() {
             echo "risk: ${risk_summary}"
             echo "network: ${network_summary}"
             echo "monitor: ${monitor}"
-            echo "machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" running=${running} suspect_count=${monitor_suspect_count} escalation_confirmations=${ESCALATION_CONFIRMATIONS} elapsed_seconds=${elapsed} quiet_seconds=${quiet} worktree_changes=${worktree_changes} network=\"${network_summary}\""
+            echo "machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" running=${running} overall_running=${running} dispatcher=${dispatcher_running} claude=${claude_running} checker=${checker_running} suspect_count=${monitor_suspect_count} escalation_confirmations=${ESCALATION_CONFIRMATIONS} elapsed_seconds=${elapsed} quiet_seconds=${quiet} worktree_changes=${worktree_changes} network=\"${network_summary}\""
             echo "action: ${action}"
             echo "analysis: ${reason}"
             echo ""
@@ -680,7 +733,7 @@ print_snapshot() {
             printf ' RISK     : %s\n' "$risk_summary"
             printf ' NETWORK  : %s\n' "$network_summary"
             printf ' MONITOR  : %s\n' "$monitor"
-            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" running=%s suspect_count=%s escalation_confirmations=%s elapsed_seconds=%s quiet_seconds=%s worktree_changes=%s network="%s"\n' "$level" "$action" "$evidence" "$running" "$monitor_suspect_count" "$ESCALATION_CONFIRMATIONS" "$elapsed" "$quiet" "$worktree_changes" "$network_summary"
+            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" running=%s overall_running=%s dispatcher=%s claude=%s checker=%s suspect_count=%s escalation_confirmations=%s elapsed_seconds=%s quiet_seconds=%s worktree_changes=%s network="%s"\n' "$level" "$action" "$evidence" "$running" "$running" "$dispatcher_running" "$claude_running" "$checker_running" "$monitor_suspect_count" "$ESCALATION_CONFIRMATIONS" "$elapsed" "$quiet" "$worktree_changes" "$network_summary"
             printf ' ACTION   : %s\n' "$action"
             if [ "$state" = "COMPLETE" ]; then
                 printf ' RESULT   : %s\n' "$reason"
@@ -693,6 +746,13 @@ print_snapshot() {
             echo ""
         fi
         last_digest="$digest"
+    else
+        # Unchanged terminal state: still emit a machine snapshot line
+        if [ "$PLAIN" -eq 1 ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" running=${running} overall_running=${running} dispatcher=${dispatcher_running} claude=${claude_running} checker=${checker_running} suspect_count=${monitor_suspect_count} elapsed_seconds=${elapsed} quiet_seconds=${quiet}"
+        else
+            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" running=%s overall_running=%s dispatcher=%s claude=%s checker=%s suspect_count=%s elapsed_seconds=%s quiet_seconds=%s\n' "$level" "$action" "$evidence" "$running" "$running" "$dispatcher_running" "$claude_running" "$checker_running" "$monitor_suspect_count" "$elapsed" "$quiet"
+        fi
     fi
 
     show_details=0
@@ -709,7 +769,7 @@ while true; do
     if [ "$ONCE" -eq 1 ]; then
         break
     fi
-    if ! is_running "$PID_FILE"; then
+    if ! any_role_is_running; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Claude process is not running; watch complete."
         break
     fi

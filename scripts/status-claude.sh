@@ -61,6 +61,9 @@ fi
 PREFIX="${WORKTREE_ROOT}/${TASK_ID}"
 WORKTREE_DIR="${WORKTREE_ROOT}/${TASK_ID}"
 PID_FILE="${PREFIX}.pid"
+DISPATCHER_PID_FILE="${PREFIX}.dispatcher.pid"
+CLAUDE_PID_FILE="${PREFIX}.claude.pid"
+CHECKER_PID_FILE="${PREFIX}.checker.pid"
 PROGRESS_FILE="${PREFIX}.progress.log"
 RESULT_FILE="${PREFIX}.result.json"
 STATUS_FILE="${PREFIX}.status.txt"
@@ -93,6 +96,23 @@ file_contains() {
     local file="$1"
     local pattern="$2"
     [ -f "$file" ] && grep -qE "$pattern" "$file" 2>/dev/null
+}
+
+role_state() {
+    local pid_file="$1"
+    if [ ! -f "$pid_file" ]; then
+        echo "missing"
+        return
+    fi
+    local pid
+    pid="$(tr -d '[:space:]' < "$pid_file")"
+    if [ -z "$pid" ]; then
+        echo "missing"
+    elif kill -0 "$pid" 2>/dev/null; then
+        echo "running"
+    else
+        echo "not-running"
+    fi
 }
 
 select_report_file() {
@@ -329,20 +349,42 @@ echo "Task ID: $TASK_ID"
 echo "Worktree: $WORKTREE_DIR"
 echo "Wait Policy: profile=${WAIT_PROFILE} startup_grace=${STARTUP_GRACE}s stale_after=${STALE_AFTER}s interrupt_after=${INTERRUPT_AFTER}s"
 
-PROCESS_STATE="unknown"
+# Spec item 3/4: role-aware PID reporting.
+DISPATCHER_STATE="$(role_state "$DISPATCHER_PID_FILE")"
+CLAUDE_ROLE_STATE="$(role_state "$CLAUDE_PID_FILE")"
+CHECKER_STATE="$(role_state "$CHECKER_PID_FILE")"
+
+# Backward compatibility: if new PID files don't exist, fall back to legacy .pid
+if [ "$CLAUDE_ROLE_STATE" = "missing" ] && [ -f "$PID_FILE" ]; then
+    CLAUDE_ROLE_STATE="$(role_state "$PID_FILE")"
+fi
+
+# Backward-compatible PID display using legacy .pid file
 if [ -f "$PID_FILE" ]; then
     PID="$(tr -d '[:space:]' < "$PID_FILE")"
     echo "PID: $PID"
-    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-        echo "Process: running"
-        PROCESS_STATE="running"
-    else
-        echo "Process: not running"
-        PROCESS_STATE="not-running"
-    fi
 else
+    PID=""
     echo "PID: missing"
-    echo "Process: unknown"
+fi
+
+echo "Dispatcher: ${DISPATCHER_STATE}"
+echo "Claude: ${CLAUDE_ROLE_STATE}"
+echo "Checker: ${CHECKER_STATE}"
+
+# Overall running: Claude or Checker still active.
+# Do not label running because only the dispatcher is finalizing artifacts.
+OVERALL_RUNNING="no"
+if [ "$CLAUDE_ROLE_STATE" = "running" ] || [ "$CHECKER_STATE" = "running" ]; then
+    OVERALL_RUNNING="yes"
+fi
+echo "Overall running: ${OVERALL_RUNNING}"
+
+# Backward-compatible PROCESS_STATE
+if [ "$OVERALL_RUNNING" = "yes" ]; then
+    PROCESS_STATE="running"
+else
+    PROCESS_STATE="not-running"
 fi
 
 echo ""
@@ -385,7 +427,7 @@ if [ -d "$WORKTREE_DIR" ]; then
     echo "Evidence: $EVIDENCE_STATE"
     echo "Network: $NETWORK_SUMMARY"
     echo "Monitor policy: $MONITOR_POLICY"
-    echo "Machine monitor: monitor_level=${MONITOR_LEVEL} action=${ACTION} evidence_state=\"${EVIDENCE_STATE}\" running=${RUNNING} elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET} worktree_changes=${CHANGE_COUNT} network=\"${NETWORK_SUMMARY}\""
+    echo "Machine monitor: monitor_level=${MONITOR_LEVEL} action=${ACTION} evidence_state=\"${EVIDENCE_STATE}\" running=${RUNNING} overall_running=${OVERALL_RUNNING} dispatcher=${DISPATCHER_STATE} claude=${CLAUDE_ROLE_STATE} checker=${CHECKER_STATE} elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET} worktree_changes=${CHANGE_COUNT} network=\"${NETWORK_SUMMARY}\""
     echo "Report source: $REPORT_SOURCE"
     echo "Claude progress source: $CLAUDE_PROGRESS_SOURCE"
     echo "Elapsed: ${ELAPSED}s"
