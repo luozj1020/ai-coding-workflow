@@ -1343,9 +1343,36 @@ worktree_digest() {
 stop_claude() {
     local reason="$1"
     local elapsed="$2"
-    progress_log "Stopping Claude (${reason}) after ${elapsed}s; sending TERM to pid=${CLAUDE_PID}"
+    local descendants=""
+    if command -v pgrep >/dev/null 2>&1; then
+        local frontier="$CLAUDE_PID"
+        local parent children
+        while [ -n "$frontier" ]; do
+            local next_frontier=""
+            for parent in $frontier; do
+                children="$(pgrep -P "$parent" 2>/dev/null || true)"
+                if [ -n "$children" ]; then
+                    descendants="${descendants} ${children}"
+                    next_frontier="${next_frontier} ${children}"
+                fi
+            done
+            frontier="$next_frontier"
+        done
+    fi
+    progress_log "Stopping Claude (${reason}) after ${elapsed}s; sending TERM to pid=${CLAUDE_PID} descendants=${descendants:-none}"
+    if [ -n "$descendants" ]; then
+        kill $descendants 2>/dev/null || true
+    fi
     kill "$CLAUDE_PID" 2>/dev/null || true
     sleep 5
+    if [ -n "$descendants" ]; then
+        local descendant
+        for descendant in $descendants; do
+            if kill -0 "$descendant" 2>/dev/null; then
+                kill -9 "$descendant" 2>/dev/null || true
+            fi
+        done
+    fi
     if kill -0 "$CLAUDE_PID" 2>/dev/null; then
         progress_log "Claude still alive after TERM; sending KILL to pid=${CLAUDE_PID}"
         kill -9 "$CLAUDE_PID" 2>/dev/null || true
@@ -1456,7 +1483,7 @@ while claude_is_running; do
         fi
         if [ -z "$_FP_SIGNAL" ]; then
             _CURRENT_PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
-            if [ "$_CURRENT_PROGRESS_HASH" != "$INITIAL_PROGRESS_HASH" ] && \
+            if [ -s "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" ] && \
                ! file_contains "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "$SEEDED_PROGRESS_MARKER"; then
                 _FP_SIGNAL="progress_updated"
             fi
@@ -1563,6 +1590,7 @@ elif [ "$CLAUDE_FIRST_PROGRESS_TIMED_OUT" -eq 1 ]; then
         echo ""
         echo "[dispatch] Claude stopped after ${ELAPSED}s: no substantive progress within ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s."
         echo "[dispatch] Convergence type: first_progress_timeout"
+        echo "[dispatch] First-progress timed out: yes"
         echo "[dispatch] Builder mode: ${CLAUDE_CODE_BUILDER_MODE}"
         echo "[dispatch] First progress signal: ${FIRST_PROGRESS_SIGNAL:-none}"
         echo "[dispatch] Progress log: ${PROGRESS_FILE}"
