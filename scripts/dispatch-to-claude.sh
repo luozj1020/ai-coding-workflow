@@ -836,9 +836,7 @@ render_claude_task_card() {
                 next
             }
             skip = 0
-            next
-        }
-        if (view == "compact" && compact_skip_section(name)) {
+        } else if (view == "compact" && compact_skip_section(name)) {
             skip = 1
             next
         }
@@ -1468,7 +1466,9 @@ while claude_is_running; do
         fi
         if [ -z "$_FP_SIGNAL" ]; then
             for _fp_file in "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md"; do
-                if [ -f "$_fp_file" ] && grep -Eiq 'blocker|stop|split|permission|approval|waiting' "$_fp_file" 2>/dev/null; then
+                if [ -f "$_fp_file" ] && \
+                   ! file_contains "$_fp_file" "$SEEDED_PROGRESS_MARKER|$SEEDED_REPORT_MARKER" && \
+                   grep -Eiq 'blocker|stop|split|permission|approval|waiting' "$_fp_file" 2>/dev/null; then
                     _FP_SIGNAL="blocker_recorded"
                     break
                 fi
