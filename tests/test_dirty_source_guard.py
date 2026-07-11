@@ -632,6 +632,173 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("## Staged Changes", diffstat)
         self.assertIn("README.md", diffstat)
 
+    # --- Runtime identity and retry-in-place tests ---
+
+    def _do_fresh_dispatch(self):
+        """Run a fresh dispatch and return (result, worktree_path, runtime_dict)."""
+        self._write_task_card()
+        self._run(["git", "add", "task-cards/PROJ.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+        result = self._dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        runtime_path = self._artifact_path(result.stdout, "Runtime Identity")
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        return result, worktree, runtime
+
+    def test_fresh_dispatch_writes_valid_runtime_json(self):
+        self._write_task_card()
+        self._run(["git", "add", "task-cards/PROJ.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+
+        result = self._dispatch()
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime_path = self._artifact_path(result.stdout, "Runtime Identity")
+        self.assertTrue(runtime_path.exists())
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        self.assertEqual(runtime["schema_version"], 1)
+        self.assertIn("task_id", runtime)
+        self.assertIn("worktree", runtime)
+        self.assertIn("base_commit", runtime)
+        self.assertIn("source_repository", runtime)
+        self.assertIn("branch", runtime)
+        self.assertIn("strategy", runtime)
+        self.assertIn("pid_files", runtime)
+        self.assertIn("dispatcher", runtime["pid_files"])
+        self.assertIn("claude", runtime["pid_files"])
+        self.assertIn("checker", runtime["pid_files"])
+        self.assertIn("pid", runtime["pid_files"])
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        self.assertEqual(runtime["worktree"], str(worktree))
+        self.assertEqual(runtime["source_repository"], str(self.repo))
+        self.assertEqual(len(runtime["base_commit"]), 40)
+        self.assertEqual(runtime["strategy"], "fresh")
+        self.assertNotIn("retry_of", runtime)
+
+    def test_retry_in_place_reuses_prior_worktree_with_new_task_id(self):
+        _, first_worktree, first_runtime = self._do_fresh_dispatch()
+        prior_task_id = first_runtime["task_id"]
+
+        second = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
+        )
+
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        second_worktree = self._artifact_path(second.stdout, "Worktree")
+        second_runtime_path = self._artifact_path(second.stdout, "Runtime Identity")
+        second_runtime = json.loads(second_runtime_path.read_text(encoding="utf-8"))
+        self.assertEqual(first_worktree, second_worktree)
+        self.assertNotEqual(first_runtime["task_id"], second_runtime["task_id"])
+        self.assertEqual(second_runtime["retry_of"], prior_task_id)
+        self.assertEqual(second_runtime["strategy"], "retry-in-place")
+        self.assertIn("retry-in-place", second.stdout)
+
+    def test_retry_in_place_rejects_missing_runtime_json(self):
+        self._write_task_card()
+        self._run(["git", "add", "task-cards/PROJ.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": "nonexistent-task-id"}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("prior runtime.json not found", result.stderr)
+
+    def test_retry_in_place_rejects_unknown_untracked_files(self):
+        _, first_worktree, first_runtime = self._do_fresh_dispatch()
+        prior_task_id = first_runtime["task_id"]
+        (first_worktree / "scratch.txt").write_text("dirty\n", encoding="utf-8")
+
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown untracked files", result.stderr)
+        self.assertIn("scratch.txt", result.stderr)
+
+    def test_retry_in_place_accepts_known_control_files(self):
+        _, first_worktree, first_runtime = self._do_fresh_dispatch()
+        prior_task_id = first_runtime["task_id"]
+        for name in ["CLAUDE_REPORT.md", "CLAUDE_PROGRESS.md", "TASK_CARD.md",
+                      "TASK_CARD_FULL.md", "CLAUDE_TASK_CARD.md", "CLAUDE_PROMPT.md"]:
+            (first_worktree / name).write_text(f"# {name}\n", encoding="utf-8")
+
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("retry-in-place", result.stdout)
+
+    def test_retry_in_place_rejects_managed_prior_strategy(self):
+        self._write_task_card()
+        first = self._dispatch(
+            extra_env={"CLAUDE_CODE_WORKTREE_STRATEGY": "reuse-managed"}
+        )
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        first_runtime = json.loads(
+            self._artifact_path(first.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        prior_task_id = first_runtime["task_id"]
+
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("reuse-managed", result.stderr)
+
+    def test_retry_in_place_rejects_live_role_pid(self):
+        _, _, first_runtime = self._do_fresh_dispatch()
+        prior_task_id = first_runtime["task_id"]
+        pid_file = self.repo / ".worktrees" / f"{prior_task_id}.claude.pid"
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
+
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("still running", result.stderr)
+
+    def test_retry_in_place_rejects_competing_reservation(self):
+        _, _, first_runtime = self._do_fresh_dispatch()
+        prior_task_id = first_runtime["task_id"]
+        reservation = self.repo / ".worktrees" / f".retry-lock-{prior_task_id}"
+        reservation.mkdir()
+
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("reservation already exists", result.stderr)
+
+    def test_retry_in_place_rejects_source_diff_in_worktree(self):
+        _, first_worktree, first_runtime = self._do_fresh_dispatch()
+        prior_task_id = first_runtime["task_id"]
+        (first_worktree / "README.md").write_text("# modified\n", encoding="utf-8")
+
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("tracked changes", result.stderr)
+
+    def test_progress_log_includes_child_exit_transition(self):
+        self._write_task_card()
+
+        result = self._dispatch()
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Claude child exited:", progress)
+        self.assertIn("transitioning to finalization immediately", progress)
+
 
 if __name__ == "__main__":
     unittest.main()

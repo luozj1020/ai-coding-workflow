@@ -1317,3 +1317,74 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("gpt-5.3-codex-spark", agents)
             self.assertIn("task-size-classifier", agents)
             self.assertIn("advisory", agents.lower())
+
+    def test_installed_dispatch_has_runtime_identity_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+
+            self.assertIn("RUNTIME_JSON=", dispatch)
+            self.assertIn("schema_version", dispatch)
+            self.assertIn('"worktree"', dispatch)
+            self.assertIn('"source_repository"', dispatch)
+            self.assertIn('"base_commit"', dispatch)
+            self.assertIn('"pid_files"', dispatch)
+            self.assertIn("Runtime identity saved to:", dispatch)
+            self.assertIn("Runtime Identity:", dispatch)
+
+    def test_installed_dispatch_has_retry_in_place_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+
+            self.assertIn("validate_retry_in_place", dispatch)
+            self.assertIn("CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID", dispatch)
+            self.assertIn("prior runtime.json not found", dispatch)
+            self.assertIn("retry-in-place", dispatch)
+            self.assertIn("reuse-managed", dispatch)
+            self.assertIn("unknown untracked files", dispatch)
+            self.assertIn("TASK_CARD.md", dispatch)
+            self.assertIn("CLAUDE_REPORT.md", dispatch)
+            self.assertIn("CLAUDE_PROGRESS.md", dispatch)
+            self.assertIn(".retry-lock-", dispatch)
+            self.assertIn("reservation already exists", dispatch)
+
+    def test_installed_status_has_runtime_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            status = (repo / "ai" / "status-claude.sh").read_text(encoding="utf-8")
+
+            self.assertIn("RUNTIME_JSON=", status)
+            self.assertIn("RUNTIME_DIAGNOSTIC", status)
+            self.assertIn("runtime.json present but worktree field missing", status)
+            self.assertIn("runtime.json worktree outside .worktrees/ boundary", status)
+            self.assertIn("runtime.json worktree directory missing", status)
+            self.assertIn("Runtime:", status)
+
+    def test_installed_watch_has_runtime_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            watch = (repo / "ai" / "watch-claude.sh").read_text(encoding="utf-8")
+
+            self.assertIn("RUNTIME_JSON=", watch)
+            self.assertIn("RUNTIME_DIAGNOSTIC", watch)
+            self.assertIn("runtime.json present but worktree field missing", watch)
+            self.assertIn("runtime.json worktree outside .worktrees/ boundary", watch)
+            self.assertIn("runtime.json worktree directory missing", watch)
+
+    def test_installed_dispatch_has_child_exit_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+
+            self.assertIn("Claude child exited:", dispatch)
+            self.assertIn("transitioning to finalization immediately", dispatch)
+
+
+if __name__ == "__main__":
+    unittest.main()
