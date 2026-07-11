@@ -24,4 +24,3 @@ Implement spec item 5 in `scripts/summarize-loop-run.py` only.
 - Edit only `scripts/summarize-loop-run.py`.
 - Do not edit tests/docs/benchmark code.
 - Do not run tests.
-

@@ -21,4 +21,3 @@ After Task 1 direction is accepted, update dispatcher PID artifacts plus `script
 ## Task 5: Checker tests and propagation
 
 Checker/Test tasks add focused tests, installer assertions, templates/docs, then run the bounded regression suite.
-

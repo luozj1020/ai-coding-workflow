@@ -33,4 +33,3 @@ Implement spec items 1, 2, and 6 in `scripts/dispatch-to-claude.sh` only.
 - No model-provided text is evaluated as shell.
 - Positive convergence needs two stable heartbeats; all missing/ambiguous evidence fails closed.
 - `bash -n scripts/dispatch-to-claude.sh` passes.
-

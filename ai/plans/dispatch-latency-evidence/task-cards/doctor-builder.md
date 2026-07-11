@@ -25,4 +25,3 @@ Implement spec item 7 in `scripts/doctor_workflow.py` only.
 - Edit only `scripts/doctor_workflow.py`.
 - Do not delete, prune, reset, or clean anything.
 - Do not edit tests/docs or run tests.
-
