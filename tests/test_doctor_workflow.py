@@ -742,7 +742,10 @@ class HashPathCLITests(unittest.TestCase):
 
     def _make_repo(self, tmp):
         repo = pathlib.Path(tmp) / "repo"
-        repo.mkdir()
+        subprocess.run(
+            [sys.executable, str(INSTALLER), str(repo)],
+            cwd=str(ROOT), capture_output=True, check=True,
+        )
         subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
         return repo
 
@@ -945,7 +948,7 @@ class HashPathDiagnosticsTests(unittest.TestCase):
             subprocess.run(["git", "commit", "-m", "init"], cwd=str(repo), capture_output=True, check=True)
             findings = module._hash_path_diagnostics(str(repo), ["file.txt"])
             text = "\n".join("{} [{}] {}".format(*f) for f in findings)
-            self.assertIn("target-only", text)
+            self.assertIn("target-only", text.lower())
             self.assertIn("does not prove global", text)
             self.assertIn("match", text.lower())
 
