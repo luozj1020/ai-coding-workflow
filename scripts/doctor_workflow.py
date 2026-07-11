@@ -62,6 +62,12 @@ WORKFLOW_REQUIRED_FILES = [
 # Documented runtime helper scripts that should be reported separately
 # when missing, distinct from other required workflow files.
 WORKFLOW_RUNTIME_HELPERS = [
+    "ai/dispatch-to-claude.sh",
+    "ai/check-worktree.sh",
+    "ai/run-codex-spark.sh",
+    "ai/run-parallel-loop.sh",
+    "ai/status-claude.sh",
+    "ai/watch-claude.sh",
     "ai/doctor_workflow.py",
     "ai/code-search-service.py",
     "ai/clean_runtime.py",
@@ -652,6 +658,14 @@ def _validate_hash_path(path, repo_root):
     if ".." in path.split(os.sep) or ".." in path.split("/"):
         return False, "traversal (..) not allowed: {}".format(path)
     full = os.path.join(repo_root, path)
+    repo_real = os.path.realpath(repo_root)
+    full_real = os.path.realpath(full)
+    try:
+        inside_repo = os.path.commonpath([repo_real, full_real]) == repo_real
+    except ValueError:
+        inside_repo = False
+    if not inside_repo:
+        return False, "path resolves outside repository: {}".format(path)
     if not os.path.exists(full):
         return False, "path does not exist: {}".format(path)
     if os.path.isdir(full):
@@ -671,7 +685,8 @@ def _hash_path_diagnostics(repo_root, paths):
 
     findings.append((INFO, "hash-check",
                      "Target-only scope: checking {} path(s); "
-                     "renormalize is never automatic".format(len(paths))))
+                     "this does not prove global worktree cleanliness; "
+                     "git add --renormalize is never automatic and requires human judgment".format(len(paths))))
 
     for path in paths:
         rel = path.replace("\\", "/")
@@ -735,9 +750,10 @@ def _hash_path_diagnostics(repo_root, paths):
                 if status_clean:
                     findings.append((WARN, "hash-check",
                                      "{}: filesystem hash {} differs from index {} "
-                                     "but porcelain status is empty (possible renormalization issue; "
-                                     "renormalize is never automatic)".format(
-                                         rel, fs_hash[:12], idx_hash[:12])))
+                                     "but porcelain status is empty (possible stat-cache/index mismatch). "
+                                     "Next read-only check: git diff --no-ext-diff -- {}; "
+                                     "git add --renormalize is never automatic and requires human judgment".format(
+                                         rel, fs_hash[:12], idx_hash[:12], rel)))
                 else:
                     findings.append((INFO, "hash-check",
                                      "{}: filesystem hash {} differs from index {} (status shows changes)".format(
@@ -912,12 +928,13 @@ def run_doctor(repo_path=None, hash_paths=None):
                              "CLAUDE_CODE_LARGE_REPO_MODE=1; reset only .worktrees/reuse/claude-managed with "
                              "CLAUDE_CODE_REUSE_WORKTREE_RESET=1 after preserving evidence."))
             findings.append((INFO, "large-repo",
-                             "Execution-only mode eligible: CLAUDE_CODE_EXECUTION_ONLY=1. "
-                             "Retry-in-place eligible when prior evidence is accepted and targets unchanged."))
+                             "Exact mechanical Builder tasks may use "
+                             "CLAUDE_CODE_BUILDER_MODE=execution-only. A clean no-diff same-task retry may use "
+                             "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID=<prior-task-id>."))
             if tracked_count >= 50000:
                 findings.append((WARN, "large-repo",
-                                 "{} tracked files is very large; prefer local-only workflow bootstrap "
-                                 "and managed worktree reuse for repeated dispatches.".format(tracked_count)))
+                                 "{} tracked files is very large; prefer local-only workflow bootstrap. "
+                                 "Managed reuse remains conditional on the low-risk/exact-target/serial/evidence gate above.".format(tracked_count)))
                 findings.append((INFO, "large-repo",
                                  "Suggested local-only bootstrap for business repositories: "
                                  "python scripts/install_workflow.py . --local-only"))
