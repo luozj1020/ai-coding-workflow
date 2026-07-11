@@ -406,12 +406,12 @@ def should_try_codegraph(mode, repo_root, tracked_count, threshold):
         return False, False, "off"
     if not os.path.isdir(os.path.join(repo_root, ".codegraph")):
         return False, False, "no .codegraph index"
+    if mode == "auto" and tracked_count > threshold:
+        return False, True, "auto skipped broad: tracked files {} > threshold {}".format(tracked_count, threshold)
     if not shutil.which("codegraph"):
         return False, False, "codegraph CLI missing"
     if mode == "try":
         return True, True, "explicit try"
-    if tracked_count > threshold:
-        return False, True, "auto skipped broad: tracked files {} > threshold {}".format(tracked_count, threshold)
     return True, True, "auto small-enough repo"
 
 

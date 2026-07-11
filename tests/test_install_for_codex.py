@@ -479,7 +479,7 @@ class TestRunAutoSetup(unittest.TestCase):
             with patch.object(self.module, "run_bootstrap") as bootstrap, \
                  patch("shutil.which", return_value=None):
                 result = self.module.run_auto_setup(str(repo), str(skill), apply=True)
-            bootstrap.assert_called_once_with(str(skill), str(repo.resolve()))
+            bootstrap.assert_called_once_with(str(skill), os.path.abspath(str(repo)))
             self.assertTrue(result["workflow_result"])
 
     def test_apply_runs_install(self):

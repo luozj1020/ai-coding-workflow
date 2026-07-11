@@ -31,6 +31,18 @@ def run_classifier_json(*args):
     return result, json.loads(result.stdout) if result.returncode == 0 else None
 
 
+def write_temp_text(text):
+    """Create a closed temporary file so Windows subprocesses can reopen it."""
+    fd, path = tempfile.mkstemp(suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    return path
+
+
+def write_temp_json(payload):
+    return write_temp_text(json.dumps(payload))
+
+
 # ---------------------------------------------------------------------------
 # Test: Serial-obvious classifications
 # ---------------------------------------------------------------------------
@@ -133,29 +145,25 @@ class TestInputModes(unittest.TestCase):
     """Test both --hints JSON file and CLI flag input modes."""
 
     def test_json_file_input(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({
-                "work_units": 3,
-                "write_scopes": ["src/a", "src/b"],
-                "estimated_minutes": 20,
-            }, f)
-            f.flush()
-            try:
-                result, data = run_classifier_json("--hints", f.name)
-                self.assertEqual(result.returncode, 0)
-                self.assertEqual(data["decision"], "parallel-candidate")
-            finally:
-                os.unlink(f.name)
+        path = write_temp_json({
+            "work_units": 3,
+            "write_scopes": ["src/a", "src/b"],
+            "estimated_minutes": 20,
+        })
+        try:
+            result, data = run_classifier_json("--hints", path)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(data["decision"], "parallel-candidate")
+        finally:
+            os.unlink(path)
 
     def test_invalid_json_file_exits_2(self):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write("not json{{{")
-            f.flush()
-            try:
-                result = run_classifier("--hints", f.name)
-                self.assertEqual(result.returncode, 2)
-            finally:
-                os.unlink(f.name)
+        path = write_temp_text("not json{{{")
+        try:
+            result = run_classifier("--hints", path)
+            self.assertEqual(result.returncode, 2)
+        finally:
+            os.unlink(path)
 
     def test_nonexistent_hints_file_exits_2(self):
         result = run_classifier("--hints", "/nonexistent/path.json")
@@ -195,87 +203,73 @@ class TestJsonInputValidation(unittest.TestCase):
 
     def test_string_work_units_exits_2(self):
         """work_units as string must exit 2."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"work_units": "three", "write_scopes": ["a", "b"]}, f)
-            f.flush()
-            try:
-                result = run_classifier("--hints", f.name)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("work_units must be an integer", result.stderr)
-            finally:
-                os.unlink(f.name)
+        path = write_temp_json({"work_units": "three", "write_scopes": ["a", "b"]})
+        try:
+            result = run_classifier("--hints", path)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("work_units must be an integer", result.stderr)
+        finally:
+            os.unlink(path)
 
     def test_negative_work_units_exits_2(self):
         """Negative work_units must exit 2."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"work_units": -1, "write_scopes": ["a", "b"]}, f)
-            f.flush()
-            try:
-                result = run_classifier("--hints", f.name)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("work_units must be nonnegative", result.stderr)
-            finally:
-                os.unlink(f.name)
+        path = write_temp_json({"work_units": -1, "write_scopes": ["a", "b"]})
+        try:
+            result = run_classifier("--hints", path)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("work_units must be nonnegative", result.stderr)
+        finally:
+            os.unlink(path)
 
     def test_bool_work_units_exits_2(self):
         """Boolean work_units must exit 2 (isinstance(True, int) is True)."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"work_units": True, "write_scopes": ["a", "b"]}, f)
-            f.flush()
-            try:
-                result = run_classifier("--hints", f.name)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("work_units must be an integer", result.stderr)
-            finally:
-                os.unlink(f.name)
+        path = write_temp_json({"work_units": True, "write_scopes": ["a", "b"]})
+        try:
+            result = run_classifier("--hints", path)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("work_units must be an integer", result.stderr)
+        finally:
+            os.unlink(path)
 
     def test_string_write_scopes_exits_2(self):
         """write_scopes as string instead of list must exit 2."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"work_units": 2, "write_scopes": "a,b"}, f)
-            f.flush()
-            try:
-                result = run_classifier("--hints", f.name)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("write_scopes must be an array", result.stderr)
-            finally:
-                os.unlink(f.name)
+        path = write_temp_json({"work_units": 2, "write_scopes": "a,b"})
+        try:
+            result = run_classifier("--hints", path)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("write_scopes must be an array", result.stderr)
+        finally:
+            os.unlink(path)
 
     def test_non_dict_root_exits_2(self):
         """Non-object JSON root must exit 2."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump([1, 2, 3], f)
-            f.flush()
-            try:
-                result = run_classifier("--hints", f.name)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("hints must be a JSON object", result.stderr)
-            finally:
-                os.unlink(f.name)
+        path = write_temp_json([1, 2, 3])
+        try:
+            result = run_classifier("--hints", path)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("hints must be a JSON object", result.stderr)
+        finally:
+            os.unlink(path)
 
     def test_negative_estimated_minutes_exits_2(self):
         """Negative estimated_minutes must exit 2."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"work_units": 2, "write_scopes": ["a", "b"], "estimated_minutes": -5}, f)
-            f.flush()
-            try:
-                result = run_classifier("--hints", f.name)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertIn("estimated_minutes must be nonnegative", result.stderr)
-            finally:
-                os.unlink(f.name)
+        path = write_temp_json({"work_units": 2, "write_scopes": ["a", "b"], "estimated_minutes": -5})
+        try:
+            result = run_classifier("--hints", path)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("estimated_minutes must be nonnegative", result.stderr)
+        finally:
+            os.unlink(path)
 
     def test_valid_input_still_works(self):
         """Valid input should still produce classification."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump({"work_units": 3, "write_scopes": ["src/a", "src/b"], "estimated_minutes": 20}, f)
-            f.flush()
-            try:
-                result, data = run_classifier_json("--hints", f.name)
-                self.assertEqual(result.returncode, 0)
-                self.assertEqual(data["decision"], "parallel-candidate")
-            finally:
-                os.unlink(f.name)
+        path = write_temp_json({"work_units": 3, "write_scopes": ["src/a", "src/b"], "estimated_minutes": 20})
+        try:
+            result, data = run_classifier_json("--hints", path)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(data["decision"], "parallel-candidate")
+        finally:
+            os.unlink(path)
 
 
 if __name__ == "__main__":
