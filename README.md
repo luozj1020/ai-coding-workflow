@@ -682,6 +682,10 @@ bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover --
 
 The dispatcher records a checker report after Claude finishes, but broad discovery is disabled by default to avoid unrelated pytest/ruff/mypy noise. Pass `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'` for exact dispatcher-run checks, or `CLAUDE_CODE_CHECKER_DISCOVER=1` when the task card explicitly allows broad project discovery.
 
+**Checker Reuse Risk Gate:** Before dispatching a `checker-test` task, fill the Checker Reuse Risk Gate in the task card with exact rows: Public API risk, Data model risk, Security risk, Migration risk, Permission risk, Concurrency risk, Cross-module risk, Production impact. Each row must be explicit `no` for task-derived checker worktree reuse to default to `reuse-managed`. Missing, `unknown`, `n/a`, `duplicate`, `high` risk, DAG, or parallel tasks stay `fresh`. An explicit strategy in the task card overrides this default. Existing reset safety via `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` remains unchanged.
+
+**Authoritative validation timeline:** The dispatcher preserves the Claude blocked state. Checker ALL GREEN is the authoritative signal that makes the final status `passed`. Checker failures set the final status accordingly.
+
 The checker also reads task-card validation fences when `--task-card` is passed:
 
 ```bash validation
@@ -777,9 +781,12 @@ While Claude Code is running, `dispatch-to-claude.sh` now writes a PID artifact 
 
 - `.worktrees/claude-<id>.pid` records the Claude subprocess PID.
 - `.worktrees/claude-<id>.progress.log` records start, heartbeat, timeout, and completion events.
+- Machine-readable status fields after finalization: `overall_running=yes`, `running=no`, `claude=not-running`. Only the dispatcher sets these fields; Claude does not finalize its own status.
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` controls heartbeat frequency; default is `30`.
 - `CLAUDE_CODE_TIMEOUT_SECONDS` controls the maximum Claude runtime; default is `600` seconds. Set it to `0` to disable timeout.
 - `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` optionally stops Claude when result/status/report/progress artifacts do not change. Default is `0` disabled; set a positive value only when you want fast-fail behavior.
+- `CLAUDE_CODE_WORKTREE_PROGRESS` controls worktree progress verbosity. Default `quiet` shows compact timing and path; `verbose` shows detailed worktree state.
+- `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE` enables conservative approval-blocked early convergence. Default `0` (off); set to `1` to enable. When enabled, if a valid complete report exists, changes are test-only scoped, an exact validation approval blocker is present, and two stable heartbeats have been observed, the dispatcher triggers the checker helper. This is not validation success or acceptance — it is an early evidence-gathering path.
 
 Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones. The dispatcher reports its size in heartbeats and copies it to `.worktrees/claude-<id>.claude-progress.md`; Codex only spends tokens on it when review/status output is explicitly read.
 
@@ -850,6 +857,16 @@ python ai/clean_runtime.py --task-id claude-20260701-093934 --apply
 
 `cleanup-worktree.sh` refuses to run while the recorded Claude PID is still alive. Use `--force` only when `git worktree remove` needs it for a broken or dirty worktree.
 `clean_runtime.py --task-id ...` is useful for large repositories because it avoids broad root artifact cleanup and preserves unrelated dispatches.
+
+---
+
+## Preserved Constraints
+
+The following constraints are preserved across all workflow changes:
+
+- **No model tiers:** there is no automatic model-tier routing or escalation between Spark, Claude, and stronger models.
+- **No implicit fallback:** Spark does not silently fall back to GPT-5.5 or another stronger model. If Spark is unavailable, report the gap and let Codex or the human decide.
+- **No automatic merge:** human review and merge remain separate. The workflow never merges automatically.
 
 ---
 
@@ -924,6 +941,8 @@ python ai/clean_runtime.py --task-id claude-20260709-120000
 # Large repos: remove only that stopped dispatch's runtime artifacts
 python ai/clean_runtime.py --task-id claude-20260709-120000 --apply
 ```
+
+`doctor_workflow.py` runs in preview-only mode: it shows count, size, and age of runtime artifacts. It does not automatically delete anything.
 
 **Check context tools:**
 

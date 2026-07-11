@@ -70,6 +70,24 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | Evidence tradeoff accepted? | no / yes, untracked scans and untracked patch evidence may be skipped |
 | Safety boundary | never reset or clean source repo; reuse only `.worktrees/reuse/claude-managed` |
 | Cleanup expectation | remove fresh worktree after review / keep managed reuse worktree / human decides |
+| Worktree progress mode | `CLAUDE_CODE_WORKTREE_PROGRESS=quiet` (default, compact timing/path) / `verbose` |
+
+## Checker Reuse Risk Gate
+
+<!-- Fill before dispatch when reusing a checker worktree from a prior task-derived run. Every row must be explicit `no` to allow `reuse-managed`. Any `yes`, `unknown`, `n/a`, `duplicate`, `high`, or missing row forces `fresh`. Explicit strategy in the task card wins over this default. Existing reset safety (`CLAUDE_CODE_REUSE_WORKTREE_RESET=1`) remains unchanged. DAG or parallel tasks always stay fresh. -->
+
+| Risk Row | Value |
+|----------|-------|
+| Public API risk | no |
+| Data model risk | no |
+| Security risk | no |
+| Migration risk | no |
+| Permission risk | no |
+| Concurrency risk | no |
+| Cross-module risk | no |
+| Production impact | no |
+
+Serial low-risk `checker-test` tasks default to `reuse-managed` only when every row above is explicit `no`. Missing, `unknown`, `n/a`, `duplicate`, `high` risk, DAG, or parallel tasks stay `fresh`. An explicit strategy in the task card overrides this default. Existing reset safety via `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` remains unchanged.
 
 ## Delegation Restoration Gate
 
@@ -96,6 +114,60 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | Interrupt and narrow task? | yes/no + reason |
 | Dispatch Checker/Test task next? | yes/no + task-card path |
 | Codex takeover threshold reached? | yes/no + cited artifacts |
+
+## Approval-Blocked Early Convergence
+
+<!-- Use this when a conservative early-exit path should run the checker helper without waiting for full validation. Enabled by `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE=1`. All conditions must hold; this is not validation success or acceptance. -->
+
+| Field | Value |
+|-------|-------|
+| Convergence env | `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE=0` (default off) / `1` (enabled) |
+| Valid complete report exists? | yes/no |
+| Test-only scoped changes? | yes/no |
+| Exact validation approval blocker present? | yes/no |
+| Two stable heartbeats observed? | yes/no |
+| Checker helper triggered? | yes/no |
+| Convergence result | early-checker / waiting / not-applicable |
+
+Conservative approval-blocked early convergence: when enabled, if a valid complete report exists, changes are test-only scoped, an exact validation approval blocker is present, and two stable heartbeats have been observed, the dispatcher triggers the checker helper. This is not validation success and not acceptance — it is an early evidence-gathering path for the checker.
+
+## Role PID Artifacts and Machine Fields
+
+<!-- Dispatcher writes these artifacts; finalization is dispatcher-only. -->
+
+| Field | Value |
+|-------|-------|
+| PID artifact | `.worktrees/claude-<id>.pid` |
+| Progress log | `.worktrees/claude-<id>.progress.log` |
+| Machine `overall_running` | yes (dispatcher finalizes) |
+| Machine `running` | no (dispatcher finalizes) |
+| Machine `claude` | not-running (dispatcher finalizes) |
+
+Dispatcher-only finalization: the dispatcher writes the PID artifact and progress log. Machine-readable status fields use `overall_running=yes`, `running=no`, `claude=not-running` after finalization. Only the dispatcher sets these fields; Claude does not finalize its own status.
+
+## Authoritative Validation Timeline
+
+<!-- The dispatcher preserves the Claude blocked state. Checker ALL GREEN is the authoritative signal for final passed. -->
+
+| Event | Effect |
+|-------|--------|
+| Claude enters blocked state | Blocked state preserved in artifacts |
+| Checker runs assigned validation | Checker report written |
+| Checker reports ALL GREEN | Final status set to `passed` |
+| Checker reports failures | Final status reflects checker result |
+
+The authoritative validation timeline: the dispatcher preserves the Claude blocked state. Checker ALL GREEN makes the final status `passed`. Checker failures set the final status accordingly.
+
+## Doctor Preview-Only Inventory
+
+<!-- `doctor_workflow.py` runs in preview-only mode. It shows count, size, and age of runtime artifacts. It does not automatically delete anything. -->
+
+| Field | Value |
+|-------|-------|
+| Preview count | shown |
+| Preview size | shown |
+| Preview age | shown |
+| Automatic deletion | no |
 
 ## Direction / Boundary Acknowledgement
 
@@ -666,6 +738,8 @@ Finish rule: do not claim completion from stale evidence, seeded/fallback report
 ## Execution Rules
 
 <!-- Any execution constraints for Claude Code. Leave blank to use defaults from CLAUDE.md. -->
+
+Preserved constraints: no model tiers, no implicit fallback, no automatic merge.
 
 ## Notes
 
