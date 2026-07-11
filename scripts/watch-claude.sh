@@ -640,7 +640,7 @@ print_details_if_needed() {
 print_snapshot() {
     print_header
 
-    local claude_progress_source report_source running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor level digest show_details dispatcher_running claude_running checker_running
+    local claude_progress_source report_source running overall_running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor level digest show_details dispatcher_running claude_running checker_running
     claude_progress_source="$(select_claude_progress_file)"
     report_source="$(select_report_file)"
 
@@ -654,7 +654,13 @@ print_snapshot() {
         claude_running="not-running"
     fi
     checker_running="$(role_state "$CHECKER_PID_FILE")"
-    # Overall: Claude or Checker active (dispatcher alone = finalizing, not running)
+    # Overall running: any role alive (dispatcher/Claude/checker)
+    if [ "$dispatcher_running" = "running" ] || [ "$claude_running" = "running" ] || [ "$checker_running" = "running" ]; then
+        overall_running="yes"
+    else
+        overall_running="no"
+    fi
+    # Execution running: Claude or Checker active (dispatcher alone = finalizing)
     if [ "$claude_running" = "running" ] || [ "$checker_running" = "running" ]; then
         running="yes"
     else
@@ -688,7 +694,7 @@ print_snapshot() {
     monitor="$(monitor_plan "$running" "$elapsed" "$quiet" "$worktree_changes" "$action" "$monitor_suspect_count")"
     level="$(monitor_level "$running" "$elapsed" "$quiet" "$worktree_changes" "$monitor_suspect_count")"
 
-    digest="${running}|${elapsed}|${quiet}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${reason}|${action}|${monitor}|${level}|${monitor_suspect_count}|${dispatcher_running}|${claude_running}|${checker_running}"
+    digest="${running}|${overall_running}|${elapsed}|${quiet}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${reason}|${action}|${monitor}|${level}|${monitor_suspect_count}|${dispatcher_running}|${claude_running}|${checker_running}"
     if [ "$digest" != "$last_digest" ]; then
         if [ "$running" = "yes" ]; then
             if [ "$checker_running" = "running" ]; then
@@ -717,7 +723,7 @@ print_snapshot() {
             echo "risk: ${risk_summary}"
             echo "network: ${network_summary}"
             echo "monitor: ${monitor}"
-            echo "machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" running=${running} overall_running=${running} dispatcher=${dispatcher_running} claude=${claude_running} checker=${checker_running} suspect_count=${monitor_suspect_count} escalation_confirmations=${ESCALATION_CONFIRMATIONS} elapsed_seconds=${elapsed} quiet_seconds=${quiet} worktree_changes=${worktree_changes} network=\"${network_summary}\""
+            echo "machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" quiet_seconds=${quiet} suspect_count=${monitor_suspect_count} running=${running} overall_running=${overall_running} dispatcher=${dispatcher_running} claude=${claude_running} checker=${checker_running} elapsed_seconds=${elapsed} worktree_changes=${worktree_changes} network=\"${network_summary}\""
             echo "action: ${action}"
             echo "analysis: ${reason}"
             echo ""
@@ -733,7 +739,7 @@ print_snapshot() {
             printf ' RISK     : %s\n' "$risk_summary"
             printf ' NETWORK  : %s\n' "$network_summary"
             printf ' MONITOR  : %s\n' "$monitor"
-            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" running=%s overall_running=%s dispatcher=%s claude=%s checker=%s suspect_count=%s escalation_confirmations=%s elapsed_seconds=%s quiet_seconds=%s worktree_changes=%s network="%s"\n' "$level" "$action" "$evidence" "$running" "$running" "$dispatcher_running" "$claude_running" "$checker_running" "$monitor_suspect_count" "$ESCALATION_CONFIRMATIONS" "$elapsed" "$quiet" "$worktree_changes" "$network_summary"
+            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" quiet_seconds=%s suspect_count=%s running=%s overall_running=%s dispatcher=%s claude=%s checker=%s elapsed_seconds=%s worktree_changes=%s network="%s"\n' "$level" "$action" "$evidence" "$quiet" "$monitor_suspect_count" "$running" "$overall_running" "$dispatcher_running" "$claude_running" "$checker_running" "$elapsed" "$worktree_changes" "$network_summary"
             printf ' ACTION   : %s\n' "$action"
             if [ "$state" = "COMPLETE" ]; then
                 printf ' RESULT   : %s\n' "$reason"
@@ -749,9 +755,9 @@ print_snapshot() {
     else
         # Unchanged terminal state: still emit a machine snapshot line
         if [ "$PLAIN" -eq 1 ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" running=${running} overall_running=${running} dispatcher=${dispatcher_running} claude=${claude_running} checker=${checker_running} suspect_count=${monitor_suspect_count} elapsed_seconds=${elapsed} quiet_seconds=${quiet}"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" quiet_seconds=${quiet} suspect_count=${monitor_suspect_count} running=${running} overall_running=${overall_running} dispatcher=${dispatcher_running} claude=${claude_running} checker=${checker_running} elapsed_seconds=${elapsed}"
         else
-            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" running=%s overall_running=%s dispatcher=%s claude=%s checker=%s suspect_count=%s elapsed_seconds=%s quiet_seconds=%s\n' "$level" "$action" "$evidence" "$running" "$running" "$dispatcher_running" "$claude_running" "$checker_running" "$monitor_suspect_count" "$elapsed" "$quiet"
+            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" quiet_seconds=%s suspect_count=%s running=%s overall_running=%s dispatcher=%s claude=%s checker=%s elapsed_seconds=%s\n' "$level" "$action" "$evidence" "$quiet" "$monitor_suspect_count" "$running" "$overall_running" "$dispatcher_running" "$claude_running" "$checker_running" "$elapsed"
         fi
     fi
 

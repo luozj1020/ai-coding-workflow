@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import pathlib
 import subprocess
 import sys
@@ -758,6 +759,223 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn('Claude process is still running', cleanup)
             self.assertIn('git worktree remove', cleanup)
             self.assertIn('Evidence artifacts were preserved', cleanup)
+
+    # --- Process-role monitoring tests ---
+
+    def _setup_worktree(self, repo, task_id):
+        """Create minimal worktree artifacts for status/watch tests."""
+        worktrees = repo / ".worktrees"
+        (worktrees / task_id).mkdir(parents=True, exist_ok=True)
+        (worktrees / f"{task_id}.progress.log").write_text(
+            "[2099-01-01 00:00:00] Claude still running: pid=1, elapsed_seconds=5, "
+            "quiet_seconds=5, result_bytes=0, status_bytes=0, report_bytes=0, "
+            "claude_progress_bytes=12\n",
+            encoding="utf-8",
+        )
+        (worktrees / f"{task_id}.result.json").write_text("", encoding="utf-8")
+        (worktrees / f"{task_id}.status.txt").write_text("", encoding="utf-8")
+        (worktrees / f"{task_id}.claude-progress.md").write_text(
+            "Working on validation\n", encoding="utf-8"
+        )
+        return worktrees
+
+    def test_status_claude_machine_line_has_required_fields(self):
+        """Status machine line must contain monitor_level/action/evidence_state/
+        quiet_seconds/suspect_count plus dispatcher/claude/checker/overall_running."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-000000"
+            worktrees = self._setup_worktree(repo, task_id)
+            # All roles stopped: write non-existent PIDs
+            (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.dispatcher.pid").write_text("99998", encoding="utf-8")
+            (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
+
+            bash_exe = load_module()._find_bash()
+            result = subprocess.run(
+                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                cwd=str(repo),
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True,
+            )
+            machine = [l for l in result.stdout.splitlines() if "Machine monitor:" in l]
+            self.assertTrue(machine, "Expected a Machine monitor line in status output")
+            line = machine[0]
+            for field in ("monitor_level=", "action=", "evidence_state=",
+                          "quiet_seconds=", "suspect_count=",
+                          "dispatcher=", "claude=", "checker=",
+                          "overall_running=", "running="):
+                self.assertIn(field, line, f"Missing {field} in machine line")
+
+    def test_status_claude_overall_running_includes_dispatcher(self):
+        """overall_running=yes when only dispatcher is alive (finalization phase),
+        but running must be no because Claude is not executing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-000000"
+            worktrees = self._setup_worktree(repo, task_id)
+            # Dispatcher alive (use current PID), Claude and checker dead
+            my_pid = str(os.getpid())
+            (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.dispatcher.pid").write_text(my_pid, encoding="utf-8")
+            (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
+
+            bash_exe = load_module()._find_bash()
+            result = subprocess.run(
+                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                cwd=str(repo),
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True,
+            )
+            self.assertIn("Overall running: yes", result.stdout)
+            # Claude must explicitly be not-running
+            self.assertIn("Claude: not-running", result.stdout)
+            # Machine line: overall_running=yes but running=no
+            machine = [l for l in result.stdout.splitlines() if "Machine monitor:" in l]
+            self.assertTrue(machine)
+            line = machine[0]
+            self.assertIn("overall_running=yes", line)
+            self.assertIn("running=no", line)
+
+    def test_status_claude_overall_running_no_when_all_stopped(self):
+        """overall_running=no when all roles are stopped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-000000"
+            worktrees = self._setup_worktree(repo, task_id)
+            (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.dispatcher.pid").write_text("99998", encoding="utf-8")
+            (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
+
+            bash_exe = load_module()._find_bash()
+            result = subprocess.run(
+                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                cwd=str(repo),
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True,
+            )
+            self.assertIn("Overall running: no", result.stdout)
+            self.assertIn("Dispatcher: not-running", result.stdout)
+            self.assertIn("Claude: not-running", result.stdout)
+            self.assertIn("Checker: not-running", result.stdout)
+
+    def test_status_claude_legacy_pid_fallback(self):
+        """When new .claude.pid is missing but legacy .pid exists, Claude state
+        falls back to the legacy PID file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-000000"
+            worktrees = self._setup_worktree(repo, task_id)
+            # Only legacy PID file; no .claude.pid
+            (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.dispatcher.pid").write_text("99998", encoding="utf-8")
+            # No .claude.pid file
+            (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
+
+            bash_exe = load_module()._find_bash()
+            result = subprocess.run(
+                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                cwd=str(repo),
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True,
+            )
+            # Claude state should fall back to legacy .pid (which has 99999 = not-running)
+            self.assertIn("Claude: not-running", result.stdout)
+            # Legacy PID display
+            self.assertIn("PID: 99999", result.stdout)
+
+    def test_watch_plain_once_emits_machine_line(self):
+        """watch-claude.sh --plain --once must emit a machine line for fast
+        terminal artifacts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-000000"
+            worktrees = self._setup_worktree(repo, task_id)
+            (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.dispatcher.pid").write_text("99998", encoding="utf-8")
+            (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
+
+            bash_exe = load_module()._find_bash()
+            result = subprocess.run(
+                [bash_exe, str(repo / "ai" / "watch-claude.sh"),
+                 task_id, "--plain", "--once"],
+                cwd=str(repo),
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True,
+            )
+            machine = [l for l in result.stdout.splitlines()
+                       if "machine:" in l and "monitor_level=" in l]
+            self.assertTrue(machine,
+                            "Expected a machine line in --plain --once output")
+            line = machine[0]
+            for field in ("monitor_level=", "action=", "evidence_state=",
+                          "quiet_seconds=", "suspect_count=",
+                          "running=", "overall_running=",
+                          "dispatcher=", "claude=", "checker="):
+                self.assertIn(field, line, f"Missing {field} in watch machine line")
+
+    def test_watch_machine_line_overall_running_includes_dispatcher(self):
+        """Watch machine line overall_running=yes when only dispatcher is alive."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-000000"
+            worktrees = self._setup_worktree(repo, task_id)
+            my_pid = str(os.getpid())
+            (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.dispatcher.pid").write_text(my_pid, encoding="utf-8")
+            (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
+
+            bash_exe = load_module()._find_bash()
+            result = subprocess.run(
+                [bash_exe, str(repo / "ai" / "watch-claude.sh"),
+                 task_id, "--plain", "--once"],
+                cwd=str(repo),
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True,
+            )
+            machine = [l for l in result.stdout.splitlines()
+                       if "machine:" in l and "monitor_level=" in l]
+            self.assertTrue(machine)
+            line = machine[0]
+            self.assertIn("overall_running=yes", line)
+            self.assertIn("running=no", line)
+            self.assertIn("dispatcher=running", line)
+            self.assertIn("claude=not-running", line)
+
+    def test_status_claude_role_pid_display(self):
+        """Status output must show Dispatcher/Claude/Checker role lines."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-000000"
+            worktrees = self._setup_worktree(repo, task_id)
+            (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.dispatcher.pid").write_text("99998", encoding="utf-8")
+            (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
+            (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
+
+            bash_exe = load_module()._find_bash()
+            result = subprocess.run(
+                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                cwd=str(repo),
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True,
+            )
+            self.assertIn("Dispatcher: ", result.stdout)
+            self.assertIn("Claude: ", result.stdout)
+            self.assertIn("Checker: ", result.stdout)
+            self.assertIn("Overall running: ", result.stdout)
 
     def test_installed_watch_handles_progress_without_checklist(self):
         with tempfile.TemporaryDirectory() as tmp:

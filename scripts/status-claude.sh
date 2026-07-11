@@ -372,16 +372,21 @@ echo "Dispatcher: ${DISPATCHER_STATE}"
 echo "Claude: ${CLAUDE_ROLE_STATE}"
 echo "Checker: ${CHECKER_STATE}"
 
-# Overall running: Claude or Checker still active.
-# Do not label running because only the dispatcher is finalizing artifacts.
+# Overall running: any role (dispatcher/Claude/checker) still active.
 OVERALL_RUNNING="no"
-if [ "$CLAUDE_ROLE_STATE" = "running" ] || [ "$CHECKER_STATE" = "running" ]; then
+if [ "$DISPATCHER_STATE" = "running" ] || [ "$CLAUDE_ROLE_STATE" = "running" ] || [ "$CHECKER_STATE" = "running" ]; then
     OVERALL_RUNNING="yes"
 fi
 echo "Overall running: ${OVERALL_RUNNING}"
 
+# Execution running: Claude or Checker still active (dispatcher-only = finalizing).
+RUNNING="no"
+if [ "$CLAUDE_ROLE_STATE" = "running" ] || [ "$CHECKER_STATE" = "running" ]; then
+    RUNNING="yes"
+fi
+
 # Backward-compatible PROCESS_STATE
-if [ "$OVERALL_RUNNING" = "yes" ]; then
+if [ "$RUNNING" = "yes" ]; then
     PROCESS_STATE="running"
 else
     PROCESS_STATE="not-running"
@@ -417,7 +422,6 @@ if [ -d "$WORKTREE_DIR" ]; then
     CLAUDE_PROGRESS_BYTES="$(file_size "$CLAUDE_PROGRESS_SOURCE")"
     REPORT_SOURCE="$(select_report_file)"
     EVIDENCE_STATE="$(evidence_state "$CHANGE_COUNT" "$CLAUDE_PROGRESS_SOURCE" "$REPORT_SOURCE")"
-    if [ "$PROCESS_STATE" = "running" ]; then RUNNING="yes"; else RUNNING="no"; fi
     ACTION="$(recommended_action "$RUNNING" "$ELAPSED" "$QUIET" "$RESULT_BYTES" "$STATUS_BYTES" "$CLAUDE_PROGRESS_BYTES" "$CHANGE_COUNT" "$EVIDENCE_STATE")"
     RISK_SUMMARY="$(partial_risk_summary)"
     NETWORK_SUMMARY="$(latest_network_summary)"
@@ -427,7 +431,7 @@ if [ -d "$WORKTREE_DIR" ]; then
     echo "Evidence: $EVIDENCE_STATE"
     echo "Network: $NETWORK_SUMMARY"
     echo "Monitor policy: $MONITOR_POLICY"
-    echo "Machine monitor: monitor_level=${MONITOR_LEVEL} action=${ACTION} evidence_state=\"${EVIDENCE_STATE}\" running=${RUNNING} overall_running=${OVERALL_RUNNING} dispatcher=${DISPATCHER_STATE} claude=${CLAUDE_ROLE_STATE} checker=${CHECKER_STATE} elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET} worktree_changes=${CHANGE_COUNT} network=\"${NETWORK_SUMMARY}\""
+    echo "Machine monitor: monitor_level=${MONITOR_LEVEL} action=${ACTION} evidence_state=\"${EVIDENCE_STATE}\" quiet_seconds=${QUIET} suspect_count=0 running=${RUNNING} overall_running=${OVERALL_RUNNING} dispatcher=${DISPATCHER_STATE} claude=${CLAUDE_ROLE_STATE} checker=${CHECKER_STATE} elapsed_seconds=${ELAPSED} worktree_changes=${CHANGE_COUNT} network=\"${NETWORK_SUMMARY}\""
     echo "Report source: $REPORT_SOURCE"
     echo "Claude progress source: $CLAUDE_PROGRESS_SOURCE"
     echo "Elapsed: ${ELAPSED}s"
