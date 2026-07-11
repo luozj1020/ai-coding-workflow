@@ -627,12 +627,30 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 Parallel remains opt-in. Ordinary serial tasks incur no extra model call. The workflow is:
 
-1. **Classifier** (local, zero-token): `python scripts/assess-parallel-opportunity.py --json ...` classifies a task brief as `serial-obvious` or `parallel-candidate` from structured hints, without reading the repository or invoking any model.
+1. **Classifier** (local, zero-token) classifies structured hints as `serial-obvious` or `parallel-candidate`, without reading the repository or invoking any model:
+
+   ```bash
+   python scripts/assess-parallel-opportunity.py --json \
+     --work-units 3 \
+     --write-scopes src/backend-a,src/backend-b,tests/integration \
+     --estimated-minutes 30 \
+     --validation-count 3
+   ```
+
 2. **Planner** (optional, one bounded Spark call): only for `parallel-candidate` results, invoke Spark `parallel-planner` mode to produce a reviewed DAG plan. Spark never executes or dispatches.
 3. **Review**: Codex/human reviews and saves the task cards and plan JSON.
 4. **Validation** (deterministic): `run-parallel-loop.sh` validates base commit agreement (must match current `HEAD`), write scope overlap, owned contract overlap, and validation ownership before any dispatch.
 5. **Dispatch**: max concurrency is explicitly capped at 2.
 6. **Review**: review and merge remain serial.
+
+| Classifier / gate result | Next action | Extra model calls |
+|--------------------------|-------------|-------------------|
+| `serial-obvious` | Create one normal serial task card | None |
+| `parallel-candidate` | Run at most one bounded Spark `parallel-planner` call, then review its proposal | One Spark call |
+| Candidate rejected by deterministic validation | Use the printed serial fallback order; do not replan automatically | None |
+| Candidate accepted | Explicitly run `run-parallel-loop.sh`, normally with `--max-concurrency 2` | One Claude dispatch per ready task |
+
+The classifier is deliberately permissive about finding candidates; dispatch is deliberately strict about write scopes, contracts, base commits, and validation ownership. This keeps the normal serial path cheap while preventing candidate discovery from becoming so restrictive that parallel execution never triggers.
 
 Two compatible paths exist:
 
