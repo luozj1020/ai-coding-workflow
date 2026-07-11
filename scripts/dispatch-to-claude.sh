@@ -406,9 +406,21 @@ validate_retry_in_place() {
     fi
     dirty_out="$(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null || true)"
     if [ -n "$dirty_out" ]; then
-        echo "Error: retry-in-place: prior worktree has untracked files:" >&2
-        echo "$dirty_out" | sed 's/^/  /' >&2
-        exit 1
+        local _unknown_untracked=""
+        while IFS= read -r _uf; do
+            [ -z "$_uf" ] && continue
+            case "$_uf" in
+                TASK_CARD.md|TASK_CARD_FULL.md|CLAUDE_TASK_CARD.md|CLAUDE_PROMPT.md|CLAUDE_REPORT.md|CLAUDE_PROGRESS.md)
+                    ;; # known dispatcher control file; allowed
+                *)
+                    _unknown_untracked="${_unknown_untracked}${_uf}\n" ;;
+            esac
+        done <<< "$dirty_out"
+        if [ -n "$_unknown_untracked" ]; then
+            echo "Error: retry-in-place: prior worktree has unknown untracked files:" >&2
+            printf '%b' "$_unknown_untracked" | sed 's/^/  /' >&2
+            exit 1
+        fi
     fi
 
     # Recorded base commit must match current source HEAD
@@ -434,15 +446,27 @@ validate_retry_in_place() {
 # If CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID is set, validate and reuse prior worktree.
 # On success, TASK_ID and WORKTREE_DIR are set from prior run's runtime.json.
 # On failure, the script exits with an actionable error (fail closed).
+BASE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
 _RETRY_TASK_ID=""
 _RETRY_WORKTREE_DIR=""
 _RETRY_BRANCH=""
 if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
     validate_retry_in_place "$CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID"
-    TASK_ID="$_RETRY_TASK_ID"
+    # Retry must receive a new unique TASK_ID; prior ID is for provenance only.
+    TASK_ID="claude-retry-${TIMESTAMP}-${RAND_SUFFIX}"
     WORKTREE_DIR="$_RETRY_WORKTREE_DIR"
     BRANCH_NAME="$_RETRY_BRANCH"
-    echo "Worktree reuse (retry-in-place): $WORKTREE_DIR (prior task: $_RETRY_TASK_ID)"
+    # Atomic reservation: prevent concurrent claim of the same retry target.
+    _RETRY_RESERVATION_DIR="${WORKTREE_ROOT}/.retry-lock-${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID}"
+    if ! mkdir "$_RETRY_RESERVATION_DIR" 2>/dev/null; then
+        echo "Error: retry-in-place: reservation already exists for task ${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID}." >&2
+        echo "Another dispatcher may be claiming this retry target." >&2
+        exit 1
+    fi
+    echo "$$" > "${_RETRY_RESERVATION_DIR}/pid"
+    trap 'rm -rf "$_RETRY_RESERVATION_DIR"' EXIT
+    echo "Worktree reuse (retry-in-place): $WORKTREE_DIR (prior task: $_RETRY_TASK_ID, new task: $TASK_ID)"
 else
     # --- Normal worktree setup (fresh or reuse-managed) ---
     if [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
@@ -543,8 +567,6 @@ if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" 
         exit 1
     fi
 fi
-
-BASE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 
 # Write runtime PID evidence only after source preflight succeeds. Failed dirty
 # source checks must remain artifact-free.
@@ -702,6 +724,9 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "branch": "%s",\n' "$BRANCH_NAME"
     printf '  "base_commit": "%s",\n' "$BASE_COMMIT"
     printf '  "source_repository": "%s",\n' "$REPO_ROOT"
+    if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
+        printf '  "retry_of": "%s",\n' "$CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID"
+    fi
     printf '  "pid_files": {\n'
     printf '    "dispatcher": "%s",\n' "$DISPATCHER_PID_FILE"
     printf '    "claude": "%s",\n' "$CLAUDE_PID_FILE"
