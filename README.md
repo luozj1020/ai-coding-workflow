@@ -64,6 +64,10 @@ The control loop is **OBSERVE → PLAN → DISPATCH → EXECUTE → VERIFY → R
 
 | Action | When | Command |
 |--------|------|---------|
+| **Guided setup (preview)** | See all phases before running | `python scripts/update_skill.py --setup-current` |
+| **Guided setup (apply)** | One-command skill update + repo setup + tools + doctor | `python scripts/update_skill.py --setup-current --apply` |
+| **Guided setup repo (preview)** | Preview guided setup for a specific repository | `python scripts/update_skill.py --setup-repo /path/to/repo` |
+| **Guided setup repo (apply)** | Run guided setup for a specific repository | `python scripts/update_skill.py --setup-repo /path/to/repo --apply` |
 | **Install Skill** | Once per computer | `python scripts/install_for_codex.py` |
 | **Update Skill** | After pulling a newer checkout | `python scripts/update_skill.py --bootstrap-current` |
 | **Bootstrap project** | Once per repository | `python scripts/install_workflow.py .` |
@@ -196,6 +200,30 @@ python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
 `python scripts/update_skill.py` updates only the user-level Codex Skill. `--bootstrap-current` and `--bootstrap-repo` additionally refresh the target repository's local workflow files with `--update-workflow-files`, so existing projects receive new dispatcher, review prompt, template, and helper behavior.
+
+### Guided setup (one-command workflow)
+
+The guided setup coordinates all steps in a single command: skill update, workflow bootstrap/refresh, environment-aware tool configuration (LSP, CodeGraph, Zoekt), and a final readiness check. Preview mode is the default — it prints the plan without making any changes:
+
+```bash
+# Preview for the current repository
+python scripts/update_skill.py --setup-current
+
+# Preview for a specific repository
+python scripts/update_skill.py --setup-repo /path/to/your-project
+```
+
+Add `--apply` to execute all phases:
+
+```bash
+# Apply guided setup for the current repository
+python scripts/update_skill.py --setup-current --apply
+
+# Apply guided setup for a specific repository
+python scripts/update_skill.py --setup-repo /path/to/your-project --apply
+```
+
+Guided setup runs four phases in order: (1) install/update the skill, (2) bootstrap or refresh workflow files, (3) run environment-aware auto-setup for LSP/CodeGraph/Zoekt, and (4) run the repository doctor. If any phase fails, execution stops and the exact failed command is shown.
 
 When running from an already installed skill but updating from a separate clone, point it at the clone:
 

@@ -23,6 +23,17 @@ python scripts/update_skill.py --bootstrap-current
 
 `update_skill.py --bootstrap-current` updates both the user-level Codex skill and the current repository's local workflow files. Plain project files under `ai/` are refreshed through `install_workflow.py --update-workflow-files`; running `install_workflow.py` without that flag reports outdated files but does not overwrite them.
 
+One-command guided setup (preview, then apply):
+
+```bash
+python scripts/update_skill.py --setup-current
+python scripts/update_skill.py --setup-current --apply
+python scripts/update_skill.py --setup-repo /path/to/repo
+python scripts/update_skill.py --setup-repo /path/to/repo --apply
+```
+
+Guided setup coordinates all steps: skill update, workflow bootstrap/refresh, environment-aware tool configuration (LSP, CodeGraph, Zoekt), and a final readiness check. Without `--apply` it prints a concise phase plan with no side effects. With `--apply` it runs all phases in order and returns non-zero on the first failure.
+
 Bootstrap a target repository:
 
 ```bash
