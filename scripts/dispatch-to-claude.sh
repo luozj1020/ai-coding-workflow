@@ -1658,6 +1658,15 @@ PYEOF
         valid=1
     fi
 
+    # A result written after the dispatcher decided to stop the run is not a
+    # successful Claude result.  This matters on Git Bash, where terminating
+    # the wrapper may leave a descendant alive long enough to emit valid JSON.
+    # Preserve that output as raw evidence and generate the timeout-aware
+    # fallback packet below.
+    if [ "$CLAUDE_TIMED_OUT" -eq 1 ] || [ "$CLAUDE_FIRST_PROGRESS_TIMED_OUT" -eq 1 ] || [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ]; then
+        valid=0
+    fi
+
     if [ "$valid" -eq 1 ]; then
         return 0
     fi
