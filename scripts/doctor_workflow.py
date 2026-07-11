@@ -865,14 +865,13 @@ def run_doctor(repo_path=None, hash_paths=None):
         findings.append((INFO, "worktrees-inventory",
                          "Age buckets: <7d={}, 7-30d={}, >30d={}".format(
                              buckets["<7"], buckets["7-30"], buckets[">30"])))
+        findings.append((INFO, "artifacts",
+                         "Doctor never deletes automatically. To preview cleanup: python ai/clean_runtime.py"))
 
         # Cleanup suggestions when thresholds are exceeded (preview only)
         GIB = 1024 * 1024 * 1024
         needs_cleanup = wt_count >= 100 or inv["approximate_bytes"] >= GIB or oldest_age >= 30
         if needs_cleanup:
-            findings.append((INFO, "artifacts",
-                             "Doctor never deletes automatically. "
-                             "To preview cleanup: python ai/clean_runtime.py"))
             if wt_count >= 100:
                 findings.append((INFO, "artifacts",
                                  "High entry count ({}). Consider cleaning stale worktrees by task ID or age.".format(wt_count)))

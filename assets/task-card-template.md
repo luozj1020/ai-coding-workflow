@@ -71,6 +71,10 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | Safety boundary | never reset or clean source repo; reuse only `.worktrees/reuse/claude-managed` |
 | Cleanup expectation | remove fresh worktree after review / keep managed reuse worktree / human decides |
 | Worktree progress mode | `CLAUDE_CODE_WORKTREE_PROGRESS=quiet` (default, compact timing/path) / `verbose` |
+| Large-repo shortcut eligibility | low risk + exact targets + serial dispatch + reduced evidence explicitly accepted / no, keep fresh + full evidence |
+| Same-task no-diff retry | no / `CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID=<prior-task-id>` after recorded identity, clean state, unchanged HEAD, and no live role PID are proven |
+| Target-only hash diagnostics | none / `python ai/doctor_workflow.py . --hash-path <repo-relative-file>` (repeatable, max 20; does not prove global cleanliness) |
+| Renormalization policy | never automatic; human judgment required |
 
 ## Checker Reuse Risk Gate
 

@@ -308,6 +308,8 @@ The task card for `controlled-builder` must include:
 
 Fill `Worktree / Large Repo Strategy Gate` before dispatch when `git worktree add`, filesystem reads, or dispatcher status/diff collection are materially slow. Defaults keep complete evidence. Prefer the explicit fast profile when the gate accepts managed reuse and summary evidence:
 
+Tracked-file count is only a signal to review this gate. Use `fast-large-repo` or managed reuse only when risk is low, targets are exact, dispatch is serial, and reduced untracked/patch evidence is explicitly accepted; otherwise keep a fresh worktree with full evidence. Exact mechanical Builder tasks may use `CLAUDE_CODE_BUILDER_MODE=execution-only`. A completed no-diff run may be retried in the same clean fresh worktree with `CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID=<prior-task-id>` after the dispatcher proves the recorded identity and safety conditions.
+
 Use `python ai/locate-code.py "symbol or behavior" --path src --max-files 12` before dispatch to build the `Claude Context Packet` cheaply. It ranks candidate files from path hints and lexical matches, prints short snippets, and suggests exact line reads. If Zoekt is installed and indexed, `--backend auto` uses it before lexical fallback. Sourcegraph can be used when `SOURCEGRAPH_URL` is configured. CodeGraph is bounded: `auto` skips graph search in large tracked-file repos, while `--codegraph try --codegraph-timeout 12` is reserved for specific file/symbol/call-path questions. If CodeGraph times out, record it once and continue with locator output plus targeted line reads instead of repeating broad graph queries.
 
 For optional indexed search setup:
@@ -580,6 +582,14 @@ Installing the Codex Skill does not automatically modify every repository. If di
 ```bash
 python ai/doctor_workflow.py
 ```
+
+On mounted filesystems, use bounded target-only hash diagnostics when file bytes appear different but Git status is empty:
+
+```bash
+python ai/doctor_workflow.py . --hash-path path/to/file --hash-path path/to/other-file
+```
+
+This compares filesystem, index, and scoped status evidence for at most 20 explicit files. It does not prove global worktree cleanliness and never runs `git add`, `git add --renormalize`, `update-index`, reset, clean, checkout, or deletion. Any renormalization remains a human-reviewed action.
 
 Do not run `bash ai/dispatch-to-claude.sh ...` until the doctor reports that project workflow files are installed.
 
