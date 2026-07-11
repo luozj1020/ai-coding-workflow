@@ -278,6 +278,13 @@ Execution cost rules:
 | Fast large-repo profile allowed? | no / yes, accepts managed worktree reuse, skipped unrelated untracked scans, and summary diff evidence |
 | Dispatch env override | none / `CLAUDE_CODE_EXECUTION_PROFILE=safe` / `CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo` |
 | Full audit card retained? | yes, `TASK_CARD_FULL.md` |
+| Builder mode | standard (default) / execution-only |
+| Execution-only safe? | no / yes: exact target files, mechanical implementation, no acknowledgement or architecture discovery needed |
+| First-progress timeout seconds | 0 (standard default, disabled) / 120 (execution-only default) / custom non-negative integer |
+
+Execution-only Builder mode renders a minimal `CLAUDE_TASK_CARD.md` with only execution-relevant sections (ID, Task Mode, Claude Context Packet, Goal, Handoff Contract, Acceptance Criteria, Testing Responsibility, Validation Contract, Required Report). The full card is preserved as `TASK_CARD_FULL.md`. Use execution-only only when target files are exact, the change is mechanical, and no acknowledgement or architecture discovery is needed. Otherwise use standard mode.
+
+The first-progress timeout stops the Claude child if no substantive progress is detected within the configured seconds. Substantive progress means: implementation worktree change, non-seeded progress update, valid non-seeded report, or blocker/stop/split/approval recorded. Seed-only silence is not progress. In standard mode the timeout defaults to 0 (disabled); in execution-only mode it defaults to 120 seconds.
 
 ## Claude Context Packet
 
