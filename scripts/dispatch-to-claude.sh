@@ -330,10 +330,6 @@ for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIF
     mkdir -p "$(dirname "$f")"
 done
 
-# Spec item 3: write dispatcher PID as soon as artifact paths exist.
-echo "$$" > "$DISPATCHER_PID_FILE"
-
-
 TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
 if [ -z "$TASK_CARD_REL" ]; then
     TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --others --exclude-standard --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
@@ -388,6 +384,10 @@ if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" 
 fi
 
 BASE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
+# Write runtime PID evidence only after source preflight succeeds. Failed dirty
+# source checks must remain artifact-free.
+echo "$$" > "$DISPATCHER_PID_FILE"
 
 create_dispatch_worktree() {
     local branch_name="$1"

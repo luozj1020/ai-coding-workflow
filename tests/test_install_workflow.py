@@ -706,7 +706,7 @@ class InstallWorkflowTests(unittest.TestCase):
             cleanup = (repo / "ai" / "cleanup-worktree.sh").read_text(encoding="utf-8")
 
             self.assertIn('*.progress.log', status)
-            self.assertIn('kill -0 "$PID"', status)
+            self.assertIn('kill -0 "$pid"', status)
             self.assertIn('tail -20 "$PROGRESS_FILE"', status)
             self.assertIn('select_claude_progress_file', status)
             self.assertIn('tail -40 "$TAIL_CLAUDE_PROGRESS_FILE"', status)
