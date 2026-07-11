@@ -101,6 +101,80 @@ def unique_ordered(values):
     return out
 
 
+def _is_text_file(filepath):
+    """Check if a file is likely text by reading the first 8 KiB."""
+    try:
+        with open(filepath, "rb") as fh:
+            chunk = fh.read(8192)
+        if b"\x00" in chunk:
+            return False
+        chunk.decode("utf-8")
+        return True
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _python_lexical_scan(repo_root, terms, paths, includes, excludes, max_matches, max_matches_per_term, time_budget, candidate_files=None):
+    """Bounded Python line scan — last-resort fallback when rg and git grep are unavailable."""
+    matches = []
+    term_used = {t: 0 for t in terms}
+    deadline = time.monotonic() + time_budget
+    lowered = [t.lower() for t in terms]
+    skip_dirs = {".git", ".worktrees", "node_modules", "vendor", "third_party", "dist", "build"}
+
+    scan_paths = []
+    if candidate_files is not None:
+        for rel in candidate_files:
+            norm = rel.replace(os.sep, "/")
+            if paths and not any(norm == p or norm.startswith(p.rstrip("/") + "/") for p in paths):
+                continue
+            scan_paths.append(os.path.join(repo_root, rel))
+    elif paths:
+        for p in paths:
+            full = os.path.join(repo_root, p)
+            if os.path.isdir(full):
+                for root, dirs, names in os.walk(full):
+                    dirs[:] = [d for d in dirs if d not in skip_dirs]
+                    for name in names:
+                        scan_paths.append(os.path.join(root, name))
+            elif os.path.isfile(full):
+                scan_paths.append(full)
+    else:
+        for root, dirs, names in os.walk(repo_root):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for name in names:
+                scan_paths.append(os.path.join(root, name))
+
+    for filepath in scan_paths:
+        if time.monotonic() >= deadline:
+            break
+        if len(matches) >= max_matches:
+            break
+        rel = os.path.relpath(filepath, repo_root).replace(os.sep, "/")
+        if not path_allowed(rel, includes, excludes):
+            continue
+        if not _is_text_file(filepath):
+            continue
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
+                for line_no, line in enumerate(fh, 1):
+                    if time.monotonic() >= deadline:
+                        break
+                    lower_line = line.lower()
+                    for i, term in enumerate(terms):
+                        if lowered[i] in lower_line:
+                            if term_used[term] >= max_matches_per_term:
+                                continue
+                            snippet = line.rstrip()[:240]
+                            matches.append((rel, line_no, "python", snippet))
+                            term_used[term] += 1
+                            if len(matches) >= max_matches:
+                                break
+        except (OSError, UnicodeDecodeError):
+            continue
+    return matches
+
+
 def extract_terms(query):
     raw = query.strip()
     tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_:.#/-]{2,}", raw)
@@ -180,16 +254,16 @@ def parse_zoekt_output(text, max_matches):
 def search_zoekt(query, index, timeout, max_matches):
     query_bin = shutil.which("zoekt")
     if not query_bin:
-        return [], "skipped (zoekt CLI missing)"
+        return [], "backend_unavailable", "zoekt CLI missing"
     if not os.path.isdir(index):
-        return [], "skipped (Zoekt index missing: {})".format(index)
-    result = run_command([query_bin, "-index", index, query], os.getcwd(), timeout)
+        return [], "backend_unavailable", "Zoekt index not found"
+    result = run_command([query_bin, "-index_dir", index, query], os.getcwd(), timeout)
     if result["timed_out"]:
-        return [], "timeout after {:.1f}s".format(result["elapsed"])
+        return [], "timeout", "timeout after {:.1f}s".format(result["elapsed"])
     if result["rc"] not in (0, 1):
-        return [], "rc={} {}".format(result["rc"], result["stderr"].strip()[:160])
+        return [], "error", "rc={} {}".format(result["rc"], result["stderr"].strip()[:160])
     matches = parse_zoekt_output(result["stdout"], max_matches)
-    return matches, "{} match line(s) elapsed={:.1f}s".format(len(matches), result["elapsed"])
+    return matches, "ok", "{} match line(s) elapsed={:.1f}s".format(len(matches), result["elapsed"])
 
 
 def _sourcegraph_line_matches(item):
@@ -225,7 +299,7 @@ def extract_sourcegraph_matches(value, max_matches):
 
 def search_sourcegraph(query, url, token, timeout, max_matches):
     if not url:
-        return [], "skipped (SOURCEGRAPH_URL not configured)"
+        return [], "backend_unavailable", "SOURCEGRAPH_URL not configured"
     endpoint = url.rstrip("/") + "/.api/graphql"
     graphql = {
         "query": (
@@ -248,15 +322,17 @@ def search_sourcegraph(query, url, token, timeout, max_matches):
             payload = response.read().decode("utf-8", errors="replace")
         data = json.loads(payload)
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        return [], "error: {}".format(exc)
+        return [], "error", str(exc)
     matches = extract_sourcegraph_matches(data, max_matches)
-    return matches, "{} match line(s) elapsed={:.1f}s".format(len(matches), time.monotonic() - started)
+    return matches, "ok", "{} match line(s) elapsed={:.1f}s".format(len(matches), time.monotonic() - started)
 
 
-def search_lexical(repo_root, terms, paths, includes, excludes, timeout, max_matches, max_matches_per_term):
+def search_lexical(repo_root, terms, paths, includes, excludes, timeout, max_matches, max_matches_per_term, candidate_files=None):
     rg = shutil.which("rg")
     matches = []
     status = []
+    use_python_fallback = False
+
     for term in terms:
         if len(matches) >= max_matches:
             break
@@ -288,6 +364,11 @@ def search_lexical(repo_root, terms, paths, includes, excludes, timeout, max_mat
         if result["timed_out"]:
             status.append("{} term={!r}: timeout after {:.1f}s".format(label, term, result["elapsed"]))
             continue
+        # When git grep is not usable (not found, not a repo, etc.), switch to Python
+        if not rg and result["rc"] not in (0, 1):
+            use_python_fallback = True
+            status.append("{}: unavailable (rc={})".format(label, result["rc"]))
+            break
         if result["rc"] not in (0, 1):
             status.append("{} term={!r}: rc={} {}".format(label, term, result["rc"], result["stderr"].strip()[:160]))
             continue
@@ -306,23 +387,32 @@ def search_lexical(repo_root, terms, paths, includes, excludes, timeout, max_mat
                 label, term, len(parsed), used_for_term
             )
         )
+
+    if use_python_fallback:
+        effective_timeout = max(1.0, timeout * len(terms))
+        python_matches = _python_lexical_scan(
+            repo_root, terms, paths, includes, excludes,
+            max_matches, max_matches_per_term, effective_timeout, candidate_files,
+        )
+        matches.extend(python_matches)
+        status.append("python: {} match(es), backend=python".format(len(python_matches)))
+
     return matches, status
 
 
 def should_try_codegraph(mode, repo_root, tracked_count, threshold):
+    """Return broad permission, narrowed permission, and routing reason."""
     if mode == "off":
-        return False, "off"
+        return False, False, "off"
     if not os.path.isdir(os.path.join(repo_root, ".codegraph")):
-        return False, "no .codegraph index"
-    if mode == "try":
-        if not shutil.which("codegraph"):
-            return False, "codegraph CLI missing"
-        return True, "explicit try"
-    if tracked_count > threshold:
-        return False, "auto skipped: tracked files {} > threshold {}".format(tracked_count, threshold)
+        return False, False, "no .codegraph index"
     if not shutil.which("codegraph"):
-        return False, "codegraph CLI missing"
-    return True, "auto small-enough repo"
+        return False, False, "codegraph CLI missing"
+    if mode == "try":
+        return True, True, "explicit try"
+    if tracked_count > threshold:
+        return False, True, "auto skipped broad: tracked files {} > threshold {}".format(tracked_count, threshold)
+    return True, True, "auto small-enough repo"
 
 
 def run_codegraph(repo_root, query, timeout, max_bytes):
@@ -332,6 +422,23 @@ def run_codegraph(repo_root, query, timeout, max_bytes):
         encoded = text.encode("utf-8")[:max_bytes]
         text = encoded.decode("utf-8", errors="replace") + "\n...[truncated]"
     return result, text
+
+
+def _narrow_codegraph_query(query, ranked, max_paths=5):
+    """Build a narrowed CodeGraph query using top ranked paths and concrete symbols."""
+    terms = extract_terms(query)
+    if isinstance(ranked, dict):
+        ranked = sorted(
+            ranked.items(),
+            key=lambda item: (-len(item[1].get("terms", set())), item[0]),
+        )
+    paths = [path for path, _data in ranked[:max_paths]]
+    if not paths:
+        return query
+    return (
+        "Analyze only these candidate files: {}. Concrete symbols/terms: {}. "
+        "Return local relationships and relevant source only."
+    ).format(", ".join(paths), ", ".join(terms[:6]) or query)
 
 
 def build_report(args):
@@ -349,46 +456,70 @@ def build_report(args):
 
     backend_status = []
     backend_matches = []
+    unavailable = []
+    selected_backend = "none"
     if backend in ("auto", "zoekt"):
-        zoek_matches, zoek_status = search_zoekt(
+        zoek_matches, zoek_status, zoek_detail = search_zoekt(
             query,
             os.path.abspath(args.zoekt_index),
             args.zoekt_timeout,
             args.max_matches,
         )
-        backend_status.append("Zoekt: {}".format(zoek_status))
+        if zoek_status == "backend_unavailable":
+            backend_status.append("Zoekt: backend_unavailable — {}".format(zoek_detail))
+            unavailable.append("zoekt")
+        else:
+            backend_status.append("Zoekt: {}".format(zoek_detail))
         backend_matches.extend(zoek_matches)
-        if backend == "zoekt" and not zoek_matches:
+        if zoek_matches:
+            selected_backend = "zoekt"
+        if backend == "zoekt" and not zoek_matches and zoek_status != "backend_unavailable":
             backend_status.append("Zoekt requested but produced no usable matches; lexical fallback enabled.")
 
     sourcegraph_url = args.sourcegraph_url or os.environ.get("SOURCEGRAPH_URL", "")
     sourcegraph_token = args.sourcegraph_token or os.environ.get("SOURCEGRAPH_TOKEN", "")
     if (backend == "sourcegraph") or (backend == "auto" and not backend_matches and sourcegraph_url):
-        sg_matches, sg_status = search_sourcegraph(
+        sg_matches, sg_status, sg_detail = search_sourcegraph(
             query,
             sourcegraph_url,
             sourcegraph_token,
             args.sourcegraph_timeout,
             args.max_matches,
         )
-        backend_status.append("Sourcegraph: {}".format(sg_status))
+        if sg_status == "backend_unavailable":
+            backend_status.append("Sourcegraph: backend_unavailable — {}".format(sg_detail))
+            unavailable.append("sourcegraph")
+        else:
+            backend_status.append("Sourcegraph: {}".format(sg_detail))
         backend_matches.extend(sg_matches)
-        if backend == "sourcegraph" and not sg_matches:
+        if sg_matches and selected_backend == "none":
+            selected_backend = "sourcegraph"
+        if backend == "sourcegraph" and not sg_matches and sg_status != "backend_unavailable":
             backend_status.append("Sourcegraph requested but produced no usable matches; lexical fallback enabled.")
 
-    codegraph_allowed, codegraph_reason = should_try_codegraph(
+    broad_allowed, narrowed_allowed, codegraph_reason = should_try_codegraph(
         args.codegraph, repo_root, tracked_count, args.codegraph_auto_file_threshold
     )
-    codegraph_status = "skipped ({})".format(codegraph_reason)
+    if codegraph_reason in ("no .codegraph index", "codegraph CLI missing"):
+        unavailable.append("codegraph")
+    codegraph_parts = []
     codegraph_text = ""
-    if codegraph_allowed:
+    codegraph_broad = "not_attempted"
+    codegraph_narrowed = "not_attempted"
+    if broad_allowed:
         result, codegraph_text = run_codegraph(
             repo_root, query, args.codegraph_timeout, args.codegraph_max_bytes
         )
         if result["timed_out"]:
-            codegraph_status = "timeout after {:.1f}s".format(result["elapsed"])
+            codegraph_broad = "timeout"
+            codegraph_parts.append("broad timeout after {:.1f}s".format(result["elapsed"]))
+            codegraph_text = ""
         else:
-            codegraph_status = "rc={} elapsed={:.1f}s".format(result["rc"], result["elapsed"])
+            codegraph_broad = "rc={}".format(result["rc"])
+            codegraph_parts.append("broad rc={} elapsed={:.1f}s".format(result["rc"], result["elapsed"]))
+    else:
+        codegraph_broad = "skipped"
+        codegraph_parts.append("broad skipped ({})".format(codegraph_reason))
 
     lexical_status = []
     matches = list(backend_matches)
@@ -402,6 +533,7 @@ def build_report(args):
             args.search_timeout,
             args.max_matches,
             args.max_matches_per_term,
+            files,
         )
         matches.extend(lexical_matches)
     for path, line_no, term, snippet in matches:
@@ -422,6 +554,34 @@ def build_report(args):
         ),
     )[: args.max_files]
 
+    should_narrow = narrowed_allowed and ranked and (
+        codegraph_broad == "timeout" or
+        (codegraph_broad == "skipped" and codegraph_reason.startswith("auto skipped broad:"))
+    )
+    if should_narrow:
+        narrowed_query = _narrow_codegraph_query(query, ranked, max_paths=5)
+        narrow_result, narrow_text = run_codegraph(
+            repo_root,
+            narrowed_query,
+            min(args.codegraph_timeout, args.codegraph_narrow_timeout),
+            args.codegraph_max_bytes,
+        )
+        if narrow_result["timed_out"]:
+            codegraph_narrowed = "timeout"
+            codegraph_parts.append("narrowed timeout after {:.1f}s".format(narrow_result["elapsed"]))
+        else:
+            codegraph_narrowed = "rc={}".format(narrow_result["rc"])
+            codegraph_parts.append(
+                "narrowed rc={} elapsed={:.1f}s".format(narrow_result["rc"], narrow_result["elapsed"])
+            )
+            if narrow_text:
+                codegraph_text = narrow_text
+
+    if args.codegraph == "off":
+        codegraph_status = "skipped (off)"
+    else:
+        codegraph_status = "; ".join(codegraph_parts)
+
     lines = []
     lines.append("# Locate Code Report")
     lines.append("")
@@ -431,7 +591,23 @@ def build_report(args):
     lines.append("- Tracked files considered: {}".format(tracked_count))
     lines.append("- Primary backend: `{}`".format(backend))
     lines.append("- CodeGraph: {}".format(codegraph_status))
-    lines.append("- Lexical backend: {}".format("rg" if shutil.which("rg") else "git grep"))
+    used_python = any("backend=python" in s for s in lexical_status)
+    if used_python:
+        lexical_label = "python"
+    elif shutil.which("rg"):
+        lexical_label = "rg"
+    else:
+        lexical_label = "git grep"
+    if selected_backend == "none" and matches:
+        selected_backend = lexical_label.replace(" ", "-")
+    lines.append("- Lexical backend: {}".format(lexical_label))
+    lines.append("")
+    lines.append("## Routing")
+    lines.append("- backend_unavailable: {}".format(",".join(unique_ordered(unavailable)) or "none"))
+    lines.append("- fallback_backend: {}".format(selected_backend))
+    lines.append("- scope_limited: {}".format("yes" if should_narrow or paths or includes else "no"))
+    lines.append("- codegraph_broad: {}".format(codegraph_broad))
+    lines.append("- codegraph_narrowed: {}".format(codegraph_narrowed))
     lines.append("")
     lines.append("## Candidate Files")
     if not ranked:
@@ -517,6 +693,12 @@ def parse_args(argv=None):
         help="CodeGraph mode. auto uses a short attempt only for smaller indexed repos.",
     )
     parser.add_argument("--codegraph-timeout", type=float, default=12.0, help="CodeGraph timeout in seconds.")
+    parser.add_argument(
+        "--codegraph-narrow-timeout",
+        type=float,
+        default=6.0,
+        help="Timeout for the single candidate-scoped CodeGraph retry.",
+    )
     parser.add_argument(
         "--codegraph-auto-file-threshold",
         type=int,
