@@ -269,7 +269,8 @@ def parse_claude_validation_state(
 ) -> str:
     """Parse Claude validation state conservatively from report/progress/status evidence.
 
-    Returns one of: 'passed', 'failed', 'unknown'.
+    Returns one of: 'passed', 'failed', 'blocked_by_approval',
+    'blocked_by_permission', 'unknown'.
     Never infers validation success from diff, report, evidence classification,
     or ACCEPT decision.  Only explicit validation wording yields passed/failed.
     """
@@ -282,14 +283,6 @@ def parse_claude_validation_state(
     evidence_text = "\n".join(read_text(path) for path in evidence_paths)
     lowered = evidence_text.lower()
 
-    # Check for explicit validation failure evidence
-    if re.search(r"validation\s+failed|validation\s+error|failed\s+validation", lowered):
-        return "failed"
-
-    # Check for explicit validation success evidence
-    if re.search(r"validation\s+(passed|succeeded|complete|successful)|validated\s+successfully", lowered):
-        return "passed"
-
     # Approval/permission blocking only counts as a validation signal when the
     # blocking phrase explicitly mentions validation, test, check, or command.
     if APPROVAL_BLOCKED_RE.search(evidence_text):
@@ -300,12 +293,17 @@ def parse_claude_validation_state(
             re.I,
         )
         if validation_near_approval:
-            # The text explicitly ties blocking to a validation/test/check context.
-            # This is not a pass or fail — it means validation was blocked.
-            if re.search(r"validation\s+failed|failed\s+validation", lowered):
-                return "failed"
-            # Blocked but not failed — cannot confirm passed.
-            return "unknown"
+            nearby = validation_near_approval.group(0).lower()
+            if "permission" in nearby:
+                return "blocked_by_permission"
+            return "blocked_by_approval"
+
+    # Check explicit outcomes only after ruling out "failed to run because
+    # approval was required", which is a blocker rather than a test failure.
+    if re.search(r"validation\s+failed|validation\s+error|failed\s+validation", lowered):
+        return "failed"
+    if re.search(r"validation\s+(passed|succeeded|complete|successful)|validated\s+successfully", lowered):
+        return "passed"
 
     # Default: unknown (no explicit validation wording found)
     return "unknown"
@@ -349,7 +347,7 @@ def compute_final_validation_state(
         return "passed", "checker_passed"
 
     # 3. Explicit Claude validation state (only passed/failed from explicit wording)
-    if claude_state in ("passed", "failed"):
+    if claude_state in ("passed", "failed", "blocked_by_approval", "blocked_by_permission"):
         return claude_state, "claude_state"
 
     # 4. Checker skipped — only if no checker passed or failed

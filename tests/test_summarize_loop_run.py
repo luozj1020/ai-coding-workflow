@@ -20,6 +20,66 @@ def load_module():
 
 
 class SummarizeLoopRunTests(unittest.TestCase):
+    def _validation_summary(self, claude_text="", checker_text=None, decision="UNKNOWN"):
+        module = load_module()
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        run = pathlib.Path(temp.name) / "loop-validation"
+        dispatch = run / "dispatch-1"
+        dispatch.mkdir(parents=True)
+        if claude_text:
+            (dispatch / "claude.report.md").write_text(
+                "# Claude Report\n\n" + claude_text + "\n", encoding="utf-8"
+            )
+        if checker_text is not None:
+            (dispatch / "claude.checker-report.md").write_text(
+                checker_text, encoding="utf-8"
+            )
+        if decision != "UNKNOWN":
+            (run / "review-1.txt").write_text(
+                "Decision: {}\n".format(decision), encoding="utf-8"
+            )
+        return module, module.summarize(run)
+
+    def test_validation_does_not_infer_pass_from_report_or_accept(self):
+        _, summary = self._validation_summary("Implementation complete.", decision="ACCEPT")
+        self.assertEqual(summary["claude_validation_state"], "unknown")
+        self.assertEqual(summary["final_validation_state"], "unknown")
+
+    def test_validation_preserves_approval_block_then_checker_pass(self):
+        module, summary = self._validation_summary(
+            "Validation command blocked by approval; implementation is complete.",
+            "# Checker Report\n\nALL GREEN\n",
+        )
+        self.assertEqual(summary["claude_validation_state"], "blocked_by_approval")
+        self.assertEqual(summary["checker_validation_state"], "passed")
+        self.assertEqual(summary["final_validation_state"], "passed")
+        self.assertEqual(summary["final_validation_reason"], "checker_passed")
+        markdown = module.render_markdown(summary)
+        self.assertIn("| claude_validation_state | blocked_by_approval |", markdown)
+        self.assertIn("| final_validation_state | passed |", markdown)
+
+    def test_validation_unrelated_approval_is_unknown(self):
+        _, summary = self._validation_summary("Deployment approval required.")
+        self.assertEqual(summary["claude_validation_state"], "unknown")
+
+    def test_validation_checker_failure_has_highest_precedence(self):
+        _, summary = self._validation_summary(
+            "Validation passed successfully.", "# Checker Report\n\nFAILED\n"
+        )
+        self.assertEqual(summary["claude_validation_state"], "passed")
+        self.assertEqual(summary["checker_validation_state"], "failed")
+        self.assertEqual(summary["final_validation_state"], "failed")
+
+    def test_validation_checker_policy_skip(self):
+        _, summary = self._validation_summary(
+            "Implementation complete.",
+            "# Checker Report\n\nSKIPPED by policy\n"
+            "Local validation is disabled by the task card\n",
+        )
+        self.assertEqual(summary["checker_validation_state"], "skipped")
+        self.assertEqual(summary["final_validation_state"], "skipped")
+
     def test_summarizes_quality_speed_cost_and_stability(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
