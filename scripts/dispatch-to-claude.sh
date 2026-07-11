@@ -116,26 +116,6 @@ if [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
     _IS_DAG_DISPATCH=1
 fi
 
-# Detect explicit risk category rows in the task card.
-# Conservative: false positive (staying fresh) is safe; false negative is not.
-_HAS_RISK_ROWS=0
-if [ -f "$TASK_CARD" ]; then
-    if awk -F'|' '
-        function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
-        /^\|/ && NF >= 3 {
-            field = tolower(trim($2))
-            if (field ~ /public.api|data.model|data.impact|security|migration|permission|concurrency|cross.module|production/) {
-                if (field !~ /mode|profile|monitor|strategy|reset|discover|view|proxy|timeout|network|large.repo|evidence|checker|validation|task.card|local.validation/) {
-                    exit 0
-                }
-            }
-        }
-        END { exit 1 }
-    ' "$TASK_CARD" 2>/dev/null; then
-        _HAS_RISK_ROWS=1
-    fi
-fi
-
 # Spec item 1: verify every relevant risk row explicitly says "no".
 # Required categories: public API, data model, security, migration,
 # permission, concurrency, cross-module, production impact.
@@ -148,15 +128,28 @@ if [ -f "$TASK_CARD" ]; then
         /^\|/ && NF >= 3 {
             field = tolower(trim($2))
             value = tolower(trim($3))
-            if (field ~ /public.api|data.model|data.impact|security|migration|permission|concurrency|cross.module|production.impact/) {
-                if (field !~ /mode|profile|monitor|strategy|reset|discover|view|proxy|timeout|network|large.repo|evidence|checker|validation|task.card|local.validation/) {
-                    if (value ~ /^no$|^n\/a$|^none$/) {
-                        say_no++
-                    }
-                }
+            category = ""
+            if (field ~ /^public api( risk| impact)?[?]?$/) category = "public-api"
+            else if (field ~ /^data model( risk| impact)?[?]?$/) category = "data-model"
+            else if (field ~ /^security( risk| impact)?[?]?$/) category = "security"
+            else if (field ~ /^migration( risk| impact)?[?]?$/) category = "migration"
+            else if (field ~ /^permission( risk| impact)?[?]?$/) category = "permission"
+            else if (field ~ /^concurrency( risk| impact)?[?]?$/) category = "concurrency"
+            else if (field ~ /^cross-module( contract)? risk[?]?$/) category = "cross-module"
+            else if (field ~ /^production( impact| risk)[?]?$/) category = "production"
+            if (category != "") {
+                if (!(category in seen)) seen[category] = 1
+                if (value != "no") seen[category] = 0
             }
         }
-        END { print say_no+0 }
+        END {
+            required["public-api"] = 1; required["data-model"] = 1; required["security"] = 1
+            required["migration"] = 1; required["permission"] = 1; required["concurrency"] = 1
+            required["cross-module"] = 1; required["production"] = 1
+            count = 0
+            for (category in required) if (seen[category] == 1) count++
+            print count
+        }
     ' "$TASK_CARD" 2>/dev/null || echo 0)"
     if [ "$_say_no_count" -ge "$_REQUIRED_RISK_CATEGORIES" ]; then
         _ALL_RISK_ROWS_SAY_NO=1
@@ -393,7 +386,7 @@ create_dispatch_worktree() {
     local branch_name="$1"
     if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "fresh" ]; then
         if [ "$CLAUDE_CODE_WORKTREE_PROGRESS" = "quiet" ]; then
-            git worktree add -b "$branch_name" "$WORKTREE_DIR" "$BASE_COMMIT" >/dev/null 2>&1 || {
+            git worktree add -b "$branch_name" "$WORKTREE_DIR" "$BASE_COMMIT" >/dev/null || {
                 echo "Error: Failed to create git worktree at $WORKTREE_DIR" >&2
                 exit 1
             }
@@ -427,11 +420,11 @@ create_dispatch_worktree() {
             exit 1
         fi
         if [ "$CLAUDE_CODE_WORKTREE_PROGRESS" = "quiet" ]; then
-            git -C "$WORKTREE_DIR" reset --hard >/dev/null 2>&1
-            git -C "$WORKTREE_DIR" clean -ffdx >/dev/null 2>&1
-            git -C "$WORKTREE_DIR" checkout -B "$branch_name" "$BASE_COMMIT" >/dev/null 2>&1
-            git -C "$WORKTREE_DIR" reset --hard "$BASE_COMMIT" >/dev/null 2>&1
-            git -C "$WORKTREE_DIR" clean -ffdx >/dev/null 2>&1
+            git -C "$WORKTREE_DIR" reset --hard >/dev/null
+            git -C "$WORKTREE_DIR" clean -ffdx >/dev/null
+            git -C "$WORKTREE_DIR" checkout -B "$branch_name" "$BASE_COMMIT" >/dev/null
+            git -C "$WORKTREE_DIR" reset --hard "$BASE_COMMIT" >/dev/null
+            git -C "$WORKTREE_DIR" clean -ffdx >/dev/null
         else
             git -C "$WORKTREE_DIR" reset --hard >/dev/null
             git -C "$WORKTREE_DIR" clean -ffdx >/dev/null
@@ -444,7 +437,7 @@ create_dispatch_worktree() {
 
     git branch -D "$branch_name" >/dev/null 2>&1 || true
     if [ "$CLAUDE_CODE_WORKTREE_PROGRESS" = "quiet" ]; then
-        git worktree add -b "$branch_name" "$WORKTREE_DIR" "$BASE_COMMIT" >/dev/null 2>&1 || {
+        git worktree add -b "$branch_name" "$WORKTREE_DIR" "$BASE_COMMIT" >/dev/null || {
             echo "Error: Failed to create reusable managed git worktree at $WORKTREE_DIR" >&2
             exit 1
         }
@@ -512,9 +505,7 @@ fi
     fi
 } > "$SOURCE_STATUS_FILE"
 
-if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
-    echo "Source status saved to: $SOURCE_STATUS_FILE"
-fi
+echo "Source status saved to: $SOURCE_STATUS_FILE"
 
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD.md"
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD_FULL.md"
@@ -953,6 +944,37 @@ valid_claude_report_file() {
     return 0
 }
 
+approval_convergence_ready() {
+    local report_file="$1"
+    local progress_file="$2"
+    local combined
+    valid_claude_report_file "$report_file" || return 1
+    for heading in "Requirements Summary" "Files Changed" "Acceptance Criteria Mapping" \
+                   "Out-of-Scope Confirmation" "Plan Match" "Checks Run"; do
+        grep -Fqi "## ${heading}" "$report_file" 2>/dev/null || return 1
+    done
+    combined="$(cat "$report_file" "$progress_file" "$STATUS_FILE" 2>/dev/null || true)"
+    printf '%s\n' "$combined" | grep -Eiq \
+        '(implementation|assigned|test edits|files changed).{0,60}(complete|completed|done)' || return 1
+    printf '%s\n' "$combined" | grep -Eiq \
+        '(validation|test|check|command).{0,80}(blocked|denied|requires|waiting).{0,80}(approval|permission|sandbox)|(approval|permission|sandbox).{0,80}(blocked|denied|required).{0,80}(run|execute).{0,40}(validation|test|check|command)' || return 1
+    return 0
+}
+
+approval_convergence_changes_safe() {
+    local line path
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        path="${line:3}"
+        case "$path" in
+            tests/*|test/*|*/tests/*|*/test/*|*__tests__/*) ;;
+            *) return 1 ;;
+        esac
+    done < <(git status --porcelain --untracked-files=all 2>/dev/null \
+        | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true)
+    return 0
+}
+
 acknowledgement_only_evidence() {
     local progress_file="$1"
     local report_file="$2"
@@ -1122,20 +1144,12 @@ while claude_is_running; do
     if [ "${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE:-1}" = "1" ] && \
        [ "$_PARSED_TASK_MODE" = "checker-test" ]; then
         _ABC_REPORT_VALID=0
-        if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
+        if approval_convergence_ready "${WORKTREE_DIR}/CLAUDE_REPORT.md" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" && \
+           approval_convergence_changes_safe; then
             _ABC_REPORT_VALID=1
         fi
 
-        _ABC_BLOCKER=0
         if [ "$_ABC_REPORT_VALID" -eq 1 ]; then
-            if grep -qiE \
-                'permission.*(block|denied|requir)|approval.*(requir|block|wait)|waiting.*(approv|permiss)|sandbox.*(block|deni)|blocked.*(permission|approval)' \
-                "$STATUS_FILE" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
-                _ABC_BLOCKER=1
-            fi
-        fi
-
-        if [ "$_ABC_REPORT_VALID" -eq 1 ] && [ "$_ABC_BLOCKER" -eq 1 ]; then
             _REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
             _PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
             _ABC_FP="$(printf '%s:%s:%s:%s' \

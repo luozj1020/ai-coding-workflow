@@ -92,6 +92,33 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    printf '# staged by claude\\n' > README.md\n"
                 "    git add README.md\n"
                 "    ;;\n"
+                "  approval-blocked|approval-incomplete|approval-unrelated)\n"
+                "    mkdir -p tests\n"
+                "    printf '# checker edit\\n' > tests/test_fixture.py\n"
+                "    if [ \"${FAKE_CLAUDE_MODE}\" = approval-incomplete ]; then\n"
+                "      printf '# incomplete report\\n' > CLAUDE_REPORT.md\n"
+                "    else\n"
+                "      cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
+                "# Claude Modification Report\n\n"
+                "## Requirements Summary\nChecker validation.\n\n"
+                "## Files Changed\n- tests/test_fixture.py\n\n"
+                "## Acceptance Criteria Mapping\n- test edit complete\n\n"
+                "## Out-of-Scope Confirmation\nNo out-of-scope changes.\n\n"
+                "## Plan Match\nfull\n\n"
+                "## Checks Run\n- python -m pytest: blocked by approval\n\n"
+                "Implementation and test edits complete.\n"
+                "REPORT_EOF\n"
+                "    fi\n"
+                "    if [ \"${FAKE_CLAUDE_MODE}\" = approval-unrelated ]; then\n"
+                "      sed -i 's/python -m pytest: blocked by approval/no validation command assigned/' CLAUDE_REPORT.md\n"
+                "      printf 'Deployment approval required. Test edits complete.\\n' > CLAUDE_PROGRESS.md\n"
+                "      echo 'deployment approval required' >&2\n"
+                "    else\n"
+                "      printf 'Test edits complete. Validation command blocked by approval.\\n' > CLAUDE_PROGRESS.md\n"
+                "      echo 'validation command requires permission approval' >&2\n"
+                "    fi\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
+                "    ;;\n"
                 "esac\n"
                 "printf '%s\\n' '{\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}'\n"
             )
@@ -118,6 +145,82 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         task.parent.mkdir(exist_ok=True)
         task.write_text("# Task\n\nNo-op dispatch fixture.\n", encoding="utf-8")
         return task
+
+    def _write_low_risk_checker_card(self, omit=None, duplicate=None):
+        rows = [
+            "Public API risk", "Data model risk", "Security risk", "Migration risk",
+            "Permission risk", "Concurrency risk", "Cross-module risk", "Production impact",
+        ]
+        lines = [
+            "# Checker", "", "## Task Mode", "", "| Field | Value |", "|---|---|",
+            "| Mode | checker-test |", "", "## Checker Reuse Risk Gate", "",
+            "| Field | Value |", "|---|---|",
+        ]
+        for field in rows:
+            if field != omit:
+                lines.append("| {} | no |".format(field))
+        if duplicate:
+            lines.append("| {} | no |".format(duplicate))
+        task = self.repo / "task-cards" / "CHECKER.md"
+        task.parent.mkdir(exist_ok=True)
+        task.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return task
+
+    def test_low_risk_checker_defaults_to_reuse_managed(self):
+        self._write_low_risk_checker_card()
+        result = self._dispatch("task-cards/CHECKER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Worktree Strategy: reuse-managed", result.stdout)
+        self.assertNotIn("Updating files:", result.stdout + result.stderr)
+
+    def test_missing_risk_cannot_be_replaced_by_duplicate(self):
+        self._write_low_risk_checker_card(
+            omit="Cross-module risk", duplicate="Security risk"
+        )
+        result = self._dispatch("task-cards/CHECKER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Worktree Strategy: fresh", result.stdout)
+
+    def test_explicit_fresh_overrides_checker_reuse(self):
+        self._write_low_risk_checker_card()
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {"CLAUDE_CODE_WORKTREE_STRATEGY": "fresh"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Worktree Strategy: fresh", result.stdout)
+
+    def test_approval_blocked_checker_converges_before_fake_exit(self):
+        self._write_low_risk_checker_card()
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {"FAKE_CLAUDE_MODE": "approval-blocked", "FAKE_CLAUDE_SLEEP_SECONDS": "8"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("approval-blocked early convergence", progress.lower())
+        self.assertIn("approval_blocked_early_convergence", status)
+
+    def test_approval_convergence_requires_complete_report(self):
+        self._write_low_risk_checker_card()
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {"FAKE_CLAUDE_MODE": "approval-incomplete", "FAKE_CLAUDE_SLEEP_SECONDS": "3"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertNotIn("approval-blocked early convergence", progress.lower())
+
+    def test_approval_convergence_ignores_unrelated_approval(self):
+        self._write_low_risk_checker_card()
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {"FAKE_CLAUDE_MODE": "approval-unrelated", "FAKE_CLAUDE_SLEEP_SECONDS": "3"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertNotIn("approval-blocked early convergence", progress.lower())
 
     def _dispatch(self, task_arg="task-cards/PROJ.md", extra_env=None):
         env = {
