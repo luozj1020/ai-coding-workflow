@@ -292,10 +292,170 @@ fi
 
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 REUSE_WORKTREE_DIR="${WORKTREE_ROOT}/reuse/claude-managed"
-if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
-    WORKTREE_DIR="$REUSE_WORKTREE_DIR"
+
+# --- Spec item 3: retry-in-place validation ---
+# Validate a prior run's recorded worktree for safe in-place reuse.
+# Sets _RETRY_TASK_ID, _RETRY_WORKTREE_DIR, _RETRY_BRANCH on success.
+# On any ambiguity, fails closed with an actionable error.
+validate_retry_in_place() {
+    local prior_task_id="$1"
+    local prior_root="${WORKTREE_ROOT}/${prior_task_id}"
+
+    local prior_runtime="${prior_root}.runtime.json"
+    local prior_dispatcher_pid="${prior_root}.dispatcher.pid"
+    local prior_claude_pid="${prior_root}.claude.pid"
+    local prior_pid="${prior_root}.pid"
+    local prior_checker_pid="${prior_root}.checker.pid"
+
+    # Load prior runtime identity artifact
+    if [ ! -f "$prior_runtime" ]; then
+        echo "Error: retry-in-place: prior runtime.json not found: ${prior_runtime}" >&2
+        echo "The prior run may not have produced a runtime identity artifact." >&2
+        exit 1
+    fi
+
+    local wt source_repo base_commit strategy
+    wt="$(sed -n 's/.*"worktree"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    source_repo="$(sed -n 's/.*"source_repository"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    base_commit="$(sed -n 's/.*"base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    strategy="$(sed -n 's/.*"strategy"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    _RETRY_BRANCH="$(sed -n 's/.*"branch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+
+    # Validate required fields
+    if [ -z "$wt" ] || [ -z "$source_repo" ] || [ -z "$base_commit" ]; then
+        echo "Error: retry-in-place: prior runtime.json is malformed (missing worktree, source_repository, or base_commit)." >&2
+        exit 1
+    fi
+
+    # Safety: worktree must be under .worktrees/ boundary
+    case "$wt" in
+        "${WORKTREE_ROOT}/"*) ;;
+        *)
+            echo "Error: retry-in-place: prior worktree is outside .worktrees/ boundary: ${wt}" >&2
+            exit 1
+            ;;
+    esac
+
+    # Reject reuse-managed prior runs: retry-in-place is for fresh worktrees only
+    if [ "$strategy" = "reuse-managed" ]; then
+        echo "Error: retry-in-place: prior run used reuse-managed strategy. Retry-in-place only supports fresh worktrees." >&2
+        exit 1
+    fi
+
+    # Worktree must exist
+    if [ ! -d "$wt" ]; then
+        echo "Error: retry-in-place: prior worktree directory missing: ${wt}" >&2
+        exit 1
+    fi
+
+    # Must be a git worktree
+    if ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "Error: retry-in-place: prior worktree is not a valid git worktree: ${wt}" >&2
+        exit 1
+    fi
+
+    # Source repository must match
+    if [ "$source_repo" != "$REPO_ROOT" ]; then
+        echo "Error: retry-in-place: source repository mismatch: recorded=${source_repo} current=${REPO_ROOT}" >&2
+        exit 1
+    fi
+
+    # No live dispatcher/Claude/checker PIDs
+    local pid_val
+    if [ -f "$prior_dispatcher_pid" ]; then
+        pid_val="$(tr -d '[:space:]' < "$prior_dispatcher_pid")"
+        if [ -n "$pid_val" ] && kill -0 "$pid_val" 2>/dev/null; then
+            echo "Error: retry-in-place: prior dispatcher PID ${pid_val} is still running." >&2
+            exit 1
+        fi
+    fi
+    if [ -f "$prior_claude_pid" ]; then
+        pid_val="$(tr -d '[:space:]' < "$prior_claude_pid")"
+        if [ -n "$pid_val" ] && kill -0 "$pid_val" 2>/dev/null; then
+            echo "Error: retry-in-place: prior Claude PID ${pid_val} is still running." >&2
+            exit 1
+        fi
+    elif [ -f "$prior_pid" ]; then
+        pid_val="$(tr -d '[:space:]' < "$prior_pid")"
+        if [ -n "$pid_val" ] && kill -0 "$pid_val" 2>/dev/null; then
+            echo "Error: retry-in-place: prior Claude PID ${pid_val} is still running." >&2
+            exit 1
+        fi
+    fi
+    if [ -f "$prior_checker_pid" ]; then
+        pid_val="$(tr -d '[:space:]' < "$prior_checker_pid")"
+        if [ -n "$pid_val" ] && kill -0 "$pid_val" 2>/dev/null; then
+            echo "Error: retry-in-place: prior checker PID ${pid_val} is still running." >&2
+            exit 1
+        fi
+    fi
+
+    # Worktree must be clean (tracked/staged/untracked)
+    local dirty_out
+    dirty_out="$(git -C "$wt" diff --name-only 2>/dev/null || true)"
+    if [ -n "$dirty_out" ]; then
+        echo "Error: retry-in-place: prior worktree has tracked changes:" >&2
+        echo "$dirty_out" | sed 's/^/  /' >&2
+        exit 1
+    fi
+    dirty_out="$(git -C "$wt" diff --cached --name-only 2>/dev/null || true)"
+    if [ -n "$dirty_out" ]; then
+        echo "Error: retry-in-place: prior worktree has staged changes:" >&2
+        echo "$dirty_out" | sed 's/^/  /' >&2
+        exit 1
+    fi
+    dirty_out="$(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null || true)"
+    if [ -n "$dirty_out" ]; then
+        echo "Error: retry-in-place: prior worktree has untracked files:" >&2
+        echo "$dirty_out" | sed 's/^/  /' >&2
+        exit 1
+    fi
+
+    # Recorded base commit must match current source HEAD
+    if [ "$base_commit" != "$BASE_COMMIT" ]; then
+        echo "Error: retry-in-place: recorded base commit does not match current HEAD: recorded=${base_commit} current=${BASE_COMMIT}" >&2
+        exit 1
+    fi
+
+    # Worktree HEAD must equal recorded base
+    local wt_head
+    wt_head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+    if [ "$wt_head" != "$base_commit" ]; then
+        echo "Error: retry-in-place: worktree HEAD does not match recorded base: worktree=${wt_head} base=${base_commit}" >&2
+        exit 1
+    fi
+
+    _RETRY_TASK_ID="$prior_task_id"
+    _RETRY_WORKTREE_DIR="$wt"
+    [ -n "$_RETRY_BRANCH" ] || _RETRY_BRANCH="claude-task-retry-${prior_task_id}"
+}
+
+# --- Spec item 3: retry-in-place setup ---
+# If CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID is set, validate and reuse prior worktree.
+# On success, TASK_ID and WORKTREE_DIR are set from prior run's runtime.json.
+# On failure, the script exits with an actionable error (fail closed).
+_RETRY_TASK_ID=""
+_RETRY_WORKTREE_DIR=""
+_RETRY_BRANCH=""
+if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
+    validate_retry_in_place "$CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID"
+    TASK_ID="$_RETRY_TASK_ID"
+    WORKTREE_DIR="$_RETRY_WORKTREE_DIR"
+    BRANCH_NAME="$_RETRY_BRANCH"
+    echo "Worktree reuse (retry-in-place): $WORKTREE_DIR (prior task: $_RETRY_TASK_ID)"
 else
-    WORKTREE_DIR="${WORKTREE_ROOT}/${TASK_ID}"
+    # --- Normal worktree setup (fresh or reuse-managed) ---
+    if [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
+        DAG_GROUP="${AI_CODING_WORKFLOW_DAG_GROUP_ID:-dag}"
+        TASK_ID="${DAG_GROUP}-${AI_CODING_WORKFLOW_DAG_TASK_ID}-${TIMESTAMP}-${RAND_SUFFIX}"
+    else
+        TASK_ID="claude-${TIMESTAMP}-${RAND_SUFFIX}"
+    fi
+    if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
+        WORKTREE_DIR="$REUSE_WORKTREE_DIR"
+    else
+        WORKTREE_DIR="${WORKTREE_ROOT}/${TASK_ID}"
+    fi
 fi
 
 mkdir -p "$WORKTREE_ROOT"
@@ -317,6 +477,7 @@ PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
 DISPATCHER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.pid"
 CLAUDE_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude.pid"
 CHECKER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker.pid"
+RUNTIME_JSON="${WORKTREE_ROOT}/${TASK_ID}.runtime.json"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 NETWORK_FILE="${WORKTREE_ROOT}/${TASK_ID}.network.log"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
@@ -456,25 +617,28 @@ create_dispatch_worktree() {
     fi
 }
 
-if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
-    BRANCH_NAME="claude-managed-reuse"
-elif [ -n "${AI_CODING_WORKFLOW_DAG_BRANCH_NAME:-}" ]; then
-    # DAG mode: caller provides a collision-resistant branch name derived
-    # from group_id + task_id + timestamp + random suffix.
-    BRANCH_NAME="$AI_CODING_WORKFLOW_DAG_BRANCH_NAME"
-else
-    BRANCH_NAME="claude-task-${TIMESTAMP}-${RAND_SUFFIX}"
-fi
-_WORKTREE_SETUP_START="$(date +%s)"
-create_dispatch_worktree "$BRANCH_NAME"
-_WORKTREE_SETUP_END="$(date +%s)"
-_WORKTREE_SETUP_DURATION=$((_WORKTREE_SETUP_END - _WORKTREE_SETUP_START))
+# Skip worktree creation if retry-in-place already provided a valid worktree.
+if [ -z "${_RETRY_WORKTREE_DIR:-}" ]; then
+    if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
+        BRANCH_NAME="claude-managed-reuse"
+    elif [ -n "${AI_CODING_WORKFLOW_DAG_BRANCH_NAME:-}" ]; then
+        # DAG mode: caller provides a collision-resistant branch name derived
+        # from group_id + task_id + timestamp + random suffix.
+        BRANCH_NAME="$AI_CODING_WORKFLOW_DAG_BRANCH_NAME"
+    else
+        BRANCH_NAME="claude-task-${TIMESTAMP}-${RAND_SUFFIX}"
+    fi
+    _WORKTREE_SETUP_START="$(date +%s)"
+    create_dispatch_worktree "$BRANCH_NAME"
+    _WORKTREE_SETUP_END="$(date +%s)"
+    _WORKTREE_SETUP_DURATION=$((_WORKTREE_SETUP_END - _WORKTREE_SETUP_START))
 
-if [ "$CLAUDE_CODE_WORKTREE_PROGRESS" = "quiet" ]; then
-    echo "Worktree ready (${CLAUDE_CODE_WORKTREE_STRATEGY}, ${_WORKTREE_SETUP_DURATION}s): $WORKTREE_DIR"
-else
-    echo "Worktree strategy: $CLAUDE_CODE_WORKTREE_STRATEGY"
-    echo "Branch: $BRANCH_NAME"
+    if [ "$CLAUDE_CODE_WORKTREE_PROGRESS" = "quiet" ]; then
+        echo "Worktree ready (${CLAUDE_CODE_WORKTREE_STRATEGY}, ${_WORKTREE_SETUP_DURATION}s): $WORKTREE_DIR"
+    else
+        echo "Worktree strategy: ${CLAUDE_CODE_WORKTREE_STRATEGY}"
+        echo "Branch: $BRANCH_NAME"
+    fi
 fi
 
 {
@@ -484,10 +648,18 @@ fi
     echo "## Worktree Strategy"
     echo ""
     echo "- Execution profile: ${CLAUDE_CODE_EXECUTION_PROFILE}"
-    echo "- Strategy: ${CLAUDE_CODE_WORKTREE_STRATEGY}"
+    if [ -n "${_RETRY_TASK_ID:-}" ]; then
+        echo "- Strategy: retry-in-place (prior: ${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID})"
+    else
+        echo "- Strategy: ${CLAUDE_CODE_WORKTREE_STRATEGY}"
+    fi
     echo "- Strategy derivation: ${_WORKTREE_STRATEGY_DERIVATION}"
     echo "- Worktree: ${WORKTREE_DIR}"
     echo "- Base commit: ${BASE_COMMIT}"
+    echo "- Runtime identity: ${RUNTIME_JSON}"
+    if [ -n "${_RETRY_TASK_ID:-}" ]; then
+        echo "- Retry provenance: prior task ${_RETRY_TASK_ID} from ${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID}"
+    fi
     echo "- Reuse reset allowed: ${CLAUDE_CODE_REUSE_WORKTREE_RESET}"
     echo "- Large repo mode: ${CLAUDE_CODE_LARGE_REPO_MODE}"
     echo "- Claude task card view: ${CLAUDE_CODE_TASK_CARD_VIEW}"
@@ -513,6 +685,33 @@ fi
 } > "$SOURCE_STATUS_FILE"
 
 echo "Source status saved to: $SOURCE_STATUS_FILE"
+
+# --- Spec item 1: write runtime identity artifact ---
+# Write atomically (via temp + mv) so monitors never see a partial file.
+_RUNTIME_STRATEGY="${CLAUDE_CODE_WORKTREE_STRATEGY}"
+if [ -n "${_RETRY_TASK_ID:-}" ]; then
+    _RUNTIME_STRATEGY="retry-in-place"
+fi
+_RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
+{
+    echo "{"
+    echo "  \"schema_version\": 1,"
+    printf '  "task_id": "%s",\n' "$TASK_ID"
+    printf '  "worktree": "%s",\n' "$WORKTREE_DIR"
+    printf '  "strategy": "%s",\n' "$_RUNTIME_STRATEGY"
+    printf '  "branch": "%s",\n' "$BRANCH_NAME"
+    printf '  "base_commit": "%s",\n' "$BASE_COMMIT"
+    printf '  "source_repository": "%s",\n' "$REPO_ROOT"
+    printf '  "pid_files": {\n'
+    printf '    "dispatcher": "%s",\n' "$DISPATCHER_PID_FILE"
+    printf '    "claude": "%s",\n' "$CLAUDE_PID_FILE"
+    printf '    "checker": "%s",\n' "$CHECKER_PID_FILE"
+    printf '    "pid": "%s"\n' "$PID_FILE"
+    echo "  }"
+    echo "}"
+} > "$_RUNTIME_TMP"
+mv "$_RUNTIME_TMP" "$RUNTIME_JSON"
+echo "Runtime identity saved to: $RUNTIME_JSON"
 
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD.md"
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD_FULL.md"
@@ -1199,6 +1398,11 @@ wait "$CLAUDE_PID"
 CLAUDE_STATUS=$?
 set -e
 
+# --- Spec item 4: distinct child exit detection and finalization transition ---
+# Log the moment the Claude child is detected as no longer running.
+# No extra waiting is introduced; finalization begins immediately.
+progress_log "Claude child exited: pid=${CLAUDE_PID}, exit_status=${CLAUDE_STATUS}; transitioning to finalization immediately"
+
 END_EPOCH="$(date +%s)"
 ELAPSED=$((END_EPOCH - START_EPOCH))
 progress_log "Claude subprocess ended; dispatcher finalizing artifacts: pid=${CLAUDE_PID}, wait_status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
@@ -1640,7 +1844,12 @@ echo ""
 echo "=== Dispatch Complete ==="
 echo "Worktree:        $WORKTREE_DIR"
 echo "Execution Profile: $CLAUDE_CODE_EXECUTION_PROFILE"
-echo "Worktree Strategy: $CLAUDE_CODE_WORKTREE_STRATEGY"
+if [ -n "${_RETRY_TASK_ID:-}" ]; then
+    echo "Worktree Strategy: retry-in-place (prior: ${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID})"
+else
+    echo "Worktree Strategy: $CLAUDE_CODE_WORKTREE_STRATEGY"
+fi
+echo "Runtime Identity: $RUNTIME_JSON"
 echo "Large Repo Mode: $CLAUDE_CODE_LARGE_REPO_MODE"
 echo "Prompt Profile:  $CLAUDE_CODE_PROMPT_PROFILE"
 echo "Evidence Mode:   $CLAUDE_CODE_EVIDENCE_MODE"

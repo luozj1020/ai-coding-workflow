@@ -70,12 +70,42 @@ STATUS_FILE="${PREFIX}.status.txt"
 NETWORK_FILE="${PREFIX}.network.log"
 DIFF_FILE="${PREFIX}.diff"
 REPORT_FILE="${PREFIX}.report.md"
-LIVE_REPORT_FILE="${WORKTREE_DIR}/CLAUDE_REPORT.md"
 CLAUDE_PROGRESS_FILE="${PREFIX}.claude-progress.md"
-LIVE_CLAUDE_PROGRESS_FILE="${WORKTREE_DIR}/CLAUDE_PROGRESS.md"
 WORKTREE_STATUS_FILE="${PREFIX}.worktree-status.txt"
+RUNTIME_JSON="${PREFIX}.runtime.json"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
 FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
+RUNTIME_DIAGNOSTIC=""
+
+# --- Spec item 2: resolve worktree from runtime identity artifact ---
+# If a runtime.json exists, use its recorded worktree path (validated to be
+# inside the same .worktrees/ boundary). Falls back to default TASK_ID path
+# if artifact is missing, malformed, or points outside the boundary.
+if [ -f "$RUNTIME_JSON" ]; then
+    _rt_wt="$(sed -n 's/.*"worktree"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$RUNTIME_JSON" 2>/dev/null | head -1)"
+    if [ -z "$_rt_wt" ]; then
+        RUNTIME_DIAGNOSTIC="runtime.json present but worktree field missing; using task-id fallback"
+    else
+        case "$_rt_wt" in
+            "${WORKTREE_ROOT}/"*)
+                if [ "$_rt_wt" = "$WORKTREE_ROOT" ] || [ "$_rt_wt" = "$WORKTREE_ROOT/" ]; then
+                    RUNTIME_DIAGNOSTIC="runtime.json worktree is .worktrees/ root; using task-id fallback"
+                elif [ -d "$_rt_wt" ]; then
+                    WORKTREE_DIR="$_rt_wt"
+                else
+                    RUNTIME_DIAGNOSTIC="runtime.json worktree directory missing: ${_rt_wt}; using task-id fallback"
+                fi
+                ;;
+            *)
+                RUNTIME_DIAGNOSTIC="runtime.json worktree outside .worktrees/ boundary: ${_rt_wt}; using task-id fallback"
+                ;;
+        esac
+    fi
+fi
+
+# Live report/progress files depend on the resolved WORKTREE_DIR.
+LIVE_REPORT_FILE="${WORKTREE_DIR}/CLAUDE_REPORT.md"
+LIVE_CLAUDE_PROGRESS_FILE="${WORKTREE_DIR}/CLAUDE_PROGRESS.md"
 
 file_size() {
     local file="$1"
@@ -347,6 +377,9 @@ print_file() {
 echo "# Claude Dispatch Status"
 echo "Task ID: $TASK_ID"
 echo "Worktree: $WORKTREE_DIR"
+if [ -n "$RUNTIME_DIAGNOSTIC" ]; then
+    echo "Runtime: $RUNTIME_DIAGNOSTIC"
+fi
 echo "Wait Policy: profile=${WAIT_PROFILE} startup_grace=${STARTUP_GRACE}s stale_after=${STALE_AFTER}s interrupt_after=${INTERRUPT_AFTER}s"
 
 # Spec item 3/4: role-aware PID reporting.

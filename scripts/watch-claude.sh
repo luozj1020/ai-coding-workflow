@@ -278,16 +278,46 @@ CLAUDE_PID_FILE="${PREFIX}.claude.pid"
 CHECKER_PID_FILE="${PREFIX}.checker.pid"
 PROGRESS_FILE="${PREFIX}.progress.log"
 ARCHIVED_CLAUDE_PROGRESS_FILE="${PREFIX}.claude-progress.md"
-LIVE_CLAUDE_PROGRESS_FILE="${WORKTREE_DIR}/CLAUDE_PROGRESS.md"
 STATUS_FILE="${PREFIX}.status.txt"
 NETWORK_FILE="${PREFIX}.network.log"
 REPORT_FILE="${PREFIX}.report.md"
-LIVE_REPORT_FILE="${WORKTREE_DIR}/CLAUDE_REPORT.md"
 RESULT_FILE="${PREFIX}.result.json"
 DIFF_FILE="${PREFIX}.diff"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
 SEEDED_PROGRESS_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"
 FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
+RUNTIME_JSON="${PREFIX}.runtime.json"
+RUNTIME_DIAGNOSTIC=""
+
+# --- Spec item 2: resolve worktree from runtime identity artifact ---
+# If a runtime.json exists, use its recorded worktree path (validated to be
+# inside the same .worktrees/ boundary). Falls back to default TASK_ID path
+# if artifact is missing, malformed, or points outside the boundary.
+if [ -f "$RUNTIME_JSON" ]; then
+    _rt_wt="$(sed -n 's/.*"worktree"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$RUNTIME_JSON" 2>/dev/null | head -1)"
+    if [ -z "$_rt_wt" ]; then
+        RUNTIME_DIAGNOSTIC="runtime.json present but worktree field missing; using task-id fallback"
+    else
+        case "$_rt_wt" in
+            "${WORKTREE_ROOT}/"*)
+                if [ "$_rt_wt" = "$WORKTREE_ROOT" ] || [ "$_rt_wt" = "$WORKTREE_ROOT/" ]; then
+                    RUNTIME_DIAGNOSTIC="runtime.json worktree is .worktrees/ root; using task-id fallback"
+                elif [ -d "$_rt_wt" ]; then
+                    WORKTREE_DIR="$_rt_wt"
+                else
+                    RUNTIME_DIAGNOSTIC="runtime.json worktree directory missing: ${_rt_wt}; using task-id fallback"
+                fi
+                ;;
+            *)
+                RUNTIME_DIAGNOSTIC="runtime.json worktree outside .worktrees/ boundary: ${_rt_wt}; using task-id fallback"
+                ;;
+        esac
+    fi
+fi
+
+# Live report/progress files depend on the resolved WORKTREE_DIR.
+LIVE_CLAUDE_PROGRESS_FILE="${WORKTREE_DIR}/CLAUDE_PROGRESS.md"
+LIVE_REPORT_FILE="${WORKTREE_DIR}/CLAUDE_REPORT.md"
 
 last_digest=""
 printed_header=0
@@ -584,12 +614,18 @@ print_header() {
             echo "Task ID: $TASK_ID"
             echo "Mode: plain compact (use --details to show full progress tails)"
             echo "Wait policy: profile=${WAIT_PROFILE} startup_grace=${STARTUP_GRACE}s stale_after=${STALE_AFTER}s interrupt_after=${INTERRUPT_AFTER}s escalation_confirmations=${ESCALATION_CONFIRMATIONS}"
+            if [ -n "$RUNTIME_DIAGNOSTIC" ]; then
+                echo "Runtime: $RUNTIME_DIAGNOSTIC"
+            fi
         else
             echo "============================================================"
             echo " CLAUDE CODE WATCH"
             echo " task: ${TASK_ID}"
             echo " mode: status panel (use --details for full tails, --plain for compact text)"
             echo " wait policy: profile=${WAIT_PROFILE} startup_grace=${STARTUP_GRACE}s stale_after=${STALE_AFTER}s interrupt_after=${INTERRUPT_AFTER}s escalation_confirmations=${ESCALATION_CONFIRMATIONS}"
+            if [ -n "$RUNTIME_DIAGNOSTIC" ]; then
+                echo " runtime: ${RUNTIME_DIAGNOSTIC}"
+            fi
             echo "============================================================"
         fi
         echo ""
