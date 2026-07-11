@@ -13,6 +13,8 @@ Exit codes:
     2  usage error (missing args, file not found, etc.)
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re
