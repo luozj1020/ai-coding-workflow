@@ -87,7 +87,7 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | Cross-module risk | no |
 | Production impact | no |
 
-Serial low-risk `checker-test` tasks default to `reuse-managed` only when every row above is explicit `no`. Missing, `unknown`, `n/a`, `duplicate`, `high` risk, DAG, or parallel tasks stay `fresh`. An explicit strategy in the task card overrides this default. Existing reset safety via `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` remains unchanged.
+Serial low-risk `checker-test` tasks default to `reuse-managed` only when every row above is explicit `no`. Missing, `unknown`, `n/a`, `duplicate`, `high` risk, DAG, or parallel tasks stay `fresh`. The environment variable `CLAUDE_CODE_WORKTREE_STRATEGY=fresh|reuse-managed` overrides this default. Existing reset safety via `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` remains unchanged.
 
 ## Delegation Restoration Gate
 
@@ -121,7 +121,7 @@ Serial low-risk `checker-test` tasks default to `reuse-managed` only when every 
 
 | Field | Value |
 |-------|-------|
-| Convergence env | `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE=0` (default off) / `1` (enabled) |
+| Convergence env | `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE=1` (default enabled) / `0` (disabled) |
 | Valid complete report exists? | yes/no |
 | Test-only scoped changes? | yes/no |
 | Exact validation approval blocker present? | yes/no |
