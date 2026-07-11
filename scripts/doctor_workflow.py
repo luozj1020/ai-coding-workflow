@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 # --- Levels ---
 ERROR = "ERROR"
@@ -174,6 +175,124 @@ def _count_runtime_artifacts(repo_root):
             tmp_count += 1
 
     return worktree_count, tmp_count
+
+
+# Maximum filesystem nodes to visit when computing approximate size.
+# Prevents runaway traversal on very large worktree trees.
+_WORKTREES_MAX_SIZE_NODES = 5000
+
+
+def _inventory_worktrees(repo_root):
+    """Return a read-only inventory of .worktrees/ entries.
+
+    Returns a dict with:
+        entry_count     - immediate children (excluding .gitkeep)
+        approximate_bytes - total byte size (may be partial if capped)
+        oldest_path     - path of the oldest entry, or None
+        oldest_age_days - age in days of the oldest entry, or 0
+        buckets         - dict {"<7": n, "7-30": n, ">30": n}
+        partial         - True if size traversal was capped at _WORKTREES_MAX_SIZE_NODES
+        error           - error string, or None
+
+    Missing .worktrees is treated as clean (entry_count=0).
+    Permission/stat errors produce a warning-level error string without crashing.
+    """
+    result = {
+        "entry_count": 0,
+        "approximate_bytes": 0,
+        "oldest_path": None,
+        "oldest_age_days": 0,
+        "buckets": {"<7": 0, "7-30": 0, ">30": 0},
+        "partial": False,
+        "error": None,
+    }
+
+    worktrees_dir = os.path.join(repo_root, ".worktrees")
+    if not os.path.isdir(worktrees_dir):
+        return result
+
+    try:
+        entries = os.listdir(worktrees_dir)
+    except OSError as exc:
+        result["error"] = "cannot list .worktrees/: {}".format(exc)
+        return result
+
+    # Filter out .gitkeep; keep only real runtime entries
+    runtime_entries = [e for e in entries if e != ".gitkeep"]
+    result["entry_count"] = len(runtime_entries)
+
+    if not runtime_entries:
+        return result
+
+    now = time.time()
+    oldest_mtime = now
+    oldest_path = None
+    nodes_visited = 0
+    total_bytes = 0
+    partial = False
+
+    for name in runtime_entries:
+        entry_path = os.path.join(worktrees_dir, name)
+        try:
+            st = os.stat(entry_path)
+        except OSError as exc:
+            result["error"] = "stat error on {}: {}".format(name, exc)
+            continue
+
+        age_days = max(0, (now - st.st_mtime) / 86400)
+        if st.st_mtime < oldest_mtime:
+            oldest_mtime = st.st_mtime
+            oldest_path = entry_path
+
+        # Bucket this entry by age
+        if age_days < 7:
+            result["buckets"]["<7"] += 1
+        elif age_days <= 30:
+            result["buckets"]["7-30"] += 1
+        else:
+            result["buckets"][">30"] += 1
+
+        # Size traversal: walk directory trees, capping total nodes visited
+        if os.path.isdir(entry_path):
+            for dirpath, dirnames, filenames in os.walk(entry_path):
+                if partial:
+                    break
+                for fname in filenames:
+                    nodes_visited += 1
+                    if nodes_visited > _WORKTREES_MAX_SIZE_NODES:
+                        partial = True
+                        break
+                    fpath = os.path.join(dirpath, fname)
+                    try:
+                        total_bytes += os.path.getsize(fpath)
+                    except OSError:
+                        pass
+                # Count the directory itself as a visited node
+                nodes_visited += 1
+                if nodes_visited > _WORKTREES_MAX_SIZE_NODES:
+                    partial = True
+        else:
+            # Single file entry
+            total_bytes += st.st_size
+
+    result["approximate_bytes"] = total_bytes
+    result["partial"] = partial
+    if oldest_path is not None:
+        result["oldest_path"] = oldest_path
+        result["oldest_age_days"] = max(0, (now - oldest_mtime) / 86400)
+
+    return result
+
+
+def _format_bytes(n):
+    """Format a byte count into a human-readable string."""
+    if n < 1024:
+        return "{} B".format(n)
+    for unit in ("KiB", "MiB", "GiB", "TiB"):
+        n /= 1024.0
+        if n < 1024:
+            return "{:.1f} {}".format(n, unit)
+    return "{:.1f} PiB".format(n)
 
 
 def _worktrees_ignore_status(repo_root):
@@ -555,16 +674,56 @@ def run_doctor(repo_path=None):
     else:
         findings.append((INFO, "dirty", "Source worktree is clean"))
 
-    # 3. Runtime artifact counts
-    wt_count, tmp_count = _count_runtime_artifacts(root)
-    if wt_count > 0:
-        findings.append((INFO, "artifacts", ".worktrees/ has {} runtime entry/entries".format(wt_count)))
-    else:
+    # 3. Runtime artifact inventory
+    inv = _inventory_worktrees(root)
+    wt_count = inv["entry_count"]
+
+    if inv["error"]:
+        findings.append((WARN, "worktrees-inventory", inv["error"]))
+
+    if wt_count == 0:
         findings.append((INFO, "artifacts", ".worktrees/ is clean (no runtime entries)"))
+    else:
+        size_label = _format_bytes(inv["approximate_bytes"])
+        if inv["partial"]:
+            size_label += " (approximate; traversal capped at {} nodes)".format(_WORKTREES_MAX_SIZE_NODES)
+        findings.append((INFO, "worktrees-inventory",
+                         ".worktrees/ has {} entries, {} total".format(wt_count, size_label)))
+
+        oldest_age = inv["oldest_age_days"]
+        if inv["oldest_path"]:
+            findings.append((INFO, "worktrees-inventory",
+                             "Oldest: {} ({:.0f} days)".format(
+                                 os.path.basename(inv["oldest_path"]), oldest_age)))
+
+        buckets = inv["buckets"]
+        findings.append((INFO, "worktrees-inventory",
+                         "Age buckets: <7d={}, 7-30d={}, >30d={}".format(
+                             buckets["<7"], buckets["7-30"], buckets[">30"])))
+
+        # Cleanup suggestions when thresholds are exceeded (preview only)
+        GIB = 1024 * 1024 * 1024
+        needs_cleanup = wt_count >= 100 or inv["approximate_bytes"] >= GIB or oldest_age >= 30
+        if needs_cleanup:
+            findings.append((INFO, "artifacts",
+                             "Doctor never deletes automatically. "
+                             "To preview cleanup: python ai/clean_runtime.py"))
+            if wt_count >= 100:
+                findings.append((INFO, "artifacts",
+                                 "High entry count ({}). Consider cleaning stale worktrees by task ID or age.".format(wt_count)))
+            if inv["approximate_bytes"] >= GIB:
+                findings.append((INFO, "artifacts",
+                                 "Disk usage is large ({}). Run 'python ai/clean_runtime.py' to preview reclaimable space.".format(size_label)))
+            if oldest_age >= 30:
+                findings.append((INFO, "artifacts",
+                                 "Oldest entry is {:.0f} days old. Consider removing entries older than 30 days.".format(oldest_age)))
+
+    tmp_count = _count_runtime_artifacts(root)[1]
     if tmp_count > 0:
         findings.append((INFO, "artifacts", "Root has {} tmp-* artifact(s)".format(tmp_count)))
-    if wt_count > 0 or tmp_count > 0:
-        findings.append((INFO, "artifacts", "Run 'python ai/clean_runtime.py' to preview, '--apply' to remove"))
+        findings.append((INFO, "artifacts",
+                         "Doctor never deletes automatically. "
+                         "To preview cleanup: python ai/clean_runtime.py"))
 
     ignore_ok, ignore_message = _worktrees_ignore_status(root)
     if ignore_ok:
