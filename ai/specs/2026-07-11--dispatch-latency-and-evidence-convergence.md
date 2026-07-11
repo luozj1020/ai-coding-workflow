@@ -68,3 +68,12 @@ The workflow is reliable but wastes time on WSL/Windows filesystems and can publ
 |----------|------|
 | Plan | `ai/plans/dispatch-latency-evidence/task_plan.md` |
 | Task cards | `ai/plans/dispatch-latency-evidence/task-cards/` |
+
+## Implementation record
+
+- Spark `plan-splitter` auto-disabled because local app-server initialization required unavailable helper write access; no strong-model fallback was used.
+- Three independent Builders ran through the reviewed parallel plan. Summary required a semantic revision; doctor first attempt produced no useful implementation and succeeded after a tightened retry; dispatcher was split after the first card proved too broad.
+- Summary Checker made no implementation progress twice because Python execution required approval. Codex scoped takeover was limited to validation-state tests and the missing blocked-state semantics; focused pytest passed.
+- Dispatcher Checker timed out with a useful but oversized test diff. Codex salvaged the accepted parser/output direction, replaced non-asserting tests with bounded integration tests, and preserved timeout evidence.
+- Documentation Builder and tightened revision both missed one stale task-card sentence; Codex takeover changed only that sentence after the repeated-miss threshold.
+- Final implementation keeps automatic merge disabled and preserves human review/merge ownership.
