@@ -136,6 +136,8 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertTrue(result_file.exists())
             self.assertIn("Codex Spark Follow-up", report.read_text(encoding="utf-8"))
             self.assertIn("| Spark model used | gpt-5.3-codex-spark |", report.read_text(encoding="utf-8"))
+            self.assertIn("| Spark requested mode | review-only |", report.read_text(encoding="utf-8"))
+            self.assertIn("| Spark purpose used | review-only |", report.read_text(encoding="utf-8"))
             self.assertIn("spark review ok", result_file.read_text(encoding="utf-8"))
             self.assertIn("Codex Spark Execution Request", prompt.read_text(encoding="utf-8"))
             self.assertEqual(
