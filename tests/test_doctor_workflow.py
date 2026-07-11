@@ -4,6 +4,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -246,8 +247,9 @@ class DoctorWorkflowTests(unittest.TestCase):
             (repo / ".worktrees" / "claude-1234.result.json").write_text("{}", encoding="utf-8")
             (repo / "tmp-something").mkdir()
             result = self.run_doctor(repo)
-            self.assertIn("[artifacts]", result.stdout)
-            self.assertIn("1 runtime", result.stdout)
+            self.assertIn("[worktrees-inventory]", result.stdout)
+            self.assertIn(".worktrees/", result.stdout)
+            self.assertIn("1 entries", result.stdout)
             self.assertIn("1 tmp-*", result.stdout)
 
     def test_doctor_warns_when_worktrees_ignore_missing(self):
@@ -390,6 +392,349 @@ class DoctorWorkflowTests(unittest.TestCase):
                 capture_output=True,
             )
             self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+
+class InventoryTests(unittest.TestCase):
+    """Tests for _inventory_worktrees and related runtime inventory behavior."""
+
+    def _make_repo(self, tmp):
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+        return repo
+
+    # --- Missing / empty .worktrees ---
+
+    def test_inventory_missing_worktrees(self):
+        """No .worktrees directory returns zero counts and no error."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            result = module._inventory_worktrees(str(repo))
+        self.assertEqual(result["entry_count"], 0)
+        self.assertEqual(result["approximate_bytes"], 0)
+        self.assertIsNone(result["oldest_path"])
+        self.assertEqual(result["oldest_age_days"], 0)
+        self.assertEqual(result["buckets"], {"<7": 0, "7-30": 0, ">30": 0})
+        self.assertFalse(result["partial"])
+        self.assertIsNone(result["error"])
+
+    def test_inventory_empty_worktrees_only_gitkeep(self):
+        """.worktrees with only .gitkeep counts as zero entries."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            (wt / ".gitkeep").touch()
+            result = module._inventory_worktrees(str(repo))
+        self.assertEqual(result["entry_count"], 0)
+        self.assertEqual(result["approximate_bytes"], 0)
+
+    # --- Entry count excludes .gitkeep ---
+
+    def test_inventory_entry_count_excludes_gitkeep(self):
+        """Only non-.gitkeep entries are counted."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            (wt / ".gitkeep").touch()
+            (wt / "entry-a").mkdir()
+            (wt / "entry-b").mkdir()
+            result = module._inventory_worktrees(str(repo))
+        self.assertEqual(result["entry_count"], 2)
+
+    # --- Age buckets and oldest entry ---
+
+    def test_inventory_age_buckets(self):
+        """Entries are bucketed by age: <7d, 7-30d, >30d."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            now = time.time()
+            # Recent entry (< 7 days)
+            recent = wt / "recent"
+            recent.mkdir()
+            (recent / "f.txt").write_text("x", encoding="utf-8")
+            os.utime(str(recent), (now - 2 * 86400, now - 2 * 86400))
+            # Medium entry (7-30 days)
+            medium = wt / "medium"
+            medium.mkdir()
+            (medium / "f.txt").write_text("x", encoding="utf-8")
+            os.utime(str(medium), (now - 15 * 86400, now - 15 * 86400))
+            # Old entry (> 30 days)
+            old = wt / "old"
+            old.mkdir()
+            (old / "f.txt").write_text("x", encoding="utf-8")
+            os.utime(str(old), (now - 45 * 86400, now - 45 * 86400))
+            result = module._inventory_worktrees(str(repo))
+        self.assertEqual(result["entry_count"], 3)
+        self.assertEqual(result["buckets"]["<7"], 1)
+        self.assertEqual(result["buckets"]["7-30"], 1)
+        self.assertEqual(result["buckets"][">30"], 1)
+
+    def test_inventory_oldest_entry(self):
+        """Oldest entry path and age are tracked correctly."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            now = time.time()
+            young = wt / "young"
+            young.mkdir()
+            os.utime(str(young), (now - 5 * 86400, now - 5 * 86400))
+            old = wt / "old"
+            old.mkdir()
+            os.utime(str(old), (now - 60 * 86400, now - 60 * 86400))
+            result = module._inventory_worktrees(str(repo))
+        self.assertIsNotNone(result["oldest_path"])
+        self.assertIn("old", result["oldest_path"])
+        self.assertGreater(result["oldest_age_days"], 59)
+        self.assertLess(result["oldest_age_days"], 62)
+
+    # --- Approximate size and traversal cap/partial marker ---
+
+    def test_inventory_approximate_size(self):
+        """Size is computed from files inside worktree directories."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            entry = wt / "entry"
+            entry.mkdir()
+            (entry / "a.txt").write_text("hello", encoding="utf-8")  # 5 bytes
+            (entry / "b.txt").write_text("world!!", encoding="utf-8")  # 7 bytes
+            result = module._inventory_worktrees(str(repo))
+        self.assertEqual(result["approximate_bytes"], 12)
+        self.assertFalse(result["partial"])
+
+    def test_inventory_approximate_size_single_file_entry(self):
+        """Non-directory entries use stat size."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            f = wt / "result.json"
+            f.write_text("abcde", encoding="utf-8")  # 5 bytes
+            result = module._inventory_worktrees(str(repo))
+        self.assertEqual(result["entry_count"], 1)
+        self.assertEqual(result["approximate_bytes"], 5)
+        self.assertFalse(result["partial"])
+
+    def test_inventory_traversal_cap_sets_partial(self):
+        """When file count exceeds _WORKTREES_MAX_SIZE_NODES, partial is True."""
+        module = load_module()
+        old_cap = module._WORKTREES_MAX_SIZE_NODES
+        module._WORKTREES_MAX_SIZE_NODES = 5
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = self._make_repo(tmp)
+                wt = repo / ".worktrees"
+                wt.mkdir()
+                entry = wt / "big"
+                entry.mkdir()
+                # Create more files than the cap
+                for i in range(10):
+                    (entry / "f{}.txt".format(i)).write_text("x", encoding="utf-8")
+                result = module._inventory_worktrees(str(repo))
+            self.assertTrue(result["partial"])
+        finally:
+            module._WORKTREES_MAX_SIZE_NODES = old_cap
+
+    # --- Threshold guidance ---
+
+    def test_threshold_guidance_count(self):
+        """High entry count triggers guidance with preview command, no auto-delete."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            for i in range(101):
+                (wt / "entry-{}".format(i)).mkdir()
+            findings, has_error = module.run_doctor(str(repo))
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("clean_runtime.py", text)
+        self.assertNotIn("automatically", text.lower().replace("never deletes automatically", ""))
+        self.assertIn("never deletes automatically", text)
+        self.assertIn("High entry count", text)
+
+    def test_threshold_guidance_size(self):
+        """Large disk usage triggers guidance with preview command."""
+        module = load_module()
+        old_inventory = module._inventory_worktrees
+        def fake_inventory(repo_root):
+            r = old_inventory(repo_root)
+            r["approximate_bytes"] = 2 * 1024 * 1024 * 1024  # 2 GiB
+            return r
+        module._inventory_worktrees = fake_inventory
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = self._make_repo(tmp)
+                wt = repo / ".worktrees"
+                wt.mkdir()
+                (wt / "entry").mkdir()
+                findings, has_error = module.run_doctor(str(repo))
+        finally:
+            module._inventory_worktrees = old_inventory
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("clean_runtime.py", text)
+        self.assertIn("never deletes automatically", text)
+        self.assertIn("Disk usage is large", text)
+
+    def test_threshold_guidance_age(self):
+        """Old entries trigger guidance with preview command."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            old = wt / "stale"
+            old.mkdir()
+            now = time.time()
+            os.utime(str(old), (now - 35 * 86400, now - 35 * 86400))
+            findings, has_error = module.run_doctor(str(repo))
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("clean_runtime.py", text)
+        self.assertIn("never deletes automatically", text)
+        self.assertIn("30 days", text)
+
+    # --- Stat/list errors warn without crash ---
+
+    def test_inventory_listdir_error_warns_without_crash(self):
+        """os.listdir failure produces an error string without raising."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            real_listdir = os.listdir
+            def fake_listdir(path):
+                if str(wt) == str(path):
+                    raise PermissionError("denied")
+                return real_listdir(path)
+            os.listdir = fake_listdir
+            try:
+                result = module._inventory_worktrees(str(repo))
+            finally:
+                os.listdir = real_listdir
+        self.assertIsNotNone(result["error"])
+        self.assertIn("cannot list .worktrees", result["error"])
+        self.assertEqual(result["entry_count"], 0)
+
+    def test_inventory_stat_error_warns_without_crash(self):
+        """os.stat failure on an entry produces a warning without raising."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            (wt / "ok-entry").mkdir()
+            real_stat = os.stat
+            call_count = [0]
+            def fake_stat(path, *args, **kwargs):
+                # Let the worktrees dir stat pass, fail on ok-entry
+                if "ok-entry" in str(path) and "ok-entry" == pathlib.Path(path).name:
+                    raise OSError("stat failed")
+                return real_stat(path, *args, **kwargs)
+            os.stat = fake_stat
+            try:
+                result = module._inventory_worktrees(str(repo))
+            finally:
+                os.stat = real_stat
+        self.assertIsNotNone(result["error"])
+        self.assertIn("stat error", result["error"])
+        self.assertEqual(result["entry_count"], 1)
+
+    def test_doctor_survives_inventory_errors(self):
+        """Full doctor run does not crash when inventory encounters errors."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            (wt / "entry").mkdir()
+            real_listdir = os.listdir
+            def fake_listdir(path):
+                if str(wt) == str(path):
+                    raise PermissionError("denied")
+                return real_listdir(path)
+            os.listdir = fake_listdir
+            try:
+                findings, has_error = module.run_doctor(str(repo))
+            finally:
+                os.listdir = real_listdir
+        # Should not crash; should report the error
+        text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+        self.assertIn("cannot list .worktrees", text)
+
+    # --- Symlink entries ---
+
+    def test_inventory_symlink_entry_is_counted(self):
+        """Symlink entries are counted in entry_count."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            # Create a target outside .worktrees
+            outside = pathlib.Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "data.txt").write_text("x" * 1000, encoding="utf-8")
+            # Create symlink inside .worktrees pointing outside
+            link = wt / "link-to-outside"
+            os.symlink(str(outside), str(link))
+            result = module._inventory_worktrees(str(repo))
+        self.assertEqual(result["entry_count"], 1)
+
+    def test_inventory_symlink_size_does_not_escape(self):
+        """Size traversal does not follow symlinks outside .worktrees."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            # Create a large target outside .worktrees
+            outside = pathlib.Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "big.txt").write_text("x" * 10000, encoding="utf-8")
+            # Create symlink inside .worktrees
+            link = wt / "link-to-outside"
+            os.symlink(str(outside), str(link))
+            result = module._inventory_worktrees(str(repo))
+        # The symlink's own stat size should be used, not the target's contents.
+        # A symlink's size is typically the length of the target path, far less than 10000.
+        self.assertLess(result["approximate_bytes"], 10000)
+
+    def test_inventory_symlink_with_real_entries(self):
+        """Symlink and real entries coexist correctly in inventory."""
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            wt = repo / ".worktrees"
+            wt.mkdir()
+            # Real entry
+            real = wt / "real-entry"
+            real.mkdir()
+            (real / "f.txt").write_text("hello", encoding="utf-8")  # 5 bytes
+            # Symlink entry
+            outside = pathlib.Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "big.txt").write_text("x" * 5000, encoding="utf-8")
+            link = wt / "symlink-entry"
+            os.symlink(str(outside), str(link))
+            result = module._inventory_worktrees(str(repo))
+        self.assertEqual(result["entry_count"], 2)
+        # Only the real entry's content should contribute to size
+        self.assertGreaterEqual(result["approximate_bytes"], 5)
+        self.assertLess(result["approximate_bytes"], 5000)
 
 
 if __name__ == "__main__":

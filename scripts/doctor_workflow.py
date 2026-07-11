@@ -252,8 +252,9 @@ def _inventory_worktrees(repo_root):
         else:
             result["buckets"][">30"] += 1
 
-        # Size traversal: walk directory trees, capping total nodes visited
-        if os.path.isdir(entry_path):
+        # Size traversal: walk directory trees, capping total nodes visited.
+        # Skip traversal for symlinks to avoid escaping .worktrees boundary.
+        if os.path.isdir(entry_path) and not os.path.islink(entry_path):
             for dirpath, dirnames, filenames in os.walk(entry_path):
                 if partial:
                     break
