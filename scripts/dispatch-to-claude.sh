@@ -93,6 +93,59 @@ case "$CLAUDE_CODE_EXECUTION_PROFILE" in
         exit 1
         ;;
 esac
+
+# --- Spec item 1: task-mode-aware worktree strategy default ---
+# Parse task mode from the task card table to enable smart strategy selection.
+# When the user did not explicitly set CLAUDE_CODE_WORKTREE_STRATEGY, select
+# reuse-managed only for serial low-risk checker-test cards.  Parallel/DAG,
+# Builder/mixed, missing/ambiguous mode, or any risk keyword stays fresh.
+_PARSED_TASK_MODE=""
+if [ -f "$TASK_CARD" ]; then
+    _PARSED_TASK_MODE="$(awk -F'|' '
+        /^\|/ && NF >= 3 {
+            field = $2; value = $3
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", field)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (tolower(field) == "mode") { print tolower(value); exit }
+        }
+    ' "$TASK_CARD" 2>/dev/null || true)"
+fi
+
+_IS_DAG_DISPATCH=0
+if [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
+    _IS_DAG_DISPATCH=1
+fi
+
+# Detect explicit risk category rows in the task card.
+# Conservative: false positive (staying fresh) is safe; false negative is not.
+_HAS_RISK_ROWS=0
+if [ -f "$TASK_CARD" ]; then
+    if awk -F'|' '
+        function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+        /^\|/ && NF >= 3 {
+            field = tolower(trim($2))
+            if (field ~ /public.api|data.model|data.impact|security|migration|permission|concurrency|cross.module|production/) {
+                if (field !~ /mode|profile|monitor|strategy|reset|discover|view|proxy|timeout|network|large.repo|evidence|checker|validation|task.card|local.validation/) {
+                    exit 0
+                }
+            }
+        }
+        END { exit 1 }
+    ' "$TASK_CARD" 2>/dev/null; then
+        _HAS_RISK_ROWS=1
+    fi
+fi
+
+# Apply smart default only when the user did not explicitly set the strategy
+# and the profile default is fresh (safe/balanced profiles).
+if [ -z "${CLAUDE_CODE_WORKTREE_STRATEGY+x}" ] && \
+   [ "$DEFAULT_WORKTREE_STRATEGY" = "fresh" ] && \
+   [ "$_PARSED_TASK_MODE" = "checker-test" ] && \
+   [ "$_IS_DAG_DISPATCH" -eq 0 ] && \
+   [ "$_HAS_RISK_ROWS" -eq 0 ]; then
+    DEFAULT_WORKTREE_STRATEGY="reuse-managed"
+fi
+
 CLAUDE_CODE_WORKTREE_STRATEGY="${CLAUDE_CODE_WORKTREE_STRATEGY:-$DEFAULT_WORKTREE_STRATEGY}"
 CLAUDE_CODE_REUSE_WORKTREE_RESET="${CLAUDE_CODE_REUSE_WORKTREE_RESET:-$DEFAULT_REUSE_WORKTREE_RESET}"
 CLAUDE_CODE_LARGE_REPO_MODE="${CLAUDE_CODE_LARGE_REPO_MODE:-$DEFAULT_LARGE_REPO_MODE}"
@@ -153,6 +206,22 @@ case "$CLAUDE_CODE_CHECKER_DISCOVER" in
     0|1) ;;
     *)
         echo "Error: CLAUDE_CODE_CHECKER_DISCOVER must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
+CLAUDE_CODE_VERBOSE="${CLAUDE_CODE_VERBOSE:-0}"
+case "$CLAUDE_CODE_VERBOSE" in
+    0|1) ;;
+    *)
+        echo "Error: CLAUDE_CODE_VERBOSE must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
+CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE="${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE:-1}"
+case "$CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE" in
+    0|1) ;;
+    *)
+        echo "Error: CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE must be 0 or 1." >&2
         exit 1
         ;;
 esac
@@ -284,7 +353,9 @@ create_dispatch_worktree() {
             echo "Error: Failed to create git worktree at $WORKTREE_DIR" >&2
             exit 1
         }
-        echo "Created worktree: $WORKTREE_DIR"
+        if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
+            echo "Created worktree: $WORKTREE_DIR"
+        fi
         return
     fi
 
@@ -308,7 +379,9 @@ create_dispatch_worktree() {
             echo "Error: reusable path exists but is not a git worktree: $WORKTREE_DIR" >&2
             exit 1
         fi
-        echo "Reusing managed worktree: $WORKTREE_DIR"
+        if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
+            echo "Reusing managed worktree: $WORKTREE_DIR"
+        fi
         git -C "$WORKTREE_DIR" reset --hard >/dev/null
         git -C "$WORKTREE_DIR" clean -ffdx >/dev/null
         git -C "$WORKTREE_DIR" checkout -B "$branch_name" "$BASE_COMMIT" >/dev/null
@@ -322,7 +395,9 @@ create_dispatch_worktree() {
         echo "Error: Failed to create reusable managed git worktree at $WORKTREE_DIR" >&2
         exit 1
     }
-    echo "Created reusable managed worktree: $WORKTREE_DIR"
+    if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
+        echo "Created reusable managed worktree: $WORKTREE_DIR"
+    fi
 }
 
 if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
@@ -334,10 +409,13 @@ elif [ -n "${AI_CODING_WORKFLOW_DAG_BRANCH_NAME:-}" ]; then
 else
     BRANCH_NAME="claude-task-${TIMESTAMP}-${RAND_SUFFIX}"
 fi
+_WORKTREE_SETUP_START="$(date +%s)"
 create_dispatch_worktree "$BRANCH_NAME"
 
-echo "Worktree strategy: $CLAUDE_CODE_WORKTREE_STRATEGY"
-echo "Branch: $BRANCH_NAME"
+if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
+    echo "Worktree strategy: $CLAUDE_CODE_WORKTREE_STRATEGY"
+    echo "Branch: $BRANCH_NAME"
+fi
 
 {
     echo "# Source Repository Status - ${TIMESTAMP}"
@@ -373,7 +451,9 @@ echo "Branch: $BRANCH_NAME"
     fi
 } > "$SOURCE_STATUS_FILE"
 
-echo "Source status saved to: $SOURCE_STATUS_FILE"
+if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
+    echo "Source status saved to: $SOURCE_STATUS_FILE"
+fi
 
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD.md"
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD_FULL.md"
@@ -429,9 +509,11 @@ render_claude_task_card() {
 
 render_claude_task_card "${WORKTREE_DIR}/TASK_CARD_FULL.md" > "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
 
-echo "Full task card copied to: ${WORKTREE_DIR}/TASK_CARD_FULL.md"
-echo "Compatibility task card copied to: ${WORKTREE_DIR}/TASK_CARD.md"
-echo "Claude execution card rendered to: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
+    echo "Full task card copied to: ${WORKTREE_DIR}/TASK_CARD_FULL.md"
+    echo "Compatibility task card copied to: ${WORKTREE_DIR}/TASK_CARD.md"
+    echo "Claude execution card rendered to: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+fi
 
 {
     echo "<!-- ${SEEDED_PROGRESS_MARKER} -->"
@@ -916,15 +998,21 @@ run_claude() {
     fi
 }
 
-echo "Invoking Claude Code..."
-echo "Progress log: $PROGRESS_FILE"
-echo "Watch Progress: bash \"$WATCH_SCRIPT\" \"$TASK_ID\""
-echo "Watch Details:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"
+_WORKTREE_SETUP_END="$(date +%s)"
+_WORKTREE_SETUP_DURATION=$((_WORKTREE_SETUP_END - _WORKTREE_SETUP_START))
+echo "Worktree ready (${CLAUDE_CODE_WORKTREE_STRATEGY}, ${_WORKTREE_SETUP_DURATION}s): $WORKTREE_DIR"
+
+if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
+    echo "Invoking Claude Code..."
+    echo "Progress log: $PROGRESS_FILE"
+    echo "Watch Progress: bash \"$WATCH_SCRIPT\" \"$TASK_ID\""
+    echo "Watch Details:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"
+fi
 cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
 write_network_header
-progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}"
 
 set +e
 run_claude &
@@ -935,6 +1023,9 @@ progress_log "Claude process started: pid=${CLAUDE_PID}"
 START_EPOCH="$(date +%s)"
 CLAUDE_TIMED_OUT=0
 CLAUDE_NO_OUTPUT_TIMED_OUT=0
+CLAUDE_APPROVAL_CONVERGED=0
+_APPROVAL_CONVERGENCE_COUNT=0
+_LAST_APPROVAL_FP=""
 LAST_ACTIVITY_EPOCH="$START_EPOCH"
 LAST_TOTAL_BYTES=0
 LAST_WORKTREE_DIGEST="$(worktree_digest)"
@@ -968,6 +1059,50 @@ while claude_is_running; do
     NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" "$QUIET_SECONDS")"
     progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, ${NETWORK_SUMMARY}"
 
+    # --- Spec item 2: approval-blocked early convergence ---
+    # End Claude early when: checker-test mode, valid non-seeded report,
+    # approval/permission blocker recorded, and state stable for two heartbeats.
+    if [ "${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE:-1}" = "1" ] && \
+       [ "$_PARSED_TASK_MODE" = "checker-test" ]; then
+        _ABC_REPORT_VALID=0
+        if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
+            _ABC_REPORT_VALID=1
+        fi
+
+        _ABC_BLOCKER=0
+        if [ "$_ABC_REPORT_VALID" -eq 1 ]; then
+            if grep -qiE \
+                'permission.*(block|denied|requir)|approval.*(requir|block|wait)|waiting.*(approv|permiss)|sandbox.*(block|deni)|blocked.*(permission|approval)' \
+                "$STATUS_FILE" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
+                _ABC_BLOCKER=1
+            fi
+        fi
+
+        if [ "$_ABC_REPORT_VALID" -eq 1 ] && [ "$_ABC_BLOCKER" -eq 1 ]; then
+            _REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
+            _PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
+            _ABC_FP="$(printf '%s:%s:%s:%s' \
+                "$_ABC_REPORT_VALID" "$WORKTREE_CHANGES" "$_REPORT_HASH" "$_PROGRESS_HASH" \
+                | sha1sum | awk '{print $1}')"
+
+            if [ "$_ABC_FP" = "$_LAST_APPROVAL_FP" ]; then
+                _APPROVAL_CONVERGENCE_COUNT=$((_APPROVAL_CONVERGENCE_COUNT + 1))
+                if [ "$_APPROVAL_CONVERGENCE_COUNT" -ge 2 ]; then
+                    progress_log "Approval-blocked early convergence: stable for ${_APPROVAL_CONVERGENCE_COUNT} heartbeats after ${ELAPSED}s"
+                    stop_claude "approval-blocked early convergence" "$ELAPSED"
+                    CLAUDE_APPROVAL_CONVERGED=1
+                    break
+                fi
+            else
+                _APPROVAL_CONVERGENCE_COUNT=1
+                _LAST_APPROVAL_FP="$_ABC_FP"
+            fi
+        else
+            _APPROVAL_CONVERGENCE_COUNT=0
+            _LAST_APPROVAL_FP=""
+        fi
+    fi
+
     if [ "$CLAUDE_CODE_TIMEOUT_SECONDS" -gt 0 ] && [ "$ELAPSED" -ge "$CLAUDE_CODE_TIMEOUT_SECONDS" ]; then
         CLAUDE_TIMED_OUT=1
         stop_claude "runtime timeout" "$ELAPSED"
@@ -990,7 +1125,16 @@ ELAPSED=$((END_EPOCH - START_EPOCH))
 progress_log "Claude subprocess ended; dispatcher finalizing artifacts: pid=${CLAUDE_PID}, wait_status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
 FINAL_NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" 0)"
 progress_log "Final network snapshot: ${FINAL_NETWORK_SUMMARY}"
-if [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ]; then
+if [ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ]; then
+    {
+        echo ""
+        echo "[dispatch] Claude stopped for approval-blocked early convergence after ${ELAPSED}s."
+        echo "[dispatch] Convergence type: approval_blocked_early_convergence"
+        echo "[dispatch] Task mode: checker-test"
+        echo "[dispatch] Progress log: ${PROGRESS_FILE}"
+    } >> "$STATUS_FILE"
+    progress_log "Claude finished by approval-blocked early convergence: elapsed_seconds=${ELAPSED}, wait_status=${CLAUDE_STATUS}"
+elif [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ]; then
     {
         echo ""
         echo "[dispatch] Claude stopped after ${ELAPSED}s because no result/status/report/progress output changed for ${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}s."
@@ -1046,7 +1190,8 @@ PYEOF
 
     if [ -n "$PYTHON_CMD" ]; then
         "$PYTHON_CMD" - "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$PROGRESS_FILE" "$REPORT_FILE" \
-            "$CLAUDE_STATUS" "$CLAUDE_TIMED_OUT" "$CLAUDE_NO_OUTPUT_TIMED_OUT" "$ELAPSED" "$reason" <<'PYEOF'
+            "$CLAUDE_STATUS" "$CLAUDE_TIMED_OUT" "$CLAUDE_NO_OUTPUT_TIMED_OUT" "$ELAPSED" "$reason" \
+            "${CLAUDE_APPROVAL_CONVERGED:-0}" <<'PYEOF'
 import json
 import sys
 from pathlib import Path
@@ -1062,7 +1207,8 @@ from pathlib import Path
     no_output_timed_out,
     elapsed,
     reason,
-) = sys.argv[1:11]
+    approval_converged,
+) = sys.argv[1:12]
 
 payload = {
     "type": "claude_dispatch_fallback",
@@ -1071,6 +1217,7 @@ payload = {
     "claude_exit_status": int(status),
     "timed_out": timed_out == "1",
     "no_output_timed_out": no_output_timed_out == "1",
+    "approval_blocked_early_convergence": approval_converged == "1",
     "elapsed_seconds": int(elapsed),
     "raw_result_file": raw_result_file,
     "status_file": status_file,
@@ -1089,6 +1236,7 @@ PYEOF
             echo "  \"claude_exit_status\": ${CLAUDE_STATUS},"
             echo "  \"timed_out\": $([ "$CLAUDE_TIMED_OUT" -eq 1 ] && echo true || echo false),"
             echo "  \"no_output_timed_out\": $([ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] && echo true || echo false),"
+            echo "  \"approval_blocked_early_convergence\": $([ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ] && echo true || echo false),"
             echo "  \"elapsed_seconds\": ${ELAPSED},"
             echo '  "message": "Claude exited without valid JSON result output; dispatcher generated this fallback result."'
             echo "}"
@@ -1373,6 +1521,7 @@ else
         echo "- Elapsed seconds: ${ELAPSED}"
         echo "- Runtime timed out: $([ "$CLAUDE_TIMED_OUT" -eq 1 ] && echo yes || echo no)"
         echo "- No-output timed out: $([ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] && echo yes || echo no)"
+        echo "- Approval-blocked early convergence: $([ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ] && echo yes || echo no)"
         echo "- Fallback result generated: $([ "$RESULT_FALLBACK_GENERATED" -eq 1 ] && echo yes || echo no)"
         echo "- Raw result artifact: $RAW_RESULT_FILE"
         echo ""
