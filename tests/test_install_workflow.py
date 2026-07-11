@@ -1385,6 +1385,23 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Claude child exited:", dispatch)
             self.assertIn("transitioning to finalization immediately", dispatch)
 
+    def test_installed_dispatch_has_builder_mode_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            self.run_installer(repo)
+
+            dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+            self.assertIn("CLAUDE_CODE_BUILDER_MODE", dispatch)
+            self.assertIn("execution-only", dispatch)
+            self.assertIn("CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS", dispatch)
+            self.assertIn("first_progress_timeout", dispatch)
+            self.assertIn("execution_only_keep_section", dispatch)
+            self.assertIn("execution-only Builder mode", dispatch)
+            self.assertIn("Do NOT restate or redesign the plan", dispatch)
+            self.assertIn("builder_mode", dispatch)
+            self.assertIn("first_progress_signal", dispatch)
+
 
 if __name__ == "__main__":
     unittest.main()

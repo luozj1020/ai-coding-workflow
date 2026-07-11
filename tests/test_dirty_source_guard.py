@@ -119,6 +119,34 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    fi\n"
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
                 "    ;;\n"
+                "  seed-only)\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
+                "    ;;\n"
+                "  worktree-change)\n"
+                "    printf '# worktree change\\n' > NEW_FILE.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
+                "    ;;\n"
+                "  progress-update)\n"
+                "    printf 'Real progress update.\\n' > CLAUDE_PROGRESS.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
+                "    ;;\n"
+                "  valid-report)\n"
+                "    cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
+                "# Claude Report\n\n"
+                "## Requirements Summary\nDone.\n\n"
+                "## Files Changed\n- README.md\n\n"
+                "## Acceptance Criteria Mapping\n- complete\n\n"
+                "## Out-of-Scope Confirmation\nNone.\n\n"
+                "## Plan Match\nfull\n\n"
+                "## Checks Run\n- passed\n\n"
+                "Implementation complete.\n"
+                "REPORT_EOF\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
+                "    ;;\n"
+                "  blocker-recorded)\n"
+                "    printf 'Dispatcher-created draft. Permission blocker encountered.\\n' > CLAUDE_REPORT.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
+                "    ;;\n"
                 "esac\n"
                 "printf '%s\\n' '{\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}'\n"
             )
@@ -164,6 +192,28 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         task = self.repo / "task-cards" / "CHECKER.md"
         task.parent.mkdir(exist_ok=True)
         task.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return task
+
+    def _write_builder_task_card(self):
+        task = self.repo / "task-cards" / "BUILDER.md"
+        task.parent.mkdir(exist_ok=True)
+        task.write_text(
+            "# Task Card\n\n"
+            "## Goal\n\nImplement visible work.\n\n"
+            "## Task Mode\n\n"
+            "| Field | Value |\n|---|---|\n| Mode | builder |\n\n"
+            "## Claude Context Packet\n\n"
+            "| Field | Value |\n|---|---|\n| Target files/modules | README.md |\n\n"
+            "## Handoff Contract\n\nEdit README.\n\n"
+            "## Acceptance Criteria\n\n- README changed\n\n"
+            "## Testing Responsibility\n\nBuilder runs tests.\n\n"
+            "## Validation Contract\n\n"
+            "```validation\ntrue\n```\n\n"
+            "## Required Report\n\nReport files changed.\n\n"
+            "## Implementation Notes\n\nSome implementation notes.\n\n"
+            "## Review Checklist\n\n- [ ] Code reviewed\n\n",
+            encoding="utf-8",
+        )
         return task
 
     def test_low_risk_checker_defaults_to_reuse_managed(self):
@@ -798,6 +848,168 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertIn("Claude child exited:", progress)
         self.assertIn("transitioning to finalization immediately", progress)
+
+    # --- Execution-only builder mode and first-progress timeout tests ---
+
+    def test_invalid_builder_mode_fails_before_worktree_creation(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"CLAUDE_CODE_BUILDER_MODE": "invalid"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CLAUDE_CODE_BUILDER_MODE must be", result.stderr)
+        worktrees = self.repo / ".worktrees"
+        artifacts = sorted(p.name for p in worktrees.glob("claude-*")) if worktrees.exists() else []
+        self.assertEqual([], artifacts)
+
+    def test_execution_only_non_builder_fails_before_worktree_creation(self):
+        self._write_low_risk_checker_card()
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {"CLAUDE_CODE_BUILDER_MODE": "execution-only"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("execution-only requires task mode 'builder'", result.stderr)
+
+    def test_standard_defaults_to_timeout_zero_and_preserves_headings(self):
+        self._write_builder_task_card()
+        result = self._dispatch("task-cards/BUILDER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("First Progress:  0s timeout", result.stdout)
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        claude_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
+        self.assertIn("## Task Mode", claude_card)
+        self.assertIn("## Goal", claude_card)
+        self.assertIn("## Acceptance Criteria", claude_card)
+        self.assertNotIn("execution-only view", claude_card.lower())
+
+    def test_execution_only_defaults_to_timeout_120_renders_smaller_card_with_short_prompt(self):
+        self._write_builder_task_card()
+        capture = self.case_root / "execution-only-prompt.md"
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "FAKE_CLAUDE_PROMPT_CAPTURE": str(capture),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("First Progress:  120s timeout", result.stdout)
+        self.assertIn("Builder Mode:    execution-only", result.stdout)
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        claude_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
+        self.assertIn("## Goal", claude_card)
+        self.assertIn("## Task Mode", claude_card)
+        self.assertIn("## Handoff Contract", claude_card)
+        self.assertIn("## Acceptance Criteria", claude_card)
+        self.assertIn("## Validation Contract", claude_card)
+        self.assertNotIn("## Implementation Notes", claude_card)
+        self.assertNotIn("## Review Checklist", claude_card)
+        self.assertIn("execution-only view", claude_card.lower())
+        prompt = capture.read_text(encoding="utf-8")
+        self.assertIn("execution-only Builder mode", prompt)
+        self.assertIn("Do NOT restate or redesign the plan", prompt)
+        self.assertIn("--- CLAUDE EXECUTION CARD ---", prompt)
+
+    def test_seed_only_stopped_at_short_deadline(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "seed-only",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("first_progress_timeout", progress.lower())
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("First-progress timed out: yes", status)
+
+    def test_source_diff_prevents_first_progress_timeout(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "worktree-change",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("first_progress_detected=1", progress)
+        self.assertIn("signal=worktree_change", progress)
+
+    def test_non_seeded_progress_update_prevents_first_progress_timeout(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "progress-update",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("first_progress_detected=1", progress)
+        self.assertIn("signal=progress_updated", progress)
+
+    def test_valid_report_prevents_first_progress_timeout(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "valid-report",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("first_progress_detected=1", progress)
+        self.assertIn("signal=valid_report", progress)
+
+    def test_blocker_recorded_prevents_first_progress_timeout(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "blocker-recorded",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("first_progress_detected=1", progress)
+        self.assertIn("signal=blocker_recorded", progress)
+
+    def test_fallback_evidence_records_first_progress_timeout_no_acceptance(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "seed-only",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        result_file = self._artifact_path(result.stdout, "Result")
+        data = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertTrue(data.get("first_progress_timeout"))
+        self.assertEqual(data.get("builder_mode"), "execution-only")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("First-progress timed out: yes", status)
+        self.assertNotIn("acceptance", status.lower())
+        self.assertNotIn("takeover", status.lower())
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertNotIn("acceptance", progress.lower())
+        self.assertNotIn("takeover", progress.lower())
 
 
 if __name__ == "__main__":
