@@ -19,6 +19,8 @@ def write_plan(tmp: pathlib.Path, plan: dict, name: str = "plan.json") -> pathli
     path = tmp / name
     path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
     for task in plan.get("tasks", []):
+        if any(ch in task.get("task_card", "") for ch in ("\t", "\n", "\r")):
+            continue
         card = tmp / task["task_card"]
         card.parent.mkdir(parents=True, exist_ok=True)
         if not card.exists():

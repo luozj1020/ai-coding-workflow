@@ -278,6 +278,15 @@ running_jobs() {
     jobs -pr | sed '/^$/d' | wc -l | tr -d '[:space:]'
 }
 
+to_bash_path() {
+    local value="${1%$'\r'}"
+    if command -v cygpath >/dev/null 2>&1 && [[ "$value" =~ ^[A-Za-z]:[\\/] ]]; then
+        cygpath -u "$value"
+    else
+        printf '%s\n' "$value"
+    fi
+}
+
 # =============================================================================
 # FLAT MODE (existing positional-card interface — unchanged behavior)
 # =============================================================================
@@ -504,7 +513,7 @@ run_dag_mode() {
             max_concurrency) PLAN_MAX_CONCURRENCY="$value" ;;
             failure_policy) PLAN_FAILURE_POLICY="$value" ;;
             plan_path) PLAN_PATH="$value" ;;
-            plan_dir) PLAN_DIR_ACTUAL="$value" ;;
+            plan_dir) PLAN_DIR_ACTUAL="$(to_bash_path "$value")" ;;
         esac
     done < "$VALIDATOR_OUTPUT_FILE"
 
@@ -529,7 +538,7 @@ run_dag_mode() {
         DAG_IDS+=("$id")
         DAG_CARDS+=("$task_card")
         DAG_DEPS+=("$depends_csv")
-        DAG_RESOLVED+=("$resolved")
+        DAG_RESOLVED+=("$(to_bash_path "$resolved")")
     done < "$VALIDATOR_OUTPUT_FILE"
 
     TASK_COUNT="${#DAG_IDS[@]}"

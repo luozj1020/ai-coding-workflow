@@ -1009,6 +1009,13 @@ if [ "$MODE" = "controlled-builder" ]; then
         [ -n "$_tp" ] && TC_ALLOWED_PATHS+=("$_tp")
     done
 
+    # Validate task-card paths before comparing sets. Without this pass a glob
+    # can be expanded later by platform-specific shell behavior and obscure the
+    # intended "specific file" error.
+    for _tp in "${TC_ALLOWED_PATHS[@]}"; do
+        validate_allow_write_path "$_tp" || exit 2
+    done
+
     # Reject duplicates in task-card paths
     _tc_unique=$(printf '%s\n' "${TC_ALLOWED_PATHS[@]}" | sort -u | wc -l)
     if [ "$_tc_unique" -ne "${#TC_ALLOWED_PATHS[@]}" ]; then

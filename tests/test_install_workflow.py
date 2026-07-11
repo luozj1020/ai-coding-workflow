@@ -817,20 +817,29 @@ class InstallWorkflowTests(unittest.TestCase):
             self.run_installer(repo)
             task_id = "claude-20990101-000000"
             worktrees = self._setup_worktree(repo, task_id)
-            # Dispatcher alive (use current PID), Claude and checker dead
-            my_pid = str(os.getpid())
+            # Use a Bash/MSYS-visible PID; a native Windows Python PID is not
+            # necessarily meaningful to Git Bash `kill -0`.
+            bash_exe = load_module()._find_bash()
+            sleeper = subprocess.Popen(
+                [bash_exe, "-c", "echo $$; exec sleep 60"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8",
+            )
+            my_pid = sleeper.stdout.readline().strip()
             (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
             (worktrees / f"{task_id}.dispatcher.pid").write_text(my_pid, encoding="utf-8")
             (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
             (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
 
-            bash_exe = load_module()._find_bash()
-            result = subprocess.run(
-                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
-                cwd=str(repo),
-                text=True, encoding="utf-8", errors="replace",
-                capture_output=True, check=True,
-            )
+            try:
+                result = subprocess.run(
+                    [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                    cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                    capture_output=True, check=True,
+                )
+            finally:
+                sleeper.terminate()
+                sleeper.wait(timeout=10)
             self.assertIn("Overall running: yes", result.stdout)
             # Claude must explicitly be not-running
             self.assertIn("Claude: not-running", result.stdout)
@@ -930,20 +939,28 @@ class InstallWorkflowTests(unittest.TestCase):
             self.run_installer(repo)
             task_id = "claude-20990101-000000"
             worktrees = self._setup_worktree(repo, task_id)
-            my_pid = str(os.getpid())
+            bash_exe = load_module()._find_bash()
+            sleeper = subprocess.Popen(
+                [bash_exe, "-c", "echo $$; exec sleep 60"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8",
+            )
+            my_pid = sleeper.stdout.readline().strip()
             (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
             (worktrees / f"{task_id}.dispatcher.pid").write_text(my_pid, encoding="utf-8")
             (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
             (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
 
-            bash_exe = load_module()._find_bash()
-            result = subprocess.run(
-                [bash_exe, str(repo / "ai" / "watch-claude.sh"),
-                 task_id, "--plain", "--once"],
-                cwd=str(repo),
-                text=True, encoding="utf-8", errors="replace",
-                capture_output=True, check=True,
-            )
+            try:
+                result = subprocess.run(
+                    [bash_exe, str(repo / "ai" / "watch-claude.sh"),
+                     task_id, "--plain", "--once"],
+                    cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                    capture_output=True, check=True,
+                )
+            finally:
+                sleeper.terminate()
+                sleeper.wait(timeout=10)
             machine = [l for l in result.stdout.splitlines()
                        if "machine:" in l and "monitor_level=" in l]
             self.assertTrue(machine)

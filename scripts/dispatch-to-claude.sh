@@ -1576,6 +1576,14 @@ ELAPSED=$((END_EPOCH - START_EPOCH))
 progress_log "Claude subprocess ended; dispatcher finalizing artifacts: pid=${CLAUDE_PID}, wait_status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
 FINAL_NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" 0)"
 progress_log "Final network snapshot: ${FINAL_NETWORK_SUMMARY}"
+# Git Bash may not provide pgrep, so a timed-out descendant can briefly keep
+# the redirected result descriptor open after the recorded wrapper exits.
+# Drain that narrow timeout window before replacing invalid output with the
+# fallback JSON; normal successful dispatches pay no delay.
+if [ "$CLAUDE_TIMED_OUT" -eq 1 ] || [ "$CLAUDE_FIRST_PROGRESS_TIMED_OUT" -eq 1 ] || [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ]; then
+    CLAUDE_CODE_TIMEOUT_DRAIN_SECONDS="${CLAUDE_CODE_TIMEOUT_DRAIN_SECONDS:-6}"
+    sleep "$CLAUDE_CODE_TIMEOUT_DRAIN_SECONDS"
+fi
 if [ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ]; then
     {
         echo ""

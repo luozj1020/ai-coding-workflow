@@ -28,6 +28,17 @@ def find_bash():
 BASH = find_bash()
 
 
+def start_bash_sleeper():
+    proc = subprocess.Popen(
+        [BASH, "-c", "echo $$; exec sleep 60"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+    )
+    return proc, proc.stdout.readline().strip()
+
+
 def remove_tree(path):
     def make_writable(func, failing_path, _exc_info):
         try:
@@ -720,8 +731,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("checker", runtime["pid_files"])
         self.assertIn("pid", runtime["pid_files"])
         worktree = self._artifact_path(result.stdout, "Worktree")
-        self.assertEqual(runtime["worktree"], str(worktree))
-        self.assertEqual(runtime["source_repository"], str(self.repo))
+        self.assertEqual(pathlib.Path(runtime["worktree"]), worktree)
+        self.assertEqual(pathlib.Path(runtime["source_repository"]), self.repo)
         self.assertEqual(len(runtime["base_commit"]), 40)
         self.assertEqual(runtime["strategy"], "fresh")
         self.assertNotIn("retry_of", runtime)
@@ -805,11 +816,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         _, _, first_runtime = self._do_fresh_dispatch()
         prior_task_id = first_runtime["task_id"]
         pid_file = self.repo / ".worktrees" / f"{prior_task_id}.claude.pid"
-        pid_file.write_text(str(os.getpid()), encoding="utf-8")
-
-        result = self._dispatch(
-            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
-        )
+        sleeper, bash_pid = start_bash_sleeper()
+        try:
+            pid_file.write_text(bash_pid, encoding="utf-8")
+            result = self._dispatch(
+                extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
+            )
+        finally:
+            sleeper.terminate()
+            sleeper.wait(timeout=10)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("still running", result.stderr)
