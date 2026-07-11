@@ -178,9 +178,9 @@ def parse_zoekt_output(text, max_matches):
 
 
 def search_zoekt(query, index, timeout, max_matches):
-    query_bin = shutil.which("zoekt-query")
+    query_bin = shutil.which("zoekt")
     if not query_bin:
-        return [], "skipped (zoekt-query missing)"
+        return [], "skipped (zoekt CLI missing)"
     if not os.path.isdir(index):
         return [], "skipped (Zoekt index missing: {})".format(index)
     result = run_command([query_bin, "-index", index, query], os.getcwd(), timeout)

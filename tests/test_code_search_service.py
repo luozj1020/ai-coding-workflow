@@ -56,6 +56,21 @@ class CodeSearchServiceTests(unittest.TestCase):
             "Dry-run only" in output or "go is required" in output,
             output,
         )
+        if "Dry-run only" in output:
+            self.assertIn("github.com/sourcegraph/zoekt/cmd/zoekt@latest", output)
+            self.assertNotIn("cmd/zoekt-query", output)
+
+    def test_zoekt_packages_match_current_upstream_cli_names(self):
+        module = load_module()
+
+        self.assertEqual(
+            module.ZOEKT_PACKAGES,
+            [
+                "github.com/sourcegraph/zoekt/cmd/zoekt-git-index@latest",
+                "github.com/sourcegraph/zoekt/cmd/zoekt-index@latest",
+                "github.com/sourcegraph/zoekt/cmd/zoekt@latest",
+            ],
+        )
 
     def test_long_running_command_streams_heartbeat(self):
         module = load_module()

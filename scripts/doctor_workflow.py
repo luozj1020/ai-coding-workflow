@@ -628,7 +628,7 @@ def _zoekt_index_path():
 def _check_code_search_services():
     """Return informational code-search backend availability rows."""
     rows = []
-    zoekt_bins = ["zoekt-git-index", "zoekt-index", "zoekt-query"]
+    zoekt_bins = ["zoekt-git-index", "zoekt-index", "zoekt"]
     missing_zoekt = [name for name in zoekt_bins if not shutil.which(name)]
     if missing_zoekt:
         rows.append(("code-search", "Zoekt CLI missing: {}".format(", ".join(missing_zoekt))))

@@ -22,7 +22,7 @@ from queue import Empty, Queue
 ZOEKT_PACKAGES = [
     "github.com/sourcegraph/zoekt/cmd/zoekt-git-index@latest",
     "github.com/sourcegraph/zoekt/cmd/zoekt-index@latest",
-    "github.com/sourcegraph/zoekt/cmd/zoekt-query@latest",
+    "github.com/sourcegraph/zoekt/cmd/zoekt@latest",
 ]
 
 
@@ -171,7 +171,7 @@ def command_doctor(args):
     print("docker: {}".format(shutil.which("docker") or "MISSING"))
     compose = docker_compose_command()
     print("docker compose: {}".format(" ".join(compose) if compose else "MISSING"))
-    for binary in ["zoekt-git-index", "zoekt-index", "zoekt-query"]:
+    for binary in ["zoekt-git-index", "zoekt-index", "zoekt"]:
         print("{}: {}".format(binary, shutil.which(binary) or "MISSING"))
     print("Zoekt index: {}".format(os.path.abspath(args.zoekt_index)))
     print("Zoekt index exists: {}".format("yes" if os.path.isdir(args.zoekt_index) else "no"))
@@ -181,7 +181,7 @@ def command_doctor(args):
     print("Sourcegraph health: {}".format(check_sourcegraph(sourcegraph_url, token, args.timeout)))
     print("")
     print("Recommended locator order for large repositories:")
-    print("  1. Zoekt if indexed and zoekt-query is available")
+    print("  1. Zoekt if indexed and the zoekt CLI is available")
     print("  2. Sourcegraph if SOURCEGRAPH_URL is configured")
     print("  3. rg/git grep lexical fallback")
     print("  4. bounded CodeGraph only for concrete symbols")
