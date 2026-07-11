@@ -3,7 +3,7 @@
 doctor_workflow.py  -  Check whether a repository is ready for the ai-coding-workflow dispatch/review loop.
 
 Usage:
-    python ai/doctor_workflow.py [repo-path]
+    python ai/doctor_workflow.py [repo-path] [--hash-path RELPATH ...]
 
 Read-only diagnostics. Reports errors, warnings, and info.
 Exit 0 when no hard errors are detected, non-zero otherwise.
@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+import argparse
 
 # --- Levels ---
 ERROR = "ERROR"
@@ -56,6 +57,22 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/init-plan.py",
     "ai/session-catchup.py",
     ".worktrees/.gitkeep",
+]
+
+# Documented runtime helper scripts that should be reported separately
+# when missing, distinct from other required workflow files.
+WORKFLOW_RUNTIME_HELPERS = [
+    "ai/doctor_workflow.py",
+    "ai/code-search-service.py",
+    "ai/clean_runtime.py",
+    "ai/install_context_tools.py",
+    "ai/locate-code.py",
+    "ai/summarize-loop-run.py",
+    "ai/benchmark-loop-runs.py",
+    "ai/init-spec.py",
+    "ai/plan-to-task-cards.py",
+    "ai/init-plan.py",
+    "ai/session-catchup.py",
 ]
 
 WORKFLOW_PLAIN_FILE_SOURCES = [
@@ -625,13 +642,128 @@ def _check_code_search_services():
     return rows
 
 
-def run_doctor(repo_path=None):
+def _validate_hash_path(path, repo_root):
+    """Validate a --hash-path value. Returns (ok, error_message).
+
+    Rejects absolute paths, traversal (..), missing paths, and directories.
+    """
+    if os.path.isabs(path):
+        return False, "absolute path not allowed: {}".format(path)
+    if ".." in path.split(os.sep) or ".." in path.split("/"):
+        return False, "traversal (..) not allowed: {}".format(path)
+    full = os.path.join(repo_root, path)
+    if not os.path.exists(full):
+        return False, "path does not exist: {}".format(path)
+    if os.path.isdir(full):
+        return False, "directory not allowed (only files): {}".format(path)
+    return True, None
+
+
+def _hash_path_diagnostics(repo_root, paths):
+    """Compare filesystem hash, index hash, and porcelain status for each path.
+
+    Returns a list of (level, category, message) findings.
+    Never mutates anything. Labels as target-only scope.
+    """
+    findings = []
+    if not paths:
+        return findings
+
+    findings.append((INFO, "hash-check",
+                     "Target-only scope: checking {} path(s); "
+                     "renormalize is never automatic".format(len(paths))))
+
+    for path in paths:
+        rel = path.replace("\\", "/")
+        full = os.path.join(repo_root, rel)
+
+        # Filesystem hash: git hash-object --no-filters
+        fs_hash = None
+        try:
+            r = subprocess.run(
+                ["git", "hash-object", "--no-filters", "--", rel],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                fs_hash = r.stdout.strip()
+        except (FileNotFoundError, OSError):
+            pass
+
+        # Index hash: git rev-parse :path
+        idx_hash = None
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", ":{}".format(rel)],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                idx_hash = r.stdout.strip()
+        except (FileNotFoundError, OSError):
+            pass
+
+        # Scoped porcelain status for this path
+        status_clean = False
+        try:
+            r = subprocess.run(
+                ["git", "status", "--porcelain", "--", rel],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if r.returncode == 0:
+                status_clean = not r.stdout.strip()
+        except (FileNotFoundError, OSError):
+            pass
+
+        if fs_hash is None and idx_hash is None:
+            findings.append((WARN, "hash-check",
+                             "{}: could not compute filesystem or index hash".format(rel)))
+            continue
+
+        if fs_hash and idx_hash:
+            if fs_hash != idx_hash:
+                if status_clean:
+                    findings.append((WARN, "hash-check",
+                                     "{}: filesystem hash {} differs from index {} "
+                                     "but porcelain status is empty (possible renormalization issue; "
+                                     "renormalize is never automatic)".format(
+                                         rel, fs_hash[:12], idx_hash[:12])))
+                else:
+                    findings.append((INFO, "hash-check",
+                                     "{}: filesystem hash {} differs from index {} (status shows changes)".format(
+                                         rel, fs_hash[:12], idx_hash[:12])))
+            else:
+                findings.append((INFO, "hash-check",
+                                 "{}: filesystem and index hashes match ({})".format(
+                                     rel, fs_hash[:12])))
+        elif fs_hash:
+            findings.append((INFO, "hash-check",
+                             "{}: filesystem hash {} (not in index)".format(rel, fs_hash[:12])))
+        elif idx_hash:
+            findings.append((INFO, "hash-check",
+                             "{}: index hash {} (file missing from filesystem)".format(rel, idx_hash[:12])))
+
+    return findings
+
+
+def run_doctor(repo_path=None, hash_paths=None):
     """Run all checks. Returns (findings, has_error).
 
     Each finding is (level, category, message).
     """
     findings = []
     has_error = False
+    hash_paths = hash_paths or []
 
     # 1. Repository root / git availability
     start = repo_path or os.getcwd()
@@ -647,11 +779,24 @@ def run_doctor(repo_path=None):
     missing_workflow = _missing_project_workflow_files(root)
     if missing_workflow:
         has_error = True
-        shown = ", ".join(missing_workflow[:6])
-        if len(missing_workflow) > 6:
-            shown += ", ..."
-        findings.append((ERROR, "workflow", "Project workflow is not bootstrapped; missing: {}".format(shown)))
-        findings.append((INFO, "workflow", "Bootstrap command: {}".format(_workflow_bootstrap_command(root))))
+        # Separate documented runtime helpers from other missing files
+        missing_helpers = [f for f in missing_workflow if f in WORKFLOW_RUNTIME_HELPERS]
+        missing_other = [f for f in missing_workflow if f not in WORKFLOW_RUNTIME_HELPERS]
+        if missing_other:
+            shown = ", ".join(missing_other[:6])
+            if len(missing_other) > 6:
+                shown += ", ..."
+            findings.append((ERROR, "workflow",
+                             "Project workflow is not bootstrapped; missing: {}".format(shown)))
+        if missing_helpers:
+            shown_h = ", ".join(missing_helpers[:6])
+            if len(missing_helpers) > 6:
+                shown_h += ", ..."
+            findings.append((ERROR, "workflow-helpers",
+                             "Documented runtime helpers missing: {}".format(shown_h)))
+        findings.append((INFO, "workflow",
+                         "Bootstrap/refresh command: {}".format(
+                             _workflow_bootstrap_command(root, update_workflow_files=True))))
     else:
         findings.append((INFO, "workflow", "Project workflow files are installed"))
         outdated_workflow = _outdated_project_workflow_files(root)
@@ -738,16 +883,50 @@ def run_doctor(repo_path=None):
     tracked_count = _tracked_file_count(root)
     if tracked_count is not None:
         if tracked_count >= 10000:
-            findings.append((WARN, "large-repo", "{} tracked files; dispatch worktree creation may be slow. Fill Worktree / Large Repo Strategy Gate before dispatch.".format(tracked_count)))
-            findings.append((INFO, "large-repo", "Recommended fast dispatch when the evidence tradeoff is acceptable: CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo bash ai/dispatch-to-claude.sh <task-card>"))
-            findings.append((INFO, "large-repo", "Before dispatch, run ai/locate-code.py for low-token candidates when targets are unclear, then fill Claude Context Packet with target files, relevant symbols, source-of-truth examples, forbidden paths, constraints, and narrow validation commands."))
-            findings.append((INFO, "large-repo", "Use Spark task-size-classifier for uncertain scope before spending stronger-model context: bash ai/run-codex-spark.sh <task-card>"))
-            findings.append((INFO, "large-repo", "Manual knobs: CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed and CLAUDE_CODE_LARGE_REPO_MODE=1; reset only .worktrees/reuse/claude-managed with CLAUDE_CODE_REUSE_WORKTREE_RESET=1 after preserving evidence."))
-            findings.append((INFO, "codegraph", "For large repositories, prefer ai/locate-code.py. Use CodeGraph only for concrete files/symbols with a short timeout; if it times out, record it once and continue with locator output plus targeted line reads."))
+            findings.append((WARN, "large-repo",
+                             "{} tracked files; dispatch worktree creation may be slow. "
+                             "Fill Worktree / Large Repo Strategy Gate before dispatch.".format(tracked_count)))
+            findings.append((INFO, "large-repo",
+                             "Before dispatch, run ai/locate-code.py for low-token candidates when targets are "
+                             "unclear, then fill Claude Context Packet with target files, relevant symbols, "
+                             "source-of-truth examples, forbidden paths, constraints, and narrow validation commands."))
+            findings.append((INFO, "large-repo",
+                             "Use Spark task-size-classifier for uncertain scope before spending "
+                             "stronger-model context: bash ai/run-codex-spark.sh <task-card>"))
+            findings.append((INFO, "codegraph",
+                             "For large repositories, prefer ai/locate-code.py. Use CodeGraph only for concrete "
+                             "files/symbols with a short timeout; if it times out, record it once and continue "
+                             "with locator output plus targeted line reads."))
+            # Fast-large-repo / reuse is conditional on:
+            #   low risk, exact targets, serial safety, and accepted evidence reduction.
+            # Otherwise use fresh/full dispatch.
+            findings.append((INFO, "large-repo",
+                             "fast-large-repo or reuse dispatch is recommended only when all of: "
+                             "low risk, exact targets, serial safety, and accepted evidence reduction. "
+                             "Otherwise prefer fresh/full dispatch."))
+            findings.append((INFO, "large-repo",
+                             "Fast dispatch when the evidence tradeoff is acceptable: "
+                             "CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo bash ai/dispatch-to-claude.sh <task-card>"))
+            findings.append((INFO, "large-repo",
+                             "Manual knobs: CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed and "
+                             "CLAUDE_CODE_LARGE_REPO_MODE=1; reset only .worktrees/reuse/claude-managed with "
+                             "CLAUDE_CODE_REUSE_WORKTREE_RESET=1 after preserving evidence."))
+            findings.append((INFO, "large-repo",
+                             "Execution-only mode eligible: CLAUDE_CODE_EXECUTION_ONLY=1. "
+                             "Retry-in-place eligible when prior evidence is accepted and targets unchanged."))
             if tracked_count >= 50000:
-                findings.append((WARN, "large-repo", "{} tracked files is very large; prefer local-only workflow bootstrap and managed worktree reuse for repeated dispatches.".format(tracked_count)))
-                findings.append((INFO, "large-repo", "Suggested local-only bootstrap for business repositories: python scripts/install_workflow.py . --local-only"))
-                findings.append((INFO, "large-repo", "Suggested repeated-dispatch profile: CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed CLAUDE_CODE_LARGE_REPO_MODE=1 CLAUDE_CODE_EVIDENCE_MODE=summary bash ai/dispatch-to-claude.sh <task-card>"))
+                findings.append((WARN, "large-repo",
+                                 "{} tracked files is very large; prefer local-only workflow bootstrap "
+                                 "and managed worktree reuse for repeated dispatches.".format(tracked_count)))
+                findings.append((INFO, "large-repo",
+                                 "Suggested local-only bootstrap for business repositories: "
+                                 "python scripts/install_workflow.py . --local-only"))
+                findings.append((INFO, "large-repo",
+                                 "Suggested repeated-dispatch profile: "
+                                 "CLAUDE_CODE_WORKTREE_STRATEGY=reuse-managed "
+                                 "CLAUDE_CODE_LARGE_REPO_MODE=1 "
+                                 "CLAUDE_CODE_EVIDENCE_MODE=summary "
+                                 "bash ai/dispatch-to-claude.sh <task-card>"))
         else:
             findings.append((INFO, "large-repo", "{} tracked files".format(tracked_count)))
 
@@ -806,6 +985,10 @@ def run_doctor(repo_path=None):
         findings.append((INFO, label, message))
     findings.append((INFO, "code-search", "Run 'python ai/code-search-service.py doctor' for Zoekt/Sourcegraph setup details."))
 
+    # 10. Hash-path diagnostics (target-only scope)
+    if hash_paths:
+        findings.extend(_hash_path_diagnostics(root, hash_paths))
+
     return findings, has_error
 
 
@@ -833,8 +1016,47 @@ def format_findings(findings):
 
 
 def main():
-    repo_path = sys.argv[1] if len(sys.argv) > 1 else None
-    findings, has_error = run_doctor(repo_path)
+    parser = argparse.ArgumentParser(
+        description="Check whether a repository is ready for the ai-coding-workflow dispatch/review loop."
+    )
+    parser.add_argument(
+        "repo_path",
+        nargs="?",
+        default=None,
+        help="Repository path (default: current directory)",
+    )
+    parser.add_argument(
+        "--hash-path",
+        action="append",
+        default=[],
+        dest="hash_paths",
+        help="File path to check hash consistency (repeatable, max 20). "
+             "Relative to repo root; rejects absolute, traversal, missing, or directory paths.",
+    )
+    args = parser.parse_args()
+
+    # Validate --hash-path count
+    if len(args.hash_paths) > 20:
+        print("ERROR: --hash-path specified {} times; maximum is 20".format(len(args.hash_paths)))
+        sys.exit(1)
+
+    # Validate each --hash-path before running doctor
+    repo_root = _find_repo_root(args.repo_path or os.getcwd())
+    if repo_root is None:
+        # run_doctor will report the missing repo error
+        repo_root = args.repo_path or os.getcwd()
+
+    validated_paths = []
+    for hp in args.hash_paths:
+        # Normalize separators
+        hp_norm = hp.replace("\\", "/")
+        ok, err = _validate_hash_path(hp_norm, repo_root)
+        if not ok:
+            print("ERROR: --hash-path: {}".format(err))
+            sys.exit(1)
+        validated_paths.append(hp_norm)
+
+    findings, has_error = run_doctor(args.repo_path, hash_paths=validated_paths)
     print(format_findings(findings))
     sys.exit(1 if has_error else 0)
 
