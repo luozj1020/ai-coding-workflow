@@ -431,6 +431,17 @@ If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave 
 - `auto`: stage routing / bundle selection. It resolves to an applicable stage bundle: ordinary pre-Builder use resolves to `preflight-bundle`, diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility.
 - `task-size-classifier`: classify tiny/small/medium/large/unknown and recommend `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`. Includes execution-cost fields when available.
 - `execution-cost-estimator`: read-only mode that predicts diff range/files and relative direct/delegated work units for a task. Work units are relative estimates, not token-accounting measurements. The estimator returns machine-readable fields: `predicted_diff_lines_low`, `predicted_diff_lines_high`, `predicted_files`, `context_scope`, `validation_complexity`, `delegation_overhead`, `estimated_direct_work_units`, `estimated_delegated_work_units`, `delegation_to_direct_ratio`, `economic_recommendation`, `safety_eligible`, `recommended_owner`, `confidence`, `risk_flags`, `reason`, and `stop_condition`. Codex fast path is allowed only when the economic recommendation favors it AND the deterministic safety gate passes: <=2 files, local context, low/none validation, high confidence, no risk flags, and upper diff within the configured threshold. The threshold is controlled by `--fast-path-max-diff-lines N` or `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 60, valid 1..200). This is a pre-dispatch fast-path decision, not a post-Claude takeover; it never automatically edits source. The estimator is also included in `preflight-bundle` and `task-size-classifier` output.
+
+Run early routing before writing a full task card:
+
+```bash
+bash ai/run-codex-spark.sh \
+  --brief "Goal: fix one parser branch. Evidence: likely one file. Risks: none known. Validation: one focused test." \
+  --mode execution-cost-estimator \
+  --result-mode direct
+```
+
+`--brief-file PATH` and `--stdin-brief` are also supported. Brief input is limited to early read-only routing modes. If Spark recommends Codex fast path and the deterministic safety gate passes, Codex edits directly without generating a full task card. Otherwise Codex uses the estimate to author the smaller, execution-specific task card sent downstream.
 - `review-only`: quick read-only critique of the task card or likely direction.
 - `task-card-audit`: check missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
 - `plan-splitter`: propose smaller Builder/Checker task cards or independent parallelizable slices.

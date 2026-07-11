@@ -52,6 +52,9 @@ class RunCodexSparkTests(unittest.TestCase):
         self.assertIn("failure-triage", result.stderr)
         self.assertIn("micro-builder", result.stderr)
         self.assertIn("--artifact", result.stderr)
+        self.assertIn("--brief", result.stderr)
+        self.assertIn("--brief-file", result.stderr)
+        self.assertIn("--stdin-brief", result.stderr)
 
     def test_help_mentions_controlled_builder_and_flags(self):
         """Required test 1: help output includes controlled-builder, --result-mode,
@@ -142,7 +145,7 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn("Codex Spark Execution Request", prompt.read_text(encoding="utf-8"))
             self.assertEqual(
                 (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
-                ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "read-only", "-"],
+                ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"],
             )
 
     def test_auto_mode_defaults_to_preflight_bundle_balanced(self):
@@ -206,10 +209,7 @@ class RunCodexSparkTests(unittest.TestCase):
             )
             cwd_text = (tmp_path / "cwd.txt").read_text(encoding="utf-8").strip()
             cwd_text = cwd_text.replace("\\", "/").rstrip("/")
-            self.assertTrue(
-                cwd_text.endswith("/" + output_dir.name),
-                "expected Spark preflight-bundle to run in artifact dir, got {}".format(cwd_text),
-            )
+            self.assertIn("/.worktrees/.codex-spark-runtime.", cwd_text)
 
     def test_auto_mode_uses_validation_planner_for_checker_task(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -365,7 +365,7 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn("claude-1.status.txt", manifest)
             self.assertEqual(
                 (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
-                ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "read-only", "-"],
+                ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"],
             )
 
     def test_micro_builder_requires_explicit_tiny_scope_contract(self):
@@ -538,7 +538,8 @@ class RunCodexSparkTests(unittest.TestCase):
             report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
             stderr_log = (output_dir / "codex-spark.stderr.log").read_text(encoding="utf-8")
             self.assertIn("| Spark auto-disabled? | yes |", report)
-            self.assertIn("local app-server/helper initialization", report)
+            self.assertIn("required path was read-only", report)
+            self.assertIn("| Spark model response received? | no |", report)
             self.assertIn("Read-only file system", stderr_log)
 
     def test_help_mentions_parallel_planner(self):
@@ -845,13 +846,10 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn("split-advisor", report)
             # Effective sandbox is workspace-write for read-only synthesis modes
             self.assertIn("| Sandbox used | workspace-write |", report)
-            # Cwd is artifact dir
+            # Cwd is a transient writable runtime directory beside artifacts.
             cwd_text = (tmp_path / "cwd.txt").read_text(encoding="utf-8").strip()
             cwd_text = cwd_text.replace("\\", "/").rstrip("/")
-            self.assertTrue(
-                cwd_text.endswith("/" + output_dir.name),
-                "expected preflight-bundle to run in artifact dir, got {}".format(cwd_text),
-            )
+            self.assertIn("/.worktrees/.codex-spark-runtime.", cwd_text)
             self.assertIn("preflight-bundle", prompt)
 
     # --- Coverage 4: Balanced checker without artifacts retains validation-planner ---
@@ -1284,6 +1282,59 @@ class RunCodexSparkTests(unittest.TestCase):
                     "direct mode should not create permanent directories, found: {}".format(spark_entries),
                 )
 
+    def test_pre_task_card_brief_routes_without_task_card_or_git_status(self):
+        """A short brief supports early routing and avoids full source status scans."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            fake_codex = tmp_path / "codex.sh"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "cat > \"$CODEX_FAKE_STDIN\"\n"
+                "echo 'predicted_files=1'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+            trace = tmp_path / "git-trace.jsonl"
+            prompt = tmp_path / "prompt.md"
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_FAKE_STDIN"] = bash_path(prompt)
+            env["GIT_TRACE2_EVENT"] = bash_path(trace)
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT),
+                    "--brief", "Fix one local parser branch; likely one file.",
+                    "--mode", "execution-cost-estimator",
+                    "--result-mode", "direct",
+                ],
+                cwd=str(repo), env=env, text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("predicted_files=1", result.stdout)
+            prompt_text = prompt.read_text(encoding="utf-8")
+            self.assertIn("Input type: pre-task-card brief", prompt_text)
+            self.assertIn("Fix one local parser branch", prompt_text)
+            trace_text = trace.read_text(encoding="utf-8", errors="replace")
+            self.assertNotIn('"status"', trace_text)
+
+    def test_brief_rejects_postflight_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), "--brief", "small task",
+                 "--mode", "postflight-bundle"],
+                cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("pre-task-card brief input is only supported", result.stderr)
+
     def test_direct_temp_cwd_is_writable_and_removed_after_exit(self):
         """Direct mode: temp cwd is outside source, writable, and removed after exit."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -1313,14 +1364,11 @@ class RunCodexSparkTests(unittest.TestCase):
                 text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-            # Cwd should be captured and outside source tree
+            # Cwd should be captured under the ignored runtime area, not the
+            # source root itself, and removed after exit.
             cwd_text = cwd_file.read_text(encoding="utf-8").strip()
             cwd_text = cwd_text.replace("\\", "/")
-            repo_str = str(repo).replace("\\", "/")
-            self.assertFalse(
-                cwd_text.startswith(repo_str),
-                "temp cwd should be outside source tree, got: {}".format(cwd_text),
-            )
+            self.assertIn("/.worktrees/.codex-spark-runtime.", cwd_text)
             # Temp dir should be removed after exit
             self.assertFalse(
                 pathlib.Path(cwd_text).exists(),

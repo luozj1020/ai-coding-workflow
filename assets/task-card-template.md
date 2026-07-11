@@ -212,6 +212,8 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 
 ## Small Change Fast Path Gate
 
+<!-- This gate records a routing decision that should normally be made from a short Spark task brief BEFORE this full task card is authored. If Codex fast path is selected, record the decision in final evidence instead of completing the remaining delegation-only card. -->
+
 <!-- Fill before dispatch. If every row supports direct Codex editing, Codex may skip Claude dispatch for this task and perform the bounded edit directly. If the edit grows beyond this gate, stop and return to task-card + Claude dispatch. -->
 
 | Field | Value |

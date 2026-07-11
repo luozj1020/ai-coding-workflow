@@ -2,7 +2,8 @@
 # run-codex-spark.sh  -  Optional Codex Spark auxiliary execution for the workflow.
 #
 # Usage:
-#   bash ai/run-codex-spark.sh <task-card> [--mode auto|task-size-classifier|execution-cost-estimator|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor]
+#   bash ai/run-codex-spark.sh <task-card> [options]
+#   bash ai/run-codex-spark.sh --brief "<short task summary>" [options]
 #       [--model gpt-5.3-codex-spark] [--sandbox read-only|workspace-write]
 #       [--budget-mode aggressive|balanced|conservative]
 #       [--fast-path-max-diff-lines N]
@@ -19,8 +20,12 @@ export PATH
 usage() {
     cat >&2 <<'EOF'
 Usage: run-codex-spark.sh <task-card> [options]
+       run-codex-spark.sh (--brief TEXT|--brief-file PATH|--stdin-brief) [options]
 
 Options:
+  --brief TEXT      Use a short pre-task-card brief for early size/cost routing.
+  --brief-file PATH Read the pre-task-card brief from PATH.
+  --stdin-brief     Read the pre-task-card brief from stdin.
   --mode MODE       auto, task-size-classifier, execution-cost-estimator,
                     review-only, task-card-audit, plan-splitter,
                     validation-planner, failure-triage, evidence-checker,
@@ -66,6 +71,10 @@ EOF
 }
 
 TASK_CARD=""
+BRIEF_TEXT=""
+BRIEF_FILE=""
+STDIN_BRIEF="no"
+INPUT_KIND="task-card"
 CODEX_BIN="${CODEX_SPARK_CODEX_BIN:-codex}"
 MODE="${CODEX_SPARK_MODE:-auto}"
 REQUESTED_MODE="$MODE"
@@ -78,6 +87,7 @@ REQUIRE_SPARK="${CODEX_SPARK_REQUIRED:-0}"
 BUDGET_MODE="${AI_SPARK_BUDGET_MODE:-balanced}"
 REQUESTED_BUDGET_MODE="$BUDGET_MODE"
 SPARK_INVOKED="yes"
+SPARK_MODEL_RESPONSE_RECEIVED="no"
 SPARK_AUTO_DISABLED="no"
 SPARK_DISABLE_REASON="not applicable"
 SPARK_CHECKS_RUN="codex exec"
@@ -96,6 +106,20 @@ EXPLICIT_OUTPUT="no"
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --brief)
+            [ $# -ge 2 ] || { echo "Error: --brief requires a value." >&2; exit 1; }
+            BRIEF_TEXT="$2"
+            shift 2
+            ;;
+        --brief-file)
+            [ $# -ge 2 ] || { echo "Error: --brief-file requires a value." >&2; exit 1; }
+            BRIEF_FILE="$2"
+            shift 2
+            ;;
+        --stdin-brief)
+            STDIN_BRIEF="yes"
+            shift
+            ;;
         --mode)
             [ $# -ge 2 ] || { echo "Error: --mode requires a value." >&2; exit 1; }
             MODE="$2"
@@ -179,9 +203,18 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -z "$TASK_CARD" ]; then
+_INPUT_COUNT=0
+[ -n "$TASK_CARD" ] && _INPUT_COUNT=$((_INPUT_COUNT + 1))
+[ -n "$BRIEF_TEXT" ] && _INPUT_COUNT=$((_INPUT_COUNT + 1))
+[ -n "$BRIEF_FILE" ] && _INPUT_COUNT=$((_INPUT_COUNT + 1))
+[ "$STDIN_BRIEF" = "yes" ] && _INPUT_COUNT=$((_INPUT_COUNT + 1))
+if [ "$_INPUT_COUNT" -ne 1 ]; then
+    echo "Error: provide exactly one task card, --brief, --brief-file, or --stdin-brief." >&2
     usage
     exit 1
+fi
+if [ -n "$BRIEF_TEXT" ] || [ -n "$BRIEF_FILE" ] || [ "$STDIN_BRIEF" = "yes" ]; then
+    INPUT_KIND="brief"
 fi
 
 case "$MODE" in
@@ -258,9 +291,23 @@ if [ "$FAST_PATH_MAX_DIFF_LINES" -gt 200 ]; then
     exit 1
 fi
 
-if [ ! -f "$TASK_CARD" ]; then
+if [ "$INPUT_KIND" = "task-card" ] && [ ! -f "$TASK_CARD" ]; then
     echo "Error: task card not found: $TASK_CARD" >&2
     exit 1
+fi
+if [ -n "$BRIEF_FILE" ] && [ ! -f "$BRIEF_FILE" ]; then
+    echo "Error: brief file not found: $BRIEF_FILE" >&2
+    exit 1
+fi
+
+if [ "$INPUT_KIND" = "brief" ]; then
+    case "$MODE" in
+        auto|task-size-classifier|execution-cost-estimator|preflight-bundle|observe-synthesizer) ;;
+        *)
+            echo "Error: pre-task-card brief input is only supported by auto, task-size-classifier, execution-cost-estimator, preflight-bundle, or observe-synthesizer." >&2
+            exit 1
+            ;;
+    esac
 fi
 
 for artifact in "${ARTIFACTS[@]}"; do
@@ -275,9 +322,13 @@ if ! command -v git >/dev/null 2>&1; then
     exit 1
 fi
 
-REPO_ROOT="$(git -C "$(dirname "$TASK_CARD")" rev-parse --show-toplevel 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [ "$INPUT_KIND" = "task-card" ]; then
+    REPO_ROOT="$(git -C "$(dirname "$TASK_CARD")" rev-parse --show-toplevel 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd)"
+else
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-INITIAL_SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
+INITIAL_SOURCE_STATUS=""
 
 # ---------------------------------------------------------------------------
 # Helper functions that read $TASK_CARD (not $TASK_CARD_COPY) so they can be
@@ -312,7 +363,12 @@ is_read_only_synthesis_mode() {
 }
 
 is_checker_task() {
+    [ "$INPUT_KIND" = "task-card" ] || return 1
     grep -Eiq 'checker-test|Validation Contract|Local validation allowed|Test-First / TDD|TDD mode' "$TASK_CARD"
+}
+
+is_advisory_mode() {
+    ! is_source_writing_mode
 }
 
 is_source_writing_mode() {
@@ -431,6 +487,10 @@ esac
 # - advisory/read-only modes default to direct
 # - explicit --output upgrades implicit direct to minimal
 if is_source_writing_mode; then
+    if [ "$INPUT_KIND" != "task-card" ]; then
+        echo "Error: source-writing mode '$MODE' requires a full task card." >&2
+        exit 1
+    fi
     if [ "$EXPLICIT_RESULT_MODE" = "yes" ] && [ "$RESULT_MODE" != "full" ]; then
         echo "Error: source-writing mode '$MODE' requires --result-mode full." >&2
         exit 1
@@ -448,6 +508,10 @@ fi
 if [ "$EXPLICIT_OUTPUT" = "yes" ] && [ "$RESULT_MODE" = "direct" ]; then
     echo "Error: --output is incompatible with --result-mode direct. Use --result-mode minimal or full when specifying --output." >&2
     exit 1
+fi
+
+if is_source_writing_mode; then
+    INITIAL_SOURCE_STATUS="$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -525,17 +589,27 @@ fi
 WORKTREE_DIR=""
 RUN_DIR="$REPO_ROOT"
 CODEX_STATUS=0
+CODEX_RUNTIME_HOME=""
+CODEX_RUNTIME_PARENT_CREATED="no"
 
-cp "$TASK_CARD" "$TASK_CARD_COPY"
+if [ "$INPUT_KIND" = "task-card" ]; then
+    cp "$TASK_CARD" "$TASK_CARD_COPY"
+elif [ -n "$BRIEF_FILE" ]; then
+    cp "$BRIEF_FILE" "$TASK_CARD_COPY"
+elif [ "$STDIN_BRIEF" = "yes" ]; then
+    cat > "$TASK_CARD_COPY"
+else
+    printf '%s\n' "$BRIEF_TEXT" > "$TASK_CARD_COPY"
+fi
 : > "$ARTIFACT_MANIFEST"
 for artifact in "${ARTIFACTS[@]}"; do
     printf '%s\n' "$artifact" >> "$ARTIFACT_MANIFEST"
 done
 
-# Read-only synthesis/bundle modes run from artifact dir with workspace-write
-# when the requested sandbox is read-only.  In direct/minimal modes the temp
-# dir serves as the writable cwd; in full mode OUTPUT_DIR is used.
-if is_read_only_synthesis_mode && [ "$SANDBOX" = "read-only" ]; then
+# All advisory modes run from a writable artifact/temp directory. This keeps
+# Codex app-server/helper initialization away from the source repository and
+# applies consistently to legacy review/planning modes too.
+if is_advisory_mode && [ "$SANDBOX" = "read-only" ]; then
     SANDBOX="workspace-write"
     if [ "$RESULT_MODE" = "direct" ] || [ "$RESULT_MODE" = "minimal" ]; then
         RUN_DIR="$TEMP_WORK_DIR"
@@ -545,14 +619,36 @@ if is_read_only_synthesis_mode && [ "$SANDBOX" = "read-only" ]; then
     SPARK_CHECKS_RUN="codex exec (${MODE} in artifact dir)"
 fi
 
-if [ "$MODE" = "task-size-classifier" ] && [ "$SANDBOX" = "read-only" ]; then
-    SANDBOX="workspace-write"
-    if [ "$RESULT_MODE" = "direct" ] || [ "$RESULT_MODE" = "minimal" ]; then
-        RUN_DIR="$TEMP_WORK_DIR"
-    else
-        RUN_DIR="$OUTPUT_DIR"
+# The CLI initializes local app-server state before contacting Spark. In
+# sandboxed sessions the user's normal CODEX_HOME may be read-only even when
+# the working directory is writable. Give advisory calls a transient writable
+# home while linking only the existing read-only identity/config inputs.
+if is_advisory_mode; then
+    if [ ! -d "${REPO_ROOT}/.worktrees" ]; then
+        mkdir -p "${REPO_ROOT}/.worktrees"
+        CODEX_RUNTIME_PARENT_CREATED="yes"
     fi
-    SPARK_CHECKS_RUN="codex exec (classifier in artifact dir)"
+    CODEX_RUNTIME_HOME="$(mktemp -d "${REPO_ROOT}/.worktrees/.codex-spark-runtime.XXXXXX")"
+    cleanup_codex_runtime_home() {
+        [ -z "$CODEX_RUNTIME_HOME" ] || rm -rf "$CODEX_RUNTIME_HOME"
+        if [ "$CODEX_RUNTIME_PARENT_CREATED" = "yes" ]; then
+            rmdir "${REPO_ROOT}/.worktrees" 2>/dev/null || true
+        fi
+    }
+    if [ -n "$TEMP_WORK_DIR" ]; then
+        trap 'cleanup_temp; cleanup_codex_runtime_home' EXIT
+    else
+        trap cleanup_codex_runtime_home EXIT
+    fi
+    _ORIGINAL_CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
+    for _codex_input in auth.json config.toml installation_id models_cache.json version.json; do
+        if [ -f "${_ORIGINAL_CODEX_HOME}/${_codex_input}" ]; then
+            cp "${_ORIGINAL_CODEX_HOME}/${_codex_input}" "${CODEX_RUNTIME_HOME}/${_codex_input}"
+        fi
+    done
+    # workspace-write grants the invocation cwd. Keep cwd and CODEX_HOME in the
+    # same transient workspace so app-server state is actually writable.
+    RUN_DIR="$CODEX_RUNTIME_HOME"
 fi
 
 if [ "$MODE" = "micro-builder" ] && [ "$SANDBOX" != "workspace-write" ]; then
@@ -779,6 +875,7 @@ write_report_header() {
         echo "|-------|-------|"
         echo "| Spark enabled in task card? | yes |"
         echo "| Spark invoked? | ${SPARK_INVOKED} |"
+        echo "| Spark model response received? | ${SPARK_MODEL_RESPONSE_RECEIVED} |"
         echo "| Spark purpose used | ${MODE} |"
         echo "| Spark requested mode | ${REQUESTED_MODE} |"
         echo "| Result mode | ${RESULT_MODE} |"
@@ -885,8 +982,12 @@ spark_failure_auto_disable_reason() {
     if [ -s "$STDERR_FILE" ]; then
         text="$(tr '[:upper:]' '[:lower:]' < "$STDERR_FILE")"
     fi
-    if printf '%s\n' "$text" | grep -Eiq 'read-only file system|os error 30|app-server|failed to initialize'; then
-        echo "codex exec failed during local app-server/helper initialization that requires write access"
+    if printf '%s\n' "$text" | grep -Eiq 'read-only file system|os error 30'; then
+        echo "codex exec failed because a required path was read-only"
+    elif printf '%s\n' "$text" | grep -Eiq 'app-server'; then
+        echo "codex exec failed during local app-server initialization before a confirmed Spark response"
+    elif printf '%s\n' "$text" | grep -Eiq 'failed to initialize'; then
+        echo "codex exec failed during local helper initialization before a confirmed Spark response"
     else
         echo "codex exec reported model, quota, auth, network, or access unavailability"
     fi
@@ -1118,9 +1219,16 @@ fi
 
 cat >> "$PROMPT_FILE" <<'TASK_EOF'
 
-## Task Card
+## Task Input
 
 TASK_EOF
+if [ "$INPUT_KIND" = "brief" ]; then
+    echo "Input type: pre-task-card brief. Estimate scope and routing before requesting a full task card." >> "$PROMPT_FILE"
+    echo "" >> "$PROMPT_FILE"
+else
+    echo "Input type: full task card." >> "$PROMPT_FILE"
+    echo "" >> "$PROMPT_FILE"
+fi
 cat "$TASK_CARD_COPY" >> "$PROMPT_FILE"
 
 # Add controlled-builder specific constraints to prompt
@@ -1145,19 +1253,33 @@ append_artifact_excerpts
 set +e
 (
     cd "$RUN_DIR"
-    run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+    if [ -n "$CODEX_RUNTIME_HOME" ]; then
+        HOME="$CODEX_RUNTIME_HOME" CODEX_HOME="$CODEX_RUNTIME_HOME" run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+    else
+        run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+    fi
 )
 CODEX_STATUS=$?
 set -e
 HELPER_EXIT_STATUS="$CODEX_STATUS"
 SPARK_CALLS_USED=1
+if [ "$CODEX_STATUS" -eq 0 ] && [ -s "$RESULT_FILE" ]; then
+    SPARK_MODEL_RESPONSE_RECEIVED="yes"
+fi
+if [ "$RESULT_MODE" != "direct" ] && [ -f "$REPORT_FILE" ]; then
+    sed -i "s/| Spark model response received? | [^|]* |/| Spark model response received? | ${SPARK_MODEL_RESPONSE_RECEIVED} |/" "$REPORT_FILE" 2>/dev/null || true
+fi
 
 if [ "$MODE" = "micro-builder" ] || [ "$MODE" = "controlled-builder" ]; then
     git -C "$RUN_DIR" status --porcelain --untracked-files=all > "$STATUS_FILE" || true
     git -C "$RUN_DIR" diff --binary > "$DIFF_FILE" || true
     git -C "$RUN_DIR" diff --stat > "$DIFFSTAT_FILE" || true
 else
-    git -C "$REPO_ROOT" status --porcelain --untracked-files=all > "$STATUS_FILE" || true
+    if [ "$RESULT_MODE" = "direct" ]; then
+        : > "$STATUS_FILE"
+    else
+        git -C "$REPO_ROOT" status --porcelain --untracked-files=all > "$STATUS_FILE" || true
+    fi
     : > "$DIFF_FILE"
     : > "$DIFFSTAT_FILE"
 fi
@@ -1527,6 +1649,11 @@ case "$RESULT_MODE" in
         # Auto-disable reporting goes to stderr for direct mode
         if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
             echo "Codex Spark report: (direct mode, no permanent report)" >&2
+            echo "Spark model response received: ${SPARK_MODEL_RESPONSE_RECEIVED}" >&2
+            if [ -s "$STDERR_FILE" ]; then
+                echo "Codex stderr excerpt (transient):" >&2
+                tail -n 12 "$STDERR_FILE" >&2
+            fi
         fi
         exit "$HELPER_EXIT_STATUS"
         ;;
