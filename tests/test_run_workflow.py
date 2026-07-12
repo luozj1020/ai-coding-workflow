@@ -88,6 +88,7 @@ def make_express_task():
         validation=[{"id": "val-1", "command": ["python", "-V"]}],
     )
     task["risk"] = {k: "no" for k in RISK_KEYS}
+    task["extensions"]["routing_hints"] = {"predicted_diff_lines": 20}
     return task
 
 

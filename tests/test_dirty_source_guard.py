@@ -170,6 +170,17 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "  diff-without-report)\n"
                 "    printf '# diff work\\n' > README.md\n"
                 "    ;;\n"
+                "  delayed-diff)\n"
+                "    sleep \"${FAKE_CLAUDE_PRE_DIFF_SLEEP:-1}\"\n"
+                "    printf '# delayed worktree change\\n' > NEW_FILE.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
+                "    ;;\n"
+                "  incremental-progress)\n"
+                "    printf '# incremental work\\n' > NEW_FILE.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
+                "    printf 'Progress update during extension.\\n' > CLAUDE_PROGRESS.md\n"
+                "    sleep \"${FAKE_CLAUDE_POST_PROGRESS_SLEEP:-4}\"\n"
+                "    ;;\n"
                 "  success)\n"
                 "    cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
                 "# Claude Modification Report\n\n"
@@ -1128,6 +1139,153 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         self.assertIn("Dispatch outcome: approval_blocked", status)
         self.assertNotIn("Dispatch outcome: no_useful_progress", status)
+
+
+    # --- Progress-aware timeout extension tests ---
+
+    def test_active_diff_growth_past_base_deadline_survives(self):
+        """Worktree diff growth detected at base deadline extends the run."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "3",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "8",
+                "FAKE_CLAUDE_MODE": "delayed-diff",
+                "FAKE_CLAUDE_PRE_DIFF_SLEEP": "1",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "6",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        # Extension should have kicked in (base timeout at 3s, diff created at 1s)
+        self.assertIn("Timeout extension started", progress)
+        # Claude finishes at 7s (1+6) before extension deadline at 11s (3+8)
+        self.assertNotIn("extension expired", progress)
+        self.assertIn("Dispatch outcome: success", status)
+
+    def test_progress_report_growth_survives_extension(self):
+        """Progress/report file growth during extension keeps run alive."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "8",
+                "FAKE_CLAUDE_MODE": "incremental-progress",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "4",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "4",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        # Extension should have kicked in due to worktree change
+        self.assertIn("Timeout extension started", progress)
+        # Claude finishes at 8s (4+4) before extension deadline at 10s (2+8)
+        self.assertNotIn("extension expired", progress)
+        self.assertIn("Dispatch outcome: success", status)
+
+    def test_seeded_only_no_growth_still_times_out(self):
+        """No progress growth at base deadline → hard timeout, no extension."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "10",
+                "FAKE_CLAUDE_MODE": "seed-only",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("runtime timeout", progress)
+        self.assertNotIn("timeout_extension_started", progress)
+        self.assertNotIn("extension_active=1", progress)
+
+    def test_extension_cap_prevents_infinite_wait(self):
+        """Extension deadline stops even if progress was growing."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "5",
+                "FAKE_CLAUDE_MODE": "incremental-progress",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "8",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("extension_active=1", progress)
+        self.assertIn("extension expired", progress)
+        self.assertIn("Progress extension used: yes", status)
+        self.assertIn("Extension seconds: 5", status)
+
+    def test_direction_stop_unaffected_by_extension(self):
+        """Direction/manual stop terminates regardless of extension."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "10",
+                "FAKE_CLAUDE_MODE": "worktree-change",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Dispatch outcome: success", status)
+        self.assertNotIn("Dispatch outcome: timeout", status)
+
+    def test_runtime_json_exposes_extension_fields(self):
+        """Runtime JSON includes base_timeout_seconds and progress_extension_seconds."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "30",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "60",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime_path = self._artifact_path(result.stdout, "Runtime Identity")
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        self.assertEqual(runtime["base_timeout_seconds"], 30)
+        self.assertEqual(runtime["progress_extension_seconds"], 60)
+
+    def test_fallback_result_includes_extension_fields(self):
+        """Fallback result JSON includes timeout extension fields."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "10",
+                "FAKE_CLAUDE_MODE": "seed-only",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        result_file = self._artifact_path(result.stdout, "Result")
+        data = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertIn("timeout_extension_used", data)
+        self.assertIn("timeout_extension_seconds", data)
+        self.assertIn("timeout_extension_reason", data)
+        self.assertFalse(data["timeout_extension_used"])
+        self.assertEqual(data["timeout_extension_seconds"], 0)
+        self.assertIsNone(data["timeout_extension_reason"])
 
 
 if __name__ == "__main__":

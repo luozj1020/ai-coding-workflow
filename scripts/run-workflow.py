@@ -356,8 +356,13 @@ def phase_facts(ctx: RunContext) -> None:
 
     try:
         collect_facts = _load_module("collect_task_facts", "collect-task-facts.py")
+        extensions = ctx.composed.get("extensions", {})
+        routing_hints = extensions.get("routing_hints", {}) if isinstance(extensions, dict) else {}
         ctx.facts = collect_facts.collect_facts(
-            composed_path, profiles_dir=ctx.profiles_dir, repo=ctx.repo
+            composed_path,
+            profiles_dir=ctx.profiles_dir,
+            repo=ctx.repo,
+            hints=routing_hints if isinstance(routing_hints, dict) else {},
         )
     except Exception as exc:
         raise PhaseError("facts", "failed", str(exc))
@@ -746,10 +751,15 @@ def run_lifecycle(
     repo_root = repo or _find_repo_root(task_path)
     base = run_dir_base or repo_root / ".worktrees"
 
-    # Determine task_id from file
+    # Safely derive a non-empty task id from Task JSON before emitting run_start.
+    # Valid tasks use their id; missing/malformed tasks use a stable provisional id
+    # and then fail normally in lint, preserving events/result/manifest.
+    task_id_from_json = None
     try:
         raw = json.loads(task_path.read_text(encoding="utf-8"))
-        task_id = raw.get("id", task_path.stem)
+        if isinstance(raw, dict) and raw.get("id"):
+            task_id_from_json = raw["id"]
+        task_id = task_id_from_json or task_path.stem
     except (json.JSONDecodeError, OSError):
         task_id = task_path.stem
 
@@ -762,6 +772,13 @@ def run_lifecycle(
         repo=repo_root,
         dispatcher=dispatcher,
     )
+
+    # Set provisional task_data so emit_event can derive a non-empty task_id
+    # before phase_lint loads the full task.  lint will overwrite this.
+    if task_id_from_json:
+        ctx.task_data = {"id": task_id_from_json}
+    else:
+        ctx.task_data = {"id": "provisional-" + task_path.stem}
 
     # Write initial manifest
     update_manifest(ctx.artifact_manifest_path, ctx.run_id, [])
