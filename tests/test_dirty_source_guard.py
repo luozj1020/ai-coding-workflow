@@ -158,6 +158,18 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    printf 'Dispatcher-created draft. Permission blocker encountered.\\n' > CLAUDE_REPORT.md\n"
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
                 "    ;;\n"
+                "  api-error-no-diff)\n"
+                "    printf '%s\\n' '{\"is_error\":true,\"result\":\"API Error: Connection closed mid-response\",\"total_cost_usd\":0}'\n"
+                "    exit 0\n"
+                "    ;;\n"
+                "  api-error-with-diff)\n"
+                "    printf '# api error work\\n' > README.md\n"
+                "    printf '%s\\n' '{\"is_error\":true,\"result\":\"API Error: Connection closed mid-response\",\"total_cost_usd\":0}'\n"
+                "    exit 0\n"
+                "    ;;\n"
+                "  diff-without-report)\n"
+                "    printf '# diff work\\n' > README.md\n"
+                "    ;;\n"
                 "esac\n"
                 "printf '%s\\n' '{\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}'\n"
             )
@@ -1025,6 +1037,85 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertNotIn("acceptance", progress.lower())
         self.assertNotIn("takeover", progress.lower())
+
+
+    # --- Semantic result error detection and dispatch outcome tests ---
+
+    def test_semantic_api_error_detected_with_no_diff(self):
+        """exit 0 + is_error=true + API Error + no diff → api_error_without_diff"""
+        self._write_task_card()
+        self._run(["git", "add", "task-cards/PROJ.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+
+        result = self._dispatch(extra_env={"FAKE_CLAUDE_MODE": "api-error-no-diff"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Semantic result error: yes", status)
+        self.assertIn("api_error:", status)
+        self.assertIn("Dispatch outcome: api_error_without_diff", status)
+        self.assertIn("Implementation changes: 0", status)
+        # Raw result must not be discarded
+        result_file = self._artifact_path(result.stdout, "Result")
+        data = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertTrue(data.get("is_error"))
+        self.assertIn("API Error:", data.get("result", ""))
+
+    def test_semantic_api_error_detected_with_diff(self):
+        """exit 0 + is_error=true + API Error + with diff → api_error_with_diff"""
+        self._write_task_card()
+        self._run(["git", "add", "task-cards/PROJ.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+
+        result = self._dispatch(extra_env={"FAKE_CLAUDE_MODE": "api-error-with-diff"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Semantic result error: yes", status)
+        self.assertIn("Dispatch outcome: api_error_with_diff", status)
+        self.assertIn("Implementation changes: 1", status)
+        # Evidence classification should still reflect diff presence
+        self.assertIn("Evidence classification: diff without report", status)
+
+    def test_normal_success_result_remains_success(self):
+        """exit 0 + normal result → dispatch_outcome=success"""
+        self._write_task_card()
+        self._run(["git", "add", "task-cards/PROJ.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+
+        result = self._dispatch()
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertNotIn("Semantic result error: yes", status)
+        self.assertIn("Dispatch outcome: success", status)
+
+    def test_diff_without_valid_report_remains_recoverable_diff_evidence(self):
+        """exit 0 + normal result + diff + no valid report → diff without report"""
+        self._write_task_card()
+        self._run(["git", "add", "task-cards/PROJ.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+
+        result = self._dispatch(extra_env={"FAKE_CLAUDE_MODE": "diff-without-report"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Evidence classification: diff without report", status)
+        self.assertIn("Implementation changes: 1", status)
+        self.assertIn("Dispatch outcome: success", status)
+        self.assertNotIn("Dispatch outcome: no_useful_progress", status)
+
+    def test_approval_blocked_not_classified_as_no_progress(self):
+        """approval-blocked with test-only diff is not no_useful_progress"""
+        self._write_low_risk_checker_card()
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {"FAKE_CLAUDE_MODE": "approval-blocked", "FAKE_CLAUDE_SLEEP_SECONDS": "8"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Dispatch outcome: approval_blocked", status)
+        self.assertNotIn("Dispatch outcome: no_useful_progress", status)
 
 
 if __name__ == "__main__":

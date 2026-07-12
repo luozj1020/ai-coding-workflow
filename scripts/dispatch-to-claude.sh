@@ -1751,6 +1751,57 @@ PYEOF
 
 ensure_result_json "missing_or_invalid_result_json"
 
+# --- Semantic result validation ---
+# Detect Claude API errors that produced exit 0 but indicate process failure.
+# Records machine-readable classification for orchestrator consumption.
+# Does NOT discard raw result, diff, progress, or report evidence.
+CLAUDE_SEMANTIC_ERROR=0
+CLAUDE_SEMANTIC_ERROR_REASON=""
+if [ -s "$RESULT_FILE" ]; then
+    if [ -n "$PYTHON_CMD" ]; then
+        _SEMANTIC_CHECK="$("$PYTHON_CMD" - "$RESULT_FILE" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        data = json.load(f)
+    is_error = data.get("is_error", False)
+    result_str = str(data.get("result", ""))
+    if is_error is True or (isinstance(is_error, str) and is_error.lower() == "true"):
+        if "API Error:" in result_str:
+            reason = result_str.split("API Error:", 1)[1].strip()[:120]
+            print("1:api_error:" + reason)
+        else:
+            print("1:is_error_true")
+    elif "API Error:" in result_str:
+        reason = result_str.split("API Error:", 1)[1].strip()[:120]
+        print("1:api_error:" + reason)
+    else:
+        print("0:")
+except Exception:
+    print("0:")
+PYEOF
+)" || _SEMANTIC_CHECK="0:"
+        CLAUDE_SEMANTIC_ERROR="${_SEMANTIC_CHECK%%:*}"
+        CLAUDE_SEMANTIC_ERROR_REASON="${_SEMANTIC_CHECK#*:}"
+    else
+        # Without Python, use grep as a fallback for detection
+        if grep -qE '"is_error"\s*:\s*true|"API Error:"' "$RESULT_FILE" 2>/dev/null; then
+            CLAUDE_SEMANTIC_ERROR=1
+            CLAUDE_SEMANTIC_ERROR_REASON="api_error_detected_grep_fallback"
+        fi
+    fi
+fi
+
+if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
+    progress_log "Semantic result error detected: reason=${CLAUDE_SEMANTIC_ERROR_REASON}, original_exit_status=${CLAUDE_STATUS}"
+    {
+        echo ""
+        echo "[dispatch] Semantic result error: yes"
+        echo "[dispatch] Semantic error reason: ${CLAUDE_SEMANTIC_ERROR_REASON}"
+        echo "[dispatch] Original exit status: ${CLAUDE_STATUS}"
+    } >> "$STATUS_FILE"
+fi
+
 cd "$WORKTREE_DIR"
 
 CHECK_SCRIPT="${SCRIPT_DIR}/check-worktree.sh"
@@ -1994,12 +2045,37 @@ if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
     VALID_CLAUDE_REPORT=1
 fi
 DISPATCH_EVIDENCE_STATE="$(classify_dispatch_evidence "$IMPLEMENTATION_CHANGES" "$VALID_CLAUDE_REPORT" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
-progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no)"
+# Compute dispatch outcome for orchestrator consumption.
+# Allows distinguishing: success, api_error_with_diff, api_error_without_diff,
+# approval_blocked, timeout, fallback, no_useful_progress.
+DISPATCH_OUTCOME="success"
+if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
+    if [ "$IMPLEMENTATION_CHANGES" -gt 0 ]; then
+        DISPATCH_OUTCOME="api_error_with_diff"
+    else
+        DISPATCH_OUTCOME="api_error_without_diff"
+    fi
+elif [ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ]; then
+    DISPATCH_OUTCOME="approval_blocked"
+elif [ "$CLAUDE_TIMED_OUT" -eq 1 ] || [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] || [ "${CLAUDE_FIRST_PROGRESS_TIMED_OUT:-0}" -eq 1 ]; then
+    DISPATCH_OUTCOME="timeout"
+elif [ "$RESULT_FALLBACK_GENERATED" -eq 1 ]; then
+    DISPATCH_OUTCOME="fallback"
+elif [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; then
+    DISPATCH_OUTCOME="no_useful_progress"
+fi
+
+progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
 {
     echo ""
     echo "[dispatch] Evidence classification: ${DISPATCH_EVIDENCE_STATE}"
     echo "[dispatch] Implementation changes: ${IMPLEMENTATION_CHANGES}"
     echo "[dispatch] Valid Claude-owned report: $([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no)"
+    echo "[dispatch] Dispatch outcome: ${DISPATCH_OUTCOME}"
+    echo "[dispatch] Semantic result error: $([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
+    if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
+        echo "[dispatch] Semantic error reason: ${CLAUDE_SEMANTIC_ERROR_REASON}"
+    fi
 } >> "$STATUS_FILE"
 
 if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then
@@ -2034,6 +2110,11 @@ else
         echo "- Builder mode: ${CLAUDE_CODE_BUILDER_MODE:-standard}"
         echo "- Approval-blocked early convergence: $([ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ] && echo yes || echo no)"
         echo "- Fallback result generated: $([ "$RESULT_FALLBACK_GENERATED" -eq 1 ] && echo yes || echo no)"
+        echo "- Dispatch outcome: ${DISPATCH_OUTCOME}"
+        echo "- Semantic result error: $([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
+        if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
+            echo "- Semantic error reason: ${CLAUDE_SEMANTIC_ERROR_REASON}"
+        fi
         echo "- Raw result artifact: $RAW_RESULT_FILE"
         echo ""
         echo "## Changed Files"
@@ -2079,6 +2160,7 @@ echo "Prompt Profile:  $CLAUDE_CODE_PROMPT_PROFILE"
 echo "Evidence Mode:   $CLAUDE_CODE_EVIDENCE_MODE"
 echo "Builder Mode:    $CLAUDE_CODE_BUILDER_MODE"
 echo "First Progress:  ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s timeout"
+echo "Dispatch Outcome:${DISPATCH_OUTCOME}"
 echo "Task Card Full:  ${WORKTREE_DIR}/TASK_CARD_FULL.md"
 echo "Claude Task:     ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
 echo "Result:          $RESULT_FILE"
