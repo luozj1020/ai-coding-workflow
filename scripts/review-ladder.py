@@ -86,15 +86,11 @@ def classify_recovery(
             "reason": f"Infrastructure issue ({classification}) cannot be resolved by model",
         }
 
-    # First explicit compile/test failure -> Claude revision
-    if classification in {"compile", "test"} and failure_count < 2:
-        return {
-            "owner": "claude-revision",
-            "model": "claude",
-            "reason": f"First {classification} failure, allowing Claude to fix",
-        }
-
     # High risk, repeated failure, architecture issue -> Codex
+    # Must be evaluated BEFORE the first compile/test Claude branch so that
+    # explicit escalation flags are never bypassed by the default first-failure
+    # path.  Preserves: first compile/test -> Claude, second -> Spark,
+    # third/repeated -> Codex.
     if assured or high_risk or architecture_issue or failure_count >= 3:
         return {
             "owner": "codex",
@@ -105,6 +101,14 @@ def classify_recovery(
                 "architecture issue" if architecture_issue else
                 f"repeated failure (count={failure_count})"
             ),
+        }
+
+    # First explicit compile/test failure -> Claude revision
+    if classification in {"compile", "test"} and failure_count < 2:
+        return {
+            "owner": "claude-revision",
+            "model": "claude",
+            "reason": f"First {classification} failure, allowing Claude to fix",
         }
 
     # Ambiguous failure -> Spark triage

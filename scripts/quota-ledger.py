@@ -11,20 +11,30 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 
-# Import broker primitives (same directory)
+# Import broker primitives by adjacent filesystem path (hyphenated filename
+# cannot be loaded with a plain import statement).  Register in sys.modules
+# so dataclass forward references resolve correctly.
 _SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
-
-from model_call_broker import (
-    LedgerLock, load_ledger, append_ledger, budget_consuming,
-    fold_by_reservation, validate_ledger_history,
+_broker_spec = importlib.util.spec_from_file_location(
+    "model_call_broker", _SCRIPTS_DIR / "model-call-broker.py"
 )
+_broker = importlib.util.module_from_spec(_broker_spec)
+sys.modules["model_call_broker"] = _broker
+_broker_spec.loader.exec_module(_broker)
+
+LedgerLock = _broker.LedgerLock
+load_ledger = _broker.load_ledger
+append_ledger = _broker.append_ledger
+budget_consuming = _broker.budget_consuming
+fold_by_reservation = _broker.fold_by_reservation
+validate_ledger_history = _broker.validate_ledger_history
 
 
 def main() -> int:
@@ -82,17 +92,25 @@ def main() -> int:
             print(json.dumps(decision, sort_keys=True))
             return 2
 
-        item = {
+        reservation_id = "legacy-{}".format(uuid.uuid4().hex[:12])
+        base_item = {
             "schema_version": 1,
             "timestamp": int(time.time()),
             "run_id": a.run_id,
+            "reservation_id": reservation_id,
             "task_id": a.task_id,
             "stage": a.stage,
+            "role": a.model,
             "model": a.model,
-            "state": "succeeded",
             "call_index": len(calls) + 1,
             "input_hash": ih,
             "evidence_hash": eh,
+        }
+        append_ledger(path, {**base_item, "state": "reserved"})
+        append_ledger(path, {**base_item, "state": "running"})
+        item = {
+            **base_item,
+            "state": "succeeded",
             "elapsed_seconds": a.elapsed_seconds,
             "result": a.result,
             "next_action": a.next_action,
