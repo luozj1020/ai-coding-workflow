@@ -72,6 +72,9 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "lint-task-card.py").exists())
             self.assertTrue((repo / "ai" / "render-task-card.py").exists())
             self.assertTrue((repo / "ai" / "schemas" / "task-card-v1.schema.json").exists())
+            self.assertTrue((repo / "ai" / "review_decision.py").exists())
+            self.assertTrue((repo / "ai" / "parse-review-decision.py").exists())
+            self.assertTrue((repo / "ai" / "schemas" / "review-decision-v1.schema.json").exists())
             self.assertTrue((repo / "ai" / "profiles" / "base.json").exists())
             self.assertTrue((repo / "ai" / "profiles" / "bugfix.json").exists())
             self.assertTrue((repo / "ai" / "examples" / "fix-typo-in-readme.json").exists())
@@ -454,7 +457,14 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("control-plane salvage", review)
             self.assertIn("preserve the reviewer-accepted first-round direction", review)
             self.assertIn("Delegation Continuity Gate", review)
-            self.assertIn("phase accepted with follow-up required", review)
+            # Structured review decision JSON contract (replaces removed prose phrase)
+            self.assertIn("parse-review-decision.py", review)
+            self.assertIn("Review Decision:", review)
+            self.assertIn("schema_version", review)
+            self.assertIn('"decision": "accept|revise|split|reject"', review)
+            self.assertIn('"scope": "phase|whole-task"', review)
+            self.assertIn("JSON decision is authoritative", review)
+            self.assertIn("structured decision required", review.lower())
             self.assertIn("Respect Task Mode", review)
             self.assertIn("dispatch a checker-test Claude task", review)
             self.assertIn("Task Mode / Direction Review", review)
@@ -712,6 +722,11 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn('Review-to-Next-Task Contract', run_loop)
             self.assertIn('New Handoff Contract', run_loop)
             self.assertIn('"$CLAUDE_PROGRESS_FILE" "$PROGRESS_FILE" "$NETWORK_FILE" "$CLAUDE_PID_FILE" 2>&1 | tee "$REVIEW_OUTPUT"', run_loop)
+            # Run-loop uses Review Decision: JSON path, not prose grep for decision words
+            self.assertIn("REVIEW_DECISION_FILE", run_loop)
+            self.assertIn("grep '^Review Decision:'", run_loop)
+            self.assertIn('data.get("decision"', run_loop)
+            self.assertIn("missing_review_decision", run_loop)
 
     def test_installed_powershell_utf8_helper(self):
         with tempfile.TemporaryDirectory() as tmp:
