@@ -1480,6 +1480,8 @@ set +e
     cd "$RUN_DIR"
     broker_args=(
         --role spark --stage builder
+        --task-id "spark-$(basename "$RUN_DIR")"
+        --ledger "${REPO_ROOT}/.ai-workflow/model-calls.jsonl"
         --input "$PROMPT_FILE" --output "$RESULT_FILE" --stderr "$STDERR_FILE"
     )
     if [ -f "execution-plan.json" ]; then

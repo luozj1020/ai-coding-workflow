@@ -425,8 +425,11 @@ if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ]; then
     fi
 else
     # Broker-mediated execution for quota enforcement and audit.
+    BROKER_REPO_ROOT="$(git -C "$RUN_DIR" rev-parse --show-toplevel 2>/dev/null || pwd)"
     broker_args=(
         --role codex --stage final-review
+        --task-id "review-$(basename "$REVIEW_PREFIX")"
+        --ledger "${BROKER_REPO_ROOT}/.ai-workflow/model-calls.jsonl"
         --output "$CODEX_EVENTS_FILE" --stderr "${REVIEW_OUTPUT_FILE}.stderr"
     )
     if [ -f "execution-plan.json" ]; then

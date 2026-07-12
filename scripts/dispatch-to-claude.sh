@@ -1416,6 +1416,8 @@ run_claude() {
         local broker_args=(
             --role claude
             --stage builder
+            --task-id "claude-$(basename "$TASK_CARD")"
+            --ledger "${REPO_ROOT}/.ai-workflow/model-calls.jsonl"
             --input CLAUDE_PROMPT.md
             --output "$RESULT_FILE"
             --stderr "${STATUS_FILE}"

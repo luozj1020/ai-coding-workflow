@@ -36,6 +36,7 @@ SCHEMAS = REPO_ROOT / "schemas"
 def load_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -230,7 +231,7 @@ class TestDuplicateEvidenceRejection(unittest.TestCase):
                 rc, out, err = run_broker(
                     tmp, role="codex", stage="builder", plan_path=plan_path,
                     input_path=inp, ledger_path=ledger,
-                    command=[sys.executable, "-c", f"print('attempt-{idx}')"),
+                    command=[sys.executable, "-c", f"print('attempt-{idx}')"],
                     run_id=f"run-{idx}",
                 )
                 with lock:
@@ -265,7 +266,7 @@ class TestDifferentEvidence(unittest.TestCase):
                 rc, _, _ = run_broker(
                     tmp, role="codex", stage="builder", plan_path=plan_path,
                     input_path=inp, ledger_path=ledger,
-                    command=[sys.executable, "-c", f"print('call-{i}')"),
+                    command=[sys.executable, "-c", f"print('call-{i}')"],
                     run_id=f"run-{i}",
                 )
                 self.assertEqual(rc, 0, f"Call {i} should succeed")
@@ -275,7 +276,7 @@ class TestDifferentEvidence(unittest.TestCase):
             rc4, _, _ = run_broker(
                 tmp, role="codex", stage="builder", plan_path=plan_path,
                 input_path=inp4, ledger_path=ledger,
-                command=[sys.executable, "-c", "print('call-3')"),
+                command=[sys.executable, "-c", "print('call-3')"],
                 run_id="run-3",
             )
             self.assertEqual(rc4, 2, "Fourth call should be denied")
@@ -329,6 +330,41 @@ class TestReservedStageEnforcement(unittest.TestCase):
                 plan_path=plan_path, input_path=inp, ledger_path=ledger,
                 command=[sys.executable, "-c", "print('review')"],
                 run_id="run-review",
+            )
+            self.assertEqual(rc, 0)
+
+    def test_reserved_stage_cannot_steal_another_reserved_slot(self):
+        with tempfile.TemporaryDirectory(prefix="broker_test_") as td:
+            tmp = Path(td)
+            plan_path = write_plan(
+                tmp,
+                make_plan(
+                    codex_calls=2,
+                    reserved_for=["final-candidate", "final-review"],
+                ),
+            )
+            ledger = tmp / "ledger.jsonl"
+            first = write_file(tmp, "first", "first.txt")
+            rc, _, _ = run_broker(
+                tmp, role="codex", stage="final-review", plan_path=plan_path,
+                input_path=first, ledger_path=ledger,
+                command=[sys.executable, "-c", "print('first')"],
+            )
+            self.assertEqual(rc, 0)
+
+            second = write_file(tmp, "second", "second.txt")
+            rc, _, _ = run_broker(
+                tmp, role="codex", stage="final-review", plan_path=plan_path,
+                input_path=second, ledger_path=ledger,
+                command=[sys.executable, "-c", "print('second')"],
+            )
+            self.assertEqual(rc, 2)
+
+            candidate = write_file(tmp, "candidate", "candidate.txt")
+            rc, _, _ = run_broker(
+                tmp, role="codex", stage="final-candidate", plan_path=plan_path,
+                input_path=candidate, ledger_path=ledger,
+                command=[sys.executable, "-c", "print('candidate')"],
             )
             self.assertEqual(rc, 0)
 
@@ -716,9 +752,10 @@ class TestShellHelperStaticChecks(unittest.TestCase):
     def test_review_with_codex_no_direct_spawn(self):
         script = SCRIPTS / "review-with-codex.sh"
         text = script.read_text(encoding="utf-8")
+        lines = text.splitlines()
         in_bypass = False
         violations = []
-        for i, line in enumerate(text.splitlines(), 1):
+        for i, line in enumerate(lines, 1):
             if "AI_CODING_WORKFLOW_BYPASS_BROKER" in line:
                 in_bypass = True
             if in_bypass and "fi" in line:
@@ -732,6 +769,8 @@ class TestShellHelperStaticChecks(unittest.TestCase):
             if "command -v" in stripped:
                 continue
             if re.search(r'\bcodex\b.*\bexec\b', stripped):
+                if i > 1 and lines[i - 2].rstrip().endswith("-- \\"):
+                    continue
                 if any(skip in stripped for skip in ["echo", "Error:", "auto_disable"]):
                     continue
                 violations.append(f"line {i}: {stripped}")

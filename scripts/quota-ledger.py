@@ -21,7 +21,10 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from model_call_broker import LedgerLock, load_ledger, append_ledger, budget_consuming
+from model_call_broker import (
+    LedgerLock, load_ledger, append_ledger, budget_consuming,
+    fold_by_reservation, validate_ledger_history,
+)
 
 
 def main() -> int:
@@ -51,15 +54,17 @@ def main() -> int:
 
     with lock:
         old = load_ledger(path)
+        validate_ledger_history(old)
+
+        # Fold by reservation_id so each reservation counts once
+        folded = fold_by_reservation(old, a.task_id, a.model)
         calls = [
-            x for x in old
-            if x.get("task_id") == a.task_id
-            and x.get("model") == a.model
-            and x.get("state") in ("reserved", "running", "succeeded")
+            r for r in folded.values()
+            if budget_consuming(r)
         ]
         duplicate = any(
-            x.get("input_hash") == ih and x.get("evidence_hash") == eh
-            for x in calls
+            r.get("input_hash") == ih and r.get("evidence_hash") == eh
+            for r in folded.values()
         )
 
         decision = {
