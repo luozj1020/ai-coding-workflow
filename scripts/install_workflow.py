@@ -87,11 +87,14 @@ PYTHON_SCRIPTS = [
     ("compose-profiles.py", "ai/compose-profiles.py"),
     ("lint-task-card.py", "ai/lint-task-card.py"),
     ("render-task-card.py", "ai/render-task-card.py"),
+    ("review_decision.py", "ai/review_decision.py"),
+    ("parse-review-decision.py", "ai/parse-review-decision.py"),
 ]
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)
 SCHEMA_ASSETS = [
     ("schemas/task-card-v1.schema.json", "ai/schemas/task-card-v1.schema.json"),
+    ("schemas/review-decision-v1.schema.json", "ai/schemas/review-decision-v1.schema.json"),
 ]
 
 # Structured assets: profiles (source relative to repo root, dest relative to repo root)

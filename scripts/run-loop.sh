@@ -353,10 +353,14 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     set -e
 
     REVIEW_ARTIFACT="$(grep '^Review Output:' "$REVIEW_OUTPUT" | sed 's/^Review Output: *//' | tail -1 || true)"
+    REVIEW_DECISION_FILE="$(grep '^Review Decision:' "$REVIEW_OUTPUT" | sed 's/^Review Decision: *//' | tail -1 || true)"
+    NEXT_TASK_DRAFT_FILE="$(grep '^Next Task Draft:' "$REVIEW_OUTPUT" | sed 's/^Next Task Draft: *//' | tail -1 || true)"
     CODEX_EVENTS="$(grep '^Codex Events:' "$REVIEW_OUTPUT" | sed 's/^Codex Events: *//' | tail -1 || true)"
     CODEX_USAGE="$(grep '^Codex Usage:' "$REVIEW_OUTPUT" | sed 's/^Codex Usage: *//' | tail -1 || true)"
 
     copy_if_present "$REVIEW_ARTIFACT" "$DISPATCH_OUTPUT"
+    copy_if_present "$REVIEW_DECISION_FILE" "$DISPATCH_OUTPUT"
+    copy_if_present "$NEXT_TASK_DRAFT_FILE" "$DISPATCH_OUTPUT"
     copy_if_present "$CODEX_EVENTS" "$DISPATCH_OUTPUT"
     copy_if_present "$CODEX_USAGE" "$DISPATCH_OUTPUT"
 
@@ -378,14 +382,57 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     fi
     write_loop_event "review_complete" "$ITERATION" "" "review=${REVIEW_OUTPUT}"
 
-    DECISION="$(grep -iE '^\*\*(ACCEPT|REVISE|SPLIT|REJECT)\*\*|^[-*] \*\*(ACCEPT|REVISE|SPLIT|REJECT)\*\*|(ACCEPT|REVISE|SPLIT|REJECT)' "$REVIEW_OUTPUT" \
-        | head -1 \
-        | sed 's/.*\(ACCEPT\|REVISE\|SPLIT\|REJECT\).*/\1/i' \
-        || true)"
+    # Extract decision from structured Review Decision JSON
+    DECISION=""
+    DECISION_SCOPE=""
+    if [ -z "$REVIEW_DECISION_FILE" ] || [ ! -f "$REVIEW_DECISION_FILE" ]; then
+        write_loop_event "stop" "$ITERATION" "" "missing_review_decision"
+        echo "Error: Review Decision file not found. Structured decision required." >&2
+        echo "Review output: $REVIEW_OUTPUT" >&2
+        echo "Run directory: $RUN_DIR" >&2
+        exit 1
+    fi
+
+    if [ -n "$PYTHON_CMD" ]; then
+        DECISION="$("$PYTHON_CMD" - "$REVIEW_DECISION_FILE" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    print(data.get("decision", ""))
+except (json.JSONDecodeError, OSError):
+    print("")
+PYEOF
+)"
+        DECISION_SCOPE="$("$PYTHON_CMD" - "$REVIEW_DECISION_FILE" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    print(data.get("scope", ""))
+except (json.JSONDecodeError, OSError):
+    print("")
+PYEOF
+)"
+    fi
+
+    if [ -z "$DECISION" ]; then
+        write_loop_event "stop" "$ITERATION" "" "invalid_review_decision"
+        echo "Error: Could not extract decision from Review Decision JSON." >&2
+        echo "Review Decision: $REVIEW_DECISION_FILE" >&2
+        echo "Run directory: $RUN_DIR" >&2
+        exit 1
+    fi
 
     echo ""
-    echo "Decision: ${DECISION:-UNKNOWN}"
-    write_loop_event "decision" "$ITERATION" "${DECISION:-UNKNOWN}" "review=${REVIEW_OUTPUT}"
+    echo "Decision: ${DECISION} (scope: ${DECISION_SCOPE:-unknown})"
+    write_loop_event "decision" "$ITERATION" "${DECISION}" "scope=${DECISION_SCOPE:-unknown};review_decision=${REVIEW_DECISION_FILE}"
 
     cat > "${RUN_DIR}/iteration-${ITERATION}-summary.md" <<EOF
 # Iteration ${ITERATION}
@@ -399,26 +446,63 @@ ${DISPATCH_OUTPUT}/
 ## Review Output
 ${REVIEW_OUTPUT}
 
+## Review Decision
+${REVIEW_DECISION_FILE}
+
 ## Usage Summary
 ${USAGE_SUMMARY}
 
 ## Decision
-${DECISION:-UNKNOWN}
+${DECISION} (scope: ${DECISION_SCOPE:-unknown})
 EOF
 
     case "$(echo "$DECISION" | tr '[:lower:]' '[:upper:]')" in
         ACCEPT)
-            write_loop_event "stop" "$ITERATION" "ACCEPT" "accepted"
-            write_quality_summary
-            echo ""
-            echo "=== Loop Complete: ACCEPTED ==="
-            echo "The change is ready for human review and merge."
-            echo "Worktree: $WORKTREE_DIR"
-            echo "Run directory: $RUN_DIR"
-            echo "Usage summary: $USAGE_SUMMARY"
-            echo "Quality summary: $QUALITY_SUMMARY"
-            echo "Loop events: $LOOP_EVENTS"
-            exit 0
+            if [ "$DECISION_SCOPE" = "whole-task" ]; then
+                write_loop_event "stop" "$ITERATION" "ACCEPT" "whole-task_accepted"
+                write_quality_summary
+                echo ""
+                echo "=== Loop Complete: ACCEPTED (whole-task) ==="
+                echo "The change is ready for human review and merge."
+                echo "Worktree: $WORKTREE_DIR"
+                echo "Run directory: $RUN_DIR"
+                echo "Usage summary: $USAGE_SUMMARY"
+                echo "Quality summary: $QUALITY_SUMMARY"
+                echo "Loop events: $LOOP_EVENTS"
+                exit 0
+            elif [ "$DECISION_SCOPE" = "phase" ]; then
+                # Phase accept: check if next_task is present
+                HAS_NEXT_TASK="false"
+                if [ -n "$NEXT_TASK_DRAFT_FILE" ] && [ -f "$NEXT_TASK_DRAFT_FILE" ] && [ -s "$NEXT_TASK_DRAFT_FILE" ]; then
+                    HAS_NEXT_TASK="true"
+                fi
+                write_loop_event "stop" "$ITERATION" "ACCEPT" "phase_accepted;has_next_task=${HAS_NEXT_TASK}"
+                write_quality_summary
+                echo ""
+                echo "=== Loop Stopped: Phase ACCEPTED ==="
+                echo "Phase accepted but whole-task is not complete."
+                echo "Review decision: $REVIEW_DECISION_FILE"
+                if [ "$HAS_NEXT_TASK" = "true" ]; then
+                    echo "Next task draft: $NEXT_TASK_DRAFT_FILE"
+                fi
+                echo "Run directory: $RUN_DIR"
+                echo "Usage summary: $USAGE_SUMMARY"
+                echo "Quality summary: $QUALITY_SUMMARY"
+                echo "Loop events: $LOOP_EVENTS"
+                exit 0
+            else
+                write_loop_event "stop" "$ITERATION" "ACCEPT" "accepted;scope=${DECISION_SCOPE:-unknown}"
+                write_quality_summary
+                echo ""
+                echo "=== Loop Complete: ACCEPTED ==="
+                echo "The change is ready for human review and merge."
+                echo "Worktree: $WORKTREE_DIR"
+                echo "Run directory: $RUN_DIR"
+                echo "Usage summary: $USAGE_SUMMARY"
+                echo "Quality summary: $QUALITY_SUMMARY"
+                echo "Loop events: $LOOP_EVENTS"
+                exit 0
+            fi
             ;;
         REVISE)
             echo ""
@@ -449,14 +533,20 @@ EOF
 
 - **Iteration:** ${ITERATION}
 - **Prior decision:** REVISE
+- **Review decision:** See ${REVIEW_DECISION_FILE}
 - **Review feedback:** See ${REVIEW_OUTPUT}
-- **Review-to-Next-Task Contract:** Copy forward Carry Forward Context, Keep, Change, Do Not Repeat, New Acceptance Criteria, New Unknowns / Decision Gates, and New Handoff Contract from ${REVIEW_OUTPUT}.
+- **Review-to-Next-Task Contract:** Copy forward Carry Forward Context, Keep, Change, Do Not Repeat, New Acceptance Criteria, New Unknowns / Decision Gates, and New Handoff Contract from ${REVIEW_DECISION_FILE} and ${REVIEW_OUTPUT}.
+- **Structured next-task draft:** See ${NEXT_TASK_DRAFT_FILE:-none}
 - **Usage summary:** See ${USAGE_SUMMARY}
 
 EOF
             CURRENT_TASK="$REVISED_TASK"
-            write_loop_event "revision_task_created" "$ITERATION" "REVISE" "task_card=${CURRENT_TASK}"
+            write_loop_event "revision_task_created" "$ITERATION" "REVISE" "task_card=${CURRENT_TASK};review_decision=${REVIEW_DECISION_FILE};next_task_draft=${NEXT_TASK_DRAFT_FILE:-none}"
             echo "Revised task card: $CURRENT_TASK"
+            echo "Review decision: $REVIEW_DECISION_FILE"
+            if [ -n "$NEXT_TASK_DRAFT_FILE" ] && [ -f "$NEXT_TASK_DRAFT_FILE" ] && [ -s "$NEXT_TASK_DRAFT_FILE" ]; then
+                echo "Next task draft: $NEXT_TASK_DRAFT_FILE"
+            fi
             echo ""
             ;;
         SPLIT)
@@ -464,7 +554,11 @@ EOF
             write_quality_summary
             echo ""
             echo "=== Loop Stopped: SPLIT ==="
-            echo "Review the decision in: $REVIEW_OUTPUT"
+            echo "Review decision: $REVIEW_DECISION_FILE"
+            echo "Review output: $REVIEW_OUTPUT"
+            if [ -n "$NEXT_TASK_DRAFT_FILE" ] && [ -f "$NEXT_TASK_DRAFT_FILE" ] && [ -s "$NEXT_TASK_DRAFT_FILE" ]; then
+                echo "Next task draft: $NEXT_TASK_DRAFT_FILE"
+            fi
             echo "Run directory: $RUN_DIR"
             echo "Usage summary: $USAGE_SUMMARY"
             echo "Quality summary: $QUALITY_SUMMARY"
@@ -476,7 +570,8 @@ EOF
             write_quality_summary
             echo ""
             echo "=== Loop Stopped: REJECTED ==="
-            echo "Review the decision in: $REVIEW_OUTPUT"
+            echo "Review decision: $REVIEW_DECISION_FILE"
+            echo "Review output: $REVIEW_OUTPUT"
             echo "Run directory: $RUN_DIR"
             echo "Usage summary: $USAGE_SUMMARY"
             echo "Quality summary: $QUALITY_SUMMARY"
@@ -488,6 +583,7 @@ EOF
             write_quality_summary
             echo ""
             echo "=== Loop Stopped: Unknown Decision ==="
+            echo "Review decision: $REVIEW_DECISION_FILE"
             echo "Review output: $REVIEW_OUTPUT"
             echo "Run directory: $RUN_DIR"
             echo "Usage summary: $USAGE_SUMMARY"

@@ -145,13 +145,36 @@ ${EXTRA_EVIDENCE}
 
 ## Required Output
 
-Respond with the following structured format:
+Your response MUST contain exactly one JSON decision object, either as the entire response or inside exactly one fenced \`\`\`json block. Human-readable explanation MAY follow outside that block.
 
-### Decision
-One of: **ACCEPT**, **REVISE**, **SPLIT**, **REJECT**. For multi-phase tasks, state whether ACCEPT means whole-task accepted or phase accepted with follow-up required.
+### JSON Decision Contract
 
-### Reasoning
-A concise explanation of why this decision was made.
+The JSON object MUST have this exact shape:
+\`\`\`json
+{
+  "schema_version": 1,
+  "decision": "accept|revise|split|reject",
+  "scope": "phase|whole-task",
+  "reasoning": "non-empty concise explanation",
+  "direction": {"status": "accepted|rejected|needs-revision|not-applicable"},
+  "acceptance": [
+    {"id": "AC-1", "status": "satisfied|failed|partial|not-evaluated", "evidence": ["artifact/path"]}
+  ],
+  "validation": {"status": "passed|failed|partial|not-run", "failed_checks": []},
+  "next_task": null,
+  "lessons": []
+}
+\`\`\`
+
+Rules:
+- For revise/split, \`next_task\` MUST be an object with at least \`mode\`, \`goal\`, \`acceptance\`.
+- For whole-task accept, \`next_task\` MUST be null. Phase accept may include a next task.
+- All fields are required. No unknown top-level fields.
+- The JSON decision is authoritative. Human text CANNOT override it.
+
+### Human Explanation (optional, outside the JSON block)
+
+You may follow the JSON block with human-readable explanation sections covering: Requirements Comparison, Task Mode / Direction Review, Phase Responsibility, Small Change Fast Path, Stall / Ambiguity Triage, Delegation Restoration, Direction / Boundary Acknowledgement, Testing Responsibility, and other analysis.
 
 ### Requirements Comparison
 Map the task card acceptance criteria to the observed implementation and evidence.
@@ -371,6 +394,39 @@ fi
 
 write_codex_usage
 
+# Parse the structured review decision from the review text
+REVIEW_DECISION_FILE="${REVIEW_PREFIX}.review-decision.json"
+NEXT_TASK_DRAFT_FILE="${REVIEW_PREFIX}.next-task-draft.json"
+PARSE_STATUS=0
+
+if [ -s "$REVIEW_OUTPUT_FILE" ] && [ -n "$PYTHON_CMD" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    PARSE_SCRIPT="${SCRIPT_DIR}/parse-review-decision.py"
+    if [ -f "$PARSE_SCRIPT" ]; then
+        set +e
+        PARSE_OUTPUT="$("$PYTHON_CMD" "$PARSE_SCRIPT" "$REVIEW_OUTPUT_FILE" \
+            --output "$REVIEW_DECISION_FILE" \
+            --next-task-draft "$NEXT_TASK_DRAFT_FILE" 2>&1)"
+        PARSE_STATUS=$?
+        set -e
+
+        if [ "$PARSE_STATUS" -ne 0 ]; then
+            echo "Error: Review decision parsing failed (exit $PARSE_STATUS)." >&2
+            echo "$PARSE_OUTPUT" >&2
+            echo "The review output did not contain a valid structured decision." >&2
+            echo "Review text cannot override the JSON decision protocol." >&2
+        else
+            echo "$PARSE_OUTPUT"
+        fi
+    else
+        echo "Warning: parse-review-decision.py not found at $PARSE_SCRIPT" >&2
+        PARSE_STATUS=1
+    fi
+elif [ -s "$REVIEW_OUTPUT_FILE" ]; then
+    echo "Warning: Python not available; cannot parse structured review decision." >&2
+    PARSE_STATUS=1
+fi
+
 if [ -s "$REVIEW_OUTPUT_FILE" ]; then
     cat "$REVIEW_OUTPUT_FILE"
 fi
@@ -379,8 +435,17 @@ if [ "$CODEX_STATUS" -ne 0 ]; then
     exit "$CODEX_STATUS"
 fi
 
+if [ "$PARSE_STATUS" -ne 0 ]; then
+    echo "Error: Review decision parsing failed. Structured decision required." >&2
+    exit "$PARSE_STATUS"
+fi
+
 echo ""
 echo "=== Review Complete ==="
 echo "Review Output: $REVIEW_OUTPUT_FILE"
+echo "Review Decision: $REVIEW_DECISION_FILE"
+if [ -f "$NEXT_TASK_DRAFT_FILE" ] && [ -s "$NEXT_TASK_DRAFT_FILE" ]; then
+    echo "Next Task Draft: $NEXT_TASK_DRAFT_FILE"
+fi
 echo "Codex Events:  $CODEX_EVENTS_FILE"
 echo "Codex Usage:   $CODEX_USAGE_FILE"

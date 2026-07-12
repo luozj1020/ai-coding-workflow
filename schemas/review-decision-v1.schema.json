@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow/schemas/review-decision-v1.schema.json",
+  "title": "Review Decision v1",
+  "description": "Structured review decision schema for the AI Coding Workflow. Version 1 — normative.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "decision",
+    "scope",
+    "reasoning",
+    "direction",
+    "acceptance",
+    "validation",
+    "next_task",
+    "lessons"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Must be exactly 1 for this schema version."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["accept", "revise", "split", "reject"],
+      "description": "The formal review decision."
+    },
+    "scope": {
+      "type": "string",
+      "enum": ["phase", "whole-task"],
+      "description": "Whether the decision covers the current phase or the whole task."
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Non-empty concise explanation of the decision."
+    },
+    "direction": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["accepted", "rejected", "needs-revision", "not-applicable"],
+          "description": "Direction status."
+        }
+      },
+      "description": "Direction assessment for the implementation."
+    },
+    "acceptance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable acceptance criterion identifier (e.g. AC-1)."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["satisfied", "failed", "partial", "not-evaluated"],
+            "description": "Status of this acceptance criterion."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Evidence artifacts supporting the status."
+          }
+        }
+      },
+      "description": "Acceptance criteria evaluation."
+    },
+    "validation": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["passed", "failed", "partial", "not-run"],
+          "description": "Overall validation status."
+        },
+        "failed_checks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "List of failed check identifiers."
+        }
+      },
+      "description": "Validation status."
+    },
+    "next_task": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["mode", "goal", "acceptance"],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["builder", "checker-test", "mixed-exception", "control-plane"],
+              "description": "Task execution mode for the next task."
+            },
+            "goal": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Goal for the next task."
+            },
+            "acceptance": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "description"],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "minItems": 1,
+              "description": "Acceptance criteria for the next task."
+            },
+            "scope": {
+              "type": "object",
+              "description": "Optional scope hints for the next task."
+            },
+            "profile": {
+              "type": "string",
+              "description": "Optional profile hint for the next task."
+            }
+          },
+          "additionalProperties": true,
+          "description": "Draft for the next task when decision is revise/split, or for phase accept with follow-up."
+        }
+      ],
+      "description": "Next task draft. Must be an object for revise/split; must be null for whole-task accept."
+    },
+    "lessons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Reusable lessons from this review."
+    }
+  }
+}
