@@ -43,6 +43,7 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 TASK_ID="loop-${TIMESTAMP}"
+RUN_ID="$TASK_ID"
 RUN_DIR="${REPO_ROOT}/.worktrees/${TASK_ID}"
 USAGE_SUMMARY="${RUN_DIR}/loop-usage-summary.md"
 QUALITY_SUMMARY="${RUN_DIR}/loop-quality-summary.md"
@@ -61,6 +62,21 @@ if command -v python3 &>/dev/null; then
     PYTHON_CMD="python3"
 elif command -v python &>/dev/null; then
     PYTHON_CMD="python"
+fi
+
+# Python is required for Event v2 writer. Fail before loop execution
+# rather than write a legacy schema.
+if [ -z "$PYTHON_CMD" ]; then
+    echo "Error: Python 3 is required for Event v2 emission." >&2
+    echo "Neither python3 nor python found in PATH." >&2
+    echo "Install Python 3.9+ before running the loop." >&2
+    exit 1
+fi
+
+EVENT_WRITER="${SCRIPT_DIR}/event_writer.py"
+if [ ! -f "$EVENT_WRITER" ]; then
+    echo "Error: event_writer.py not found at $EVENT_WRITER" >&2
+    exit 1
 fi
 
 USER_TIMEOUT_SET=0
@@ -112,34 +128,60 @@ write_loop_event() {
     local iteration="${2:-}"
     local decision="${3:-}"
     local detail="${4:-}"
-    if [ -z "$PYTHON_CMD" ]; then
-        printf '{"time":"%s","event":"%s","iteration":"%s","decision":"%s","detail":"%s"}\n' \
-            "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$event" "$iteration" "$decision" "$detail" >> "$LOOP_EVENTS"
-        return 0
-    fi
-    "$PYTHON_CMD" - "$LOOP_EVENTS" "$event" "$iteration" "$decision" "$detail" <<'PYEOF'
-import json
+    local phase="${5:-setup}"
+    local role="${6:-run-loop}"
+
+    "$PYTHON_CMD" - "$SCRIPT_DIR" "$LOOP_EVENTS" "$TASK_ID" "$event" "$iteration" "$decision" "$detail" "$phase" "$role" "$RUN_ID" <<'PYEOF'
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-path = Path(sys.argv[1])
-event, iteration, decision, detail = sys.argv[2:6]
-payload = {
-    "time": datetime.now(timezone.utc).isoformat(),
-    "event": event,
-}
-if iteration:
+# argv: script_dir events_path task_id event_name iteration decision detail phase role run_id
+script_dir = Path(sys.argv[1])
+sys.path.insert(0, str(script_dir))
+
+from event_writer import EventWriter, build_event
+
+events_path = Path(sys.argv[2])
+task_id = sys.argv[3]
+event_name = sys.argv[4]
+iteration_raw = sys.argv[5]
+decision = sys.argv[6]
+detail_raw = sys.argv[7]
+phase = sys.argv[8]
+role = sys.argv[9]
+run_id = sys.argv[10]
+
+iteration = None
+if iteration_raw:
     try:
-        payload["iteration"] = int(iteration)
+        iteration = int(iteration_raw)
     except ValueError:
-        payload["iteration"] = iteration
+        pass
+
+detail = {}
 if decision:
-    payload["decision"] = decision
-if detail:
-    payload["detail"] = detail
-with path.open("a", encoding="utf-8") as f:
-    f.write(json.dumps(payload, sort_keys=True) + "\n")
+    detail["decision"] = decision
+if detail_raw:
+    # Parse legacy semicolon-separated detail into structured dict
+    for part in detail_raw.split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            detail[k.strip()] = v.strip()
+        elif part.strip():
+            detail[part.strip()] = True
+
+event = build_event(
+    run_id=run_id,
+    task_id=task_id,
+    event=event_name,
+    phase=phase,
+    role=role,
+    iteration=iteration,
+    detail=detail,
+)
+
+writer = EventWriter(events_path)
+writer.append(event)
 PYEOF
 }
 
@@ -153,7 +195,7 @@ Run directory: ${RUN_DIR}
 Initial task card: ${TASK_CARD}
 
 EOF
-write_loop_event "run_start" "" "" "task_card=${TASK_CARD};max_iterations=${MAX_ITERATIONS}"
+write_loop_event "run_start" "" "" "task_card=${TASK_CARD};max_iterations=${MAX_ITERATIONS}" "setup" "run-loop"
 
 echo "=== Loop Runner ==="
 echo "Run directory: $RUN_DIR"
@@ -243,12 +285,12 @@ update_adaptive_timeout() {
     fi
 
     NEXT_TIMEOUT_SECONDS="$(clamp_timeout "$proposed")"
-    write_loop_event "adaptive_timeout_observed" "$iteration" "" "elapsed_seconds=${elapsed};progress_done=${done};progress_total=${total};per_item_seconds=${per_item:-0};remaining_items=${remaining:-0};next_timeout_seconds=${NEXT_TIMEOUT_SECONDS}"
+    write_loop_event "adaptive_timeout_observed" "$iteration" "" "elapsed_seconds=${elapsed};progress_done=${done};progress_total=${total};per_item_seconds=${per_item:-0};remaining_items=${remaining:-0};next_timeout_seconds=${NEXT_TIMEOUT_SECONDS}" "dispatch" "run-loop"
 }
 
 while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     echo "--- Iteration ${ITERATION} ---"
-    write_loop_event "iteration_start" "$ITERATION" "" "task_card=${CURRENT_TASK}"
+    write_loop_event "iteration_start" "$ITERATION" "" "task_card=${CURRENT_TASK}" "dispatch" "run-loop"
 
     DISPATCH_OUTPUT="${RUN_DIR}/dispatch-${ITERATION}"
     mkdir -p "$DISPATCH_OUTPUT"
@@ -260,10 +302,10 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     DISPATCH_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-$NEXT_TIMEOUT_SECONDS}"
     if [ "$USER_TIMEOUT_SET" -eq 0 ] && [ "$ADAPTIVE_WAIT" -eq 1 ]; then
         echo "Adaptive dispatch timeout: ${DISPATCH_TIMEOUT_SECONDS}s"
-        write_loop_event "adaptive_timeout_applied" "$ITERATION" "" "timeout_seconds=${DISPATCH_TIMEOUT_SECONDS};source=adaptive"
+        write_loop_event "adaptive_timeout_applied" "$ITERATION" "" "timeout_seconds=${DISPATCH_TIMEOUT_SECONDS};source=adaptive" "dispatch" "run-loop"
         CLAUDE_CODE_TIMEOUT_SECONDS="$DISPATCH_TIMEOUT_SECONDS" bash "$DISPATCH_SCRIPT" "$CURRENT_TASK" 2>&1 | tee "$DISPATCH_LOG"
     else
-        write_loop_event "adaptive_timeout_skipped" "$ITERATION" "" "user_timeout_set=${USER_TIMEOUT_SET};adaptive_wait=${ADAPTIVE_WAIT}"
+        write_loop_event "adaptive_timeout_skipped" "$ITERATION" "" "user_timeout_set=${USER_TIMEOUT_SET};adaptive_wait=${ADAPTIVE_WAIT}" "dispatch" "run-loop"
         bash "$DISPATCH_SCRIPT" "$CURRENT_TASK" 2>&1 | tee "$DISPATCH_LOG"
     fi
 
@@ -285,12 +327,12 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     PROGRESS_FILE="$(parse_path "Progress Log" "$DISPATCH_LOG")"
 
     if [ -z "$RESULT_FILE" ] || [ -z "$DIFF_FILE" ]; then
-        write_loop_event "dispatch_incomplete" "$ITERATION" "" "dispatch_log=${DISPATCH_LOG}"
+        write_loop_event "dispatch_incomplete" "$ITERATION" "" "dispatch_log=${DISPATCH_LOG}" "dispatch" "run-loop"
         echo "Error: Dispatch did not produce result.json or diff files." >&2
         echo "Check $DISPATCH_OUTPUT/ for details." >&2
         exit 1
     fi
-    write_loop_event "dispatch_complete" "$ITERATION" "" "worktree=${WORKTREE_DIR};checker=${CHECKER_REPORT_FILE}"
+    write_loop_event "dispatch_complete" "$ITERATION" "" "worktree=${WORKTREE_DIR};checker=${CHECKER_REPORT_FILE}" "dispatch" "run-loop"
     if [ "$USER_TIMEOUT_SET" -eq 0 ] && [ "$ADAPTIVE_WAIT" -eq 1 ]; then
         update_adaptive_timeout "$ITERATION" "$CLAUDE_PROGRESS_FILE" "$PROGRESS_FILE" "$DISPATCH_TIMEOUT_SECONDS"
     fi
@@ -375,18 +417,18 @@ while [ "$ITERATION" -le "$MAX_ITERATIONS" ]; do
     } >> "$USAGE_SUMMARY"
 
     if [ "$REVIEW_STATUS" -ne 0 ]; then
-        write_loop_event "review_failed" "$ITERATION" "" "status=${REVIEW_STATUS};review=${REVIEW_OUTPUT}"
+        write_loop_event "review_failed" "$ITERATION" "" "status=${REVIEW_STATUS};review=${REVIEW_OUTPUT}" "review" "run-loop"
         echo "Review command failed with status $REVIEW_STATUS. Human intervention required." >&2
         echo "Run directory: $RUN_DIR" >&2
         exit "$REVIEW_STATUS"
     fi
-    write_loop_event "review_complete" "$ITERATION" "" "review=${REVIEW_OUTPUT}"
+    write_loop_event "review_complete" "$ITERATION" "" "review=${REVIEW_OUTPUT}" "review" "run-loop"
 
     # Extract decision from structured Review Decision JSON
     DECISION=""
     DECISION_SCOPE=""
     if [ -z "$REVIEW_DECISION_FILE" ] || [ ! -f "$REVIEW_DECISION_FILE" ]; then
-        write_loop_event "stop" "$ITERATION" "" "missing_review_decision"
+        write_loop_event "stop" "$ITERATION" "" "missing_review_decision" "review" "run-loop"
         echo "Error: Review Decision file not found. Structured decision required." >&2
         echo "Review output: $REVIEW_OUTPUT" >&2
         echo "Run directory: $RUN_DIR" >&2
@@ -423,7 +465,7 @@ PYEOF
     fi
 
     if [ -z "$DECISION" ]; then
-        write_loop_event "stop" "$ITERATION" "" "invalid_review_decision"
+        write_loop_event "stop" "$ITERATION" "" "invalid_review_decision" "decision" "run-loop"
         echo "Error: Could not extract decision from Review Decision JSON." >&2
         echo "Review Decision: $REVIEW_DECISION_FILE" >&2
         echo "Run directory: $RUN_DIR" >&2
@@ -432,7 +474,7 @@ PYEOF
 
     echo ""
     echo "Decision: ${DECISION} (scope: ${DECISION_SCOPE:-unknown})"
-    write_loop_event "decision" "$ITERATION" "${DECISION}" "scope=${DECISION_SCOPE:-unknown};review_decision=${REVIEW_DECISION_FILE}"
+    write_loop_event "decision" "$ITERATION" "${DECISION}" "scope=${DECISION_SCOPE:-unknown};review_decision=${REVIEW_DECISION_FILE}" "decision" "run-loop"
 
     cat > "${RUN_DIR}/iteration-${ITERATION}-summary.md" <<EOF
 # Iteration ${ITERATION}
@@ -459,7 +501,7 @@ EOF
     case "$(echo "$DECISION" | tr '[:lower:]' '[:upper:]')" in
         ACCEPT)
             if [ "$DECISION_SCOPE" = "whole-task" ]; then
-                write_loop_event "stop" "$ITERATION" "ACCEPT" "whole-task_accepted"
+                write_loop_event "stop" "$ITERATION" "ACCEPT" "whole-task_accepted" "finalization" "run-loop"
                 write_quality_summary
                 echo ""
                 echo "=== Loop Complete: ACCEPTED (whole-task) ==="
@@ -476,7 +518,7 @@ EOF
                 if [ -n "$NEXT_TASK_DRAFT_FILE" ] && [ -f "$NEXT_TASK_DRAFT_FILE" ] && [ -s "$NEXT_TASK_DRAFT_FILE" ]; then
                     HAS_NEXT_TASK="true"
                 fi
-                write_loop_event "stop" "$ITERATION" "ACCEPT" "phase_accepted;has_next_task=${HAS_NEXT_TASK}"
+                write_loop_event "stop" "$ITERATION" "ACCEPT" "phase_accepted;has_next_task=${HAS_NEXT_TASK}" "finalization" "run-loop"
                 write_quality_summary
                 echo ""
                 echo "=== Loop Stopped: Phase ACCEPTED ==="
@@ -491,7 +533,7 @@ EOF
                 echo "Loop events: $LOOP_EVENTS"
                 exit 0
             else
-                write_loop_event "stop" "$ITERATION" "ACCEPT" "accepted;scope=${DECISION_SCOPE:-unknown}"
+                write_loop_event "stop" "$ITERATION" "ACCEPT" "accepted;scope=${DECISION_SCOPE:-unknown}" "finalization" "run-loop"
                 write_quality_summary
                 echo ""
                 echo "=== Loop Complete: ACCEPTED ==="
@@ -510,7 +552,7 @@ EOF
             ITERATION=$((ITERATION + 1))
 
             if [ "$ITERATION" -gt "$MAX_ITERATIONS" ]; then
-                write_loop_event "stop" "$((ITERATION - 1))" "REVISE" "max_iterations_reached"
+                write_loop_event "stop" "$((ITERATION - 1))" "REVISE" "max_iterations_reached" "finalization" "run-loop"
                 write_quality_summary
                 echo ""
                 echo "=== Loop Stopped: Max iterations reached ==="
@@ -541,7 +583,7 @@ EOF
 
 EOF
             CURRENT_TASK="$REVISED_TASK"
-            write_loop_event "revision_task_created" "$ITERATION" "REVISE" "task_card=${CURRENT_TASK};review_decision=${REVIEW_DECISION_FILE};next_task_draft=${NEXT_TASK_DRAFT_FILE:-none}"
+            write_loop_event "revision_task_created" "$ITERATION" "REVISE" "task_card=${CURRENT_TASK};review_decision=${REVIEW_DECISION_FILE};next_task_draft=${NEXT_TASK_DRAFT_FILE:-none}" "decision" "run-loop"
             echo "Revised task card: $CURRENT_TASK"
             echo "Review decision: $REVIEW_DECISION_FILE"
             if [ -n "$NEXT_TASK_DRAFT_FILE" ] && [ -f "$NEXT_TASK_DRAFT_FILE" ] && [ -s "$NEXT_TASK_DRAFT_FILE" ]; then
@@ -550,7 +592,7 @@ EOF
             echo ""
             ;;
         SPLIT)
-            write_loop_event "stop" "$ITERATION" "SPLIT" "split_requested"
+            write_loop_event "stop" "$ITERATION" "SPLIT" "split_requested" "finalization" "run-loop"
             write_quality_summary
             echo ""
             echo "=== Loop Stopped: SPLIT ==="
@@ -566,7 +608,7 @@ EOF
             exit 0
             ;;
         REJECT)
-            write_loop_event "stop" "$ITERATION" "REJECT" "rejected"
+            write_loop_event "stop" "$ITERATION" "REJECT" "rejected" "finalization" "run-loop"
             write_quality_summary
             echo ""
             echo "=== Loop Stopped: REJECTED ==="
@@ -579,7 +621,7 @@ EOF
             exit 1
             ;;
         *)
-            write_loop_event "stop" "$ITERATION" "${DECISION:-UNKNOWN}" "unknown_decision"
+            write_loop_event "stop" "$ITERATION" "${DECISION:-UNKNOWN}" "unknown_decision" "finalization" "run-loop"
             write_quality_summary
             echo ""
             echo "=== Loop Stopped: Unknown Decision ==="
@@ -596,7 +638,7 @@ done
 
 echo ""
 echo "=== Loop Stopped: Max iterations reached ==="
-write_loop_event "stop" "$MAX_ITERATIONS" "${DECISION:-UNKNOWN}" "max_iterations_reached"
+write_loop_event "stop" "$MAX_ITERATIONS" "${DECISION:-UNKNOWN}" "max_iterations_reached" "finalization" "run-loop"
 write_quality_summary
 echo "Human intervention required."
 echo "Codex direct intervention may now be appropriate if the repeated Claude attempts are documented and another Claude revision is unlikely to help."

@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow/schemas/run-event-v2.schema.json",
+  "title": "Run Event v2",
+  "description": "Append-only run event schema with causal links for the AI Coding Workflow. Version 2 — normative.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "parent_event_id",
+    "run_id",
+    "task_id",
+    "iteration",
+    "phase",
+    "role",
+    "event",
+    "artifact_refs",
+    "timestamp",
+    "detail"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 2,
+      "description": "Must be exactly 2 for this schema version."
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique event identifier. Deterministic enough to correlate but unique per append."
+    },
+    "parent_event_id": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "minLength": 1 }
+      ],
+      "description": "Causal parent event ID. Null for the first event in a run."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Run directory identifier (e.g. loop-20260101-120000)."
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Task card identifier for this run."
+    },
+    "iteration": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "integer", "minimum": 1 }
+      ],
+      "description": "Loop iteration number. Null for non-iteration events."
+    },
+    "phase": {
+      "type": "string",
+      "enum": ["setup", "dispatch", "review", "decision", "finalization"],
+      "description": "Workflow phase when the event was emitted."
+    },
+    "role": {
+      "type": "string",
+      "enum": ["run-loop", "dispatch", "reviewer", "claude", "codex", "checker", "system"],
+      "description": "Actor that produced this event."
+    },
+    "event": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Event name (e.g. run_start, iteration_start, dispatch_complete, review_complete, decision, stop)."
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Paths to artifacts produced or consumed by this event. Run-relative where possible."
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})?$",
+      "description": "UTC timestamp in ISO 8601 format."
+    },
+    "detail": {
+      "type": "object",
+      "description": "Structured detail object. No semicolon-delimited strings — use proper key-value pairs.",
+      "additionalProperties": true
+    }
+  }
+}

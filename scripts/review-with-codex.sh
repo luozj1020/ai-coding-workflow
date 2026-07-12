@@ -60,25 +60,75 @@ REVIEW_PREFIX="${DIFF_FILE%.diff}"
 REVIEW_OUTPUT_FILE="${REVIEW_PREFIX}.review.txt"
 CODEX_EVENTS_FILE="${REVIEW_PREFIX}.codex-events.jsonl"
 CODEX_USAGE_FILE="${REVIEW_PREFIX}.codex-usage.txt"
+REVIEW_PACKET_FILE="${REVIEW_PREFIX}.review-packet.json"
+REVIEW_PROMPT_FILE="${REVIEW_PREFIX}.review-prompt.txt"
 
-TASK_CONTENT="$(cat "$TASK_CARD")"
-RESULT_CONTENT="$(cat "$RESULT_JSON")"
-DIFF_CONTENT="$(cat "$DIFF_FILE")"
+# Build review packet if build-review-packet.py is available
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BUILD_PACKET_SCRIPT="${SCRIPT_DIR}/build-review-packet.py"
 
-EXTRA_EVIDENCE=""
-for f in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
-    if [ -n "$f" ] && [ -f "$f" ]; then
-        LABEL="$(basename "$f")"
-        EXTRA_EVIDENCE="${EXTRA_EVIDENCE}
+PYTHON_CMD=""
+if command -v python3 &>/dev/null; then
+    PYTHON_CMD="python3"
+elif command -v python &>/dev/null; then
+    PYTHON_CMD="python"
+fi
+
+# Find the run directory (parent of the diff file's directory)
+RUN_DIR="$(dirname "$DIFF_FILE")"
+# If diff is in a dispatch-N subdirectory, go up one level
+if [[ "$RUN_DIR" == */dispatch-* ]]; then
+    RUN_DIR="$(dirname "$RUN_DIR")"
+fi
+
+# Build review packet from run directory
+if [ -n "$PYTHON_CMD" ] && [ -f "$BUILD_PACKET_SCRIPT" ]; then
+    # Collect supplemental files
+    SUPPLEMENTAL_ARGS=""
+    for f in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
+        if [ -n "$f" ] && [ -f "$f" ]; then
+            SUPPLEMENTAL_ARGS="$SUPPLEMENTAL_ARGS $f"
+        fi
+    done
+
+    set +e
+    "$PYTHON_CMD" "$BUILD_PACKET_SCRIPT" "$RUN_DIR" \
+        --output "$REVIEW_PACKET_FILE" \
+        --prompt-output "$REVIEW_PROMPT_FILE" \
+        --supplemental $SUPPLEMENTAL_ARGS \
+        >/dev/null 2>&1
+    PACKET_STATUS=$?
+    set -e
+
+    if [ "$PACKET_STATUS" -ne 0 ]; then
+        echo "Warning: Review packet build failed (exit $PACKET_STATUS). Falling back to direct evidence." >&2
+    fi
+fi
+
+# Use review prompt from packet if available, otherwise build a bounded fallback
+if [ -f "$REVIEW_PROMPT_FILE" ]; then
+    REVIEW_PROMPT="$(cat "$REVIEW_PROMPT_FILE")"
+else
+    # Bounded fallback: do not concatenate full logs/diff
+    TASK_CONTENT="$(head -c 4000 "$TASK_CARD")"
+    RESULT_CONTENT="$(head -c 4000 "$RESULT_JSON")"
+    DIFF_CONTENT="$(head -c 20000 "$DIFF_FILE")"
+
+    EXTRA_EVIDENCE=""
+    for f in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
+        if [ -n "$f" ] && [ -f "$f" ]; then
+            LABEL="$(basename "$f")"
+            FILE_CONTENT="$(tail -c 4000 "$f")"
+            EXTRA_EVIDENCE="${EXTRA_EVIDENCE}
 
 ## Extra Evidence: ${LABEL}
 \`\`\`
-$(cat "$f")
+${FILE_CONTENT}
 \`\`\`"
-    fi
-done
+        fi
+    done
 
-REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the following execution evidence and make a structured decision.
+    REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the following execution evidence and make a structured decision.
 
 ## Your Role
 - You are reviewing, NOT implementing. Do NOT write code or suggest code edits.
@@ -259,12 +309,8 @@ For phase-only ACCEPT with remaining implementation/test-writing work, also prov
 ### Reusable Lessons
 Record any knowledge that could inform future planning."
 
-PYTHON_CMD=""
-if command -v python3 &>/dev/null; then
-    PYTHON_CMD="python3"
-elif command -v python &>/dev/null; then
-    PYTHON_CMD="python"
-fi
+# PYTHON_CMD is set earlier (before review packet build).
+# Remove the duplicate definition that was here.
 
 write_codex_usage() {
     if [ -z "$PYTHON_CMD" ]; then
@@ -354,10 +400,23 @@ fi
 echo "Review Output: $REVIEW_OUTPUT_FILE"
 echo "Codex Events:  $CODEX_EVENTS_FILE"
 echo "Codex Usage:   $CODEX_USAGE_FILE"
+if [ -f "$REVIEW_PACKET_FILE" ]; then
+    echo "Review Packet: $REVIEW_PACKET_FILE"
+fi
 echo ""
 
+# Pass prompt via stdin or file to avoid huge command-line arguments
 set +e
-codex exec --json "$REVIEW_PROMPT" > "$CODEX_EVENTS_FILE" 2>"${REVIEW_OUTPUT_FILE}.stderr"
+if [ -f "$REVIEW_PROMPT_FILE" ]; then
+    # Use the bounded prompt file
+    codex exec --json < "$REVIEW_PROMPT_FILE" > "$CODEX_EVENTS_FILE" 2>"${REVIEW_OUTPUT_FILE}.stderr"
+else
+    # Use a temp file for the prompt
+    TEMP_PROMPT="$(mktemp "${REVIEW_PREFIX}.prompt.XXXXXX")"
+    printf '%s' "$REVIEW_PROMPT" > "$TEMP_PROMPT"
+    codex exec --json < "$TEMP_PROMPT" > "$CODEX_EVENTS_FILE" 2>"${REVIEW_OUTPUT_FILE}.stderr"
+    rm -f "$TEMP_PROMPT"
+fi
 CODEX_STATUS=$?
 set -e
 

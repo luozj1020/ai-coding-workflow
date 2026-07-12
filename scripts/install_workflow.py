@@ -89,12 +89,20 @@ PYTHON_SCRIPTS = [
     ("render-task-card.py", "ai/render-task-card.py"),
     ("review_decision.py", "ai/review_decision.py"),
     ("parse-review-decision.py", "ai/parse-review-decision.py"),
+    ("event_writer.py", "ai/event_writer.py"),
+    ("validate-run-events.py", "ai/validate-run-events.py"),
+    ("build-review-packet.py", "ai/build-review-packet.py"),
+    ("resume-run.py", "ai/resume-run.py"),
+    ("replay-run.py", "ai/replay-run.py"),
 ]
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)
 SCHEMA_ASSETS = [
     ("schemas/task-card-v1.schema.json", "ai/schemas/task-card-v1.schema.json"),
     ("schemas/review-decision-v1.schema.json", "ai/schemas/review-decision-v1.schema.json"),
+    ("schemas/run-event-v2.schema.json", "ai/schemas/run-event-v2.schema.json"),
+    ("schemas/artifact-manifest-v1.schema.json", "ai/schemas/artifact-manifest-v1.schema.json"),
+    ("schemas/review-packet-v1.schema.json", "ai/schemas/review-packet-v1.schema.json"),
 ]
 
 # Structured assets: profiles (source relative to repo root, dest relative to repo root)
