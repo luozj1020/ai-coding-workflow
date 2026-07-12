@@ -4,6 +4,14 @@ A reusable Codex / Claude Code workflow skill for installing a local multi-agent
 
 English | [中文](README_CN.md)
 
+## Quota and latency optimized routing
+
+The control plane now minimizes total completion cost, not model calls in isolation. `python scripts/route-task.py task-hints.json` deterministically selects **express**, **standard**, **assured**, or **recovery**. Quota mode (`normal|constrained|critical`) and latency mode (`interactive|balanced|batch`) are independent. Standard work reserves Codex for an actual decision trigger; assured work reserves architecture and final reviews.
+
+`quota-ledger.py` enforces call budgets and duplicate-evidence guards. `evaluate-acceptance.py` performs L0 deterministic checks, `select-review-tier.py` chooses L0 local/L1 Spark/L2 Codex, `context-cache.py` reuses bounded locator evidence, and `check-retry-evidence.py` blocks retries without changed evidence. The `quota-efficient-balanced` profile uses a 32 KB Standard review packet.
+
+Remote Bazel handoff remains human-controlled. `generate-handoff.py` emits preview-only publish/update/batched-validation instructions, while `validation-ingest.py` classifies returned logs locally. These helpers never push, SSH, merge, or authorize acceptance.
+
 ## What it does
 
 ai-coding-workflow bootstraps repositories with:

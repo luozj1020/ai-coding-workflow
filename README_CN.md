@@ -4,6 +4,14 @@
 
 [English](README.md) | 中文
 
+## 额度与时延协同路由
+
+控制面现在优化“总完成成本”，而不是孤立追求模型调用最少。`python scripts/route-task.py task-hints.json` 通过确定性规则选择 **express、standard、assured、recovery** 四条通道。额度模式 `normal|constrained|critical` 与时延模式 `interactive|balanced|batch` 相互独立；普通任务仅在出现真实决策触发器时使用 Codex，高风险任务为架构和最终审查保留调用。
+
+`quota-ledger.py` 管理调用预算并拦截重复 evidence；`evaluate-acceptance.py` 执行 L0 确定性验收；`select-review-tier.py` 选择 L0 本地/L1 Spark/L2 Codex；`context-cache.py` 复用有界定位证据；`check-retry-evidence.py` 阻止无新证据重试。`quota-efficient-balanced` Profile 将 Standard Review Packet 限制为 32 KB。
+
+远程 Bazel 仍由人工控制。`generate-handoff.py` 只生成预览式发布、更新和合并 target 验证指令，`validation-ingest.py` 在本地分类返回日志；这些工具不会自动 push、SSH、merge 或批准验收。
+
 ## 功能说明
 
 ai-coding-workflow 可以为仓库自动配置：

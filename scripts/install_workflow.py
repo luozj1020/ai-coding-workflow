@@ -100,6 +100,15 @@ PYTHON_SCRIPTS = [
     ("learn-store.py", "ai/learn-store.py"),
     ("aiwf.py", "ai/aiwf.py"),
     ("run-benchmark-suite.py", "ai/run-benchmark-suite.py"),
+    ("route-task.py", "ai/route-task.py"),
+    ("quota-ledger.py", "ai/quota-ledger.py"),
+    ("latency-policy.py", "ai/latency-policy.py"),
+    ("evaluate-acceptance.py", "ai/evaluate-acceptance.py"),
+    ("select-review-tier.py", "ai/select-review-tier.py"),
+    ("context-cache.py", "ai/context-cache.py"),
+    ("check-retry-evidence.py", "ai/check-retry-evidence.py"),
+    ("validation-ingest.py", "ai/validation-ingest.py"),
+    ("compare-efficiency.py", "ai/compare-efficiency.py"),
 ]
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)
@@ -118,6 +127,7 @@ PROFILE_ASSETS = [
     ("profiles/bugfix.json", "ai/profiles/bugfix.json"),
     ("profiles/cpp-bazel.json", "ai/profiles/cpp-bazel.json"),
     ("profiles/manual-remote-validation.json", "ai/profiles/manual-remote-validation.json"),
+    ("profiles/quota-efficient-balanced.json", "ai/profiles/quota-efficient-balanced.json"),
 ]
 
 # Structured assets: examples (source relative to repo root, dest relative to repo root)
