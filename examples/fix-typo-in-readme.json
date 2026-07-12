@@ -5,8 +5,7 @@
   "goal": "Fix a typo in the project README.",
   "profiles": ["base", "bugfix"],
   "scope": {
-    "write_paths": ["README.md"],
-    "read_paths": []
+    "write_paths": ["README.md"]
   },
   "acceptance": [
     {
@@ -45,13 +44,7 @@
       "Typo not found at specified location"
     ]
   },
-  "validation": [
-    {
-      "id": "compile-check",
-      "command": ["python", "-m", "py_compile", "README.md"],
-      "description": "Verify README is still valid (placeholder — real check would be linter)"
-    }
-  ],
+  "validation": [],
   "stop_conditions": [
     "typo_not_found",
     "scope_boundary_crossed"

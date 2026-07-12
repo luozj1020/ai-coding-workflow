@@ -2,16 +2,6 @@
   "name": "base",
   "description": "Base profile for all task types. Provides sensible defaults.",
   "profile_version": 1,
-  "risk": {
-    "public_api": "unknown",
-    "data_model": "unknown",
-    "security": "unknown",
-    "migration": "unknown",
-    "permission": "unknown",
-    "concurrency": "unknown",
-    "cross_module": "unknown",
-    "production_impact": "unknown"
-  },
   "handoff": {
     "must_do": [
       "Report files changed with one-line purpose per file",

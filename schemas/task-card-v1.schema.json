@@ -215,7 +215,8 @@
           "command": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1
             },
             "minItems": 1,
             "description": "Command as argv array (not shell string)."

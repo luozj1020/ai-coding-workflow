@@ -34,6 +34,16 @@ REQUIRED_VALIDATION_FIELDS = ["id", "command"]
 
 TOP_LEVEL_PROPERTY_NAMES = set(REQUIRED_TOP_LEVEL) | {"extensions"}
 
+# Allowed nested keys (for rejecting unknown fields within sub-objects)
+VALID_SCOPE_KEYS = {"write_paths", "read_paths", "forbidden_paths"}
+VALID_ACCEPTANCE_KEYS = {"id", "description", "validation_id"}
+VALID_RISK_KEYS = {
+    "public_api", "data_model", "security", "migration",
+    "permission", "concurrency", "cross_module", "production_impact",
+}
+VALID_HANDOFF_KEYS = {"must_do", "must_not_do", "may_decide", "must_report", "stop_condition"}
+VALID_VALIDATION_KEYS = {"id", "command", "description", "local_allowed"}
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -156,6 +166,9 @@ def validate_task(data: Any, path: str = "") -> List[str]:
         errors.append(f"{root}.scope: expected object")
     else:
         scope = data["scope"]
+        for key in scope:
+            if key not in VALID_SCOPE_KEYS:
+                errors.append(f"{_json_path(root, 'scope')}: unknown key '{key}'")
         for f in REQUIRED_SCOPE_FIELDS:
             if f not in scope:
                 errors.append(f"{_json_path(root, 'scope')}: missing required field '{f}'")
@@ -181,16 +194,28 @@ def validate_task(data: Any, path: str = "") -> List[str]:
     elif not data["acceptance"]:
         errors.append(f"{root}.acceptance: expected non-empty array")
     else:
+        seen_acceptance_ids: set[str] = set()
         for i, item in enumerate(data["acceptance"]):
             ap = f"{root}.acceptance[{i}]"
             if not isinstance(item, dict):
                 errors.append(f"{ap}: expected object")
                 continue
+            for key in item:
+                if key not in VALID_ACCEPTANCE_KEYS:
+                    errors.append(f"{ap}: unknown key '{key}'")
             for f in REQUIRED_ACCEPTANCE_FIELDS:
                 if f not in item:
                     errors.append(f"{ap}: missing required field '{f}'")
                 elif not isinstance(item[f], str) or not item[f]:
                     errors.append(f"{ap}.{f}: expected non-empty string")
+            if "id" in item and isinstance(item["id"], str) and item["id"]:
+                if item["id"] in seen_acceptance_ids:
+                    errors.append(f"{ap}: duplicate acceptance id '{item['id']}'")
+                seen_acceptance_ids.add(item["id"])
+            if "validation_id" in item:
+                vid = item["validation_id"]
+                if not isinstance(vid, str) or not vid:
+                    errors.append(f"{ap}.validation_id: expected non-empty string")
 
     # risk
     if "risk" not in data:
@@ -198,6 +223,9 @@ def validate_task(data: Any, path: str = "") -> List[str]:
     elif not isinstance(data["risk"], dict):
         errors.append(f"{root}.risk: expected object")
     else:
+        for key in data["risk"]:
+            if key not in VALID_RISK_KEYS:
+                errors.append(f"{_json_path(root, 'risk')}: unknown key '{key}'")
         for key, val in data["risk"].items():
             if val not in VALID_RISK_VALUES:
                 errors.append(f"{_json_path(root, 'risk')}.{key}: expected one of {VALID_RISK_VALUES}, got '{val}'")
@@ -207,6 +235,17 @@ def validate_task(data: Any, path: str = "") -> List[str]:
         errors.append(f"{root}: missing required field 'handoff'")
     elif not isinstance(data["handoff"], dict):
         errors.append(f"{root}.handoff: expected object")
+    else:
+        for key in data["handoff"]:
+            if key not in VALID_HANDOFF_KEYS:
+                errors.append(f"{_json_path(root, 'handoff')}: unknown key '{key}'")
+        for key, val in data["handoff"].items():
+            if not isinstance(val, list):
+                errors.append(f"{_json_path(root, 'handoff')}.{key}: expected array")
+            else:
+                for i, item in enumerate(val):
+                    if not isinstance(item, str) or not item:
+                        errors.append(f"{_json_path(root, 'handoff')}.{key}[{i}]: expected non-empty string")
 
     # validation
     if "validation" not in data:
@@ -214,14 +253,22 @@ def validate_task(data: Any, path: str = "") -> List[str]:
     elif not isinstance(data["validation"], list):
         errors.append(f"{root}.validation: expected array")
     else:
+        seen_validation_ids: set[str] = set()
         for i, item in enumerate(data["validation"]):
             vp = f"{root}.validation[{i}]"
             if not isinstance(item, dict):
                 errors.append(f"{vp}: expected object")
                 continue
+            for key in item:
+                if key not in VALID_VALIDATION_KEYS:
+                    errors.append(f"{vp}: unknown key '{key}'")
             for f in REQUIRED_VALIDATION_FIELDS:
                 if f not in item:
                     errors.append(f"{vp}: missing required field '{f}'")
+            if "id" in item and isinstance(item["id"], str) and item["id"]:
+                if item["id"] in seen_validation_ids:
+                    errors.append(f"{vp}: duplicate validation id '{item['id']}'")
+                seen_validation_ids.add(item["id"])
             if "command" in item:
                 cmd = item["command"]
                 if not isinstance(cmd, list):
@@ -232,6 +279,21 @@ def validate_task(data: Any, path: str = "") -> List[str]:
                     for j, arg in enumerate(cmd):
                         if not isinstance(arg, str):
                             errors.append(f"{vp}.command[{j}]: expected string")
+                        elif not arg:
+                            errors.append(f"{vp}.command[{j}]: expected non-empty string")
+
+        # Cross-reference: every acceptance validation_id must reference an existing validation id
+        if "acceptance" in data and isinstance(data["acceptance"], list):
+            for i, item in enumerate(data["acceptance"]):
+                if not isinstance(item, dict):
+                    continue
+                vid = item.get("validation_id")
+                if vid is not None:
+                    if vid not in seen_validation_ids:
+                        errors.append(
+                            f"{root}.acceptance[{i}].validation_id: "
+                            f"references unknown validation id '{vid}'"
+                        )
 
     # stop_conditions
     if "stop_conditions" not in data:
@@ -275,6 +337,14 @@ def load_profile(name: str, profiles_dir: Union[str, Path]) -> Dict[str, Any]:
 
     if "name" not in data:
         raise ProfileLoadError(f"Profile missing 'name' field: {profile_path}")
+
+    if "profile_version" not in data:
+        raise ProfileLoadError(f"Profile missing 'profile_version' field: {profile_path}")
+
+    if data["name"] != name:
+        raise ProfileLoadError(
+            f"Profile name '{data['name']}' does not match filename '{name}': {profile_path}"
+        )
 
     return data
 
