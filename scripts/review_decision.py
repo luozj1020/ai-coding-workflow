@@ -105,11 +105,13 @@ def extract_decision_json(text: str) -> Dict[str, Any]:
     """
     candidates: List[Dict[str, Any]] = []
 
-    # Strategy 1: try the entire text as JSON
+    # Strategy 1: try the entire text (or a prefix) as JSON.
+    # raw_decode detects a JSON object at position 0 even when trailing
+    # content (e.g. fenced blocks) follows, ensuring ambiguity is caught.
     stripped = text.strip()
-    if stripped.startswith("{") and stripped.endswith("}"):
+    if stripped.startswith("{"):
         try:
-            obj = json.loads(stripped)
+            obj, _ = json.JSONDecoder().raw_decode(stripped, 0)
             if isinstance(obj, dict):
                 candidates.append(obj)
         except json.JSONDecodeError:
