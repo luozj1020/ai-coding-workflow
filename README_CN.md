@@ -19,6 +19,60 @@ ai-coding-workflow 可以为仓库自动配置：
 - Direction / Boundary Acknowledgement 方向/边界确认门，以及防反复确认规则
 - 幂等更新的托管块（managed blocks）
 
+## 工作流架构概览
+
+```mermaid
+flowchart TD
+    U[用户目标] --> O[OBSERVE 观察<br/>LSP · locator · Zoekt/rg · 有界 CodeGraph]
+    O --> R{任务卡前 ROUTE 路由}
+
+    R -- 微小且明确 --> F{确定性快速路径 Gate}
+    R -- 规模或成本不明确 --> SE[Spark 执行成本预估<br/>短简报 · 直接回传]
+    SE --> F
+    R -- 多个工作单元 --> PA[本地并行机会判断<br/>零 Token]
+    PA -- serial-obvious --> P[Codex PLAN 规划<br/>spec · 任务卡 · 验收 · 责任]
+    PA -- parallel-candidate --> PP[Spark parallel-planner<br/>一次受限的建议调用]
+    PP --> PG[Codex/人工审查 DAG<br/>范围 · contracts · Base commit · 验证责任]
+
+    F -- 安全的局部修改 --> C[Codex 范围内直接修改]
+    F -- 委派或先写 spec --> P
+    P --> D[串行 DISPATCH<br/>默认 balanced]
+    D --> W{Worktree 策略 Gate}
+    W -- 普通或高风险 --> FW[Fresh worktree<br/>完整证据]
+    W -- 精确低风险串行任务 --> RW[Managed reuse 或原地重试<br/>显式证据取舍]
+    FW --> B[Claude Builder<br/>范围内实现]
+    RW --> B
+
+    PG --> PV{确定性并行校验}
+    PV -- 拒绝 --> SF[输出串行回退顺序<br/>不自动执行]
+    SF --> P
+    PV -- 通过 --> PD[显式 flat 或 DAG 派发<br/>最大并发 2]
+    PD --> MB[独立 Claude Builders<br/>隔离 worktrees]
+    MB --> AR[串行聚合审查<br/>不自动合并]
+
+    B --> R1[Codex 方向审查]
+    R1 -- 修订或拆分 --> P
+    R1 -- 方向接受 --> K[Claude Checker/Test<br/>分配的测试和精确验证]
+    C --> V[确定性验证]
+    K --> V
+    AR --> V
+
+    V --> E[证据包<br/>runtime identity · 角色 PID · diff · 报告 · checks]
+    E --> R2{Codex 最终审查}
+    R2 -- 接受 --> H[人工审查和合并]
+    R2 -- 修订 --> P
+    R2 -- 命中停止条件 --> X[保留证据并升级处理]
+
+    classDef auxiliary fill:#eef6ff,stroke:#3973ac,color:#102a43;
+    classDef execution fill:#fff7e6,stroke:#b7791f,color:#4a2c00;
+    classDef decision fill:#f3e8ff,stroke:#805ad5,color:#2d1b4e;
+    class SE,PP auxiliary;
+    class B,MB,K,C,V,PD execution;
+    class R,F,W,PA,PV,R1,R2 decision;
+```
+
+完整控制循环为 **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**。ROUTE 位于完整任务卡之前：明显任务走零模型串行路径，成本不明确时可使用一次短 Spark 预估，只有疑似存在多个独立范围的任务才进入可选并行规划。Spark 始终只提供建议，不负责派发、验收或合并。Codex负责路由、规划和审查；Claude Builder负责委派实现；Claude Checker/Test负责被分配的测试。并行 Builder使用隔离 worktree，最终仍通过串行聚合审查汇合；人工审查和合并与自动派发保持分离。
+
 ## 常用动作
 
 | 动作 | 时机 | 命令 |

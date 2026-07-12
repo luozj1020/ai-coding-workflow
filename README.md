@@ -23,42 +23,55 @@ ai-coding-workflow bootstraps repositories with:
 
 ```mermaid
 flowchart TD
-    U[Human goal] --> O[OBSERVE<br/>LSP · locator · bounded CodeGraph · local evidence]
-    O --> S{Scope and risk clear?}
-    S -- Uncertain --> SP[Spark auxiliary pass<br/>size/cost estimate · audit · split · validation plan]
-    SP --> P
-    S -- Yes --> P[Codex PLAN<br/>spec · task card · acceptance · ownership]
+    U[Human goal] --> O[OBSERVE<br/>LSP · locator · Zoekt/rg · bounded CodeGraph]
+    O --> R{ROUTE before task card}
 
-    P --> F{Small Change Fast Path?}
+    R -- Tiny and clear --> F{Deterministic fast-path gate}
+    R -- Size or cost unclear --> SE[Spark execution-cost estimator<br/>short brief · direct result]
+    SE --> F
+    R -- Multiple work units --> PA[Local parallel opportunity check<br/>zero token]
+    PA -- serial-obvious --> P[Codex PLAN<br/>spec · task card · acceptance · ownership]
+    PA -- parallel-candidate --> PP[Spark parallel-planner<br/>one bounded advisory call]
+    PP --> PG[Codex/human reviews DAG<br/>scopes · contracts · base commit · validation owner]
+
     F -- Safe local change --> C[Codex scoped edit]
-    F -- Delegated work --> D[DISPATCH]
+    F -- Delegate or spec-first --> P
+    P --> D[Serial DISPATCH<br/>balanced by default]
     D --> W{Worktree strategy gate}
-    W -- Normal/high risk --> FW[Fresh worktree<br/>full evidence]
-    W -- Exact low-risk serial task --> RW[Managed reuse or safe retry-in-place<br/>explicit reduced-evidence tradeoff]
-
+    W -- Normal or high risk --> FW[Fresh worktree<br/>full evidence]
+    W -- Exact low-risk serial task --> RW[Managed reuse or retry-in-place<br/>explicit evidence tradeoff]
     FW --> B[Claude Builder<br/>scoped implementation]
     RW --> B
+
+    PG --> PV{Deterministic parallel validation}
+    PV -- Rejected --> SF[Printed serial fallback order<br/>no automatic execution]
+    SF --> P
+    PV -- Accepted --> PD[Explicit flat or DAG dispatch<br/>max concurrency 2]
+    PD --> MB[Independent Claude Builders<br/>isolated worktrees]
+    MB --> AR[Serial aggregate review<br/>no automatic merge]
+
     B --> R1[Codex direction review]
     R1 -- Revise or split --> P
-    R1 -- Direction accepted --> K[Claude Checker/Test<br/>assigned tests and exact validation]
+    R1 -- Accepted direction --> K[Claude Checker/Test<br/>assigned tests and exact validation]
     C --> V[Deterministic verification]
     K --> V
+    AR --> V
 
     V --> E[Evidence packet<br/>runtime identity · role PIDs · diff · reports · checks]
     E --> R2{Codex final review}
-    R2 -- Accept --> H[Human review / merge]
+    R2 -- Accept --> H[Human review and merge]
     R2 -- Revise --> P
     R2 -- Stop condition --> X[Preserve artifacts and escalate]
 
     classDef auxiliary fill:#eef6ff,stroke:#3973ac,color:#102a43;
     classDef execution fill:#fff7e6,stroke:#b7791f,color:#4a2c00;
     classDef decision fill:#f3e8ff,stroke:#805ad5,color:#2d1b4e;
-    class SP auxiliary;
-    class B,K,C,V execution;
-    class S,F,W,R1,R2 decision;
+    class SE,PP auxiliary;
+    class B,MB,K,C,V,PD execution;
+    class R,F,W,PA,PV,R1,R2 decision;
 ```
 
-The control loop is **OBSERVE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**. Spark is optional advisory support and does not authorize merge. Codex owns planning and review; Claude Builder owns delegated implementation; Claude Checker/Test owns assigned test work and validation. Runtime identity, progress, role PID, diff, and checker artifacts keep interrupted or partially completed runs recoverable. Human review and merge remain separate from automated dispatch.
+The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**. ROUTE happens before full task-card authoring: obvious work stays on the zero-model serial path, uncertain cost may use a short Spark estimate, and only plausible multi-scope work reaches the optional parallel planner. Spark remains advisory and never dispatches, accepts, or merges. Codex owns routing, planning, and review; Claude Builder owns delegated edits; Claude Checker/Test owns assigned test work. Parallel builders remain isolated and converge through serial aggregate review. Runtime identity, progress, role PID, diff, reports, and checker artifacts keep interrupted work recoverable; human review and merge remain separate.
 
 ## Common actions
 
