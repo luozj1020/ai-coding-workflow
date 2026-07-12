@@ -101,6 +101,7 @@ PYTHON_SCRIPTS = [
     ("aiwf.py", "ai/aiwf.py"),
     ("run-benchmark-suite.py", "ai/run-benchmark-suite.py"),
     ("route-task.py", "ai/route-task.py"),
+    ("collect-task-facts.py", "ai/collect-task-facts.py"),
     ("quota-ledger.py", "ai/quota-ledger.py"),
     ("latency-policy.py", "ai/latency-policy.py"),
     ("evaluate-acceptance.py", "ai/evaluate-acceptance.py"),

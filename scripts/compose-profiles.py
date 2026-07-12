@@ -8,6 +8,9 @@ Reads a task JSON, composes its declared profiles, merges with the task
 instance, and writes the composed result. Non-zero exit on invalid
 schema, missing profiles, or composition conflict.
 
+Pipeline: validate raw Task → compose profiles → validate composed Task.
+Fail closed with actionable errors at each step.
+
 Python 3.9+ compatible. No third-party dependencies.
 """
 from __future__ import annotations
@@ -61,21 +64,21 @@ def main(argv: list[str] | None = None) -> int:
 
     profiles_dir = Path(args.profiles_dir) if args.profiles_dir else find_default_profiles_dir()
 
-    # Load task
+    # Step 1: Load raw task
     try:
         task = load_task_json(args.task)
     except ValidationError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    # Validate task
+    # Step 2: Validate raw task (fail closed before composition)
     errors = validate_task(task)
     if errors:
         for err in errors:
-            print(f"Validation error: {err}", file=sys.stderr)
+            print(f"Raw task validation error: {err}", file=sys.stderr)
         return 1
 
-    # Compose profiles
+    # Step 3: Compose profiles
     try:
         composed = compose_profiles(task.get("profiles", []), profiles_dir, task)
     except ProfileLoadError as exc:
@@ -85,7 +88,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Conflict: {exc}", file=sys.stderr)
         return 1
 
-    # Write output
+    # Step 4: Validate composed task (mandatory post-compose check)
+    composed_errors = validate_task(composed)
+    if composed_errors:
+        for err in composed_errors:
+            print(f"Composed task validation error: {err}", file=sys.stderr)
+        return 1
+
+    # Step 5: Write output
     output_str = json.dumps(composed, indent=2, ensure_ascii=False, sort_keys=False) + "\n"
     write_output(output_str, args.output)
 

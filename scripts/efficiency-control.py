@@ -26,8 +26,8 @@ def write_json(path, data):
 def prepare(args):
     hints = json.loads(Path(args.hints).read_text(encoding="utf-8"))
     route = router.route(hints); task_id = hints.get("task_id") or Path(args.task_card).stem
-    risks = {k for k, v in hints.get("risks", {}).items() if v not in ("no", False, None, 0)}
-    single = route["lane"] == "express" and not risks and hints.get("exact_validation") and hints.get("files", 99) <= 2 and not hints.get("test_changes_large")
+    # Copy single-pass eligibility from Router — never re-derive
+    single = route["execution"]["single_pass_allowed"]
     spark_use = (not hints.get("local_tools_sufficient", False) and hints.get("spark_may_change_route", False)
                  and (hints.get("spark_may_avoid_codex", False) or hints.get("spark_may_avoid_retry", False))
                  and route["budget"]["spark_calls"] > 0)
@@ -38,7 +38,7 @@ def prepare(args):
     }
     cache_identity = {"commit": hints.get("commit"), "files": hints.get("target_files", []), "symbols": hints.get("symbols", []), "profile": hints.get("profile"), "targets": hints.get("build_targets", [])}
     plan = {"schema_version": 1, "generated_at": int(time.time()), "task_id": task_id, "lane": route["lane"], "budget": route["budget"],
-            "execution": {"builder_checker_split": route["execution"]["builder_checker_split"], "single_pass_builder_checker": single, "max_iterations": 2 if hints.get("latency_mode", "interactive") == "interactive" else 3, "require_new_evidence_for_retry": True},
+            "execution": {"builder_checker_split": route["execution"]["builder_checker_split"], "single_pass_allowed": single, "single_pass_reason": route["execution"]["single_pass_reason"], "max_iterations": 2 if hints.get("latency_mode", "interactive") == "interactive" else 3, "require_new_evidence_for_retry": True},
             "review": {"reserved_for": route["budget"].get("codex_reserved_for", []), "milestones": ["implementation-complete", "validation-complete", "final-candidate"], "incremental": True},
             "spark": {"invoke": bool(spark_use), "reason": "may change route and avoid stronger/retry call" if spark_use else "local tools sufficient or result cannot change route", "max_calls": 1},
             "context": {"cache_key": digest(cache_identity), "levels": levels, "default_level": "L1", "allow_l2_on_gap": True},
