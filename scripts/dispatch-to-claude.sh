@@ -926,6 +926,8 @@ Core rules:
 
 `CLAUDE_REPORT.md` before finishing must include: requirements summary, files changed, acceptance criteria mapping, out-of-scope confirmation, plan match, validation confidence, reviewer should check, checks run/blocked, deviations, risks, open questions, and human review checklist.
 
+- If `CLAUDE_CONTEXT_PACKET.md` is present, read it before exploring the codebase. It contains pre-computed target files, symbols, snippets, and constraints.
+
 --- CLAUDE EXECUTION CARD ---
 EOF
 else
@@ -1013,6 +1015,10 @@ Checker expectations:
 - Known risks, assumptions, and open questions.
 - Human review checklist.
 - Notes that help Codex compare the implementation against the original task.
+
+Context Packet:
+- If `CLAUDE_CONTEXT_PACKET.md` is present, read it before exploring the codebase. It contains pre-computed target files, symbols, snippets, and constraints relevant to this task.
+- The context packet is dispatch evidence and should not be counted as an implementation change.
 
 --- CLAUDE EXECUTION CARD ---
 EOF

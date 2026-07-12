@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Union
 
 # Allow running from repo root or scripts dir
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from evidence_hash import canonical_json as _canonical_json, evidence_hash as _evidence_hash
 from task_schema import (
     ProfileConflictError,
     ProfileLoadError,
@@ -56,14 +57,8 @@ def _escalate_risk(current: str, hint_value: str) -> str:
     return "yes" if max(c, h) == 2 else ("unknown" if max(c, h) == 1 else "no")
 
 
-def _canonical_json(data: Any) -> str:
-    """Produce canonical JSON for hashing: sorted keys, compact separators."""
-    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def _facts_hash(data: Any) -> str:
-    """SHA-256 of canonical JSON representation."""
-    return hashlib.sha256(_canonical_json(data).encode("utf-8")).hexdigest()
+# Canonical JSON and hashing delegated to shared evidence_hash module.
+_facts_hash = _evidence_hash
 
 
 def _git(repo: Path, *args: str) -> str:

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Deterministic Optimization control plane; it never invokes models."""
-import argparse, hashlib, importlib.util, json, time
+import argparse, importlib.util, json, time
 from pathlib import Path
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+from evidence_hash import evidence_hash as _evidence_hash, content_hash as _content_hash
 
 HERE = Path(__file__).resolve().parent
 
@@ -15,9 +18,7 @@ router = load_module("aiwf_route", "route-task.py")
 evaluator = load_module("aiwf_accept", "evaluate-acceptance.py")
 tiers = load_module("aiwf_tier", "select-review-tier.py")
 
-def digest(value):
-    raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(raw.encode()).hexdigest()
+digest = _evidence_hash
 
 def write_json(path, data):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,7 +55,7 @@ def prepare(args):
         write_json(cache_path, context_packet)
     write_json(output / "execution-plan.json", plan)
     write_json(output / "context-packet.json", context_packet)
-    write_json(output / "retry-state.json", {"task_card": hashlib.sha256(Path(args.task_card).read_bytes()).hexdigest(), "context": digest(levels), "failure_log": None, "environment": digest(hints.get("environment", {}))})
+    write_json(output / "retry-state.json", {"task_card": _content_hash(Path(args.task_card).read_bytes()), "context": digest(levels), "failure_log": None, "environment": digest(hints.get("environment", {}))})
     print(json.dumps(plan, ensure_ascii=False, sort_keys=True, indent=2))
 
 def review(args):

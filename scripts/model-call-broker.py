@@ -21,7 +21,6 @@ Python 3.9+ compatible. No third-party dependencies.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
@@ -31,6 +30,9 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from evidence_hash import content_hash as _content_hash
 
 # ---------------------------------------------------------------------------
 # Cross-process locking
@@ -341,12 +343,15 @@ def validate_ledger_history(records: List[Dict[str, Any]]) -> None:
 
 
 def compute_hash(path: Optional[Path], fallback: bytes = b"") -> str:
-    """SHA-256 of file contents, or of fallback bytes if no path."""
+    """SHA-256 of file contents, or of fallback bytes if no path.
+
+    Delegates to shared evidence_hash.content_hash for canonical implementation.
+    """
     if path is not None:
         data = path.read_bytes()
     else:
         data = fallback
-    return hashlib.sha256(data).hexdigest()
+    return _content_hash(data)
 
 
 # ---------------------------------------------------------------------------

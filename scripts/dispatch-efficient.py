@@ -1,22 +1,334 @@
 #!/usr/bin/env python3
-"""Budgeted dispatch front door. Preview by default; --execute invokes Claude once."""
-import argparse, hashlib, json, re, subprocess, time
+"""Budgeted dispatch front door. Preview by default; --execute invokes Claude once.
+
+Changes from PR4:
+- Context injection: materializes CLAUDE_CONTEXT_PACKET.md from plan/context JSON
+  before Claude starts, so the prompt can reference it.
+- Real-time tee: --execute streams stdout/stderr to terminal while saving to files,
+  replacing the old capture_output=True approach.
+"""
+import argparse, hashlib, json, os, re, subprocess, sys, time
 from pathlib import Path
-HERE=Path(__file__).resolve().parent
-def rows(path): return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()] if path.exists() else []
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from evidence_hash import content_hash as _content_hash, evidence_hash as _evidence_hash
+
+
+def rows(path):
+    return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()] if path.exists() else []
+
+
+def _render_context_packet_md(context_packet: dict) -> str:
+    """Render a context packet dict as CLAUDE_CONTEXT_PACKET.md.
+
+    Produces a structured markdown with L0/L1/L2 levels for Claude to read
+    before exploration.
+    """
+    lines = [
+        "# Claude Context Packet",
+        "",
+        f"**Task ID:** {context_packet.get('task_id', 'unknown')}",
+        f"**Goal:** {context_packet.get('goal', '')}",
+        "",
+    ]
+
+    # Forbidden paths
+    forbidden = context_packet.get("forbidden_paths", [])
+    if forbidden:
+        lines.append("## Forbidden Paths")
+        lines.append("")
+        for p in forbidden:
+            lines.append(f"- `{p}`")
+        lines.append("")
+
+    # Validation
+    validation = context_packet.get("validation", [])
+    if validation:
+        lines.append("## Validation Commands")
+        lines.append("")
+        for v in validation:
+            lines.append(f"- `{v}`")
+        lines.append("")
+
+    # Acceptance
+    acceptance = context_packet.get("acceptance", [])
+    if acceptance:
+        lines.append("## Acceptance Criteria")
+        lines.append("")
+        for a in acceptance:
+            if isinstance(a, dict):
+                lines.append(f"- {a.get('description', a.get('id', str(a)))}")
+            else:
+                lines.append(f"- {a}")
+        lines.append("")
+
+    # L0: Target files, symbols, build targets
+    l0 = context_packet.get("L0", {})
+    l0_files = l0.get("files", [])
+    l0_symbols = l0.get("symbols", [])
+    l0_targets = l0.get("targets", [])
+    if l0_files or l0_symbols or l0_targets:
+        lines.append("## L0 — Primary Targets")
+        lines.append("")
+        if l0_files:
+            lines.append("### Files")
+            lines.append("")
+            for f in l0_files:
+                lines.append(f"- `{f}`")
+            lines.append("")
+        if l0_symbols:
+            lines.append("### Symbols")
+            lines.append("")
+            for s in l0_symbols:
+                lines.append(f"- `{s}`")
+            lines.append("")
+        if l0_targets:
+            lines.append("### Build Targets")
+            lines.append("")
+            for t in l0_targets:
+                lines.append(f"- `{t}`")
+            lines.append("")
+
+    # L1: Snippets, call paths, constraints
+    l1 = context_packet.get("L1", {})
+    l1_snippets = l1.get("snippets", [])
+    l1_call_paths = l1.get("call_paths", [])
+    l1_constraints = l1.get("constraints", [])
+    if l1_snippets or l1_call_paths or l1_constraints:
+        lines.append("## L1 — Context Snippets & Constraints")
+        lines.append("")
+        if l1_snippets:
+            lines.append("### Reference Snippets")
+            lines.append("")
+            for s in l1_snippets:
+                if isinstance(s, dict):
+                    lines.append(f"- `{s.get('file', '?')}` lines {s.get('start', '?')}-{s.get('end', '?')}")
+                else:
+                    lines.append(f"- {s}")
+            lines.append("")
+        if l1_call_paths:
+            lines.append("### Call Paths")
+            lines.append("")
+            for cp in l1_call_paths:
+                lines.append(f"- `{cp}`")
+            lines.append("")
+        if l1_constraints:
+            lines.append("### Constraints")
+            lines.append("")
+            for c in l1_constraints:
+                lines.append(f"- {c}")
+            lines.append("")
+
+    # L2: Full files (only when enabled)
+    l2 = context_packet.get("L2", {})
+    if l2.get("enabled") and l2.get("full_files"):
+        lines.append("## L2 — Full File Content")
+        lines.append("")
+        for entry in l2["full_files"]:
+            if isinstance(entry, dict):
+                path = entry.get("path", "?")
+                content = entry.get("content", "")
+                lines.append(f"### `{path}`")
+                lines.append("")
+                lines.append("```")
+                lines.append(content)
+                lines.append("```")
+                lines.append("")
+            else:
+                lines.append(f"- `{entry}`")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("*This packet was auto-generated by the dispatch-efficient control plane.*")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _materialize_context_packet(out: Path, context_packet_path: Path) -> Path:
+    """Materialize CLAUDE_CONTEXT_PACKET.md from context-packet.json.
+
+    Returns the path to the generated markdown file.
+    """
+    packet = json.loads(context_packet_path.read_text(encoding="utf-8"))
+    md_content = _render_context_packet_md(packet)
+    md_path = out / "CLAUDE_CONTEXT_PACKET.md"
+    md_path.write_text(md_content, encoding="utf-8")
+    return md_path
+
+
+def _tee_subprocess(cmd, stdin_data=None, stdout_path=None, stderr_path=None, cwd=None):
+    """Run a subprocess with real-time tee: stream to terminal AND save to files.
+
+    Returns the exit code. Preserves child exit code exactly.
+    """
+    import select
+    import threading
+
+    # Open output files
+    out_fh = open(stdout_path, "wb") if stdout_path else None
+    err_fh = open(stderr_path, "wb") if stderr_path else None
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE if stdin_data is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+        )
+
+        # Feed stdin and close
+        if stdin_data is not None:
+            proc.stdin.write(stdin_data)
+            proc.stdin.close()
+
+        # Thread-safe tee for stdout and stderr
+        def tee_stream(src, dst_file, dst_terminal):
+            """Read from src, write to dst_file and dst_terminal."""
+            while True:
+                chunk = src.read(4096)
+                if not chunk:
+                    break
+                if dst_file:
+                    dst_file.write(chunk)
+                    dst_file.flush()
+                dst_terminal.write(chunk)
+                dst_terminal.flush()
+
+        stdout_thread = threading.Thread(
+            target=tee_stream,
+            args=(proc.stdout, out_fh, sys.stdout.buffer),
+            daemon=True,
+        )
+        stderr_thread = threading.Thread(
+            target=tee_stream,
+            args=(proc.stderr, err_fh, sys.stderr.buffer),
+            daemon=True,
+        )
+
+        stdout_thread.start()
+        stderr_thread.start()
+
+        proc.wait()
+        stdout_thread.join()
+        stderr_thread.join()
+
+        return proc.returncode
+
+    finally:
+        if out_fh:
+            out_fh.close()
+        if err_fh:
+            err_fh.close()
+
+
 def main():
- p=argparse.ArgumentParser();p.add_argument("--plan",required=True);p.add_argument("--task-card",required=True);p.add_argument("--output-dir",required=True);p.add_argument("--ledger",default=".ai-workflow/run-ledger.jsonl");p.add_argument("--retry-state");p.add_argument("--current-context");p.add_argument("--failure-log");p.add_argument("--execute",action="store_true");a=p.parse_args();plan=json.loads(Path(a.plan).read_text());card=Path(a.task_card);out=Path(a.output_dir);out.mkdir(parents=True,exist_ok=True);ledger=Path(a.ledger);calls=[x for x in rows(ledger) if x.get("task_id")==plan["task_id"] and x.get("model")=="claude"]
- if len(calls)>=plan["budget"]["claude_calls"]: print("Claude call budget exhausted");return 2
- if calls and not a.retry_state: print("Retry requires --retry-state and new evidence");return 2
- if calls:
-  old=json.loads(Path(a.retry_state).read_text());now={"task_card":hashlib.sha256(card.read_bytes()).hexdigest(),"context":hashlib.sha256(Path(a.current_context).read_bytes()).hexdigest() if a.current_context else None,"failure_log":hashlib.sha256(Path(a.failure_log).read_bytes()).hexdigest() if a.failure_log else None}
-  if not any(v and v!=old.get(k) for k,v in now.items()): print("no-new-evidence retry blocked");return 2
- dispatch_card=card
- if plan["execution"].get("single_pass_allowed"):
-  text=card.read_text(encoding="utf-8");text=re.sub(r"(?im)^\|\s*Mode\s*\|\s*builder\s*\|","| Mode | mixed-exception |",text,count=1);text+="\n## Mixed Exception\nExpress Lane authorizes implementation plus exact narrow validation only.\n";dispatch_card=out/"single-pass-task-card.md";dispatch_card.write_text(text,encoding="utf-8")
- preview={"task_id":plan["task_id"],"lane":plan["lane"],"dispatch_card":str(dispatch_card),"single_pass":plan["execution"].get("single_pass_allowed",False),"call_index":len(calls)+1,"execute":a.execute};(out/"dispatch-preview.json").write_text(json.dumps(preview,sort_keys=True,indent=2)+"\n");print(json.dumps(preview,sort_keys=True,indent=2))
- if not a.execute:return 0
- start=time.time();result=subprocess.run(["bash",str(HERE/"dispatch-to-claude.sh"),str(dispatch_card)],text=True,capture_output=True);entry={"schema_version":1,"timestamp":int(time.time()),"run_id":out.name,"task_id":plan["task_id"],"stage":"single-pass" if preview["single_pass"] else "builder","model":"claude","call_index":len(calls)+1,"input_hash":hashlib.sha256(dispatch_card.read_bytes()).hexdigest(),"evidence_hash":hashlib.sha256((a.failure_log or "initial").encode()).hexdigest(),"elapsed_seconds":round(time.time()-start,3),"result":"dispatched" if result.returncode==0 else "dispatch-failed","next_action":"milestone-review"};ledger.parent.mkdir(parents=True,exist_ok=True)
- with ledger.open("a",encoding="utf-8") as f:f.write(json.dumps(entry,sort_keys=True)+"\n")
- (out/"dispatch.stdout").write_text(result.stdout);(out/"dispatch.stderr").write_text(result.stderr);return result.returncode
-if __name__=="__main__":raise SystemExit(main())
+    p = argparse.ArgumentParser()
+    p.add_argument("--plan", required=True)
+    p.add_argument("--task-card", required=True)
+    p.add_argument("--output-dir", required=True)
+    p.add_argument("--ledger", default=".ai-workflow/run-ledger.jsonl")
+    p.add_argument("--retry-state")
+    p.add_argument("--current-context")
+    p.add_argument("--failure-log")
+    p.add_argument("--execute", action="store_true")
+    a = p.parse_args()
+
+    plan = json.loads(Path(a.plan).read_text())
+    card = Path(a.task_card)
+    out = Path(a.output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    ledger = Path(a.ledger)
+    calls = [x for x in rows(ledger) if x.get("task_id") == plan["task_id"] and x.get("model") == "claude"]
+
+    if len(calls) >= plan["budget"]["claude_calls"]:
+        print("Claude call budget exhausted")
+        return 2
+
+    if calls and not a.retry_state:
+        print("Retry requires --retry-state and new evidence")
+        return 2
+
+    if calls:
+        old = json.loads(Path(a.retry_state).read_text())
+        now = {
+            "task_card": _content_hash(card.read_bytes()),
+            "context": _content_hash(Path(a.current_context).read_bytes()) if a.current_context else None,
+            "failure_log": _content_hash(Path(a.failure_log).read_bytes()) if a.failure_log else None,
+        }
+        if not any(v and v != old.get(k) for k, v in now.items()):
+            print("no-new-evidence retry blocked")
+            return 2
+
+    dispatch_card = card
+    if plan["execution"].get("single_pass_allowed"):
+        text = card.read_text(encoding="utf-8")
+        text = re.sub(r"(?im)^\|\s*Mode\s*\|\s*builder\s*\|", "| Mode | mixed-exception |", text, count=1)
+        text += "\n## Mixed Exception\nExpress Lane authorizes implementation plus exact narrow validation only.\n"
+        dispatch_card = out / "single-pass-task-card.md"
+        dispatch_card.write_text(text, encoding="utf-8")
+
+    # --- Context injection: materialize CLAUDE_CONTEXT_PACKET.md ---
+    context_packet_path = out / "context-packet.json"
+    if context_packet_path.exists():
+        _materialize_context_packet(out, context_packet_path)
+
+    preview = {
+        "task_id": plan["task_id"],
+        "lane": plan["lane"],
+        "dispatch_card": str(dispatch_card),
+        "single_pass": plan["execution"].get("single_pass_allowed", False),
+        "call_index": len(calls) + 1,
+        "execute": a.execute,
+    }
+    (out / "dispatch-preview.json").write_text(json.dumps(preview, sort_keys=True, indent=2) + "\n")
+    print(json.dumps(preview, sort_keys=True, indent=2))
+
+    if not a.execute:
+        return 0
+
+    # --- Execute: real-time tee ---
+    start = time.time()
+    cmd = ["bash", str(HERE / "dispatch-to-claude.sh"), str(dispatch_card)]
+
+    exit_code = _tee_subprocess(
+        cmd,
+        stdin_data=None,
+        stdout_path=str(out / "dispatch.stdout"),
+        stderr_path=str(out / "dispatch.stderr"),
+    )
+
+    entry = {
+        "schema_version": 1,
+        "timestamp": int(time.time()),
+        "run_id": out.name,
+        "task_id": plan["task_id"],
+        "stage": "single-pass" if preview["single_pass"] else "builder",
+        "model": "claude",
+        "call_index": len(calls) + 1,
+        "input_hash": _content_hash(dispatch_card.read_bytes()),
+        "evidence_hash": _content_hash((a.failure_log or "initial").encode()),
+        "elapsed_seconds": round(time.time() - start, 3),
+        "result": "dispatched" if exit_code == 0 else "dispatch-failed",
+        "next_action": "milestone-review",
+    }
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, sort_keys=True) + "\n")
+
+    # Write append-only progress log
+    progress_path = out / "dispatch-progress.log"
+    with progress_path.open("a", encoding="utf-8") as pf:
+        pf.write(json.dumps({
+            "timestamp": int(time.time()),
+            "event": "dispatch-complete",
+            "exit_code": exit_code,
+            "elapsed_seconds": round(time.time() - start, 3),
+        }, sort_keys=True) + "\n")
+
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
