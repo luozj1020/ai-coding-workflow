@@ -2066,9 +2066,11 @@ class SparkDiagnosticsTests(unittest.TestCase):
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True,
             )
-            # Empty response should cause non-zero exit
-            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            # Spark is auxiliary by default, so the unusable response is
+            # recorded and auto-disabled without blocking the main workflow.
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("empty response", result.stderr)
+            self.assertIn("auto-disabled", result.stderr)
             # Should create a diagnostic directory
             worktrees_dir = repo / ".worktrees"
             self.assertTrue(worktrees_dir.exists(), ".worktrees should exist")
@@ -2130,7 +2132,7 @@ class SparkDiagnosticsTests(unittest.TestCase):
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True,
             )
-            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             # No diagnostic directory should exist
             worktrees_dir = repo / ".worktrees"
             if worktrees_dir.exists():
@@ -2187,7 +2189,7 @@ class SparkDiagnosticsTests(unittest.TestCase):
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True,
             )
-            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             worktrees_dir = repo / ".worktrees"
             diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
             self.assertEqual(len(diag_entries), 1,
@@ -2209,12 +2211,31 @@ class SparkDiagnosticsTests(unittest.TestCase):
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True,
             )
-            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             worktrees_dir = repo / ".worktrees"
             if worktrees_dir.exists():
                 diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
                 self.assertEqual(diag_entries, [],
                     f"env off should not create diagnostic dir, found: {diag_entries}")
+
+    def test_empty_response_with_require_spark_is_nonzero(self):
+        """An empty response is a hard failure when Spark is required."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path, output_text="", exit_code=0)
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--require-spark", "--diagnostics", "failure"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertNotIn("auto-disabled", result.stderr)
 
     def test_execution_failure_records_classification(self):
         """Non-availability, non-empty-response failure records execution-failure."""
@@ -2269,6 +2290,228 @@ class SparkDiagnosticsTests(unittest.TestCase):
             diag_text = (diag_entries[0] / "diagnostic.md").read_text(encoding="utf-8")
             self.assertIn("Stderr Excerpt", diag_text)
             self.assertIn("line1 error", diag_text)
+
+    def test_compact_diagnostic_redacts_secrets_in_stderr(self):
+        """Compact diagnostic redacts fake secrets from stderr excerpt."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path, output_text="", exit_code=1,
+                stderr_text="api_key=sk-fake123456789\nError: auth token bad\nNormal error line"
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--diagnostics", "failure"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            worktrees_dir = repo / ".worktrees"
+            diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1)
+            diag_text = (diag_entries[0] / "diagnostic.md").read_text(encoding="utf-8")
+            # Fake secret should be redacted
+            self.assertNotIn("sk-fake123456789", diag_text)
+            self.assertIn("[REDACTED]", diag_text)
+            # Normal error text should remain
+            self.assertIn("Normal error line", diag_text)
+            # Header should mention redaction
+            self.assertIn("redacted", diag_text.lower())
+
+    def test_full_diagnostic_copies_prompt_and_status(self):
+        """Full diagnostic copies prompt, result, stderr, and status into permanent dir."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path, output_text="some output", exit_code=2,
+                stderr_text="internal error"
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--diagnostics", "full"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            worktrees_dir = repo / ".worktrees"
+            diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1)
+            diag_dir = diag_entries[0]
+            # All evidence files should exist in the permanent directory
+            self.assertTrue((diag_dir / "codex-spark.prompt.md").exists(),
+                "full diagnostic should copy prompt.md")
+            self.assertTrue((diag_dir / "codex-spark.result.txt").exists(),
+                "full diagnostic should copy result.txt")
+            self.assertTrue((diag_dir / "codex-spark.stderr.log").exists(),
+                "full diagnostic should copy stderr.log")
+            self.assertTrue((diag_dir / "codex-spark.status.txt").exists(),
+                "full diagnostic should have status.txt")
+            self.assertTrue((diag_dir / "codex-spark.report.md").exists(),
+                "full diagnostic should have report.md")
+            # Report should reference permanent copies
+            report_text = (diag_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn(str(diag_dir / "codex-spark.prompt.md"), report_text)
+            self.assertIn(str(diag_dir / "codex-spark.result.txt"), report_text)
+            self.assertIn(str(diag_dir / "codex-spark.stderr.log"), report_text)
+            self.assertIn(str(diag_dir / "codex-spark.status.txt"), report_text)
+            # Status file should contain metadata
+            status_text = (diag_dir / "codex-spark.status.txt").read_text(encoding="utf-8")
+            self.assertIn("exit_code=2", status_text)
+            self.assertIn("execution-failure", status_text)
+            # Prompt should contain task content
+            prompt_text = (diag_dir / "codex-spark.prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Codex Spark Execution Request", prompt_text)
+
+    def test_full_diagnostic_preserves_empty_stream_files(self):
+        """Full diagnostics keep concrete empty stdout/stderr evidence files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path, output_text="", exit_code=0)
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--diagnostics", "full"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            diag_entries = list((repo / ".worktrees").glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1)
+            result_file = diag_entries[0] / "codex-spark.result.txt"
+            stderr_file = diag_entries[0] / "codex-spark.stderr.log"
+            self.assertTrue(result_file.is_file())
+            self.assertTrue(stderr_file.is_file())
+            self.assertEqual(result_file.stat().st_size, 0)
+
+
+class SparkSchemaInvalidTests(unittest.TestCase):
+    """Tests for schema-invalid classification of estimator output."""
+
+    def _make_repo_with_task_card(self, tmp_path, task_card_text="# Task\n"):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+        task_card = repo / "task-card.md"
+        task_card.write_text(task_card_text, encoding="utf-8")
+        return repo, task_card
+
+    def _run_estimator(self, output_text, extra_args=None, env_extra=None):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = pathlib.Path(temp.name)
+        repo, task_card = self._make_repo_with_task_card(root)
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        fake_codex = fake_bin / "codex"
+        lines = output_text.splitlines()
+        printf_args = " ".join(repr(line) for line in lines)
+        fake_codex.write_text(
+            "#!/usr/bin/env bash\ncat > /dev/null\nprintf '%s\\n' " + printf_args + "\n",
+            encoding="utf-8",
+        )
+        fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+        env = os.environ.copy()
+        env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+        env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+        if env_extra:
+            env.update(env_extra)
+        cmd = [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+               "--mode", "execution-cost-estimator", "--result-mode", "direct"]
+        if extra_args:
+            cmd.extend(extra_args)
+        result = subprocess.run(
+            cmd, cwd=str(repo), env=env,
+            text=True, encoding="utf-8", errors="replace",
+            capture_output=True,
+        )
+        return result, repo
+
+    SAFE_OUTPUT = (
+        "predicted_diff_lines_low=8\n"
+        "predicted_diff_lines_high=24\n"
+        "predicted_files=1\n"
+        "context_scope=local\n"
+        "validation_complexity=low\n"
+        "delegation_overhead=high\n"
+        "estimated_direct_work_units=30\n"
+        "estimated_delegated_work_units=80\n"
+        "delegation_to_direct_ratio=2.67\n"
+        "economic_recommendation=codex-fast-path\n"
+        "safety_eligible=yes\n"
+        "recommended_owner=codex-fast-path\n"
+        "cost_confidence=high\n"
+        "risk_flags=none"
+    )
+
+    def test_valid_estimator_output_exits_0(self):
+        """Valid estimator output exits 0."""
+        result, _ = self._run_estimator(self.SAFE_OUTPUT)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_missing_predicted_diff_lines_low_is_schema_invalid(self):
+        """Missing predicted_diff_lines_low classifies as schema-invalid."""
+        output = self.SAFE_OUTPUT.replace("predicted_diff_lines_low=8\n", "")
+        result, repo = self._run_estimator(output)
+        # schema-invalid auto-disables → exit 0 (no --require-spark)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("schema-invalid", result.stderr)
+
+    def test_invalid_context_scope_is_schema_invalid(self):
+        """Invalid context_scope value classifies as schema-invalid."""
+        output = self.SAFE_OUTPUT.replace("context_scope=local", "context_scope=invalid")
+        result, repo = self._run_estimator(output)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("schema-invalid", result.stderr)
+
+    def test_invalid_economic_recommendation_is_schema_invalid(self):
+        """Invalid economic_recommendation value classifies as schema-invalid."""
+        output = self.SAFE_OUTPUT.replace(
+            "economic_recommendation=codex-fast-path", "economic_recommendation=bad"
+        )
+        result, repo = self._run_estimator(output)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("schema-invalid", result.stderr)
+
+    def test_zero_work_units_is_schema_invalid(self):
+        """Zero estimated_direct_work_units classifies as schema-invalid."""
+        output = self.SAFE_OUTPUT.replace(
+            "estimated_direct_work_units=30", "estimated_direct_work_units=0"
+        )
+        result, repo = self._run_estimator(output)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("schema-invalid", result.stderr)
+
+    def test_schema_invalid_with_require_spark_exits_nonzero(self):
+        """schema-invalid with --require-spark exits non-zero."""
+        output = self.SAFE_OUTPUT.replace("predicted_diff_lines_low=8\n", "")
+        result, _ = self._run_estimator(output, extra_args=["--require-spark"])
+        self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("schema-invalid", result.stderr)
+
+    def test_schema_invalid_creates_compact_diagnostic(self):
+        """schema-invalid in direct mode creates a compact diagnostic."""
+        output = self.SAFE_OUTPUT.replace("predicted_diff_lines_low=8\n", "")
+        result, repo = self._run_estimator(output)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        worktrees_dir = repo / ".worktrees"
+        diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+        self.assertEqual(len(diag_entries), 1,
+            f"expected one diagnostic dir, found: {diag_entries}")
+        diag_text = (diag_entries[0] / "diagnostic.md").read_text(encoding="utf-8")
+        self.assertIn("schema-invalid", diag_text)
 
 
 if __name__ == "__main__":

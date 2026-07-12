@@ -1020,6 +1020,58 @@ spark_failure_auto_disable_reason() {
 DIAGNOSTIC_DIR=""
 DIAGNOSTIC_FAILURE_CLASS="none"
 
+# Conservative secret redaction for stderr excerpts.
+# Replaces lines containing common credential/token patterns with a marker.
+redact_secrets() {
+    sed -E \
+        -e 's/^(.*(api[_-]?key|api[_-]?secret|auth[_-]?token|bearer|authorization|access[_-]?token|secret[_-]?key|private[_-]?key|password|passwd|credential)[[:space:]]*[:=][[:space:]]*).*/\1[REDACTED]/i' \
+        -e 's/^(.*(token|secret|key|auth)[[:space:]]*[:=][[:space:]]*).*/\1[REDACTED]/i' \
+        -e 's#^(.*://[^:/@ ]+):[^@/ ]+@#\1:[REDACTED]@#' \
+        -e 's/^(.*Authorization:[[:space:]]*Bearer[[:space:]]+).*/\1[REDACTED]/i' \
+        -e 's/^(.*x-api-key:[[:space:]]*).*/\1[REDACTED]/i' \
+        -e 's/^(.*(OPENAI|ANTHROPIC|AZURE|AWS|GCP|GITHUB|GITLAB|SLACK|SENDGRID|TWILIO|STRIPE)[[:space:]_]*(API[_]?KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)[[:space:]]*[:=][[:space:]]*).*/\1[REDACTED]/i'
+}
+
+# Validate all required estimator output fields. Returns 0 if schema is valid,
+# 1 if any required field is missing or has an invalid value.
+_estimator_schema_valid() {
+    [ -s "$RESULT_FILE" ] || return 1
+    local _val
+    # Check all required cost fields that the script already parses
+    for _field in predicted_diff_lines_low predicted_diff_lines_high predicted_files \
+                  context_scope validation_complexity delegation_overhead \
+                  estimated_direct_work_units estimated_delegated_work_units \
+                  delegation_to_direct_ratio economic_recommendation \
+                  safety_eligible recommended_owner; do
+        _val="$(grep -m1 "^${_field}=" "$RESULT_FILE" 2>/dev/null || true)"
+        _val="${_val#$_field=}"
+        case "$_field" in
+            predicted_diff_lines_low|predicted_diff_lines_high)
+                case "$_val" in ''|*[!0-9]*) return 1 ;; esac ;;
+            predicted_files)
+                case "$_val" in unknown) ;; ''|*[!0-9]*) return 1 ;; esac ;;
+            context_scope)
+                case "$_val" in local|bounded|broad|unknown) ;; *) return 1 ;; esac ;;
+            validation_complexity)
+                case "$_val" in none|low|medium|high|unknown) ;; *) return 1 ;; esac ;;
+            delegation_overhead)
+                case "$_val" in low|medium|high) ;; *) return 1 ;; esac ;;
+            estimated_direct_work_units|estimated_delegated_work_units)
+                case "$_val" in ''|*[!0-9]*|0) return 1 ;; esac ;;
+            delegation_to_direct_ratio)
+                [[ "$_val" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+                [[ "$_val" =~ ^0+([.]0+)?$ ]] && return 1 ;;
+            economic_recommendation)
+                case "$_val" in codex-fast-path|claude-builder) ;; *) return 1 ;; esac ;;
+            safety_eligible)
+                case "$_val" in yes|no) ;; *) return 1 ;; esac ;;
+            recommended_owner)
+                case "$_val" in codex-fast-path|claude-builder|spec-first|human-clarification) ;; *) return 1 ;; esac ;;
+        esac
+    done
+    return 0
+}
+
 classify_failure() {
     local codex_exit="$1"
     local result_empty="$2"
@@ -1030,8 +1082,7 @@ classify_failure() {
     elif [ "$codex_exit" -ne 0 ]; then
         echo "execution-failure"
     elif [ "$result_empty" = "no" ] && [ "$MODE" = "execution-cost-estimator" ]; then
-        # Schema validation already happened; check if key fields are missing
-        if ! grep -q '^predicted_diff_lines_low=' "$RESULT_FILE" 2>/dev/null; then
+        if ! _estimator_schema_valid; then
             echo "schema-invalid"
         else
             echo "none"
@@ -1049,7 +1100,7 @@ write_compact_diagnostic() {
     local stderr_excerpt=""
 
     if [ -s "$STDERR_FILE" ]; then
-        stderr_excerpt="$(head -n "$stderr_excerpt_lines" "$STDERR_FILE")"
+        stderr_excerpt="$(head -n "$stderr_excerpt_lines" "$STDERR_FILE" | redact_secrets)"
     fi
 
     DIAGNOSTIC_DIR="${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}"
@@ -1069,7 +1120,7 @@ write_compact_diagnostic() {
         echo "| Diagnostics mode | ${DIAGNOSTICS_MODE} |"
         echo "| Timestamp | ${TIMESTAMP} |"
         echo ""
-        echo "## Stderr Excerpt (first ${stderr_excerpt_lines} lines)"
+        echo "## Stderr Excerpt (first ${stderr_excerpt_lines} lines, redacted)"
         echo ""
         if [ -n "$stderr_excerpt" ]; then
             echo '```'
@@ -1090,17 +1141,41 @@ write_full_diagnostic() {
     DIAGNOSTIC_DIR="${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}"
     mkdir -p "$DIAGNOSTIC_DIR"
 
-    # Copy evidence files from the (possibly transient) temp dir
+    # Copy all evidence files from the (possibly transient) temp dir into
+    # the permanent diagnostic directory so all report paths are real.
     local diag_report="${DIAGNOSTIC_DIR}/codex-spark.report.md"
+    local diag_prompt="${DIAGNOSTIC_DIR}/codex-spark.prompt.md"
     local diag_result="${DIAGNOSTIC_DIR}/codex-spark.result.txt"
     local diag_stderr="${DIAGNOSTIC_DIR}/codex-spark.stderr.log"
+    local diag_status="${DIAGNOSTIC_DIR}/codex-spark.status.txt"
 
-    if [ -s "$RESULT_FILE" ]; then
+    if [ -f "$PROMPT_FILE" ]; then
+        cp "$PROMPT_FILE" "$diag_prompt"
+    fi
+    # Preserve real files even when either stream is empty so report paths
+    # never point at missing evidence.
+    if [ -f "$RESULT_FILE" ]; then
         cp "$RESULT_FILE" "$diag_result"
+    else
+        : > "$diag_result"
     fi
-    if [ -s "$STDERR_FILE" ]; then
+    if [ -f "$STDERR_FILE" ]; then
         cp "$STDERR_FILE" "$diag_stderr"
+    else
+        : > "$diag_stderr"
     fi
+    # Write a compact status/metadata artifact
+    {
+        echo "exit_code=${codex_exit}"
+        echo "failure_class=${DIAGNOSTIC_FAILURE_CLASS}"
+        echo "mode=${MODE}"
+        echo "model=${MODEL}"
+        echo "result_mode=${RESULT_MODE}"
+        echo "diagnostics_mode=${DIAGNOSTICS_MODE}"
+        echo "auto_disabled=${SPARK_AUTO_DISABLED}"
+        echo "spark_calls_used=${SPARK_CALLS_USED}"
+        echo "timestamp=${TIMESTAMP}"
+    } > "$diag_status"
 
     # Temporarily redirect REPORT_FILE to the diagnostic directory
     local _orig_report="$REPORT_FILE"
@@ -1112,10 +1187,12 @@ write_full_diagnostic() {
         echo "| Field | Value |"
         echo "|-------|-------|"
         echo "| Codex exit code | ${codex_exit} |"
+        echo "| Failure classification | ${DIAGNOSTIC_FAILURE_CLASS} |"
         echo "| Result mode | full (diagnostics=full) |"
-        echo "| Prompt | ${PROMPT_FILE} |"
+        echo "| Prompt | ${diag_prompt} |"
         echo "| Raw output | ${diag_result} |"
         echo "| Stderr log | ${diag_stderr} |"
+        echo "| Status metadata | ${diag_status} |"
         echo "| Strong-model fallback used | no |"
         echo ""
         echo "## Codex Spark Output"
@@ -1778,6 +1855,22 @@ elif [ "$COST_RECOMMENDED_OWNER" = "codex-fast-path" ] || [ "$COST_RECOMMENDED_O
     COST_RECOMMENDED_OWNER="claude-builder"
 fi
 
+# Detect schema-invalid estimator output for non-direct modes.
+# For direct mode this is handled in the result emission section below.
+_result_is_schema_invalid="no"
+if [ "$CODEX_STATUS" -eq 0 ] && [ -s "$RESULT_FILE" ] && [ "$MODE" = "execution-cost-estimator" ] && [ "$RESULT_MODE" != "direct" ]; then
+    if ! _estimator_schema_valid; then
+        _result_is_schema_invalid="yes"
+        HELPER_EXIT_STATUS=1
+        echo "Codex Spark: estimator output is schema-invalid (missing or invalid required fields)" >&2
+        if [ "$REQUIRE_SPARK" != "1" ]; then
+            SPARK_AUTO_DISABLED="yes"
+            SPARK_DISABLE_REASON="estimator output missing or invalid required fields"
+            HELPER_EXIT_STATUS=0
+        fi
+    fi
+fi
+
 # Emit result based on result mode
 case "$RESULT_MODE" in
     direct)
@@ -1803,6 +1896,21 @@ case "$RESULT_MODE" in
         if [ "$CODEX_STATUS" -eq 0 ] && [ "$_direct_result_empty" = "yes" ]; then
             echo "Codex Spark: empty response (exit 0 with no usable output)" >&2
             HELPER_EXIT_STATUS=1
+            if [ "$REQUIRE_SPARK" != "1" ]; then
+                SPARK_AUTO_DISABLED="yes"
+                SPARK_DISABLE_REASON="Spark returned an empty response"
+                HELPER_EXIT_STATUS=0
+            fi
+        fi
+        # Detect schema-invalid estimator output as explicit failure
+        if [ "$DIAGNOSTIC_FAILURE_CLASS" = "schema-invalid" ]; then
+            echo "Codex Spark: estimator output is schema-invalid (missing or invalid required fields)" >&2
+            HELPER_EXIT_STATUS=1
+            if [ "$REQUIRE_SPARK" != "1" ]; then
+                SPARK_AUTO_DISABLED="yes"
+                SPARK_DISABLE_REASON="estimator output missing or invalid required fields"
+                HELPER_EXIT_STATUS=0
+            fi
         fi
         # Write diagnostics based on mode
         if [ "$DIAGNOSTIC_FAILURE_CLASS" != "none" ]; then
@@ -1820,6 +1928,9 @@ case "$RESULT_MODE" in
         fi
         # Auto-disable reporting goes to stderr for direct mode
         if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+            if [ "$CODEX_STATUS" -eq 0 ]; then
+                echo "Codex Spark auto-disabled: ${SPARK_DISABLE_REASON}" >&2
+            fi
             echo "Codex Spark report: (direct mode, no permanent report)" >&2
             echo "Spark model response received: ${SPARK_MODEL_RESPONSE_RECEIVED}" >&2
             if [ -s "$STDERR_FILE" ]; then
@@ -1864,11 +1975,18 @@ case "$RESULT_MODE" in
             elif [ "$MODE" = "controlled-builder" ]; then
                 echo "| Boundary outcome | pass |"
             fi
-            if [ "$CODEX_STATUS" -ne 0 ]; then
+            if [ "$CODEX_STATUS" -ne 0 ] || [ "$_result_is_schema_invalid" = "yes" ]; then
                 echo ""
                 echo "## Failure Handling"
                 echo ""
-                if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+                if [ "$_result_is_schema_invalid" = "yes" ]; then
+                    echo "Estimator output is schema-invalid: one or more required machine-readable fields are missing or have invalid values."
+                    if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+                        echo "Spark was auto-disabled because it is auxiliary. The helper exits 0 so the main workflow may continue."
+                    else
+                        echo "With --require-spark, schema-invalid output is a hard failure."
+                    fi
+                elif [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
                     echo "Spark exited non-zero with an availability-style failure and was auto-disabled because it is auxiliary. The helper exits 0 so the main workflow may continue."
                 else
                     echo "Spark exited non-zero. Strong-model fallback was not used. Re-run explicitly with another model only after human approval."
@@ -1924,11 +2042,18 @@ case "$RESULT_MODE" in
             else
                 echo "No stdout output captured."
             fi
-            if [ "$CODEX_STATUS" -ne 0 ]; then
+            if [ "$CODEX_STATUS" -ne 0 ] || [ "$_result_is_schema_invalid" = "yes" ]; then
                 echo ""
                 echo "## Failure Handling"
                 echo ""
-                if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+                if [ "$_result_is_schema_invalid" = "yes" ]; then
+                    echo "Estimator output is schema-invalid: one or more required machine-readable fields are missing or have invalid values."
+                    if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+                        echo "Spark was auto-disabled because it is auxiliary. The helper exits 0 so the main workflow may continue."
+                    else
+                        echo "With --require-spark, schema-invalid output is a hard failure."
+                    fi
+                elif [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
                     echo "Spark exited non-zero with an availability-style failure and was auto-disabled because it is auxiliary. The helper exits 0 so the main workflow may continue."
                 else
                     echo "Spark exited non-zero. Strong-model fallback was not used. Re-run explicitly with another model only after human approval."

@@ -151,6 +151,16 @@ When `--output` is passed without an explicit `--result-mode`, the helper select
 
 **Observability tradeoff:** `direct` mode intentionally has no file-backed metrics — no `codex-spark.report.md`, no artifact directory, no manifest. This is by design for lightweight advisory calls where only the inline result matters. When benchmark aggregation, quality tracking, or audit evidence is needed across multiple Spark invocations, choose `minimal` or `full` so the report file exists for `ai/benchmark-loop-runs.py` and `ai/summarize-loop-run.py` to aggregate.
 
+### Spark Diagnostics (`--diagnostics`)
+
+When a direct-mode Spark call produces an unusable result (empty response, availability failure, execution failure, or schema-invalid estimator output), the helper can persist a diagnostic record. Controlled by `--diagnostics MODE` / `CODEX_SPARK_DIAGNOSTICS`:
+
+- **`failure`** (default): writes a compact `diagnostic.md` under `.worktrees/spark-diagnostic-<timestamp>/` with mode, model, exit code, failure classification, and a redacted stderr excerpt. Secrets (API keys, tokens, auth headers, URL credentials, environment-style assignments) are stripped before saving.
+- **`off`**: strict zero-persistence — no diagnostic directory is created even on failure.
+- **`full`**: copies all evidence (prompt, result, stderr, status metadata) into the permanent diagnostic directory for full reproduction. All report paths reference permanent copies, not transient temp files.
+
+Successful direct calls always remain zero-persistence regardless of diagnostics mode. Estimator output is classified as `schema-invalid` when any required machine-readable field is missing or has an invalid value; without `--require-spark`, this auto-disables Spark and exits 0 after recording.
+
 Pre-task-card example:
 
 ```bash

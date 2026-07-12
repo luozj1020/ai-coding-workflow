@@ -566,6 +566,8 @@ When `--output` is passed without an explicit `--result-mode`, the helper select
 
 **Observability tradeoff:** `direct` mode intentionally has no file-backed metrics — no `codex-spark.report.md`, no artifact directory, no manifest. This is by design for lightweight advisory calls. When benchmark aggregation, quality tracking, or audit evidence is needed across multiple Spark invocations, choose `minimal` or `full` so `ai/benchmark-loop-runs.py` and `ai/summarize-loop-run.py` can aggregate results.
 
+**Spark diagnostics (`--diagnostics`):** when a direct-mode call produces an unusable result (empty response, availability/execution failure, or schema-invalid estimator output), `--diagnostics failure` (default) writes a compact redacted record under `.worktrees/spark-diagnostic-<timestamp>/`. Secrets are stripped from stderr excerpts. `--diagnostics off` disables all persistence. `--diagnostics full` copies all evidence into the permanent directory for reproduction. Successful calls remain zero-persistence. Estimator output classified as `schema-invalid` auto-disables Spark (exits 0) unless `--require-spark` is set.
+
 **Controlled-builder permission mode** provides narrow, auditable source-write permission for Spark:
 
 - The task card must specify 1–3 exact `--allow-write` paths with a matching `Controlled-builder allowed paths` row.

@@ -530,6 +530,8 @@ Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`co
 
 **可观测性取舍：** `direct` 模式有意不提供文件级指标——没有 `codex-spark.report.md`、没有产物目录、没有 manifest。这是为轻量级 advisory 调用设计的。当需要跨多次 Spark 调用进行 benchmark 聚合、质量追踪或审计时，选择 `minimal` 或 `full`，以便 `ai/benchmark-loop-runs.py` 和 `ai/summarize-loop-run.py` 可以聚合结果。
 
+**Spark 诊断（`--diagnostics`）：** 当 direct 模式调用产生不可用结果（空响应、可用性/执行失败、或 schema-invalid 估算器输出）时，`--diagnostics failure`（默认）在 `.worktrees/spark-diagnostic-<timestamp>/` 下写入紧凑的脱敏记录。stderr 摘要中的密钥会被剥离。`--diagnostics off` 禁用所有持久化。`--diagnostics full` 将所有证据复制到永久目录以供复现。成功调用始终保持零持久化。估算器输出被分类为 `schema-invalid` 时，除非设置了 `--require-spark`，否则自动禁用 Spark 并以 0 退出。
+
 **Controlled-builder 权限模式** 为 Spark 提供窄范围、可审计的源码写入权限：
 
 - 任务卡必须指定 1–3 个精确的 `--allow-write` 路径，并有对应的 `Controlled-builder allowed paths` 行。
