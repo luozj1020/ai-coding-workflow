@@ -2,6 +2,10 @@ import importlib.util, json, tempfile, unittest
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
+sys_path = str(ROOT / "scripts")
+import sys
+if sys_path not in sys.path:
+    sys.path.insert(0, sys_path)
 def load(name, path):
     spec=importlib.util.spec_from_file_location(name, ROOT/path); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); return mod
 packet=load("e0_packet","scripts/build_review_packet.py")

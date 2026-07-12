@@ -971,6 +971,7 @@ class TestPythonCompile(unittest.TestCase):
         self.assertEqual(result.returncode, 0, f"Compile error: {result.stderr}")
 
 
+@unittest.skipIf(os.name == "nt", "Bash syntax is covered by the dedicated Linux Shell syntax job")
 class TestShellSyntax(unittest.TestCase):
     """Shell scripts must pass bash syntax check."""
 
