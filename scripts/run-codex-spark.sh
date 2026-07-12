@@ -347,6 +347,7 @@ if [ "$INPUT_KIND" = "task-card" ]; then
 else
     REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 INITIAL_SOURCE_STATUS=""
 
@@ -1477,10 +1478,30 @@ append_artifact_excerpts
 set +e
 (
     cd "$RUN_DIR"
-    if [ -n "$CODEX_RUNTIME_HOME" ]; then
-        HOME="$CODEX_RUNTIME_HOME" CODEX_HOME="$CODEX_RUNTIME_HOME" run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+    broker_args=(
+        --role spark --stage builder
+        --input "$PROMPT_FILE" --output "$RESULT_FILE" --stderr "$STDERR_FILE"
+    )
+    if [ -f "execution-plan.json" ]; then
+        broker_args+=(--plan "execution-plan.json")
+    fi
+    if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ]; then
+        # Internal bypass for tests/bootstrap to avoid broker recursion.
+        if [ -n "$CODEX_RUNTIME_HOME" ]; then
+            HOME="$CODEX_RUNTIME_HOME" CODEX_HOME="$CODEX_RUNTIME_HOME" run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+        else
+            run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+        fi
     else
-        run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+        # Broker-mediated execution for quota enforcement and audit.
+        if [ -n "$CODEX_RUNTIME_HOME" ]; then
+            HOME="$CODEX_RUNTIME_HOME" CODEX_HOME="$CODEX_RUNTIME_HOME" \
+                python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
+                "$CODEX_BIN" exec --model "$MODEL" --sandbox "$SANDBOX" -
+        else
+            python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
+                "$CODEX_BIN" exec --model "$MODEL" --sandbox "$SANDBOX" -
+        fi
     fi
 )
 CODEX_STATUS=$?

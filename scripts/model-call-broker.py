@@ -1,0 +1,611 @@
+#!/usr/bin/env python3
+"""Atomic model-call broker with cross-process quota enforcement.
+
+Single entry point for Claude, Spark, and Codex calls. Prevents overspending
+quota, duplicate evidence triggering another call, and reserved review stages
+being consumed early.
+
+Usage:
+    python scripts/model-call-broker.py --role claude --stage builder \
+        --plan execution-plan.json --input claude-prompt.md -- claude -p ...
+
+    python scripts/model-call-broker.py --role codex --stage final-review \
+        --plan execution-plan.json --evidence review-packet.json -- codex exec --json ...
+
+    # Legacy compatibility (no plan):
+    python scripts/model-call-broker.py --role claude --stage builder \
+        --max-calls 3 --input claude-prompt.md -- claude -p ...
+
+Python 3.9+ compatible. No third-party dependencies.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
+
+# ---------------------------------------------------------------------------
+# Cross-process locking
+# ---------------------------------------------------------------------------
+
+try:
+    import msvcrt  # type: ignore[import-untyped]
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
+
+try:
+    import fcntl  # type: ignore[import-untyped]
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+
+
+@dataclass
+class LedgerLock:
+    """Cross-process file lock. Use as a context manager.
+
+    Windows: msvcrt byte-range locking on a .lock sidecar file.
+    Unix: fcntl.flock(LOCK_EX) on a .lock sidecar file.
+    Fallback: directory-based lock (works everywhere, stale-lock risk on crash).
+    """
+
+    lock_path: Path
+    _fh: Any = None
+    _dir_fallback: bool = False
+
+    def acquire(self, timeout: float = 30.0) -> None:
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        if msvcrt is not None:
+            self._fh = open(self.lock_path, "w")  # noqa: SIM115
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    return
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Could not acquire ledger lock {self.lock_path} within {timeout}s"
+                        )
+                    time.sleep(0.05)
+        elif fcntl is not None:
+            self._fh = open(self.lock_path, "w")  # noqa: SIM115
+            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+        else:
+            # Directory-based fallback
+            self._dir_fallback = True
+            deadline = time.monotonic() + timeout
+            lock_dir = self.lock_path.with_suffix(".lockdir")
+            while True:
+                try:
+                    lock_dir.mkdir()
+                    self.lock_path.write_text(str(os.getpid()), encoding="utf-8")
+                    return
+                except FileExistsError:
+                    # Check for stale lock (>60s)
+                    try:
+                        age = time.time() - lock_dir.stat().st_mtime
+                        if age > 60:
+                            lock_dir.rmdir()
+                            continue
+                    except OSError:
+                        pass
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Could not acquire ledger lock {self.lock_path} within {timeout}s"
+                        )
+                    time.sleep(0.05)
+
+    def release(self) -> None:
+        if self._fh is not None:
+            if msvcrt is not None:
+                try:
+                    self._fh.seek(0)
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            elif fcntl is not None:
+                try:
+                    fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            self._fh.close()
+            self._fh = None
+        elif self._dir_fallback:
+            lock_dir = self.lock_path.with_suffix(".lockdir")
+            try:
+                lock_dir.rmdir()
+            except OSError:
+                pass
+            self._dir_fallback = False
+
+    def __enter__(self) -> "LedgerLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.release()
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class BrokerError(Exception):
+    """Raised when the broker denies or fails a reservation."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Plan loading
+# ---------------------------------------------------------------------------
+
+REQUIRED_BUDGET_KEYS = ("claude_calls", "spark_calls", "codex_calls")
+
+
+def load_plan(path: Path) -> Dict[str, Any]:
+    """Load and validate an execution plan from JSON."""
+    if not path.exists():
+        raise BrokerError(f"Execution plan not found: {path}")
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise BrokerError(f"Cannot read execution plan {path}: {exc}") from exc
+    if not isinstance(plan, dict):
+        raise BrokerError("Execution plan must be a JSON object")
+    if "budget" not in plan:
+        raise BrokerError("Execution plan missing 'budget' section")
+    budget = plan["budget"]
+    for key in REQUIRED_BUDGET_KEYS:
+        if key not in budget:
+            raise BrokerError(f"Execution plan budget missing '{key}'")
+    return plan
+
+
+def make_compatibility_plan(
+    role: str, max_calls: Optional[int], task_id: str
+) -> Dict[str, Any]:
+    """Build a conservative default plan for legacy callers.
+
+    Does not silently grant unlimited calls. Each role defaults to 1 call
+    unless overridden by --max-calls.
+    """
+    budgets = {"claude_calls": 1, "spark_calls": 1, "codex_calls": 1}
+    budget_key = f"{role}_calls"
+    if budget_key in budgets and max_calls is not None:
+        budgets[budget_key] = max(max_calls, 0)
+    return {
+        "schema_version": 1,
+        "task_id": task_id,
+        "lane": "standard",
+        "budget": budgets,
+        "review": {"reserved_for": [], "milestones": []},
+        "compatibility_mode": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Ledger I/O (append-only JSONL, cross-process safe under lock)
+# ---------------------------------------------------------------------------
+
+VALID_STATES = ("reserved", "running", "succeeded", "failed", "cancelled")
+
+
+def load_ledger(path: Path) -> List[Dict[str, Any]]:
+    """Load all records from the JSONL ledger."""
+    if not path.exists():
+        return []
+    try:
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def append_ledger(path: Path, record: Dict[str, Any]) -> None:
+    """Append a single JSONL record to the ledger. Caller must hold lock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+# ---------------------------------------------------------------------------
+# Hashing
+# ---------------------------------------------------------------------------
+
+
+def compute_hash(path: Optional[Path], fallback: bytes = b"") -> str:
+    """SHA-256 of file contents, or of fallback bytes if no path."""
+    if path is not None:
+        data = path.read_bytes()
+    else:
+        data = fallback
+    return hashlib.sha256(data).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Budget accounting
+# ---------------------------------------------------------------------------
+
+
+def budget_consuming(record: Dict[str, Any]) -> bool:
+    """States that count against budget: reserved, running, succeeded."""
+    return record.get("state") in ("reserved", "running", "succeeded")
+
+
+def count_role_calls(
+    records: List[Dict[str, Any]], task_id: str, role: str
+) -> int:
+    """Count budget-consuming records for a task+role."""
+    return sum(
+        1
+        for r in records
+        if r.get("task_id") == task_id
+        and r.get("role") == role
+        and budget_consuming(r)
+    )
+
+
+def check_budget(
+    records: List[Dict[str, Any]],
+    plan: Dict[str, Any],
+    role: str,
+    stage: str,
+) -> None:
+    """Validate role/stage against plan budget and review.reserved_for.
+
+    Rules:
+    - Total budget-consuming calls for this role must be < plan budget.
+    - If review.reserved_for lists stages, those calls are pre-allocated
+      and only the specified stages may consume them.
+    - A role/stage not in reserved_for must use unreserved quota only.
+    """
+    budget = plan["budget"]
+    budget_key = f"{role}_calls"
+    max_calls = budget.get(budget_key, 0)
+    if max_calls <= 0:
+        raise BrokerError(
+            f"Role '{role}' has zero budget in execution plan"
+        )
+
+    used = count_role_calls(records, plan["task_id"], role)
+    reserved_for = plan.get("review", {}).get("reserved_for", [])
+
+    if reserved_for:
+        # Count calls reserved for the specified stages
+        reserved_count = sum(
+            1
+            for r in records
+            if r.get("task_id") == plan["task_id"]
+            and r.get("role") == role
+            and budget_consuming(r)
+            and r.get("stage") in reserved_for
+        )
+        unreserved_budget = max_calls - reserved_count
+
+        if stage in reserved_for:
+            # This stage has access to reserved calls
+            if used >= max_calls:
+                raise BrokerError(
+                    f"Budget exhausted for role '{role}': {used}/{max_calls} calls used"
+                )
+        else:
+            # This stage can only use unreserved quota
+            unreserved_used = used - reserved_count
+            if unreserved_used >= unreserved_budget:
+                raise BrokerError(
+                    f"Stage '{stage}' cannot consume reserved budget for {reserved_for}: "
+                    f"unreserved quota exhausted ({unreserved_used}/{unreserved_budget})"
+                )
+    else:
+        if used >= max_calls:
+            raise BrokerError(
+                f"Budget exhausted for role '{role}': {used}/{max_calls} calls used"
+            )
+
+
+def check_duplicate(
+    records: List[Dict[str, Any]],
+    task_id: str,
+    role: str,
+    input_hash: str,
+    evidence_hash: str,
+    retry_failed: bool,
+) -> None:
+    """Reject duplicate effective evidence unless retry_failed is set."""
+    for r in records:
+        if (
+            r.get("task_id") == task_id
+            and r.get("role") == role
+            and r.get("input_hash") == input_hash
+            and r.get("evidence_hash") == evidence_hash
+            and r.get("state") in ("reserved", "running", "succeeded")
+        ):
+            if not retry_failed:
+                raise BrokerError(
+                    f"Duplicate evidence rejected: reservation {r.get('reservation_id')} "
+                    f"already exists with same input/evidence hash"
+                )
+            break
+
+
+# ---------------------------------------------------------------------------
+# Reservation allocation
+# ---------------------------------------------------------------------------
+
+
+def allocate_reservation(
+    records: List[Dict[str, Any]],
+    plan: Dict[str, Any],
+    role: str,
+    stage: str,
+    input_hash: str,
+    evidence_hash: str,
+    run_id: str,
+    reservation_id: str,
+) -> Dict[str, Any]:
+    """Append 'reserved' entry to ledger. Returns the record."""
+    call_index = count_role_calls(records, plan["task_id"], role) + 1
+    record = {
+        "schema_version": 1,
+        "timestamp": int(time.time()),
+        "run_id": run_id,
+        "reservation_id": reservation_id,
+        "task_id": plan["task_id"],
+        "stage": stage,
+        "role": role,
+        "state": "reserved",
+        "call_index": call_index,
+        "input_hash": input_hash,
+        "evidence_hash": evidence_hash,
+    }
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Command execution
+# ---------------------------------------------------------------------------
+
+
+def run_command(
+    command: Sequence[str],
+    input_data: Optional[bytes],
+    output_path: Optional[Path],
+    stderr_path: Optional[Path],
+) -> int:
+    """Execute the model command. Never uses shell=True. Returns exit code."""
+    out_fh = open(output_path, "wb") if output_path else subprocess.PIPE
+    err_fh = open(stderr_path, "wb") if stderr_path else subprocess.PIPE
+
+    try:
+        result = subprocess.run(
+            command,
+            input=input_data,
+            stdout=out_fh,
+            stderr=err_fh,
+            shell=False,
+        )
+        return result.returncode
+    finally:
+        if output_path and out_fh is not subprocess.PIPE:
+            out_fh.close()
+        if stderr_path and err_fh is not subprocess.PIPE:
+            err_fh.close()
+
+
+# ---------------------------------------------------------------------------
+# Main lifecycle
+# ---------------------------------------------------------------------------
+
+
+def execute(
+    role: str,
+    stage: str,
+    plan_path: Optional[Path],
+    input_path: Optional[Path],
+    evidence_path: Optional[Path],
+    output_path: Optional[Path],
+    stderr_path: Optional[Path],
+    ledger_path: Path,
+    run_id: str,
+    reservation_id: str,
+    dry_run: bool,
+    retry_failed: bool,
+    max_calls: Optional[int],
+    command: Sequence[str],
+) -> int:
+    """Full broker lifecycle. Returns child exit code."""
+    # 1. Load or generate plan
+    if plan_path is not None:
+        plan = load_plan(plan_path)
+    else:
+        task_id = f"compat-{run_id}"
+        plan = make_compatibility_plan(role, max_calls, task_id)
+
+    # 2. Hash input and evidence
+    input_hash = compute_hash(input_path)
+    evidence_hash = compute_hash(evidence_path)
+
+    # 3. Acquire lock and validate
+    lock = LedgerLock(ledger_path.with_suffix(".lock"))
+
+    with lock:
+        records = load_ledger(ledger_path)
+        check_budget(records, plan, role, stage)
+        check_duplicate(
+            records, plan["task_id"], role, input_hash, evidence_hash, retry_failed
+        )
+
+        if dry_run:
+            budget_key = f"{role}_calls"
+            used = count_role_calls(records, plan["task_id"], role)
+            print(json.dumps({
+                "dry_run": True,
+                "role": role,
+                "stage": stage,
+                "task_id": plan["task_id"],
+                "input_hash": input_hash,
+                "evidence_hash": evidence_hash,
+                "budget_used": used,
+                "budget_max": plan["budget"].get(budget_key, 0),
+                "command": command,
+            }, sort_keys=True, indent=2))
+            return 0
+
+        # 4. Allocate reservation
+        reserved_record = allocate_reservation(
+            records, plan, role, stage, input_hash, evidence_hash,
+            run_id, reservation_id,
+        )
+        append_ledger(ledger_path, reserved_record)
+
+        # 5. Append 'running' state
+        running_record = {**reserved_record, "state": "running", "timestamp": int(time.time())}
+        append_ledger(ledger_path, running_record)
+
+    # 6. Execute command (lock released)
+    input_data = input_path.read_bytes() if input_path is not None else None
+    start = time.monotonic()
+
+    try:
+        exit_code = run_command(command, input_data, output_path, stderr_path)
+    except Exception as exc:
+        # Record failure
+        elapsed = time.monotonic() - start
+        with lock:
+            fail_record = {
+                **running_record,
+                "state": "failed",
+                "timestamp": int(time.time()),
+                "elapsed_seconds": round(elapsed, 3),
+                "exit_code": -1,
+                "error": str(exc),
+            }
+            append_ledger(ledger_path, fail_record)
+        raise
+
+    elapsed = time.monotonic() - start
+
+    # 7. Record final state
+    final_state = "succeeded" if exit_code == 0 else "failed"
+    with lock:
+        final_record = {
+            **running_record,
+            "state": final_state,
+            "timestamp": int(time.time()),
+            "elapsed_seconds": round(elapsed, 3),
+            "exit_code": exit_code,
+            "output_path": str(output_path) if output_path else None,
+            "stderr_path": str(stderr_path) if stderr_path else None,
+        }
+        append_ledger(ledger_path, final_record)
+
+    return exit_code
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="aiwf model-call",
+        description="Atomic model-call broker with cross-process quota enforcement",
+    )
+
+    # Required
+    parser.add_argument(
+        "--role", required=True, choices=["claude", "spark", "codex"],
+        help="Model role (claude, spark, codex)",
+    )
+    parser.add_argument("--stage", required=True, help="Execution stage (e.g. builder, final-review)")
+
+    # Plan (optional for compatibility mode)
+    parser.add_argument("--plan", type=Path, help="Execution plan JSON (optional)")
+
+    # Input/evidence
+    parser.add_argument("--input", type=Path, help="Input file (hashed and passed as stdin)")
+    parser.add_argument("--evidence", type=Path, help="Evidence file (hashed for dedup)")
+
+    # Output
+    parser.add_argument("--output", type=Path, help="Redirect child stdout to file")
+    parser.add_argument("--stderr", type=Path, help="Redirect child stderr to file")
+
+    # Ledger
+    parser.add_argument("--ledger", type=Path, default=Path(".ai-workflow/run-ledger.jsonl"),
+                        help="Ledger JSONL path (default: .ai-workflow/run-ledger.jsonl)")
+
+    # Run ID
+    parser.add_argument("--run-id", help="Run identifier (auto-generated if omitted)")
+    parser.add_argument("--reservation-id", help="Reservation identifier (auto-generated if omitted)")
+
+    # Behavior
+    parser.add_argument("--dry-run", action="store_true", help="Validate and inspect without executing")
+    parser.add_argument("--retry-failed", action="store_true",
+                        help="Allow retry of failed reservation with same evidence (fail-closed by default)")
+
+    # Legacy compatibility
+    parser.add_argument("--max-calls", type=int, help="Budget override for compatibility mode (no --plan)")
+
+    # Command
+    parser.add_argument("command", nargs=argparse.REMAINDER,
+                        help="Command to execute (after -- separator)")
+
+    args = parser.parse_args()
+
+    # Validate command
+    if not args.command or args.command[0] != "--":
+        parser.error("Command required after '--' separator")
+    command = args.command[1:]
+    if not command:
+        parser.error("No command specified after '--'")
+
+    # Validate --max-calls requires no --plan
+    if args.max_calls is not None and args.plan is not None:
+        parser.error("--max-calls cannot be used with --plan")
+
+    # Generate IDs
+    run_id = args.run_id or f"run-{uuid.uuid4().hex[:12]}"
+    reservation_id = args.reservation_id or f"res-{uuid.uuid4().hex[:12]}"
+
+    try:
+        return execute(
+            role=args.role,
+            stage=args.stage,
+            plan_path=args.plan,
+            input_path=args.input,
+            evidence_path=args.evidence,
+            output_path=args.output,
+            stderr_path=args.stderr,
+            ledger_path=args.ledger,
+            run_id=run_id,
+            reservation_id=reservation_id,
+            dry_run=args.dry_run,
+            retry_failed=args.retry_failed,
+            max_calls=args.max_calls,
+            command=command,
+        )
+    except BrokerError as exc:
+        print(f"broker: denied: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"broker: error: {exc}", file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

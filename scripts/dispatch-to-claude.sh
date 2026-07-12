@@ -1394,20 +1394,46 @@ claude_is_running() {
 }
 
 run_claude() {
-    if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
-        claude -p \
-            --permission-mode acceptEdits \
-            --output-format json \
-            < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
-    else
-        (
-            unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
-            unset http_proxy https_proxy all_proxy no_proxy
+    if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ]; then
+        # Internal bypass for tests/bootstrap to avoid broker recursion.
+        if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
             claude -p \
                 --permission-mode acceptEdits \
                 --output-format json \
                 < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
+        else
+            (
+                unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+                unset http_proxy https_proxy all_proxy no_proxy
+                claude -p \
+                    --permission-mode acceptEdits \
+                    --output-format json \
+                    < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
+            )
+        fi
+    else
+        # Broker-mediated execution for quota enforcement and audit.
+        local broker_args=(
+            --role claude
+            --stage builder
+            --input CLAUDE_PROMPT.md
+            --output "$RESULT_FILE"
+            --stderr "${STATUS_FILE}"
         )
+        if [ -f "execution-plan.json" ]; then
+            broker_args+=(--plan execution-plan.json)
+        fi
+        if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
+            python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
+                claude -p --permission-mode acceptEdits --output-format json
+        else
+            (
+                unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+                unset http_proxy https_proxy all_proxy no_proxy
+                python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
+                    claude -p --permission-mode acceptEdits --output-format json
+            )
+        fi
     fi
 }
 

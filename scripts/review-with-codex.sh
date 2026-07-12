@@ -413,15 +413,37 @@ echo ""
 
 # Pass prompt via stdin or file to avoid huge command-line arguments
 set +e
-if [ -f "$REVIEW_PROMPT_FILE" ]; then
-    # Use the bounded prompt file
-    codex exec --json < "$REVIEW_PROMPT_FILE" > "$CODEX_EVENTS_FILE" 2>"${REVIEW_OUTPUT_FILE}.stderr"
+if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ]; then
+    # Internal bypass for tests/bootstrap to avoid broker recursion.
+    if [ -f "$REVIEW_PROMPT_FILE" ]; then
+        codex exec --json < "$REVIEW_PROMPT_FILE" > "$CODEX_EVENTS_FILE" 2>"${REVIEW_OUTPUT_FILE}.stderr"
+    else
+        TEMP_PROMPT="$(mktemp "${REVIEW_PREFIX}.prompt.XXXXXX")"
+        printf '%s' "$REVIEW_PROMPT" > "$TEMP_PROMPT"
+        codex exec --json < "$TEMP_PROMPT" > "$CODEX_EVENTS_FILE" 2>"${REVIEW_OUTPUT_FILE}.stderr"
+        rm -f "$TEMP_PROMPT"
+    fi
 else
-    # Use a temp file for the prompt
-    TEMP_PROMPT="$(mktemp "${REVIEW_PREFIX}.prompt.XXXXXX")"
-    printf '%s' "$REVIEW_PROMPT" > "$TEMP_PROMPT"
-    codex exec --json < "$TEMP_PROMPT" > "$CODEX_EVENTS_FILE" 2>"${REVIEW_OUTPUT_FILE}.stderr"
-    rm -f "$TEMP_PROMPT"
+    # Broker-mediated execution for quota enforcement and audit.
+    broker_args=(
+        --role codex --stage final-review
+        --output "$CODEX_EVENTS_FILE" --stderr "${REVIEW_OUTPUT_FILE}.stderr"
+    )
+    if [ -f "execution-plan.json" ]; then
+        broker_args+=(--plan "execution-plan.json")
+    fi
+    if [ -f "$REVIEW_PROMPT_FILE" ]; then
+        broker_args+=(--input "$REVIEW_PROMPT_FILE")
+        python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
+            codex exec --json
+    else
+        TEMP_PROMPT="$(mktemp "${REVIEW_PREFIX}.prompt.XXXXXX")"
+        printf '%s' "$REVIEW_PROMPT" > "$TEMP_PROMPT"
+        broker_args+=(--input "$TEMP_PROMPT")
+        python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
+            codex exec --json
+        rm -f "$TEMP_PROMPT"
+    fi
 fi
 CODEX_STATUS=$?
 set -e
