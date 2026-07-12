@@ -3,8 +3,8 @@
   "profile_version": 1,
   "description": "C++ repositories built with Bazel",
   "extensions": {
-    "context_order": ["clangd", "locator", "bazel-targets", "bounded-codegraph", "targeted-read"],
-    "validation": {
+    "cpp_bazel": {
+      "context_order": ["clangd", "locator", "bazel-targets", "bounded-codegraph", "targeted-read"],
       "required_fingerprint": ["git_sha", "bazel", "java", "compiler", "python"],
       "allow_remote_required": true
     }

@@ -20,8 +20,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import fnmatch
+import subprocess
 import sys
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -65,16 +66,33 @@ def _facts_hash(data: Any) -> str:
     return hashlib.sha256(_canonical_json(data).encode("utf-8")).hexdigest()
 
 
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(["git", "-C", str(repo), *args], text=True, capture_output=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _repository_root(task_path: Path, repo: Optional[Union[str, Path]]) -> Path:
+    candidates = [Path(repo).resolve()] if repo else [task_path.resolve().parent, Path.cwd()]
+    for candidate in candidates:
+        root = _git(candidate, "rev-parse", "--show-toplevel")
+        if root:
+            return Path(root).resolve()
+    return candidates[0]
+
+
 def collect_facts(
     task_path: Union[str, Path],
     hints_path: Optional[Union[str, Path]] = None,
     profiles_dir: Optional[Union[str, Path]] = None,
+    repo: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """Collect routing facts from a task and optional hints.
 
     Returns a dict conforming to the routing-facts-v1 schema.
     Raises ValidationError or ProfileLoadError on failure.
     """
+    task_path = Path(task_path)
+    repo_root = _repository_root(task_path, repo)
     profiles_dir_path = Path(profiles_dir) if profiles_dir else find_default_profiles_dir()
 
     # Step 1: Load and validate raw task
@@ -119,9 +137,10 @@ def collect_facts(
     target_files: List[str] = []
     scope = composed.get("scope", {})
     if isinstance(scope.get("write_paths"), list):
-        target_files.extend(scope["write_paths"])
-    if isinstance(scope.get("read_paths"), list):
-        target_files.extend(scope["read_paths"])
+        tracked = _git(repo_root, "ls-files").splitlines()
+        for pattern in scope["write_paths"]:
+            matches = [path for path in tracked if fnmatch.fnmatch(path, pattern)]
+            target_files.extend(matches or [pattern])
 
     # Step 8: Extract validation info
     validation_ids: List[str] = []
@@ -136,12 +155,21 @@ def collect_facts(
     remote_required = False
     ext = composed.get("extensions", {})
     if isinstance(ext, dict):
-        val_ext = ext.get("validation", {})
-        if isinstance(val_ext, dict):
-            remote_required = bool(val_ext.get("allow_remote_required", False))
-        # Also check for manual-remote-validation profile markers
-        if ext.get("automation") == "preview":
+        cpp_ext = ext.get("cpp_bazel", {})
+        remote_ext = ext.get("remote_validation", {})
+        if isinstance(cpp_ext, dict):
+            remote_required = bool(cpp_ext.get("allow_remote_required", False))
+        if isinstance(remote_ext, dict) and remote_ext.get("automation") == "preview":
             remote_required = True
+
+    tracked_files = _git(repo_root, "ls-files").splitlines()
+    marker_names = ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel", "BUILD", "BUILD.bazel"]
+    markers = [name for name in marker_names if (repo_root / name).exists()]
+    has_cpp = any(Path(path).suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"} for path in tracked_files)
+    file_count = len(tracked_files)
+    scale = "small" if file_count < 300 else "medium" if file_count < 3000 else "large" if file_count < 20000 else "monorepo"
+    cache_dir = repo_root / ".ai-workflow" / "cache" / "context"
+    cache_entries = len(list(cache_dir.glob("*.json"))) if cache_dir.is_dir() else 0
 
     # Step 10: Build the facts object (exclude hash before computing it)
     facts: Dict[str, Any] = {
@@ -155,11 +183,15 @@ def collect_facts(
         "validation_ids": validation_ids,
         "exact_validation": exact_validation,
         "profiles": composed.get("profiles", []),
-        "commit": hints.get("commit", ""),
-        "repository_size": hints.get("repository_size", "unknown"),
-        "repository_markers": hints.get("repository_markers", []),
+        "commit": _git(repo_root, "rev-parse", "HEAD"),
+        "repository": {"root": str(repo_root), "tracked_files": file_count, "scale": scale, "bazel": bool(markers), "cpp": has_cpp},
+        "repository_size": scale,
+        "repository_markers": markers,
         "remote_validation_required": remote_required,
-        "context_cache_state": hints.get("context_cache_state", "none"),
+        "context_cache_state": {"available": cache_entries > 0, "entries": cache_entries},
+        "predicted_diff_lines": hints.get("predicted_diff_lines", hints.get("diff_lines", 999)),
+        "quota_mode": hints.get("quota_mode", "normal"),
+        "latency_mode": hints.get("latency_mode", "interactive"),
     }
 
     # Step 11: Compute hash (over everything except the hash field itself)
@@ -191,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Directory containing profile JSON files. Default: <repo>/profiles/",
     )
+    parser.add_argument("--repo", default=None, help="Repository root. Defaults to Git discovery.")
     parser.add_argument(
         "--output", "-o",
         default=None,
@@ -200,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        facts = collect_facts(args.task, args.hints, args.profiles_dir)
+        facts = collect_facts(args.task, args.hints, args.profiles_dir, args.repo)
     except ValidationError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

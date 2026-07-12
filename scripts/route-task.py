@@ -58,19 +58,23 @@ def _extract_risks(data: Dict[str, Any]) -> Set[str]:
     risks: Set[str] = set()
 
     # Collected facts format (effective_risks)
-    effective = data.get("effective_risks", {})
+    effective = data.get("effective_risks")
     if isinstance(effective, dict):
-        for k, v in effective.items():
+        for k in HIGH:
+            v = effective.get(k, "unknown")
             if v in ("yes", "unknown"):
                 risks.add(k)
         return risks
 
     # Legacy hints format (risks dict)
-    raw = data.get("risks", {})
+    raw = data.get("risks")
     if isinstance(raw, dict):
-        for k, v in raw.items():
-            if v not in (False, "no", None, 0):
+        for k in HIGH:
+            v = raw.get(k, "unknown")
+            if v not in (False, "no", 0):
                 risks.add(k)
+    else:
+        risks.update(HIGH)
 
     return risks
 
@@ -91,7 +95,7 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     else:
         # Express requires: small scope, exact validation, no risks
         file_count = data.get("target_files_count", data.get("files", 99))
-        diff_lines = data.get("diff_lines", 999)
+        diff_lines = data.get("predicted_diff_lines", data.get("diff_lines", 999))
         exact = data.get("exact_validation", False)
         no_risks = not risks
 
@@ -107,18 +111,14 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     c, cl, s = budgets.get(lane, budgets["standard"])
 
     # Single-pass decision: only the Router calculates this
-    builder_checker_split = lane == "assured" or bool(
-        data.get("test_changes_large") or data.get("validation_affects_behavior")
-    )
-    single_pass_allowed = not builder_checker_split and lane != "recovery"
-    if builder_checker_split:
-        single_pass_reason = "assured lane or behavioral validation requires split"
-    elif lane == "recovery":
-        single_pass_reason = "recovery lane requires iterative approach"
+    single_pass_allowed = lane == "express" and not risks and bool(data.get("exact_validation"))
+    builder_checker_split = not single_pass_allowed
+    if single_pass_allowed:
+        single_pass_reason = "express-lane-exact-validation"
     elif risks:
-        single_pass_reason = "risk categories present require split review"
+        single_pass_reason = "risk-not-exactly-no"
     else:
-        single_pass_reason = "bounded deterministic scope with exact validation"
+        single_pass_reason = f"{lane}-lane-requires-separated-validation"
 
     # Build reason list
     reason = sorted(risks) if risks else (

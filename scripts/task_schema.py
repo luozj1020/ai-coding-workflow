@@ -469,6 +469,9 @@ def compose_profiles(
     # Merge with task instance
     if task_instance is not None:
         composed = _deep_merge(composed, task_instance, "task")
+        errors = validate_task(composed)
+        if errors:
+            raise ValidationError("Composed task invalid: " + "; ".join(errors))
 
     return composed
 

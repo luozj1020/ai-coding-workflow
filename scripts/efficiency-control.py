@@ -24,7 +24,8 @@ def write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 def prepare(args):
-    hints = json.loads(Path(args.hints).read_text(encoding="utf-8"))
+    facts_path = args.facts or args.hints
+    hints = json.loads(Path(facts_path).read_text(encoding="utf-8"))
     route = router.route(hints); task_id = hints.get("task_id") or Path(args.task_card).stem
     # Copy single-pass eligibility from Router — never re-derive
     single = route["execution"]["single_pass_allowed"]
@@ -71,7 +72,7 @@ def review(args):
 
 def main():
     parser = argparse.ArgumentParser(); sub = parser.add_subparsers(dest="command", required=True)
-    prep = sub.add_parser("prepare"); prep.add_argument("--hints", required=True); prep.add_argument("--task-card", required=True); prep.add_argument("--output-dir", required=True); prep.add_argument("--cache-dir", default=".ai-workflow/cache/context")
+    prep = sub.add_parser("prepare"); source = prep.add_mutually_exclusive_group(required=True); source.add_argument("--facts"); source.add_argument("--hints", help="Legacy conservative input; cannot qualify for Express without complete risks"); prep.add_argument("--task-card", required=True); prep.add_argument("--output-dir", required=True); prep.add_argument("--cache-dir", default=".ai-workflow/cache/context")
     rev = sub.add_parser("review"); rev.add_argument("--plan", required=True); rev.add_argument("--evidence", required=True); rev.add_argument("--previous"); rev.add_argument("--ledger", default=".ai-workflow/run-ledger.jsonl"); rev.add_argument("--milestone", choices=["implementation-complete", "validation-complete", "final-candidate"], required=True); rev.add_argument("--output", required=True)
     args = parser.parse_args(); return prepare(args) if args.command == "prepare" else review(args)
 
