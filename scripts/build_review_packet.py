@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = 1
 
-DEFAULT_MAX_PROMPT_BYTES = 200_000
+DEFAULT_MAX_PROMPT_BYTES = 32_768
 DEFAULT_MAX_DIFF_HUNKS = 40
 DEFAULT_MAX_LOG_TAIL_LINES = 120
 DEFAULT_MAX_ARTIFACT_SUMMARY_BYTES = 20_000
@@ -126,6 +126,33 @@ def safe_relative(path: Path, base: Path) -> str:
         return str(rel).replace("\\", "/")
     except ValueError:
         return str(path).replace("\\", "/")
+
+
+def parse_acceptance_matrix(path: Path) -> List[Dict[str, Any]]:
+    """Extract acceptance criteria from a JSON or Markdown task card."""
+    text = read_text(path)
+    if path.suffix.lower() == ".json":
+        try:
+            data = json.loads(text)
+            return [{"id": str(item.get("id", f"AC-{i + 1}")),
+                     "description": str(item.get("description", "")),
+                     "status": "not-evaluated", "evidence": []}
+                    for i, item in enumerate(data.get("acceptance", []))
+                    if isinstance(item, dict)]
+        except (json.JSONDecodeError, AttributeError):
+            return []
+    section = re.search(r"(?ims)^##\s+Acceptance(?: Criteria)?\s*$\n(.*?)(?=^##\s|\Z)", text)
+    if not section:
+        return []
+    result: List[Dict[str, Any]] = []
+    for line in section.group(1).splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if line.lstrip().startswith("|") and len(cells) >= 2 and cells[0].lower() not in {"id", "---", "----"} and not set(cells[0]) <= {"-", ":"}:
+            result.append({"id": cells[0], "description": cells[1], "status": "not-evaluated", "evidence": []})
+        elif re.match(r"^\s*[-*]\s+", line):
+            desc = re.sub(r"^\s*[-*]\s+", "", line).strip()
+            result.append({"id": f"AC-{len(result) + 1}", "description": desc, "status": "not-evaluated", "evidence": []})
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -256,12 +283,14 @@ def build_review_packet(
     max_log_tail_lines: int = DEFAULT_MAX_LOG_TAIL_LINES,
     max_artifact_summary_bytes: int = DEFAULT_MAX_ARTIFACT_SUMMARY_BYTES,
     supplemental_files: Optional[List[Path]] = None,
+    task_card: Optional[Path] = None,
+    diff_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Build a bounded review packet from run directory artifacts."""
 
     # Find key artifacts
-    task_cards = sorted(run_dir.glob("task-card-*.md"))
-    diff_files = sorted(run_dir.glob("*.diff"))
+    task_cards = [task_card.resolve()] if task_card else sorted(run_dir.glob("task-card-*.md")) + sorted(run_dir.glob("task-card-*.json"))
+    diff_files = [diff_file.resolve()] if diff_file else sorted(run_dir.glob("*.diff"))
     checker_reports = sorted(run_dir.glob("*.checker-report.md"))
     usage_files = sorted(run_dir.glob("*.usage.txt"))
     result_files = sorted(run_dir.glob("*.result.json"))
@@ -342,7 +371,7 @@ def build_review_packet(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "task_summary": task_summary[:max_artifact_summary_bytes],
         "active_contracts": active_contracts[:max_artifact_summary_bytes],
-        "acceptance_matrix": [],  # Would need to parse from task card
+        "acceptance_matrix": parse_acceptance_matrix(task_cards[-1]) if task_cards else [],
         "changed_files": changed_files,
         "diff_hunks": diff_hunks,
         "checker_summary": checker_summary[:max_artifact_summary_bytes],
@@ -352,9 +381,8 @@ def build_review_packet(
         "prompt_bytes": 0,  # Will be set after serialization
     }
 
-    # Set prompt_bytes to the size of the serialized packet
-    packet_json = json.dumps(packet, indent=2, ensure_ascii=False, sort_keys=True)
-    packet["prompt_bytes"] = len(packet_json.encode("utf-8"))
+    # prompt_bytes describes the actual bounded model input, not packet storage.
+    packet["prompt_bytes"] = len(render_review_prompt(packet, max_prompt_bytes).encode("utf-8"))
 
     return packet
 
@@ -370,6 +398,13 @@ def render_review_prompt(packet: Dict[str, Any], max_bytes: int = DEFAULT_MAX_PR
     """
     lines = [
         "# Review Packet",
+        "",
+        "## Required Review Decision JSON",
+        "Return exactly one JSON object (raw or in one fenced json block) with: "
+        "schema_version=1; decision=accept|revise|split|reject; scope=phase|whole-task; "
+        "non-empty reasoning; direction.status=accepted|rejected|needs-revision|not-applicable; "
+        "acceptance=[{id,status,evidence}]; validation={status,failed_checks}; next_task; lessons. "
+        "For revise/split next_task must contain mode, goal, acceptance. Human prose cannot override JSON.",
         "",
         "## Task Summary",
         packet.get("task_summary", "(none)"),
@@ -443,7 +478,9 @@ def render_review_prompt(packet: Dict[str, Any], max_bytes: int = DEFAULT_MAX_PR
     # Truncate if needed
     encoded = prompt.encode("utf-8")
     if len(encoded) > max_bytes:
-        truncated = encoded[:max_bytes]
-        prompt = truncated.decode("utf-8", errors="replace") + "\n\n... [prompt truncated to fit byte limit]"
+        suffix = "\n\n... [prompt truncated to fit byte limit]"
+        budget = max(0, max_bytes - len(suffix.encode("utf-8")))
+        truncated = encoded[:budget]
+        prompt = truncated.decode("utf-8", errors="ignore") + suffix
 
     return prompt

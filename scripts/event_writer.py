@@ -223,28 +223,31 @@ class EventWriter:
             if errors:
                 raise EventValidationError("; ".join(errors))
 
-        # Auto-link parent to last written event if not set
-        if event.get("parent_event_id") is None and self._last_event_id is not None:
-            event["parent_event_id"] = self._last_event_id
-
-        line = json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n"
-
-        self._locked_append(line)
+        self._locked_append(event)
         self._last_event_id = event["event_id"]
         return event["event_id"]
 
-    def _locked_append(self, line: str) -> None:
-        """Append a line to the JSONL file with file locking."""
+    def _locked_append(self, event: Dict[str, Any]) -> None:
+        """Recover the durable tail and append one linked event under lock."""
         # Retry loop for lock contention
         for attempt in range(10):
             try:
-                with open(self._path, "a", encoding="utf-8") as f:
+                with open(self._path, "a+", encoding="utf-8") as f:
                     try:
                         if fcntl is not None:
                             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     except (OSError, AttributeError):
                         # Windows or unsupported — retry-based approach
                         pass
+                    f.seek(0)
+                    prior = [line for line in f.read().splitlines() if line.strip()]
+                    if event.get("parent_event_id") is None and prior:
+                        try:
+                            event["parent_event_id"] = json.loads(prior[-1])["event_id"]
+                        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                            raise EventWriterError("Cannot link event to malformed durable tail") from exc
+                    line = json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n"
+                    f.seek(0, os.SEEK_END)
                     f.write(line)
                     f.flush()
                     os.fsync(f.fileno())

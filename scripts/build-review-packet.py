@@ -40,6 +40,8 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("--max-log-tail-lines", type=int, default=DEFAULT_MAX_LOG_TAIL_LINES)
     parser.add_argument("--max-artifact-summary-bytes", type=int, default=DEFAULT_MAX_ARTIFACT_SUMMARY_BYTES)
     parser.add_argument("--supplemental", nargs="*", help="Additional artifact paths to include.")
+    parser.add_argument("--task-card", help="Exact task card; prevents cross-task artifact selection.")
+    parser.add_argument("--diff-file", help="Exact diff; prevents cross-task artifact selection.")
     args = parser.parse_args(argv)
 
     run_dir = Path(args.run_dir).resolve()
@@ -56,6 +58,8 @@ def main(argv: List[str] | None = None) -> int:
         max_log_tail_lines=args.max_log_tail_lines,
         max_artifact_summary_bytes=args.max_artifact_summary_bytes,
         supplemental_files=supplemental,
+        task_card=Path(args.task_card) if args.task_card else None,
+        diff_file=Path(args.diff_file) if args.diff_file else None,
     )
 
     # Write packet JSON

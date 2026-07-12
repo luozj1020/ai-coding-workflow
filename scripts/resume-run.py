@@ -69,13 +69,27 @@ def validate_manifest(run_dir: Path) -> Tuple[List[Dict[str, Any]], List[str]]:
 
     entries = data.get("entries", [])
     errors: List[str] = []
+    if not isinstance(entries, list):
+        return [], ["artifact-manifest.json: entries must be an array"]
 
     for entry in entries:
+        if not isinstance(entry, dict):
+            errors.append("artifact-manifest.json: entry must be an object")
+            continue
         path = entry.get("path", "")
         expected_hash = entry.get("sha256", "")
         expected_size = entry.get("size", -1)
 
-        artifact_path = run_dir / path
+        candidate = Path(path)
+        if not path or candidate.is_absolute() or ".." in candidate.parts:
+            errors.append(f"Unsafe artifact path: {path!r}")
+            continue
+        artifact_path = (run_dir / candidate).resolve()
+        try:
+            artifact_path.relative_to(run_dir.resolve())
+        except ValueError:
+            errors.append(f"Artifact path escapes run directory: {path}")
+            continue
         if not artifact_path.exists():
             if entry.get("required"):
                 errors.append(f"Required artifact missing: {path}")
@@ -121,7 +135,20 @@ def load_events(run_dir: Path) -> Tuple[List[Dict[str, Any]], List[str]]:
     writer = EventWriter(events_path)
     try:
         events = writer.read_all()
-        return events, []
+        errors: List[str] = []
+        expected_run = None
+        expected_task = None
+        previous_id = None
+        for index, event in enumerate(events, 1):
+            run_id, task_id = event.get("run_id"), event.get("task_id")
+            if expected_run is None:
+                expected_run, expected_task = run_id, task_id
+            if run_id != expected_run or task_id != expected_task:
+                errors.append(f"Event identity mismatch at line {index}")
+            if event.get("parent_event_id") != previous_id:
+                errors.append(f"Broken event parent chain at line {index}")
+            previous_id = event.get("event_id")
+        return events, errors
     except Exception as e:
         return [], [str(e)]
 
@@ -205,7 +232,7 @@ def build_resume_plan(
     # Determine if resume is safe
     resume_safe = (
         not event_errors
-        and not missing_required
+        and not manifest_errors
         and not has_interrupted
     )
 
@@ -233,6 +260,8 @@ def build_resume_plan(
         plan["blockers"].append("Run was interrupted (dispatch_incomplete or review_failed)")
     if missing_required:
         plan["blockers"].extend(missing_required[:5])
+    if manifest_errors and not missing_required:
+        plan["blockers"].append(f"{len(manifest_errors)} manifest integrity error(s)")
     if event_errors:
         plan["blockers"].append(f"{len(event_errors)} event validation error(s)")
 

@@ -95,6 +95,8 @@ if [ -n "$PYTHON_CMD" ] && [ -f "$BUILD_PACKET_SCRIPT" ]; then
     "$PYTHON_CMD" "$BUILD_PACKET_SCRIPT" "$RUN_DIR" \
         --output "$REVIEW_PACKET_FILE" \
         --prompt-output "$REVIEW_PROMPT_FILE" \
+        --task-card "$TASK_CARD" \
+        --diff-file "$DIFF_FILE" \
         --supplemental $SUPPLEMENTAL_ARGS \
         >/dev/null 2>&1
     PACKET_STATUS=$?
