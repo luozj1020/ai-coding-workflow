@@ -91,6 +91,7 @@ PYTHON_SCRIPTS = [
     ("parse-review-decision.py", "ai/parse-review-decision.py"),
     ("event_writer.py", "ai/event_writer.py"),
     ("validate-run-events.py", "ai/validate-run-events.py"),
+    ("build_review_packet.py", "ai/build_review_packet.py"),
     ("build-review-packet.py", "ai/build-review-packet.py"),
     ("resume-run.py", "ai/resume-run.py"),
     ("replay-run.py", "ai/replay-run.py"),

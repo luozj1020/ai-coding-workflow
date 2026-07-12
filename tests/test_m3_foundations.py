@@ -872,6 +872,7 @@ class TestInstallerCopiesM3(unittest.TestCase):
 
     def test_build_review_packet_installed(self):
         content = (SCRIPTS / "install_workflow.py").read_text(encoding="utf-8")
+        self.assertIn("build_review_packet.py", content)
         self.assertIn("build-review-packet.py", content)
 
     def test_resume_run_installed(self):
@@ -905,6 +906,7 @@ class TestInstallerCopiesM3(unittest.TestCase):
             )
             self.assertTrue((repo / "ai" / "event_writer.py").exists())
             self.assertTrue((repo / "ai" / "validate-run-events.py").exists())
+            self.assertTrue((repo / "ai" / "build_review_packet.py").exists())
             self.assertTrue((repo / "ai" / "build-review-packet.py").exists())
             self.assertTrue((repo / "ai" / "resume-run.py").exists())
             self.assertTrue((repo / "ai" / "replay-run.py").exists())
@@ -938,6 +940,14 @@ class TestPythonCompile(unittest.TestCase):
 
     def test_build_review_packet_compiles(self):
         path = SCRIPTS / "build-review-packet.py"
+        result = subprocess.run(
+            [sys.executable, "-m", "py_compile", str(path)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, f"Compile error: {result.stderr}")
+
+    def test_build_review_packet_module_compiles(self):
+        path = SCRIPTS / "build_review_packet.py"
         result = subprocess.run(
             [sys.executable, "-m", "py_compile", str(path)],
             capture_output=True, text=True,

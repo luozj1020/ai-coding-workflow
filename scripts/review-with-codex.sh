@@ -128,7 +128,8 @@ ${FILE_CONTENT}
         fi
     done
 
-    REVIEW_PROMPT="You are a code reviewer in a multi-agent workflow. Review the following execution evidence and make a structured decision.
+    REVIEW_PROMPT=$(cat <<_REVIEW_EOF_
+You are a code reviewer in a multi-agent workflow. Review the following execution evidence and make a structured decision.
 
 ## Your Role
 - You are reviewing, NOT implementing. Do NOT write code or suggest code edits.
@@ -307,7 +308,9 @@ For REVISE, SPLIT, or REJECT, provide a task-card-ready handoff with:
 For phase-only ACCEPT with remaining implementation/test-writing work, also provide this contract for the next Claude dispatch.
 
 ### Reusable Lessons
-Record any knowledge that could inform future planning."
+Record any knowledge that could inform future planning.
+_REVIEW_EOF_
+)
 
 # PYTHON_CMD is set earlier (before review packet build).
 # Remove the duplicate definition that was here.
