@@ -59,14 +59,75 @@ def prepare(args):
 
 def review(args):
     plan = json.loads(Path(args.plan).read_text()); evidence = json.loads(Path(args.evidence).read_text())
-    result = evaluator.evaluate(evidence); tier = tiers.select_tier({**result, "lane": plan["lane"], "codex_available": evidence.get("codex_available", True)})
+
+    # Use review-ladder for deterministic evaluation
+    ladder = load_module("review_ladder", "review-ladder.py")
+
+    # Build ladder input from evidence
+    ladder_input = {
+        "task": evidence.get("task", {}),
+        "validation_results": evidence.get("validation_results"),
+        "artifact_manifest": evidence.get("artifact_manifest"),
+        "diff_evidence": evidence.get("diff_evidence", {}),
+        "remote_evidence": evidence.get("remote_evidence"),
+    }
+
+    # Check if we have a composed task or need legacy mode
+    if ladder_input["task"]:
+        ladder_result = ladder.evaluate_ladder(
+            task=ladder_input["task"],
+            validation_results=ladder_input["validation_results"],
+            artifact_manifest=ladder_input["artifact_manifest"],
+            diff_evidence=ladder_input["diff_evidence"],
+            remote_evidence=ladder_input["remote_evidence"],
+            failure_count=evidence.get("failure_count", 1),
+            assured=plan["lane"] == "assured",
+        )
+        result = ladder_result["l0_acceptance"]
+        tier = {"tier": ladder_result["tier"], "action": ladder_result["action"]}
+        model_authorized = ladder_result["model_authorized"]
+        model_call_prohibited = ladder_result["model_call_prohibited"]
+    else:
+        # Legacy mode: use old evaluate + select-tier
+        result = evaluator.evaluate(evidence)
+        tier = tiers.select_tier({**result, "lane": plan["lane"], "codex_available": evidence.get("codex_available", True)})
+        model_authorized = "codex" if tier["tier"] == "L2-codex" else None
+        model_call_prohibited = False
+
     previous = json.loads(Path(args.previous).read_text()) if args.previous else {}
     evidence_hash = digest(evidence)
     ledger_path = Path(args.ledger); ledger = [json.loads(x) for x in ledger_path.read_text(encoding="utf-8").splitlines() if x.strip()] if ledger_path.exists() else []
     codex_rows = [x for x in ledger if x.get("task_id") == plan["task_id"] and x.get("model") == "codex"]
     duplicate = any(x.get("evidence_hash") == evidence_hash for x in codex_rows)
     budget_available = len(codex_rows) < plan["budget"]["codex_calls"]
-    output = {"schema_version": 1, "task_id": plan["task_id"], "milestone": args.milestone, "acceptance": result, "review": tier, "evidence_hash": evidence_hash, "incremental_evidence": {k: v for k, v in evidence.items() if previous.get(k) != v}, "codex_call_authorized": tier["tier"] == "L2-codex" and args.milestone in plan["review"]["milestones"] and budget_available and not duplicate, "codex_budget": {"used": len(codex_rows), "max": plan["budget"]["codex_calls"], "duplicate_evidence": duplicate}}
+
+    # Determine authorization: use ladder result, but still check budget/dedup
+    codex_call_authorized = (
+        model_authorized == "codex"
+        and not model_call_prohibited
+        and args.milestone in plan["review"]["milestones"]
+        and budget_available
+        and not duplicate
+    )
+
+    output = {
+        "schema_version": 1,
+        "task_id": plan["task_id"],
+        "milestone": args.milestone,
+        "acceptance": result,
+        "review": tier,
+        "evidence_hash": evidence_hash,
+        "incremental_evidence": {k: v for k, v in evidence.items() if previous.get(k) != v},
+        "codex_call_authorized": codex_call_authorized,
+        "model_call_prohibited": model_call_prohibited,
+        "codex_budget": {"used": len(codex_rows), "max": plan["budget"]["codex_calls"], "duplicate_evidence": duplicate},
+    }
+
+    # Include ladder-specific fields if available
+    if ladder_input["task"]:
+        output["mechanical_failures"] = ladder_result.get("mechanical_failures", [])
+        output["recovery"] = ladder_result.get("recovery")
+
     write_json(args.output, output); print(json.dumps(output, sort_keys=True, indent=2))
     return 0 if result["status"] == "passed" else 2
 

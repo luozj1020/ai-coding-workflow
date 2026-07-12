@@ -115,6 +115,7 @@ PYTHON_SCRIPTS = [
     ("dispatch-efficient.py", "ai/dispatch-efficient.py"),
     ("remote-precheck.py", "ai/remote-precheck.py"),
     ("route-recovery.py", "ai/route-recovery.py"),
+    ("review-ladder.py", "ai/review-ladder.py"),
 ]
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)
