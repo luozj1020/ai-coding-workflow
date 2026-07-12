@@ -15,7 +15,7 @@ class CppBazelHandoffTests(unittest.TestCase):
             data=json.loads(Path(d,"manifest.json").read_text()); self.assertEqual(data["schema_version"],1)
             for name in ("local-publish.sh","remote-validate.sh"):
                 text=Path(d,name).read_text(); self.assertIn("echo",text)
-                subprocess.check_call(["bash","-n",Path(d,name)])
+                subprocess.run(["bash","-n"],input=text,text=True,check=True)
     def test_hostile_task_id_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             run=subprocess.run([sys.executable,ROOT/"scripts/generate-handoff.py","../bad","--output-dir",d,"--repo-url","x","--branch","main","--sha","abcdef1"],capture_output=True)

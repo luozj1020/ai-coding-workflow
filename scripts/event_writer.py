@@ -15,7 +15,10 @@ As a module:
 """
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl; append+flush remains the fallback.
+    fcntl = None
 import hashlib
 import json
 import os
@@ -237,7 +240,8 @@ class EventWriter:
             try:
                 with open(self._path, "a", encoding="utf-8") as f:
                     try:
-                        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                        if fcntl is not None:
+                            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                     except (OSError, AttributeError):
                         # Windows or unsupported — retry-based approach
                         pass
@@ -245,7 +249,8 @@ class EventWriter:
                     f.flush()
                     os.fsync(f.fileno())
                     try:
-                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                        if fcntl is not None:
+                            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
                     except (OSError, AttributeError):
                         pass
                 return

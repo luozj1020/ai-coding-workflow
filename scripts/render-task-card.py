@@ -32,6 +32,10 @@ from task_schema import (
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows pipes otherwise inherit a legacy console code page while callers
+    # consume this machine-generated Markdown as UTF-8.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(
         description="Render a task card JSON as Markdown.",
         formatter_class=argparse.RawDescriptionHelpFormatter,

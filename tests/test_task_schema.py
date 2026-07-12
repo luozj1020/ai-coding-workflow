@@ -1017,7 +1017,7 @@ class TestInstalledPathDiscovery(unittest.TestCase):
             try:
                 self.ts.__file__ = str(scripts_dir / "task_schema.py")
                 result = self.ts.find_default_profiles_dir()
-                self.assertEqual(result, installed)
+                self.assertTrue(os.path.samefile(result, installed))
             finally:
                 self.ts.__file__ = original_file
 
@@ -1036,7 +1036,7 @@ class TestInstalledPathDiscovery(unittest.TestCase):
             try:
                 self.ts.__file__ = str(scripts_dir / "task_schema.py")
                 result = self.ts.find_default_schema_path()
-                self.assertEqual(result, schema_file)
+                self.assertTrue(os.path.samefile(result, schema_file))
             finally:
                 self.ts.__file__ = original_file
 
@@ -1055,7 +1055,7 @@ class TestInstalledPathDiscovery(unittest.TestCase):
             try:
                 self.ts.__file__ = str(scripts_dir / "task_schema.py")
                 result = self.ts.find_default_profiles_dir()
-                self.assertEqual(result, source_profiles)
+                self.assertTrue(os.path.samefile(result, source_profiles))
             finally:
                 self.ts.__file__ = original_file
 

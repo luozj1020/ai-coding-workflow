@@ -2359,10 +2359,10 @@ class SparkDiagnosticsTests(unittest.TestCase):
                 "full diagnostic should have report.md")
             # Report should reference permanent copies
             report_text = (diag_dir / "codex-spark.report.md").read_text(encoding="utf-8")
-            self.assertIn(str(diag_dir / "codex-spark.prompt.md"), report_text)
-            self.assertIn(str(diag_dir / "codex-spark.result.txt"), report_text)
-            self.assertIn(str(diag_dir / "codex-spark.stderr.log"), report_text)
-            self.assertIn(str(diag_dir / "codex-spark.status.txt"), report_text)
+            normalized_report = report_text.replace("\\", "/").lower()
+            for name in ("codex-spark.prompt.md", "codex-spark.result.txt",
+                         "codex-spark.stderr.log", "codex-spark.status.txt"):
+                self.assertIn("/" + name, normalized_report)
             # Status file should contain metadata
             status_text = (diag_dir / "codex-spark.status.txt").read_text(encoding="utf-8")
             self.assertIn("exit_code=2", status_text)

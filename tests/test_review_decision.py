@@ -1064,7 +1064,7 @@ class TestShellSyntax(unittest.TestCase):
     def test_review_with_codex_syntax(self):
         path = SCRIPTS / "review-with-codex.sh"
         result = subprocess.run(
-            ["bash", "-n", str(path)],
+            ["bash", "-n", path.name], cwd=str(SCRIPTS),
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, f"Syntax error: {result.stderr}")
@@ -1072,7 +1072,7 @@ class TestShellSyntax(unittest.TestCase):
     def test_run_loop_syntax(self):
         path = SCRIPTS / "run-loop.sh"
         result = subprocess.run(
-            ["bash", "-n", str(path)],
+            ["bash", "-n", path.name], cwd=str(SCRIPTS),
             capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, f"Syntax error: {result.stderr}")
