@@ -426,7 +426,8 @@ class TestDispatchTee(unittest.TestCase):
             stdout_path = Path(td) / "out.txt"
             stderr_path = Path(td) / "err.txt"
             script = Path(td) / "fake.sh"
-            script.write_text("#!/bin/bash\necho OUT\nerrstuff >&2\n")
+            # Use 'echo ... >&2' so bash writes to stderr, not execute 'errstuff'
+            script.write_text("#!/bin/bash\necho OUT\necho errstuff >&2\n")
             os.chmod(script, 0o755)
 
             dispatch_mod._tee_subprocess(

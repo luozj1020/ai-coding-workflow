@@ -162,12 +162,12 @@ def _tee_subprocess(cmd, stdin_data=None, stdout_path=None, stderr_path=None, cw
 
     Returns the exit code. Preserves child exit code exactly.
     """
-    import select
     import threading
 
     # Open output files
     out_fh = open(stdout_path, "wb") if stdout_path else None
     err_fh = open(stderr_path, "wb") if stderr_path else None
+    proc = None
 
     try:
         proc = subprocess.Popen(
@@ -217,6 +217,19 @@ def _tee_subprocess(cmd, stdin_data=None, stdout_path=None, stderr_path=None, cw
         return proc.returncode
 
     finally:
+        # Close pipe handles on all paths to avoid ResourceWarning.
+        # By the time we reach here either (a) threads joined and pipes
+        # hit EOF, or (b) an exception occurred and daemon threads will
+        # terminate when the process exits.  Either way, closing is safe.
+        if proc is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+            try:
+                proc.stderr.close()
+            except OSError:
+                pass
         if out_fh:
             out_fh.close()
         if err_fh:

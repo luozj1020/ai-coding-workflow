@@ -230,6 +230,28 @@ def build_evidence(
     if extra:
         evidence.update(extra)
 
+    # Deterministic top-level evidence_hash computed over the payload
+    # excluding the hash field itself.  Artifact paths are excluded so
+    # that identical content at different paths yields the same hash
+    # where path identity is not evidence.
+    hashable = {
+        "schema_version": evidence.get("schema_version"),
+        "task": evidence.get("task"),
+        "dispatch_dir": evidence.get("dispatch_dir"),
+        "artifacts": {
+            k: {ik: iv for ik, iv in v.items() if ik != "path"}
+            for k, v in evidence.get("artifacts", {}).items()
+        },
+        "evidence_hashes": evidence.get("evidence_hashes"),
+    }
+    for key in ("result_json", "validation_results", "artifact_manifest",
+                "remote_ingest", "quota_ledger", "runtime_json",
+                "checker_report", "progress_status", "claude_report",
+                "changed_files", "diffstat"):
+        if key in evidence:
+            hashable[key] = evidence[key]
+    evidence["evidence_hash"] = evidence_hash(hashable)
+
     return evidence
 
 
