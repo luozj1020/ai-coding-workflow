@@ -1,1 +1,12 @@
-{"id":"failed-test-repair","trust":"trusted-local"}
+{
+  "id": "failed-test-repair",
+  "trust": "trusted-local",
+  "task": "Repair a failing test suite",
+  "expected_lane": "standard",
+  "expected_tier": "L1",
+  "allowed_files": ["tests/**/*.py", "src/**/*.py"],
+  "forbidden_files": [".git/config"],
+  "validations": ["python -m pytest tests/ -x"],
+  "quota_budget": 6,
+  "latency_budget_seconds": 240
+}

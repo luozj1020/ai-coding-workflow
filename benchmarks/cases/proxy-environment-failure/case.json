@@ -1,1 +1,12 @@
-{"id":"proxy-environment-failure","trust":"trusted-local"}
+{
+  "id": "proxy-environment-failure",
+  "trust": "trusted-local",
+  "task": "Handle proxy environment configuration failure",
+  "expected_lane": "standard",
+  "expected_tier": "L1",
+  "allowed_files": ["scripts/**/*.py", "profiles/**/*.json"],
+  "forbidden_files": [".git/config"],
+  "validations": ["python scripts/doctor_workflow.py"],
+  "quota_budget": 4,
+  "latency_budget_seconds": 180
+}

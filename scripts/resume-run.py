@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """resume-run.py — Validate run state and output a resume plan.
 
-Reads events, manifest, and hashes from a run directory.
-Finds the latest safe phase/iteration and outputs a machine-readable
-resume plan plus human summary.
+Resume types (PR7):
+  - resume-from-dispatch: dispatch complete, review not started
+  - resume-from-partial-diff: partial diff exists, dispatch incomplete
+  - resume-from-review: review complete, decision not made
+  - resume-from-decision: decision made, finalization not complete
+  - requires-human: human intervention needed (ambiguous state)
+  - unsafe-corrupted: integrity check failed, cannot resume safely
+
+Hash verification: verify artifact hashes before reuse.
+Dispatch complete + review failed: resume from existing review packet/evidence
+  without invoking Claude.
+Corruption fails closed: any hash mismatch → unsafe-corrupted.
+review_failed alone is recoverable (not corruption).
 
 NEVER executes dispatch by default. --apply may only prepare next
 task/context, not invoke Claude/Codex.
@@ -45,70 +55,18 @@ PHASE_COMPLETION_EVENTS = {
     "finalization": "run_complete",
 }
 
+# Resume type constants (PR7)
+RESUME_FROM_DISPATCH = "resume-from-dispatch"
+RESUME_FROM_PARTIAL_DIFF = "resume-from-partial-diff"
+RESUME_FROM_REVIEW = "resume-from-review"
+RESUME_FROM_DECISION = "resume-from-decision"
+REQUIRES_HUMAN = "requires-human"
+UNSAFE_CORRUPTED = "unsafe-corrupted"
+
 
 # ---------------------------------------------------------------------------
-# Manifest validation
+# Manifest validation with hash verification
 # ---------------------------------------------------------------------------
-
-def validate_manifest(run_dir: Path) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Load and validate the artifact manifest.
-
-    Returns (entries, errors).
-    """
-    manifest_path = run_dir / "artifact-manifest.json"
-    if not manifest_path.exists():
-        return [], ["artifact-manifest.json not found"]
-
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        return [], [f"artifact-manifest.json: {e}"]
-
-    if data.get("schema_version") != 1:
-        return [], [f"artifact-manifest.json: schema_version={data.get('schema_version')}, expected 1"]
-
-    entries = data.get("entries", [])
-    errors: List[str] = []
-    if not isinstance(entries, list):
-        return [], ["artifact-manifest.json: entries must be an array"]
-
-    for entry in entries:
-        if not isinstance(entry, dict):
-            errors.append("artifact-manifest.json: entry must be an object")
-            continue
-        path = entry.get("path", "")
-        expected_hash = entry.get("sha256", "")
-        expected_size = entry.get("size", -1)
-
-        candidate = Path(path)
-        if not path or candidate.is_absolute() or ".." in candidate.parts:
-            errors.append(f"Unsafe artifact path: {path!r}")
-            continue
-        artifact_path = (run_dir / candidate).resolve()
-        try:
-            artifact_path.relative_to(run_dir.resolve())
-        except ValueError:
-            errors.append(f"Artifact path escapes run directory: {path}")
-            continue
-        if not artifact_path.exists():
-            if entry.get("required"):
-                errors.append(f"Required artifact missing: {path}")
-            continue
-
-        # Hash check
-        if expected_hash:
-            actual_hash = sha256_file(artifact_path)
-            if actual_hash != expected_hash:
-                errors.append(f"Hash mismatch for {path}: expected {expected_hash[:16]}..., got {actual_hash[:16]}...")
-
-        # Size check
-        if expected_size >= 0:
-            actual_size = artifact_path.stat().st_size
-            if actual_size != expected_size:
-                errors.append(f"Size mismatch for {path}: expected {expected_size}, got {actual_size}")
-
-    return entries, errors
-
 
 def sha256_file(path: Path) -> str:
     """Compute SHA-256 hex digest of a file."""
@@ -117,6 +75,85 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def validate_manifest(run_dir: Path) -> Tuple[List[Dict[str, Any]], List[str], bool]:
+    """Load and validate the artifact manifest with hash verification.
+
+    Returns (entries, errors, has_corruption).
+    has_corruption=True if any hash mismatch is found (fails closed).
+    """
+    manifest_path = run_dir / "artifact-manifest.json"
+    if not manifest_path.exists():
+        return [], ["artifact-manifest.json not found"], False
+
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return [], [f"artifact-manifest.json: {e}"], True
+
+    if data.get("schema_version") != 1:
+        return [], [
+            f"artifact-manifest.json: schema_version={data.get('schema_version')}, expected 1"
+        ], True
+
+    entries = data.get("entries", [])
+    errors: List[str] = []
+    has_corruption = False
+
+    if not isinstance(entries, list):
+        return [], ["artifact-manifest.json: entries must be an array"], True
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            errors.append("artifact-manifest.json: entry must be an object")
+            has_corruption = True
+            continue
+
+        path = entry.get("path", "")
+        expected_hash = entry.get("sha256", "")
+        expected_size = entry.get("size", -1)
+
+        candidate = Path(path)
+        if not path or candidate.is_absolute() or ".." in candidate.parts:
+            errors.append(f"Unsafe artifact path: {path!r}")
+            has_corruption = True
+            continue
+
+        artifact_path = (run_dir / candidate).resolve()
+        try:
+            artifact_path.relative_to(run_dir.resolve())
+        except ValueError:
+            errors.append(f"Artifact path escapes run directory: {path}")
+            has_corruption = True
+            continue
+
+        if not artifact_path.exists():
+            if entry.get("required"):
+                errors.append(f"Required artifact missing: {path}")
+            continue
+
+        # Hash check — corruption if mismatch
+        if expected_hash:
+            actual_hash = sha256_file(artifact_path)
+            if actual_hash != expected_hash:
+                errors.append(
+                    f"Hash mismatch for {path}: "
+                    f"expected {expected_hash[:16]}..., got {actual_hash[:16]}..."
+                )
+                has_corruption = True
+
+        # Size check
+        if expected_size >= 0:
+            actual_size = artifact_path.stat().st_size
+            if actual_size != expected_size:
+                errors.append(
+                    f"Size mismatch for {path}: "
+                    f"expected {expected_size}, got {actual_size}"
+                )
+                has_corruption = True
+
+    return entries, errors, has_corruption
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +167,10 @@ def load_events(run_dir: Path) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
     events_path = run_dir / "loop-events.jsonl"
     if not events_path.exists():
-        return [], ["loop-events.jsonl not found"]
+        # Try alternate name
+        events_path = run_dir / "run-events.jsonl"
+    if not events_path.exists():
+        return [], ["No events file found (loop-events.jsonl or run-events.jsonl)"]
 
     writer = EventWriter(events_path)
     try:
@@ -153,12 +193,13 @@ def load_events(run_dir: Path) -> Tuple[List[Dict[str, Any]], List[str]]:
         return [], [str(e)]
 
 
-def find_latest_safe_point(events: List[Dict[str, Any]]) -> Tuple[str, Optional[int], Dict[str, Any]]:
+def find_latest_safe_point(
+    events: List[Dict[str, Any]],
+) -> Tuple[str, Optional[int], Dict[str, Any]]:
     """Find the latest safe phase and iteration to resume from.
 
     Returns (phase, iteration, detail).
     """
-    # Track completed phases
     completed_phases: Dict[str, Dict[str, Any]] = {}
     last_iteration: Optional[int] = None
 
@@ -173,7 +214,6 @@ def find_latest_safe_point(events: List[Dict[str, Any]]) -> Tuple[str, Optional[
         if iteration is not None:
             last_iteration = iteration
 
-        # Check if this event completes a phase
         expected = PHASE_COMPLETION_EVENTS.get(phase)
         if expected and event_name == expected:
             completed_phases[phase] = {
@@ -183,7 +223,6 @@ def find_latest_safe_point(events: List[Dict[str, Any]]) -> Tuple[str, Optional[
                 "detail": event.get("detail", {}),
             }
 
-    # Find the latest safe phase in order
     latest_safe_phase = "setup"
     latest_detail: Dict[str, Any] = {}
 
@@ -193,6 +232,67 @@ def find_latest_safe_point(events: List[Dict[str, Any]]) -> Tuple[str, Optional[
             latest_detail = completed_phases[phase]
 
     return latest_safe_phase, last_iteration, latest_detail
+
+
+def has_event(events: List[Dict[str, Any]], event_name: str) -> bool:
+    """Check if a specific event exists in the event log."""
+    return any(
+        e.get("event") == event_name
+        and e.get("schema_version") == EVENT_SCHEMA_VERSION
+        for e in events
+    )
+
+
+# ---------------------------------------------------------------------------
+# Resume type determination (PR7)
+# ---------------------------------------------------------------------------
+
+def determine_resume_type(
+    safe_phase: str,
+    events: List[Dict[str, Any]],
+    has_corruption: bool,
+    manifest_errors: List[str],
+) -> str:
+    """Determine the exact resume type.
+
+    Returns one of the PR7 resume type constants.
+    """
+    # Corruption fails closed
+    if has_corruption:
+        return UNSAFE_CORRUPTED
+
+    dispatch_complete = has_event(events, "dispatch_complete")
+    review_complete = has_event(events, "review_complete")
+    review_failed = has_event(events, "review_failed")
+    decision_made = has_event(events, "decision")
+    run_complete = has_event(events, "run_complete")
+
+    # Run already complete — no resume needed, but report as decision
+    if run_complete:
+        return RESUME_FROM_DECISION
+
+    # Decision made but finalization not complete
+    if decision_made:
+        return RESUME_FROM_DECISION
+
+    # Review complete, decision not made
+    if review_complete:
+        return RESUME_FROM_REVIEW
+
+    # Dispatch complete + review failed → recoverable (resume from existing evidence)
+    if dispatch_complete and review_failed:
+        return RESUME_FROM_REVIEW  # review_failed alone is recoverable
+
+    # Dispatch complete, review not started
+    if dispatch_complete:
+        return RESUME_FROM_DISPATCH
+
+    # Partial diff exists (dispatch incomplete)
+    if safe_phase == "setup" or has_event(events, "dispatch_incomplete"):
+        return RESUME_FROM_PARTIAL_DIFF
+
+    # Ambiguous state — require human
+    return REQUIRES_HUMAN
 
 
 # ---------------------------------------------------------------------------
@@ -205,42 +305,50 @@ def build_resume_plan(
     manifest_entries: List[Dict[str, Any]],
     manifest_errors: List[str],
     event_errors: List[str],
+    has_corruption: bool,
 ) -> Dict[str, Any]:
-    """Build a machine-readable resume plan."""
+    """Build a machine-readable resume plan with PR7 resume types."""
     safe_phase, last_iteration, phase_detail = find_latest_safe_point(events)
 
     # Determine next phase
     try:
         current_idx = SAFE_PHASE_ORDER.index(safe_phase)
-        next_phase = SAFE_PHASE_ORDER[current_idx + 1] if current_idx + 1 < len(SAFE_PHASE_ORDER) else None
+        next_phase = (
+            SAFE_PHASE_ORDER[current_idx + 1]
+            if current_idx + 1 < len(SAFE_PHASE_ORDER)
+            else None
+        )
     except ValueError:
         next_phase = "setup"
 
+    # Determine resume type
+    resume_type = determine_resume_type(
+        safe_phase, events, has_corruption, manifest_errors
+    )
+
     # Check for interrupted state
-    has_interrupted = any(
-        e.get("event") == "dispatch_incomplete" or e.get("event") == "review_failed"
-        for e in events
-        if e.get("schema_version") == EVENT_SCHEMA_VERSION
+    has_interrupted = has_event(events, "dispatch_incomplete") or has_event(
+        events, "review_failed"
     )
 
     # Check for missing required artifacts
     missing_required = [
-        err for err in manifest_errors
-        if "Required artifact missing" in err
+        err for err in manifest_errors if "Required artifact missing" in err
     ]
 
     # Determine if resume is safe
     resume_safe = (
         not event_errors
-        and not manifest_errors
-        and not has_interrupted
+        and not has_corruption
+        and resume_type not in (UNSAFE_CORRUPTED, REQUIRES_HUMAN)
     )
 
-    plan = {
-        "schema_version": 1,
+    plan: Dict[str, Any] = {
+        "schema_version": 2,
         "run_dir": str(run_dir),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "resume_safe": resume_safe,
+        "resume_type": resume_type,
         "latest_safe_phase": safe_phase,
         "latest_safe_iteration": last_iteration,
         "next_phase": next_phase,
@@ -252,15 +360,22 @@ def build_resume_plan(
         "manifest_validation": {
             "total_entries": len(manifest_entries),
             "errors": manifest_errors[:20],
+            "has_corruption": has_corruption,
         },
         "blockers": [],
     }
 
-    if has_interrupted:
-        plan["blockers"].append("Run was interrupted (dispatch_incomplete or review_failed)")
+    if resume_type == UNSAFE_CORRUPTED:
+        plan["blockers"].append("Artifact integrity check failed (hash mismatch)")
+    if resume_type == REQUIRES_HUMAN:
+        plan["blockers"].append("Ambiguous run state requires human intervention")
+    if has_interrupted and resume_type != UNSAFE_CORRUPTED:
+        plan["blockers"].append(
+            "Run was interrupted (dispatch_incomplete or review_failed)"
+        )
     if missing_required:
         plan["blockers"].extend(missing_required[:5])
-    if manifest_errors and not missing_required:
+    if manifest_errors and not missing_required and not has_corruption:
         plan["blockers"].append(f"{len(manifest_errors)} manifest integrity error(s)")
     if event_errors:
         plan["blockers"].append(f"{len(event_errors)} event validation error(s)")
@@ -279,6 +394,7 @@ def render_human_summary(plan: Dict[str, Any]) -> str:
         "## Status",
         "",
         f"- Resume safe: **{'yes' if plan['resume_safe'] else 'NO'}**",
+        f"- Resume type: **{plan['resume_type']}**",
         f"- Latest safe phase: **{plan['latest_safe_phase']}**",
         f"- Latest iteration: {plan['latest_safe_iteration'] or 'N/A'}",
         f"- Next phase: {plan['next_phase'] or 'run complete'}",
@@ -293,7 +409,6 @@ def render_human_summary(plan: Dict[str, Any]) -> str:
             lines.append(f"- {b}")
         lines.append("")
 
-    # Event validation
     ev = plan["event_validation"]
     lines.append("## Event Validation")
     lines.append("")
@@ -304,12 +419,12 @@ def render_human_summary(plan: Dict[str, Any]) -> str:
             lines.append(f"  - {err}")
     lines.append("")
 
-    # Manifest validation
     mv = plan["manifest_validation"]
     lines.append("## Manifest Validation")
     lines.append("")
     lines.append(f"- Total entries: {mv['total_entries']}")
     lines.append(f"- Errors: {len(mv['errors'])}")
+    lines.append(f"- Corruption detected: {'YES' if mv.get('has_corruption') else 'no'}")
     if mv["errors"]:
         for err in mv["errors"][:5]:
             lines.append(f"  - {err}")
@@ -342,7 +457,7 @@ def apply_resume(run_dir: Path, plan: Dict[str, Any]) -> int:
 # CLI
 # ---------------------------------------------------------------------------
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Validate run state and output a resume plan."
     )
@@ -363,10 +478,12 @@ def main(argv: List[str] | None = None) -> int:
 
     # Load and validate
     events, event_errors = load_events(run_dir)
-    manifest_entries, manifest_errors = validate_manifest(run_dir)
+    manifest_entries, manifest_errors, has_corruption = validate_manifest(run_dir)
 
     # Build plan
-    plan = build_resume_plan(run_dir, events, manifest_entries, manifest_errors, event_errors)
+    plan = build_resume_plan(
+        run_dir, events, manifest_entries, manifest_errors, event_errors, has_corruption
+    )
 
     # Output JSON plan
     if args.output:

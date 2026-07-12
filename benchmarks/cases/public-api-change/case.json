@@ -1,1 +1,12 @@
-{"id":"public-api-change","trust":"trusted-local"}
+{
+  "id": "public-api-change",
+  "trust": "trusted-local",
+  "task": "Make a public API change with backward compatibility",
+  "expected_lane": "assured",
+  "expected_tier": "L2",
+  "allowed_files": ["src/**/*.py", "tests/**/*.py"],
+  "forbidden_files": [".git/config", "secrets/**"],
+  "validations": ["python -m pytest tests/ -x"],
+  "quota_budget": 8,
+  "latency_budget_seconds": 480
+}

@@ -1,1 +1,12 @@
-{"id":"multi-round-recovery","trust":"trusted-local"}
+{
+  "id": "multi-round-recovery",
+  "trust": "trusted-local",
+  "task": "Recover from multiple failed attempts",
+  "expected_lane": "assured",
+  "expected_tier": "L2",
+  "allowed_files": ["scripts/**/*.py", "tests/**/*.py"],
+  "forbidden_files": [".git/config"],
+  "validations": ["python -m pytest tests/ -x"],
+  "quota_budget": 10,
+  "latency_budget_seconds": 600
+}

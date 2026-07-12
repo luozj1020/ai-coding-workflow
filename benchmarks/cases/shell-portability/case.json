@@ -1,1 +1,12 @@
-{"id":"shell-portability","trust":"trusted-local"}
+{
+  "id": "shell-portability",
+  "trust": "trusted-local",
+  "task": "Fix shell script portability issues",
+  "expected_lane": "standard",
+  "expected_tier": "L0",
+  "allowed_files": ["scripts/**/*.sh", "ai/**/*.sh"],
+  "forbidden_files": [".git/config"],
+  "validations": ["bash -n scripts/check-worktree.sh"],
+  "quota_budget": 3,
+  "latency_budget_seconds": 120
+}

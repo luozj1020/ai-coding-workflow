@@ -1,1 +1,12 @@
-{"id":"remote-bazel-failure","trust":"trusted-local"}
+{
+  "id": "remote-bazel-failure",
+  "trust": "trusted-local",
+  "task": "Fix a remote Bazel build failure by updating BUILD file",
+  "expected_lane": "standard",
+  "expected_tier": "L1",
+  "allowed_files": ["BUILD", "src/**/*.py"],
+  "forbidden_files": [".git/config", "secrets/**"],
+  "validations": ["bazel test //src:all --test_output=errors"],
+  "quota_budget": 5,
+  "latency_budget_seconds": 300
+}

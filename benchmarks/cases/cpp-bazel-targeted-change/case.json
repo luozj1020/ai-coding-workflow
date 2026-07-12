@@ -1,1 +1,12 @@
-{"id":"cpp-bazel-targeted-change","trust":"trusted-local"}
+{
+  "id": "cpp-bazel-targeted-change",
+  "trust": "trusted-local",
+  "task": "Fix a C++ Bazel targeted build issue",
+  "expected_lane": "standard",
+  "expected_tier": "L1",
+  "allowed_files": ["src/**/*.cc", "src/**/*.h", "BUILD"],
+  "forbidden_files": [".git/config", "third_party/**"],
+  "validations": ["bazel test //src:target_test --test_output=errors"],
+  "quota_budget": 5,
+  "latency_budget_seconds": 300
+}

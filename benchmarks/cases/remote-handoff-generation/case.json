@@ -1,1 +1,12 @@
-{"id":"remote-handoff-generation","trust":"trusted-local"}
+{
+  "id": "remote-handoff-generation",
+  "trust": "trusted-local",
+  "task": "Generate remote validation handoff for a C++ Bazel change",
+  "expected_lane": "assured",
+  "expected_tier": "L2",
+  "allowed_files": ["handoff/**", "scripts/**/*.py"],
+  "forbidden_files": [".git/config", "secrets/**"],
+  "validations": ["python scripts/generate-handoff.py --help"],
+  "quota_budget": 8,
+  "latency_budget_seconds": 600
+}

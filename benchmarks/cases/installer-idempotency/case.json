@@ -1,1 +1,12 @@
-{"id":"installer-idempotency","trust":"trusted-local"}
+{
+  "id": "installer-idempotency",
+  "trust": "trusted-local",
+  "task": "Ensure installer is idempotent across runs",
+  "expected_lane": "standard",
+  "expected_tier": "L1",
+  "allowed_files": ["scripts/install_*.py"],
+  "forbidden_files": [".git/config"],
+  "validations": ["python scripts/install_workflow.py --check"],
+  "quota_budget": 4,
+  "latency_budget_seconds": 180
+}

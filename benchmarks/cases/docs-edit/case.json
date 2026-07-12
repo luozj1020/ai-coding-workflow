@@ -1,1 +1,12 @@
-{"id":"docs-edit","trust":"trusted-local"}
+{
+  "id": "docs-edit",
+  "trust": "trusted-local",
+  "task": "Fix a typo in documentation",
+  "expected_lane": "express",
+  "expected_tier": "L0",
+  "allowed_files": ["docs/**", "*.md"],
+  "forbidden_files": [],
+  "validations": ["echo 'docs-only, no validation needed'"],
+  "quota_budget": 1,
+  "latency_budget_seconds": 30
+}

@@ -1,1 +1,12 @@
-{"id":"large-repo-code-location","trust":"trusted-local"}
+{
+  "id": "large-repo-code-location",
+  "trust": "trusted-local",
+  "task": "Locate and fix code in a large repository",
+  "expected_lane": "standard",
+  "expected_tier": "L0",
+  "allowed_files": ["src/**/*.py"],
+  "forbidden_files": [".git/config"],
+  "validations": ["python -m pytest tests/test_locate_code.py -x"],
+  "quota_budget": 4,
+  "latency_budget_seconds": 180
+}

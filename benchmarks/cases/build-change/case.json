@@ -1,1 +1,12 @@
-{"id":"build-change","trust":"trusted-local"}
+{
+  "id": "build-change",
+  "trust": "trusted-local",
+  "task": "Fix a build system configuration issue",
+  "expected_lane": "standard",
+  "expected_tier": "L0",
+  "allowed_files": ["Makefile", "CMakeLists.txt", "BUILD"],
+  "forbidden_files": [".git/config"],
+  "validations": ["make check"],
+  "quota_budget": 3,
+  "latency_budget_seconds": 120
+}

@@ -1,1 +1,12 @@
-{"id":"python-helper-bugfix","trust":"trusted-local"}
+{
+  "id": "python-helper-bugfix",
+  "trust": "trusted-local",
+  "task": "Fix a bug in a Python helper script",
+  "expected_lane": "express",
+  "expected_tier": "L0",
+  "allowed_files": ["scripts/**/*.py", "tests/**/*.py"],
+  "forbidden_files": [],
+  "validations": ["python -m pytest tests/test_task_facts.py -x"],
+  "quota_budget": 2,
+  "latency_budget_seconds": 60
+}
