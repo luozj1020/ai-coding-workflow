@@ -67,10 +67,41 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "session-catchup.py").exists())
             self.assertTrue((repo / "ai" / "validate-parallel-plan.py").exists())
             self.assertTrue((repo / "ai" / "assess-parallel-opportunity.py").exists())
+            self.assertTrue((repo / "ai" / "task_schema.py").exists())
+            self.assertTrue((repo / "ai" / "compose-profiles.py").exists())
+            self.assertTrue((repo / "ai" / "lint-task-card.py").exists())
+            self.assertTrue((repo / "ai" / "render-task-card.py").exists())
+            self.assertTrue((repo / "ai" / "schemas" / "task-card-v1.schema.json").exists())
+            self.assertTrue((repo / "ai" / "profiles" / "base.json").exists())
+            self.assertTrue((repo / "ai" / "profiles" / "bugfix.json").exists())
+            self.assertTrue((repo / "ai" / "examples" / "fix-typo-in-readme.json").exists())
             self.assertTrue((repo / ".worktrees" / ".gitkeep").exists())
             gitignore = (repo / ".gitignore").read_text(encoding="utf-8")
             self.assertIn("/.worktrees/*", gitignore)
             self.assertIn("!/.worktrees/.gitkeep", gitignore)
+
+    def test_structured_assets_are_idempotent_and_updatable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            first = self.run_installer(repo)
+            # Structured assets created on first run
+            self.assertTrue((repo / "ai" / "schemas" / "task-card-v1.schema.json").exists())
+            self.assertTrue((repo / "ai" / "profiles" / "base.json").exists())
+            self.assertTrue((repo / "ai" / "profiles" / "bugfix.json").exists())
+            self.assertTrue((repo / "ai" / "examples" / "fix-typo-in-readme.json").exists())
+            self.assertIn("created: ai/schemas/task-card-v1.schema.json", first.stdout)
+            self.assertIn("created: ai/profiles/base.json", first.stdout)
+
+            second = self.run_installer(repo)
+            # Structured assets skipped on second run (idempotent)
+            self.assertIn("skipped: ai/schemas/task-card-v1.schema.json", second.stdout)
+            self.assertIn("skipped: ai/profiles/base.json", second.stdout)
+
+            # Tamper and refresh
+            (repo / "ai" / "profiles" / "base.json").write_text("{}", encoding="utf-8")
+            third = self.run_installer(repo, "--update-workflow-files")
+            self.assertIn("updated: ai/profiles/base.json", third.stdout)
 
     def test_install_preserves_gitignore_and_adds_worktree_rules(self):
         with tempfile.TemporaryDirectory() as tmp:

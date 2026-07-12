@@ -600,17 +600,39 @@ def render_task_card(
 # ---------------------------------------------------------------------------
 
 def find_default_profiles_dir() -> Path:
-    """Find the default profiles directory relative to this script."""
+    """Find the default profiles directory relative to this script.
+
+    Checks source-checkout layout first (<repo>/profiles/), then
+    installed layout (<repo>/ai/profiles/). Returns the first that
+    exists; falls back to source-checkout path for determinism.
+    """
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent
-    return repo_root / "profiles"
+    source_path = repo_root / "profiles"
+    installed_path = repo_root / "ai" / "profiles"
+    if source_path.is_dir():
+        return source_path
+    if installed_path.is_dir():
+        return installed_path
+    return source_path
 
 
 def find_default_schema_path() -> Path:
-    """Find the default schema path relative to this script."""
+    """Find the default schema path relative to this script.
+
+    Checks source-checkout layout first (<repo>/schemas/), then
+    installed layout (<repo>/ai/schemas/). Returns the first that
+    exists; falls back to source-checkout path for determinism.
+    """
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent
-    return repo_root / "schemas" / "task-card-v1.schema.json"
+    source_path = repo_root / "schemas" / "task-card-v1.schema.json"
+    installed_path = repo_root / "ai" / "schemas" / "task-card-v1.schema.json"
+    if source_path.is_file():
+        return source_path
+    if installed_path.is_file():
+        return installed_path
+    return source_path
 
 
 def load_task_json(path: Union[str, Path]) -> Dict[str, Any]:

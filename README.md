@@ -146,8 +146,92 @@ ai-coding-workflow/
     init-plan.py         -> Create ai/plans/<task-id>/ planning files
     session-catchup.py   -> Generate resume-context.md from plan and artifacts
     validate-parallel-plan.py -> Validate parallel DAG plan JSON against schema v1
+    task_schema.py       -> Shared stdlib loader, validator, and profile composer
+    compose-profiles.py  -> Compose profiles with a task instance
+    lint-task-card.py    -> Validate a task card JSON against schema and profiles
+    render-task-card.py  -> Render a task card JSON as Markdown
+  schemas/
+    task-card-v1.schema.json -> Normative JSON Schema for task cards v1
+  profiles/
+    base.json            -> Base profile with sensible defaults
+    bugfix.json          -> Bugfix profile narrowing scope and risk defaults
+  examples/
+    fix-typo-in-readme.json -> Example task card
   tests/
     test_*.py            -> Installer, dispatch, and helper regression tests
+```
+
+---
+
+## JSON Task Cards (opt-in)
+
+Task cards can be authored as structured JSON instead of (or alongside) Markdown. JSON task cards provide schema validation, deterministic profile composition, and machine-readable acceptance criteria. Existing Markdown task cards and the dispatcher remain fully supported — JSON is an opt-in addition.
+
+### Source checkout commands
+
+From a cloned `ai-coding-workflow` checkout:
+
+```bash
+# Lint a task card JSON against schema and profiles
+python scripts/lint-task-card.py task.json
+
+# Compose profiles and merge with task instance
+python scripts/compose-profiles.py task.json --output composed.json
+
+# Render as Markdown (audit view for humans, execution view for Claude)
+python scripts/render-task-card.py task.json --view audit
+python scripts/render-task-card.py task.json --view execution
+```
+
+### Installed-project commands
+
+After `install_workflow.py` bootstraps a target repository, the tools are available under `ai/`:
+
+```bash
+# Lint
+python ai/lint-task-card.py ai/task-cards/PROJ-123.json
+
+# Compose
+python ai/compose-profiles.py ai/task-cards/PROJ-123.json --output composed.json
+
+# Render
+python ai/render-task-card.py ai/task-cards/PROJ-123.json --view execution
+```
+
+### JSON as opt-in source of truth
+
+When a task card exists as both `.json` and `.md`, the JSON file is the source of truth. The Markdown file is the human-readable rendering. Use `render-task-card.py` to regenerate the Markdown from JSON.
+
+### Audit vs execution rendering
+
+- **Audit view** (`--view audit`): includes all sections — risk assessment, extensions, full handoff contract. For human review.
+- **Execution view** (`--view execution`): includes only execution-relevant sections — goal, scope, acceptance, validation, stop conditions. For Claude dispatch.
+
+### Conflict hard-fail
+
+Profile composition is deterministic and fail-closed. If two profiles define conflicting scalar values for the same field, composition raises an error rather than silently picking one. Use `lint-task-card.py` to catch conflicts before dispatch.
+
+### Legacy Markdown compatibility
+
+Markdown task cards continue to work unchanged. The dispatcher, templates, and review scripts all support Markdown. JSON is purely opt-in for teams that want schema validation and structured composition.
+
+### Installed asset layout
+
+After bootstrap, structured assets live under the `ai/` namespace:
+
+```
+ai/
+  task_schema.py              # Shared validator and profile composer
+  compose-profiles.py         # CLI: compose profiles with task
+  lint-task-card.py           # CLI: lint task card JSON
+  render-task-card.py         # CLI: render task card as Markdown
+  schemas/
+    task-card-v1.schema.json  # Normative JSON Schema
+  profiles/
+    base.json                 # Base profile
+    bugfix.json               # Bugfix profile
+  examples/
+    fix-typo-in-readme.json   # Example task card
 ```
 
 ---

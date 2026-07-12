@@ -83,6 +83,26 @@ PYTHON_SCRIPTS = [
     ("session-catchup.py", "ai/session-catchup.py"),
     ("validate-parallel-plan.py", "ai/validate-parallel-plan.py"),
     ("assess-parallel-opportunity.py", "ai/assess-parallel-opportunity.py"),
+    ("task_schema.py", "ai/task_schema.py"),
+    ("compose-profiles.py", "ai/compose-profiles.py"),
+    ("lint-task-card.py", "ai/lint-task-card.py"),
+    ("render-task-card.py", "ai/render-task-card.py"),
+]
+
+# Structured assets: schemas (source relative to repo root, dest relative to repo root)
+SCHEMA_ASSETS = [
+    ("schemas/task-card-v1.schema.json", "ai/schemas/task-card-v1.schema.json"),
+]
+
+# Structured assets: profiles (source relative to repo root, dest relative to repo root)
+PROFILE_ASSETS = [
+    ("profiles/base.json", "ai/profiles/base.json"),
+    ("profiles/bugfix.json", "ai/profiles/bugfix.json"),
+]
+
+# Structured assets: examples (source relative to repo root, dest relative to repo root)
+EXAMPLE_ASSETS = [
+    ("examples/fix-typo-in-readme.json", "ai/examples/fix-typo-in-readme.json"),
 ]
 
 WORKTREES_GITIGNORE_LINES = [
@@ -641,6 +661,19 @@ def main(argv=None):
     for src_name, dest_rel in PYTHON_SCRIPTS:
         src = os.path.join(scripts_dir, src_name)
         dest = os.path.join(repo_path, dest_rel)
+        status = install_or_update_plain(read_file(src), dest, update_workflow_files)
+        results[status].append(dest_rel)
+        print(f"  {status}: {dest_rel}")
+
+    # --- Install structured assets (schemas, profiles, examples) ---
+    repo_root = os.path.dirname(assets_dir)
+    for src_rel, dest_rel in SCHEMA_ASSETS + PROFILE_ASSETS + EXAMPLE_ASSETS:
+        src = os.path.join(repo_root, src_rel)
+        dest = os.path.join(repo_path, dest_rel)
+        if not os.path.isfile(src):
+            results["warned"].append(f"{src_rel} (source missing)")
+            print(f"  warned: {src_rel} (source missing)")
+            continue
         status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
         print(f"  {status}: {dest_rel}")

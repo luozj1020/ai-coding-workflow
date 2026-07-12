@@ -267,6 +267,33 @@ Dispatch artifacts live under `.worktrees/`:
 - `codex-spark.report.md`, `codex-spark.prompt.md`, `codex-spark.result.txt`, `codex-spark.stderr.log`, `codex-spark.artifacts.txt`, and optional `codex-spark.diff` from `ai/run-codex-spark.sh`
 - `parallel-summary.md`, `parallel-events.jsonl`, and per-task dispatch logs from `ai/run-parallel-loop.sh`
 
+## JSON Task Cards
+
+Task cards can be authored as structured JSON alongside Markdown. JSON provides schema validation, deterministic profile composition, and machine-readable acceptance criteria. Existing Markdown task cards remain fully supported.
+
+### Lint, compose, render
+
+```bash
+# Source checkout
+python scripts/lint-task-card.py task.json
+python scripts/compose-profiles.py task.json --output composed.json
+python scripts/render-task-card.py task.json --view execution
+
+# Installed project
+python ai/lint-task-card.py ai/task-cards/PROJ-123.json
+python ai/compose-profiles.py ai/task-cards/PROJ-123.json --output composed.json
+python ai/render-task-card.py ai/task-cards/PROJ-123.json --view execution
+```
+
+### Key behaviors
+
+- **JSON is opt-in.** Markdown task cards and the dispatcher are unchanged.
+- **JSON is source of truth** when both `.json` and `.md` exist for the same task.
+- **Audit vs execution views.** `--view audit` includes risk, extensions, full handoff. `--view execution` includes only goal, scope, acceptance, validation, stop conditions.
+- **Conflict hard-fail.** Profile composition raises on conflicting scalars; use `lint-task-card.py` to catch before dispatch.
+- **Installed assets.** After bootstrap, schemas live at `ai/schemas/`, profiles at `ai/profiles/`, examples at `ai/examples/`.
+- **Python 3.9 and Windows paths/spaces** are supported.
+
 ## When To Load More
 
 Read only the relevant reference for the current need:

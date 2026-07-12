@@ -138,6 +138,90 @@ ai-coding-workflow/
     init-plan.py        ← 创建 ai/plans/<task-id>/ 计划文件
     session-catchup.py  ← 根据计划和 artifacts 生成 resume-context.md
     validate-parallel-plan.py ← 校验并行 DAG 计划 JSON 是否符合 schema v1
+    task_schema.py       ← 共享标准库加载器、校验器和 profile 组合器
+    compose-profiles.py  ← 将 profile 与任务实例组合
+    lint-task-card.py    ← 校验任务卡 JSON 是否符合 schema 和 profile
+    render-task-card.py  ← 将任务卡 JSON 渲染为 Markdown
+  schemas/
+    task-card-v1.schema.json ← 任务卡 v1 的规范 JSON Schema
+  profiles/
+    base.json            ← 基础 profile，提供合理默认值
+    bugfix.json          ← Bugfix profile，缩小范围和风险默认值
+  examples/
+    fix-typo-in-readme.json ← 示例任务卡
+```
+
+---
+
+## JSON 任务卡（可选启用）
+
+任务卡可以用结构化 JSON 代替（或配合）Markdown 编写。JSON 任务卡提供 schema 校验、确定性 profile 组合和机器可读的验收标准。现有 Markdown 任务卡和调度器完全不受影响——JSON 是可选新增功能。
+
+### 源码检出命令
+
+在克隆的 `ai-coding-workflow` 仓库中：
+
+```bash
+# 校验任务卡 JSON 是否符合 schema 和 profile
+python scripts/lint-task-card.py task.json
+
+# 组合并与任务实例合并
+python scripts/compose-profiles.py task.json --output composed.json
+
+# 渲染为 Markdown（audit 视图供人工审查，execution 视图供 Claude）
+python scripts/render-task-card.py task.json --view audit
+python scripts/render-task-card.py task.json --view execution
+```
+
+### 已安装项目命令
+
+`install_workflow.py` 引导目标仓库后，工具在 `ai/` 下可用：
+
+```bash
+# 校验
+python ai/lint-task-card.py ai/task-cards/PROJ-123.json
+
+# 组合
+python ai/compose-profiles.py ai/task-cards/PROJ-123.json --output composed.json
+
+# 渲染
+python ai/render-task-card.py ai/task-cards/PROJ-123.json --view execution
+```
+
+### JSON 作为可选启用的权威来源
+
+当任务卡同时存在 `.json` 和 `.md` 版本时，JSON 文件是权威来源。Markdown 文件是人工可读的渲染结果。使用 `render-task-card.py` 从 JSON 重新生成 Markdown。
+
+### 审计与执行渲染
+
+- **审计视图**（`--view audit`）：包含所有部分——风险评估、扩展、完整交接合同。供人工审查。
+- **执行视图**（`--view execution`）：仅包含与执行相关的部分——目标、范围、验收、验证、停止条件。供 Claude 调度。
+
+### 冲突硬失败
+
+Profile 组合是确定性的、失败即关闭的。如果两个 profile 对同一字段定义了冲突的标量值，组合会抛出错误而非静默选择其一。使用 `lint-task-card.py` 在调度前捕获冲突。
+
+### 兼容传统 Markdown
+
+Markdown 任务卡继续正常工作。调度器、模板和审查脚本均支持 Markdown。JSON 仅面向需要 schema 校验和结构化组合的团队可选使用。
+
+### 已安装资产布局
+
+引导后，结构化资产位于 `ai/` 命名空间下：
+
+```
+ai/
+  task_schema.py              # 共享校验器和 profile 组合器
+  compose-profiles.py         # CLI：组合 profile 与任务
+  lint-task-card.py           # CLI：校验任务卡 JSON
+  render-task-card.py         # CLI：将任务卡渲染为 Markdown
+  schemas/
+    task-card-v1.schema.json  # 规范 JSON Schema
+  profiles/
+    base.json                 # 基础 profile
+    bugfix.json               # Bugfix profile
+  examples/
+    fix-typo-in-readme.json   # 示例任务卡
 ```
 
 ---

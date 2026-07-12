@@ -123,7 +123,18 @@ ai/
   init-plan.py                # Create ai/plans/<task-id>/ planning files
   session-catchup.py          # Generate resume-context.md from plan and artifacts
   validate-parallel-plan.py   # Validate parallel DAG plan JSON against schema v1
+  task_schema.py              # Shared stdlib loader, validator, and profile composer
+  compose-profiles.py         # Compose profiles with a task instance
+  lint-task-card.py           # Validate a task card JSON against schema and profiles
+  render-task-card.py         # Render a task card JSON as Markdown
   README.md                   # This file
+  schemas/
+    task-card-v1.schema.json  # Normative JSON Schema for task cards v1
+  profiles/
+    base.json                 # Base profile with sensible defaults
+    bugfix.json               # Bugfix profile narrowing scope and risk defaults
+  examples/
+    fix-typo-in-readme.json   # Example task card
 .worktrees/                   # Isolated git worktrees for execution
 ai/plans/                     # Persistent planning files for long-running tasks
 AGENTS.md                     # Shared agent rules
@@ -131,6 +142,28 @@ CLAUDE.md                     # Claude Code configuration
 ```
 
 ## Quick Start
+
+### JSON Task Cards (opt-in)
+
+Task cards can be authored as structured JSON instead of Markdown. JSON provides schema validation, deterministic profile composition, and machine-readable acceptance criteria. Existing Markdown task cards remain fully supported — JSON is purely opt-in.
+
+```bash
+# Lint a task card JSON
+python ai/lint-task-card.py ai/task-cards/PROJ-123.json
+
+# Compose profiles and merge with task instance
+python ai/compose-profiles.py ai/task-cards/PROJ-123.json --output composed.json
+
+# Render as Markdown (audit for humans, execution for Claude)
+python ai/render-task-card.py ai/task-cards/PROJ-123.json --view audit
+python ai/render-task-card.py ai/task-cards/PROJ-123.json --view execution
+```
+
+Key behaviors:
+- **JSON is source of truth** when both `.json` and `.md` exist for the same task.
+- **Audit view** includes risk, extensions, full handoff. **Execution view** includes only goal, scope, acceptance, validation, stop conditions.
+- **Conflict hard-fail.** Profile composition raises on conflicting scalars; use `lint-task-card.py` to catch before dispatch.
+- Schemas live at `ai/schemas/`, profiles at `ai/profiles/`, examples at `ai/examples/`.
 
 ### 1. Create a Task Card
 

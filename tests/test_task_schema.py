@@ -977,5 +977,103 @@ class TestProfileCompositionIntegration(unittest.TestCase):
             self.ts.compose_profiles(["nonexistent_xyz"], PROFILES, task)
 
 
+# ─── 13. Installed-path asset discovery ───
+
+class TestInstalledPathDiscovery(unittest.TestCase):
+    """Coverage #13: find_default_profiles_dir and find_default_schema_path
+    discover assets from source checkout and installed layouts."""
+
+    def setUp(self):
+        self.ts = _load_task_schema()
+
+    def test_source_checkout_profiles_dir_found(self):
+        """Source checkout <repo>/profiles/ is preferred when it exists."""
+        result = self.ts.find_default_profiles_dir()
+        self.assertEqual(result, PROFILES)
+        self.assertTrue(result.is_dir())
+
+    def test_source_checkout_schema_path_found(self):
+        """Source checkout <repo>/schemas/task-card-v1.schema.json is preferred."""
+        result = self.ts.find_default_schema_path()
+        self.assertEqual(result, SCHEMA)
+        self.assertTrue(result.is_file())
+
+    def test_installed_profiles_dir_fallback(self):
+        """When source profiles/ is missing, ai/profiles/ is used."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # Create a mock installed layout
+            installed = pathlib.Path(tmp) / "ai" / "profiles"
+            installed.mkdir(parents=True)
+            (installed / "base.json").write_text(
+                json.dumps({"name": "base", "profile_version": 1}), encoding="utf-8"
+            )
+            # Create a mock script at <tmp>/scripts/task_schema.py
+            scripts_dir = pathlib.Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "task_schema.py").write_text("# mock", encoding="utf-8")
+
+            # Patch the module's __file__ to point to our mock
+            original_file = self.ts.__file__
+            try:
+                self.ts.__file__ = str(scripts_dir / "task_schema.py")
+                result = self.ts.find_default_profiles_dir()
+                self.assertEqual(result, installed)
+            finally:
+                self.ts.__file__ = original_file
+
+    def test_installed_schema_path_fallback(self):
+        """When source schemas/ is missing, ai/schemas/ is used."""
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = pathlib.Path(tmp) / "ai" / "schemas"
+            installed.mkdir(parents=True)
+            schema_file = installed / "task-card-v1.schema.json"
+            schema_file.write_text("{}", encoding="utf-8")
+            scripts_dir = pathlib.Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "task_schema.py").write_text("# mock", encoding="utf-8")
+
+            original_file = self.ts.__file__
+            try:
+                self.ts.__file__ = str(scripts_dir / "task_schema.py")
+                result = self.ts.find_default_schema_path()
+                self.assertEqual(result, schema_file)
+            finally:
+                self.ts.__file__ = original_file
+
+    def test_source_checkout_takes_precedence_over_installed(self):
+        """When both source and installed exist, source checkout wins."""
+        with tempfile.TemporaryDirectory() as tmp:
+            source_profiles = pathlib.Path(tmp) / "profiles"
+            source_profiles.mkdir()
+            installed_profiles = pathlib.Path(tmp) / "ai" / "profiles"
+            installed_profiles.mkdir(parents=True)
+            scripts_dir = pathlib.Path(tmp) / "scripts"
+            scripts_dir.mkdir()
+            (scripts_dir / "task_schema.py").write_text("# mock", encoding="utf-8")
+
+            original_file = self.ts.__file__
+            try:
+                self.ts.__file__ = str(scripts_dir / "task_schema.py")
+                result = self.ts.find_default_profiles_dir()
+                self.assertEqual(result, source_profiles)
+            finally:
+                self.ts.__file__ = original_file
+
+    def test_compose_works_with_installed_profiles(self):
+        """compose_profiles works when profiles are in ai/profiles/ layout."""
+        with tempfile.TemporaryDirectory() as tmp:
+            profiles_dir = pathlib.Path(tmp) / "ai" / "profiles"
+            profiles_dir.mkdir(parents=True)
+            (profiles_dir / "test_profile.json").write_text(json.dumps({
+                "name": "test_profile",
+                "profile_version": 1,
+                "risk": {"public_api": "no"},
+            }), encoding="utf-8")
+
+            composed = self.ts.compose_profiles(["test_profile"], profiles_dir)
+            self.assertIn("risk", composed)
+            self.assertEqual(composed["risk"]["public_api"], "no")
+
+
 if __name__ == "__main__":
     unittest.main()
