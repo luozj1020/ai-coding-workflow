@@ -311,6 +311,7 @@ For phase-only ACCEPT with remaining implementation/test-writing work, also prov
 Record any knowledge that could inform future planning.
 _REVIEW_EOF_
 )
+fi
 
 # PYTHON_CMD is set earlier (before review packet build).
 # Remove the duplicate definition that was here.

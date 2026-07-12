@@ -140,6 +140,7 @@ def parse_diff_hunks(diff_text: str, max_hunks: int) -> List[Dict[str, str]]:
     hunks: List[Dict[str, str]] = []
     current_file = ""
     current_hunk_lines: List[str] = []
+    hunk_started = False
 
     for line in diff_text.splitlines():
         if line.startswith("diff --git"):
@@ -155,16 +156,21 @@ def parse_diff_hunks(diff_text: str, max_hunks: int) -> List[Dict[str, str]]:
             parts = line.split(" b/", 1)
             current_file = parts[1] if len(parts) > 1 else line
             current_hunk_lines = [line]
+            hunk_started = False
         elif line.startswith("@@"):
             # New hunk header
-            if current_hunk_lines and current_file:
+            # File headers belong to the first hunk. Only flush when a prior
+            # @@ hunk has already started.
+            if hunk_started and current_hunk_lines and current_file:
                 hunks.append({
                     "file": current_file,
                     "hunk": "\n".join(current_hunk_lines),
                 })
                 if len(hunks) >= max_hunks:
                     break
-            current_hunk_lines = [line]
+                current_hunk_lines = []
+            current_hunk_lines.append(line)
+            hunk_started = True
         else:
             current_hunk_lines.append(line)
 
