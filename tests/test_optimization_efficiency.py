@@ -4,7 +4,8 @@ R=Path(__file__).resolve().parents[1]
 def run(script,*args,check=True): return subprocess.run([sys.executable,R/'scripts'/script,*map(str,args)],text=True,capture_output=True,check=check)
 class OptimizationEfficiencyTests(unittest.TestCase):
  def test_four_lanes_and_budgets(self):
-  cases=[({"files":1,"diff_lines":20,"exact_validation":True,"risks":{}},"express"),({"files":3,"risks":{}},"standard"),({"files":1,"risks":{"security":"yes"}},"assured"),({"failure_type":"network","risks":{}},"recovery")]
+  no={k:'no' for k in ('public_api','data_model','security','migration','permission','concurrency','cross_module','production_impact')}
+  cases=[({"target_files_count":1,"predicted_diff_lines":20,"exact_validation":True,"effective_risks":no},"express"),({"target_files_count":3,"predicted_diff_lines":20,"exact_validation":True,"effective_risks":no},"standard"),({"target_files_count":1,"predicted_diff_lines":20,"exact_validation":True,"effective_risks":{**no,"security":"yes"}},"assured"),({"failure_type":"network","effective_risks":no},"recovery")]
   with tempfile.TemporaryDirectory() as d:
    for i,(data,lane) in enumerate(cases):
     p=Path(d)/str(i);p.write_text(json.dumps(data));self.assertEqual(json.loads(run('route-task.py',p).stdout)['lane'],lane)
@@ -24,9 +25,9 @@ class OptimizationEfficiencyTests(unittest.TestCase):
    log=Path(d)/'log';log.write_text('abcdef1234567890abcdef1234567890abcdef12\nERROR: x.cc:12 compile failed');out=json.loads(run('validation-ingest.py',log,'--expected-sha','abcdef1','--exit-code','1').stdout);self.assertEqual(out['classification'],'compile');self.assertTrue(out['sha_matches'])
  def test_control_plane_context_cache_review_and_dispatch_preview(self):
   with tempfile.TemporaryDirectory() as d:
-   root=Path(d);hints=root/'h.json';card=root/'task.md';out=root/'run';cache=root/'cache';card.write_text('| Mode | builder |\n');hints.write_text(json.dumps({'task_id':'T','goal':'g','files':1,'diff_lines':5,'exact_validation':True,'risks':{},'target_files':['a.py'],'validation':['pytest -q']}))
-   run('efficiency-control.py','prepare','--hints',hints,'--task-card',card,'--output-dir',out,'--cache-dir',cache);plan=json.loads((out/'execution-plan.json').read_text());self.assertEqual(plan['lane'],'express');self.assertTrue(plan['execution']['single_pass_builder_checker']);self.assertFalse(plan['context']['cache_reused'])
-   run('efficiency-control.py','prepare','--hints',hints,'--task-card',card,'--output-dir',out,'--cache-dir',cache);self.assertTrue(json.loads((out/'execution-plan.json').read_text())['context']['cache_reused'])
+   root=Path(d);hints=root/'h.json';card=root/'task.md';out=root/'run';cache=root/'cache';card.write_text('| Mode | builder |\n');no={k:'no' for k in ('public_api','data_model','security','migration','permission','concurrency','cross_module','production_impact')};hints.write_text(json.dumps({'task_id':'T','goal':'g','target_files_count':1,'predicted_diff_lines':5,'exact_validation':True,'effective_risks':no,'target_files':['a.py'],'validation':['pytest -q']}))
+   run('efficiency-control.py','prepare','--facts',hints,'--task-card',card,'--output-dir',out,'--cache-dir',cache);plan=json.loads((out/'execution-plan.json').read_text());self.assertEqual(plan['lane'],'express');self.assertTrue(plan['execution']['single_pass_allowed']);self.assertFalse(plan['context']['cache_reused'])
+   run('efficiency-control.py','prepare','--facts',hints,'--task-card',card,'--output-dir',out,'--cache-dir',cache);self.assertTrue(json.loads((out/'execution-plan.json').read_text())['context']['cache_reused'])
    preview=run('dispatch-efficient.py','--plan',out/'execution-plan.json','--task-card',card,'--output-dir',out/'dispatch');self.assertEqual(json.loads(preview.stdout)['execute'],False);self.assertIn('mixed-exception',(out/'dispatch/single-pass-task-card.md').read_text())
    evidence=root/'e.json';evidence.write_text(json.dumps({'allowed_paths':['a.py'],'changed_files':['a.py'],'validation_exit_code':0,'diff_lines':2}));run('efficiency-control.py','review','--plan',out/'execution-plan.json','--evidence',evidence,'--milestone','final-candidate','--output',out/'review.json');self.assertEqual(json.loads((out/'review.json').read_text())['review']['tier'],'L0-local')
  def test_recovery_and_remote_precheck(self):

@@ -125,6 +125,7 @@ SCHEMA_ASSETS = [
     ("schemas/review-packet-v1.schema.json", "ai/schemas/review-packet-v1.schema.json"),
     ("schemas/handoff-v1.schema.json", "ai/schemas/handoff-v1.schema.json"),
     ("schemas/efficiency-plan-v1.schema.json", "ai/schemas/efficiency-plan-v1.schema.json"),
+    ("schemas/routing-facts-v1.schema.json", "ai/schemas/routing-facts-v1.schema.json"),
 ]
 
 # Structured assets: profiles (source relative to repo root, dest relative to repo root)

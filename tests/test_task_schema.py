@@ -958,8 +958,8 @@ class TestProfileCompositionIntegration(unittest.TestCase):
     def test_task_instance_fills_missing_fields(self):
         task = _make_valid_task()
         task["custom_field"] = "custom_value"
-        composed = self.ts.compose_profiles(["base"], PROFILES, task)
-        self.assertEqual(composed["custom_field"], "custom_value")
+        with self.assertRaises(self.ts.ValidationError):
+            self.ts.compose_profiles(["base"], PROFILES, task)
 
     def test_task_instance_cannot_override_profile_scalar(self):
         """Task instance should not silently override a conflicting profile contract."""
