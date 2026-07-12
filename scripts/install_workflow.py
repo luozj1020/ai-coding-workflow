@@ -118,6 +118,7 @@ PYTHON_SCRIPTS = [
     ("review-ladder.py", "ai/review-ladder.py"),
     ("evidence_hash.py", "ai/evidence_hash.py"),
     ("evidence-builder.py", "ai/evidence-builder.py"),
+    ("run-workflow.py", "ai/run-workflow.py"),
 ]
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)

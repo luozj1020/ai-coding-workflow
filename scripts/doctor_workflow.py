@@ -56,6 +56,7 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/plan-to-task-cards.py",
     "ai/init-plan.py",
     "ai/session-catchup.py",
+    "ai/run-workflow.py",
     ".worktrees/.gitkeep",
 ]
 
@@ -79,6 +80,7 @@ WORKFLOW_RUNTIME_HELPERS = [
     "ai/plan-to-task-cards.py",
     "ai/init-plan.py",
     "ai/session-catchup.py",
+    "ai/run-workflow.py",
 ]
 
 WORKFLOW_PLAIN_FILE_SOURCES = [
@@ -111,6 +113,7 @@ WORKFLOW_PLAIN_FILE_SOURCES = [
     ("scripts/plan-to-task-cards.py", "ai/plan-to-task-cards.py"),
     ("scripts/init-plan.py", "ai/init-plan.py"),
     ("scripts/session-catchup.py", "ai/session-catchup.py"),
+    ("scripts/run-workflow.py", "ai/run-workflow.py"),
 ]
 
 
