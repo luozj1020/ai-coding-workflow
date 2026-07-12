@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "Remote validation handoff v1", "type": "object",
+  "required": ["schema_version", "task_id", "repository", "validation", "artifacts"],
+  "properties": {
+    "schema_version": {"const": 1}, "task_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+    "repository": {"type": "object", "required": ["url", "branch", "sha"], "properties": {"url":{"type":"string"},"branch":{"type":"string"},"sha":{"type":"string","pattern":"^[0-9a-fA-F]{7,64}$"}}, "additionalProperties": false},
+    "validation": {"type":"object","required":["state","targets","commands"],"properties":{"state":{"enum":["local-runnable","remote-required","skipped-by-policy"]},"targets":{"type":"array","items":{"type":"string"}},"commands":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},
+    "artifacts": {"type":"array","items":{"type":"string"}}
+  }, "additionalProperties": false
+}

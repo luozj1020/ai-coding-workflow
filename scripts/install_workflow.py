@@ -95,6 +95,8 @@ PYTHON_SCRIPTS = [
     ("build-review-packet.py", "ai/build-review-packet.py"),
     ("resume-run.py", "ai/resume-run.py"),
     ("replay-run.py", "ai/replay-run.py"),
+    ("detect-cpp-bazel.py", "ai/detect-cpp-bazel.py"),
+    ("generate-handoff.py", "ai/generate-handoff.py"),
 ]
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)
@@ -104,12 +106,15 @@ SCHEMA_ASSETS = [
     ("schemas/run-event-v2.schema.json", "ai/schemas/run-event-v2.schema.json"),
     ("schemas/artifact-manifest-v1.schema.json", "ai/schemas/artifact-manifest-v1.schema.json"),
     ("schemas/review-packet-v1.schema.json", "ai/schemas/review-packet-v1.schema.json"),
+    ("schemas/handoff-v1.schema.json", "ai/schemas/handoff-v1.schema.json"),
 ]
 
 # Structured assets: profiles (source relative to repo root, dest relative to repo root)
 PROFILE_ASSETS = [
     ("profiles/base.json", "ai/profiles/base.json"),
     ("profiles/bugfix.json", "ai/profiles/bugfix.json"),
+    ("profiles/cpp-bazel.json", "ai/profiles/cpp-bazel.json"),
+    ("profiles/manual-remote-validation.json", "ai/profiles/manual-remote-validation.json"),
 ]
 
 # Structured assets: examples (source relative to repo root, dest relative to repo root)
