@@ -259,7 +259,7 @@ Fast path rules:
 | Spark confidence | high / medium / low |
 | Final owner decision | codex-fast-path / claude-builder / spec-first / human-clarification |
 | Final owner rationale | <!-- why Codex or Claude was chosen --> |
-| Fast-path max diff lines | <!-- configured threshold, default 60 --> |
+| Fast-path max diff lines | <!-- configured threshold, default 100 --> |
 | Escalation condition | <!-- when to abandon fast path and dispatch Claude --> |
 
 Execution cost rules:
@@ -268,7 +268,7 @@ Execution cost rules:
 - Work units are relative estimates, not claimed token-accounting measurements.
 - If economic recommendation is Codex but safety eligibility is no, final owner is Claude/spec/human, never Codex fast path.
 - Spark recommendation is advisory; Codex reviews and makes the final owner decision.
-- Configure the fast-path threshold with `--fast-path-max-diff-lines N` or `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 60, valid 1..200).
+- Configure the fast-path threshold with `--fast-path-max-diff-lines N` or `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 100, valid 1..200).
 
 ## Task Card Views
 

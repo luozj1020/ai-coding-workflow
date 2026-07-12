@@ -56,6 +56,22 @@ class RunCodexSparkTests(unittest.TestCase):
         self.assertIn("--brief-file", result.stderr)
         self.assertIn("--stdin-brief", result.stderr)
 
+    def test_help_mentions_default_100_for_fast_path(self):
+        """Help output and environment docs show default 100 for fast-path threshold."""
+        result = subprocess.run(
+            [bash_exe(), bash_path(SCRIPT), "--help"],
+            cwd=str(ROOT),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("default 100", result.stderr)
+        self.assertIn("--fast-path-max-diff-lines", result.stderr)
+        self.assertIn("CODEX_FAST_PATH_MAX_DIFF_LINES", result.stderr)
+
     def test_help_mentions_controlled_builder_and_flags(self):
         """Required test 1: help output includes controlled-builder, --result-mode,
         --allow-write, --max-diff-lines, and CODEX_SPARK_RESULT_MODE."""
@@ -1817,7 +1833,7 @@ stop_condition=scope expands"""
 
     def test_estimator_overrides_unsafe_model_claims(self):
         replacements = {
-            "diff": ("predicted_diff_lines_high=24", "predicted_diff_lines_high=61", "diff-high-exceeds-60"),
+            "diff": ("predicted_diff_lines_high=24", "predicted_diff_lines_high=101", "diff-high-exceeds-100"),
             "files": ("predicted_files=1", "predicted_files=3", "predicted-files-exceed-2"),
             "context": ("context_scope=local", "context_scope=bounded", "context-not-local"),
             "validation": ("validation_complexity=low", "validation_complexity=medium", "validation-not-low"),
@@ -1886,6 +1902,71 @@ stop_condition=scope expands"""
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertEqual(result.stdout.strip(), self.SAFE_OUTPUT)
         self.assertFalse(output_dir.exists())
+
+    # --- Focused tests for default 100 threshold ---
+
+    def test_omitted_flag_and_env_uses_default_100(self):
+        """When no --fast-path-max-diff-lines or CODEX_FAST_PATH_MAX_DIFF_LINES
+        is set, the default threshold is 100. A predicted upper diff of 100 is
+        still within threshold; 101 exceeds it."""
+        # 100 lines is within the default 100 threshold → safe
+        output_at_100 = self.SAFE_OUTPUT.replace(
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=100"
+        )
+        result, output_dir, _ = self._run(output_at_100)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Safety eligible | yes |", report)
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
+
+        # 101 lines exceeds the default 100 threshold → not safe
+        output_at_101 = self.SAFE_OUTPUT.replace(
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=101"
+        )
+        result2, output_dir2, _ = self._run(output_at_101)
+        self.assertEqual(result2.returncode, 0, result2.stderr + result2.stdout)
+        report2 = (output_dir2 / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Safety eligible | no |", report2)
+        self.assertIn("diff-high-exceeds-100", report2)
+        self.assertIn("| Recommended owner | claude-builder |", report2)
+
+    def test_explicit_cli_override_wins_over_default(self):
+        """Explicit --fast-path-max-diff-lines overrides the default 100."""
+        # 50 lines exceeds threshold of 42 → not safe
+        output_50 = self.SAFE_OUTPUT.replace(
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=50"
+        )
+        result, output_dir, _ = self._run(
+            output_50, "--fast-path-max-diff-lines", "42"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Safety eligible | no |", report)
+        self.assertIn("diff-high-exceeds-42", report)
+
+    def test_environment_override_works_with_new_default(self):
+        """CODEX_FAST_PATH_MAX_DIFF_LINES env var overrides the default 100."""
+        # 30 lines exceeds env threshold of 20 → not safe
+        output_30 = self.SAFE_OUTPUT.replace(
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=30"
+        )
+        result, output_dir, _ = self._run(
+            output_30, env_extra={"CODEX_FAST_PATH_MAX_DIFF_LINES": "20"}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Safety eligible | no |", report)
+        self.assertIn("diff-high-exceeds-20", report)
+
+    def test_values_outside_1_200_remain_rejected(self):
+        """Values outside the 1..200 range are still rejected."""
+        for value in ("0", "201", "not-a-number", "-1"):
+            with self.subTest(value=value):
+                result, _, _ = self._run(
+                    self.SAFE_OUTPUT, "--fast-path-max-diff-lines", value
+                )
+                self.assertNotEqual(result.returncode, 0, f"Value {value} should be rejected")
+                self.assertIn("fast-path-max-diff-lines", result.stderr)
 
 
 if __name__ == "__main__":

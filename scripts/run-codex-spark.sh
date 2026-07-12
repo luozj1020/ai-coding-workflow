@@ -36,7 +36,7 @@ Options:
                     or lesson-extractor
   --fast-path-max-diff-lines N
                     Upper diff threshold for codex-fast-path safety (1-200,
-                    default 60)
+                    default 100)
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
   --sandbox MODE    read-only or workspace-write (default: read-only)
   --budget-mode     aggressive, balanced, or conservative (default: balanced)
@@ -66,7 +66,7 @@ Environment:
   CODEX_SPARK_ALLOW_DIRTY_SOURCE=1
   CODEX_SPARK_REQUIRED=1
   AI_SPARK_BUDGET_MODE=aggressive|balanced|conservative
-  CODEX_FAST_PATH_MAX_DIFF_LINES=60
+  CODEX_FAST_PATH_MAX_DIFF_LINES=100
 EOF
 }
 
@@ -101,7 +101,7 @@ RESULT_MODE="${CODEX_SPARK_RESULT_MODE:-}"
 EXPLICIT_RESULT_MODE="no"
 ALLOWED_WRITES=()
 MAX_DIFF_LINES=""
-FAST_PATH_MAX_DIFF_LINES="${CODEX_FAST_PATH_MAX_DIFF_LINES:-60}"
+FAST_PATH_MAX_DIFF_LINES="${CODEX_FAST_PATH_MAX_DIFF_LINES:-100}"
 EXPLICIT_OUTPUT="no"
 
 while [ $# -gt 0 ]; do

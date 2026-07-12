@@ -446,7 +446,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 - `auto`：阶段路由 / 包选择。解析为适用的阶段包：普通 Builder 前使用解析为 `preflight-bundle`，diff/report/evidence 使用解析为 `postflight-bundle`，Checker/Test 保持 `validation-planner`，失败/无报告证据包含失败归因。在 aggressive 预算模式下，失败证据还额外启用修订起草职责。
 - `task-size-classifier`：判断任务是 tiny/small/medium/large/unknown，并建议 `codex-fast-path`、`spark-review-only`、`spark-micro-builder`、`claude-builder`、`checker-test`、`spec-first` 或 `human-clarification`。可用时包含执行成本字段。
-- `execution-cost-estimator`：只读模式，预测任务的 diff 范围/文件数和相对直接/委托工作量。工作量是相对估算，不是 token 计量。估算器返回机器可读字段：`predicted_diff_lines_low`、`predicted_diff_lines_high`、`predicted_files`、`context_scope`、`validation_complexity`、`delegation_overhead`、`estimated_direct_work_units`、`estimated_delegated_work_units`、`delegation_to_direct_ratio`、`economic_recommendation`、`safety_eligible`、`recommended_owner`、`confidence`、`risk_flags`、`reason` 和 `stop_condition`。仅当经济建议倾向 Codex 且确定性安全门通过时，才允许 Codex fast path：<=2 文件、本地上下文、低/无验证、高置信度、无风险标志，且上界 diff 在配置阈值内。阈值由 `--fast-path-max-diff-lines N` 或 `CODEX_FAST_PATH_MAX_DIFF_LINES` 控制（默认 60，有效范围 1..200）。这是派发前的 fast-path 决策，不是 Claude 接管后的决策；它永远不会自动编辑源码。估算器也包含在 `preflight-bundle` 和 `task-size-classifier` 输出中。
+- `execution-cost-estimator`：只读模式，预测任务的 diff 范围/文件数和相对直接/委托工作量。工作量是相对估算，不是 token 计量。估算器返回机器可读字段：`predicted_diff_lines_low`、`predicted_diff_lines_high`、`predicted_files`、`context_scope`、`validation_complexity`、`delegation_overhead`、`estimated_direct_work_units`、`estimated_delegated_work_units`、`delegation_to_direct_ratio`、`economic_recommendation`、`safety_eligible`、`recommended_owner`、`confidence`、`risk_flags`、`reason` 和 `stop_condition`。仅当经济建议倾向 Codex 且确定性安全门通过时，才允许 Codex fast path：<=2 文件、本地上下文、低/无验证、高置信度、无风险标志，且上界 diff 在配置阈值内。阈值由 `--fast-path-max-diff-lines N` 或 `CODEX_FAST_PATH_MAX_DIFF_LINES` 控制（默认 100，有效范围 1..200）。这是派发前的 fast-path 决策，不是 Claude 接管后的决策；它永远不会自动编辑源码。估算器也包含在 `preflight-bundle` 和 `task-size-classifier` 输出中。
 - `review-only`：快速只读审查任务卡或实现方向。
 - `task-card-audit`：派发前检查缺失 gate、职责混合、验收不清和可能导致 Claude 卡住的风险。
 - `plan-splitter`：建议更小的 Builder/Checker 任务卡，或可并行的独立切片。
@@ -465,7 +465,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 - `postflight-bundle`：只读阶段包，用于 diff/report/evidence 使用。
 - `revision-drafter`：只读模式，用于起草修订说明。
 - `lesson-extractor`：只读模式，用于从已完成工作中提取经验教训。
-- `execution-cost-estimator`：只读模式，预测任务的 diff 范围/文件数和相对直接/委托工作量。工作量是相对估算，不是 token 计量。包含在 `preflight-bundle` 和 `task-size-classifier` 输出中。仅当经济建议倾向 Codex 且确定性安全门通过时才允许 Codex fast path。阈值：`--fast-path-max-diff-lines N` / `CODEX_FAST_PATH_MAX_DIFF_LINES`（默认 60，有效范围 1..200）。仅用于派发前决策；永远不会自动编辑源码。
+- `execution-cost-estimator`：只读模式，预测任务的 diff 范围/文件数和相对直接/委托工作量。工作量是相对估算，不是 token 计量。包含在 `preflight-bundle` 和 `task-size-classifier` 输出中。仅当经济建议倾向 Codex 且确定性安全门通过时才允许 Codex fast path。阈值：`--fast-path-max-diff-lines N` / `CODEX_FAST_PATH_MAX_DIFF_LINES`（默认 100，有效范围 1..200）。仅用于派发前决策；永远不会自动编辑源码。
 
 包输出使用七个压缩标题：Decision Summary、Risk Flags、Scope and Boundaries、Acceptance Matrix、Evidence Conflicts、Required Codex Decisions、Recommended Next Action。
 
@@ -477,7 +477,7 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 
 当显式使用 `task-size-classifier` 模式，或 conservative 预算下的 auto 路由选中该模式时，helper 会在 Spark artifact 目录中用 `workspace-write` sandbox 启动 Codex。这样本地 helper 初始化有可写工作目录，但不会给源仓库写权限，且该模式仍禁止修改源代码。
 
-`execution-cost-estimator` 模式及其在 `preflight-bundle`/`task-size-classifier` 中的包含支持 `--fast-path-max-diff-lines N` 标志（也可用 `CODEX_FAST_PATH_MAX_DIFF_LINES` 环境变量）来配置 Codex fast-path 资格的上界 diff 行数阈值。默认值为 60，有效范围为 1..200。当预测的上界 diff 超过此阈值时，无论经济建议如何，安全门都会拒绝 Codex fast path。
+`execution-cost-estimator` 模式及其在 `preflight-bundle`/`task-size-classifier` 中的包含支持 `--fast-path-max-diff-lines N` 标志（也可用 `CODEX_FAST_PATH_MAX_DIFF_LINES` 环境变量）来配置 Codex fast-path 资格的上界 diff 行数阈值。默认值为 100，有效范围为 1..200。当预测的上界 diff 超过此阈值时，无论经济建议如何，安全门都会拒绝 Codex fast path。
 
 运行证据检查：
 
