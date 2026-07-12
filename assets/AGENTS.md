@@ -18,6 +18,8 @@ Use the explicit loop: OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIE
 
 Before full PLAN/task-card authoring, perform a lightweight ROUTE step when task size or delegation economics are unclear. Send Spark a short task brief with `--brief`, `--brief-file`, or `--stdin-brief` using `execution-cost-estimator`/`preflight-bundle`. Write the full task card only when routing selects Claude/Spark Builder, spec-first, or another delegated path. A Codex fast-path decision should not pay full task-card authoring overhead first.
 
+For the quota/latency optimized path, use `aiwf efficient prepare` to create a four-lane execution plan, layered cached Context Packet, model-call budgets, Spark value decision, and retry baseline. Review its artifacts before `aiwf dispatch-efficient --execute`; without `--execute`, dispatch is preview-only. Use `aiwf efficient review` only at implementation-complete, validation-complete, or final-candidate milestones. It runs deterministic acceptance first, emits incremental evidence, and selects L0 local, L1 Spark, or L2 Codex. Only Express Lane may use the single-pass mixed-exception card; Standard and Assured follow the plan's split policy. `aiwf loop` remains the legacy compatible loop.
+
 - PLAN with `ai/task-card-template.md`.
 - For ambiguous product/API/UX changes, create or cite a spec with `ai/init-spec.py` and fill `Spec Gate` before implementation dispatch.
 - For multi-step plans, use `ai/plan-to-task-cards.py` or manual equivalents to derive small task cards from reviewed plan sections.

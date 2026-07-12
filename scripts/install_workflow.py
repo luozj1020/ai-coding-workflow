@@ -109,6 +109,10 @@ PYTHON_SCRIPTS = [
     ("check-retry-evidence.py", "ai/check-retry-evidence.py"),
     ("validation-ingest.py", "ai/validation-ingest.py"),
     ("compare-efficiency.py", "ai/compare-efficiency.py"),
+    ("efficiency-control.py", "ai/efficiency-control.py"),
+    ("dispatch-efficient.py", "ai/dispatch-efficient.py"),
+    ("remote-precheck.py", "ai/remote-precheck.py"),
+    ("route-recovery.py", "ai/route-recovery.py"),
 ]
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)
@@ -119,6 +123,7 @@ SCHEMA_ASSETS = [
     ("schemas/artifact-manifest-v1.schema.json", "ai/schemas/artifact-manifest-v1.schema.json"),
     ("schemas/review-packet-v1.schema.json", "ai/schemas/review-packet-v1.schema.json"),
     ("schemas/handoff-v1.schema.json", "ai/schemas/handoff-v1.schema.json"),
+    ("schemas/efficiency-plan-v1.schema.json", "ai/schemas/efficiency-plan-v1.schema.json"),
 ]
 
 # Structured assets: profiles (source relative to repo root, dest relative to repo root)

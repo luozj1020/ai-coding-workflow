@@ -12,6 +12,17 @@
 
 远程 Bazel 仍由人工控制。`generate-handoff.py` 只生成预览式发布、更新和合并 target 验证指令，`validation-ingest.py` 在本地分类返回日志；这些工具不会自动 push、SSH、merge 或批准验收。
 
+完整集成入口：
+
+```bash
+python scripts/aiwf.py efficient prepare --hints task-hints.json --task-card task.md --output-dir .ai-workflow/runs/T-1
+python scripts/aiwf.py dispatch-efficient --plan .ai-workflow/runs/T-1/execution-plan.json --task-card task.md --output-dir .ai-workflow/runs/T-1/dispatch
+# 审查 dispatch-preview.json 后，才显式添加 --execute。
+python scripts/aiwf.py efficient review --plan .ai-workflow/runs/T-1/execution-plan.json --evidence evidence.json --milestone final-candidate --output .ai-workflow/runs/T-1/review.json
+```
+
+`prepare` 生成可缓存的 L0/L1/L2 Context Packet 和重试基线；`dispatch-efficient` 强制 Claude 调用预算并拒绝无新证据重试，只有 Express Lane 能生成经确定性门控的 `mixed-exception` 单轮卡；`review` 执行本地验收、输出增量 evidence，并且只在配置的 milestone 授权 Codex。`aiwf loop` 继续作为兼容旧流程的入口。
+
 ## 功能说明
 
 ai-coding-workflow 可以为仓库自动配置：

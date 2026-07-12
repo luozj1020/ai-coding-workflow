@@ -12,6 +12,17 @@ The control plane now minimizes total completion cost, not model calls in isolat
 
 Remote Bazel handoff remains human-controlled. `generate-handoff.py` emits preview-only publish/update/batched-validation instructions, while `validation-ingest.py` classifies returned logs locally. These helpers never push, SSH, merge, or authorize acceptance.
 
+The integrated path is:
+
+```bash
+python scripts/aiwf.py efficient prepare --hints task-hints.json --task-card task.md --output-dir .ai-workflow/runs/T-1
+python scripts/aiwf.py dispatch-efficient --plan .ai-workflow/runs/T-1/execution-plan.json --task-card task.md --output-dir .ai-workflow/runs/T-1/dispatch
+# Add --execute only after reviewing dispatch-preview.json.
+python scripts/aiwf.py efficient review --plan .ai-workflow/runs/T-1/execution-plan.json --evidence evidence.json --milestone final-candidate --output .ai-workflow/runs/T-1/review.json
+```
+
+`prepare` writes a reusable layered Context Packet and retry baseline. `dispatch-efficient` enforces the Claude call budget and refuses retries without changed evidence; Express Lane alone can generate a reviewed `mixed-exception` single-pass card. `review` runs deterministic acceptance, emits incremental evidence, and authorizes Codex only at configured milestones. `aiwf loop` remains the legacy compatible loop.
+
 ## What it does
 
 ai-coding-workflow bootstraps repositories with:

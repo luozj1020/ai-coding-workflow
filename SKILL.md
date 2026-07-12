@@ -104,6 +104,8 @@ Core loop:
 6. REVIEW: run `bash ai/review-with-codex.sh ...` or `bash ai/run-loop.sh ...`.
 7. LEARN: carry accept/revise/split/reject decisions into the next iteration.
 
+For quota/latency optimized runs, prefer the integrated control plane: `aiwf efficient prepare` creates the reviewed lane/budget plan plus layered cached Context Packet; `aiwf dispatch-efficient` is preview-only unless `--execute` is explicit and enforces Claude budgets/new-evidence retries; `aiwf efficient review` evaluates a milestone with incremental evidence and selects L0 local, L1 Spark, or L2 Codex. Only deterministic Express Lane plans may combine Builder and exact narrow validation in one mixed-exception card. `aiwf loop` remains the legacy compatible loop.
+
 ## Hot-Path Rules
 
 - Codex designs and reviews; Claude Code edits.
