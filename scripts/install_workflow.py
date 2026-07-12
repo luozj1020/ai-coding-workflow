@@ -97,6 +97,9 @@ PYTHON_SCRIPTS = [
     ("replay-run.py", "ai/replay-run.py"),
     ("detect-cpp-bazel.py", "ai/detect-cpp-bazel.py"),
     ("generate-handoff.py", "ai/generate-handoff.py"),
+    ("learn-store.py", "ai/learn-store.py"),
+    ("aiwf.py", "ai/aiwf.py"),
+    ("run-benchmark-suite.py", "ai/run-benchmark-suite.py"),
 ]
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)
