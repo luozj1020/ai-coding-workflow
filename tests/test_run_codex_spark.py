@@ -1969,5 +1969,307 @@ stop_condition=scope expands"""
                 self.assertIn("fast-path-max-diff-lines", result.stderr)
 
 
+class SparkDiagnosticsTests(unittest.TestCase):
+    """Tests for --diagnostics off|failure|full flag."""
+
+    def _make_repo_with_task_card(self, tmp_path, task_card_text="# Task\n"):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+        task_card = repo / "task-card.md"
+        task_card.write_text(task_card_text, encoding="utf-8")
+        return repo, task_card
+
+    def _make_fake_codex(self, tmp_path, output_text="spark ok", exit_code=0, stderr_text=""):
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_codex = fake_bin / "codex"
+        script = "#!/usr/bin/env bash\ncat > /dev/null\n"
+        if stderr_text:
+            script += f"echo '{stderr_text}' >&2\n"
+        if output_text:
+            script += f"echo '{output_text}'\n"
+        script += f"exit {exit_code}\n"
+        fake_codex.write_text(script, encoding="utf-8")
+        fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+        return fake_codex
+
+    def test_help_mentions_diagnostics(self):
+        """Help output includes --diagnostics flag and env var."""
+        result = subprocess.run(
+            [bash_exe(), bash_path(SCRIPT), "--help"],
+            cwd=str(ROOT),
+            text=True, encoding="utf-8", errors="replace",
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("--diagnostics", result.stderr)
+        self.assertIn("off", result.stderr)
+        self.assertIn("failure", result.stderr)
+        self.assertIn("full", result.stderr)
+        self.assertIn("CODEX_SPARK_DIAGNOSTICS", result.stderr)
+
+    def test_invalid_diagnostics_option_fails(self):
+        """Invalid --diagnostics value exits non-zero."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(tmp_path / "missing")
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--diagnostics", "invalid"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("invalid", result.stderr.lower())
+
+    def test_successful_direct_leaves_no_permanent_directory(self):
+        """Successful direct call with non-empty result creates no permanent directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path, output_text="ok result")
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--diagnostics", "failure"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.stdout.strip(), "ok result")
+            # No codex-spark-diagnostic directory should exist
+            worktrees_dir = repo / ".worktrees"
+            if worktrees_dir.exists():
+                diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+                self.assertEqual(diag_entries, [],
+                    f"successful call should not create diagnostic dir, found: {diag_entries}")
+
+    def test_empty_response_creates_compact_diagnostic_by_default(self):
+        """Exit 0 + empty stdout creates a compact empty-response diagnostic by default."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path, output_text="", exit_code=0)
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            # Empty response should cause non-zero exit
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("empty response", result.stderr)
+            # Should create a diagnostic directory
+            worktrees_dir = repo / ".worktrees"
+            self.assertTrue(worktrees_dir.exists(), ".worktrees should exist")
+            diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1,
+                f"expected exactly one diagnostic dir, found: {diag_entries}")
+            diagnostic = diag_entries[0] / "diagnostic.md"
+            self.assertTrue(diagnostic.exists(), "diagnostic.md should exist")
+            diag_text = diagnostic.read_text(encoding="utf-8")
+            self.assertIn("empty-response", diag_text)
+            self.assertIn("| Resolved mode |", diag_text)
+            self.assertIn("| Model |", diag_text)
+            self.assertIn("| Exit code |", diag_text)
+            self.assertIn("| Stdout empty | yes |", diag_text)
+
+    def test_nonzero_availability_failure_records_classification(self):
+        """Non-zero availability failure records original exit/classification."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path, output_text="", exit_code=1,
+                stderr_text="quota exceeded for requested model"
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            # Availability failure auto-disables → exit 0
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("auto-disabled", result.stderr)
+            # Should create a diagnostic directory
+            worktrees_dir = repo / ".worktrees"
+            diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1,
+                f"expected exactly one diagnostic dir, found: {diag_entries}")
+            diag_text = (diag_entries[0] / "diagnostic.md").read_text(encoding="utf-8")
+            self.assertIn("availability-failure", diag_text)
+            self.assertIn("| Exit code | 1 |", diag_text)
+
+    def test_diagnostics_off_leaves_no_diagnostic_directory(self):
+        """--diagnostics off leaves no diagnostic directory even on failure."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path, output_text="", exit_code=0)
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--diagnostics", "off"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            # No diagnostic directory should exist
+            worktrees_dir = repo / ".worktrees"
+            if worktrees_dir.exists():
+                diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+                self.assertEqual(diag_entries, [],
+                    f"diagnostics=off should not create diagnostic dir, found: {diag_entries}")
+
+    def test_diagnostics_full_retains_full_artifacts(self):
+        """--diagnostics full retains full reproduction artifacts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path, output_text="", exit_code=1,
+                stderr_text="some error"
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--diagnostics", "full"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            # Non-availability failure keeps non-zero exit
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            # Should create a full diagnostic directory with report
+            worktrees_dir = repo / ".worktrees"
+            diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1,
+                f"expected exactly one diagnostic dir, found: {diag_entries}")
+            diag_dir = diag_entries[0]
+            self.assertTrue((diag_dir / "codex-spark.report.md").exists(),
+                "full diagnostic should contain report.md")
+            report_text = (diag_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("Codex Spark Follow-up", report_text)
+            self.assertIn("diagnostics=full", report_text)
+
+    def test_diagnostics_default_is_failure(self):
+        """Default diagnostics mode is 'failure' — compact diagnostic on empty response."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path, output_text="", exit_code=0)
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            # No --diagnostics flag → should default to 'failure'
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            worktrees_dir = repo / ".worktrees"
+            diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1,
+                f"default should create diagnostic on failure, found: {diag_entries}")
+
+    def test_diagnostics_env_var_override(self):
+        """CODEX_SPARK_DIAGNOSTICS env var controls diagnostics mode."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path, output_text="", exit_code=0)
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_SPARK_DIAGNOSTICS"] = "off"
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card)],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            worktrees_dir = repo / ".worktrees"
+            if worktrees_dir.exists():
+                diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+                self.assertEqual(diag_entries, [],
+                    f"env off should not create diagnostic dir, found: {diag_entries}")
+
+    def test_execution_failure_records_classification(self):
+        """Non-availability, non-empty-response failure records execution-failure."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path, output_text="partial output", exit_code=2,
+                stderr_text="internal error"
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--diagnostics", "failure"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+            worktrees_dir = repo / ".worktrees"
+            diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1,
+                f"expected one diagnostic dir, found: {diag_entries}")
+            diag_text = (diag_entries[0] / "diagnostic.md").read_text(encoding="utf-8")
+            self.assertIn("execution-failure", diag_text)
+            self.assertIn("| Exit code | 2 |", diag_text)
+
+    def test_compact_diagnostic_includes_stderr_excerpt(self):
+        """Compact diagnostic includes bounded stderr excerpt."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path, output_text="", exit_code=1,
+                stderr_text="line1 error\nline2 detail\nline3 more"
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--diagnostics", "failure"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            worktrees_dir = repo / ".worktrees"
+            diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1)
+            diag_text = (diag_entries[0] / "diagnostic.md").read_text(encoding="utf-8")
+            self.assertIn("Stderr Excerpt", diag_text)
+            self.assertIn("line1 error", diag_text)
+
+
 if __name__ == "__main__":
     unittest.main()

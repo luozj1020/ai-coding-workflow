@@ -50,6 +50,11 @@ Options:
   --artifact PATH   Add a bounded artifact excerpt to the Spark prompt.
                     May be passed more than once.
   --output DIR      Artifact directory (default: .worktrees/codex-spark-<timestamp>)
+  --diagnostics MODE
+                    off, failure, or full (default: failure).
+                    off: strict zero-persistence even on failure.
+                    failure: preserve compact diagnostic on unusable result.
+                    full: preserve existing full evidence set for reproduction.
   --allow-dirty-source
                     Allow micro-builder dispatch from a dirty source repo
   --require-spark   Treat Spark unavailability as a hard helper failure
@@ -62,6 +67,7 @@ Environment:
   CODEX_SPARK_SANDBOX
   CODEX_SPARK_OUTPUT_DIR
   CODEX_SPARK_RESULT_MODE=direct|minimal|full
+  CODEX_SPARK_DIAGNOSTICS=off|failure|full
   CODEX_SPARK_ARTIFACT_LINES=160
   CODEX_SPARK_ALLOW_DIRTY_SOURCE=1
   CODEX_SPARK_REQUIRED=1
@@ -99,6 +105,7 @@ SPARK_PROVISIONAL_ACCEPTANCE="not applicable"
 ARTIFACTS=()
 RESULT_MODE="${CODEX_SPARK_RESULT_MODE:-}"
 EXPLICIT_RESULT_MODE="no"
+DIAGNOSTICS_MODE="${CODEX_SPARK_DIAGNOSTICS:-failure}"
 ALLOWED_WRITES=()
 MAX_DIFF_LINES=""
 FAST_PATH_MAX_DIFF_LINES="${CODEX_FAST_PATH_MAX_DIFF_LINES:-100}"
@@ -172,6 +179,11 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || { echo "Error: --output requires a value." >&2; exit 1; }
             OUTPUT_DIR="$2"
             EXPLICIT_OUTPUT="yes"
+            shift 2
+            ;;
+        --diagnostics)
+            [ $# -ge 2 ] || { echo "Error: --diagnostics requires a value." >&2; exit 1; }
+            DIAGNOSTICS_MODE="$2"
             shift 2
             ;;
         --allow-dirty-source)
@@ -257,6 +269,14 @@ if [ -n "$RESULT_MODE" ]; then
             ;;
     esac
 fi
+
+case "$DIAGNOSTICS_MODE" in
+    off|failure|full) ;;
+    *)
+        echo "Error: invalid --diagnostics: $DIAGNOSTICS_MODE (expected off, failure, or full)" >&2
+        exit 1
+        ;;
+esac
 
 if [ -n "$MAX_DIFF_LINES" ]; then
     case "$MAX_DIFF_LINES" in
@@ -993,6 +1013,133 @@ spark_failure_auto_disable_reason() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Diagnostic support: compact failure records for direct mode.
+# ---------------------------------------------------------------------------
+
+DIAGNOSTIC_DIR=""
+DIAGNOSTIC_FAILURE_CLASS="none"
+
+classify_failure() {
+    local codex_exit="$1"
+    local result_empty="$2"
+    if [ "$codex_exit" -eq 0 ] && [ "$result_empty" = "yes" ]; then
+        echo "empty-response"
+    elif [ "$codex_exit" -ne 0 ] && spark_unavailable_failure; then
+        echo "availability-failure"
+    elif [ "$codex_exit" -ne 0 ]; then
+        echo "execution-failure"
+    elif [ "$result_empty" = "no" ] && [ "$MODE" = "execution-cost-estimator" ]; then
+        # Schema validation already happened; check if key fields are missing
+        if ! grep -q '^predicted_diff_lines_low=' "$RESULT_FILE" 2>/dev/null; then
+            echo "schema-invalid"
+        else
+            echo "none"
+        fi
+    else
+        echo "none"
+    fi
+}
+
+write_compact_diagnostic() {
+    local codex_exit="$1"
+    local result_empty="$2"
+    local failure_class="$3"
+    local stderr_excerpt_lines=20
+    local stderr_excerpt=""
+
+    if [ -s "$STDERR_FILE" ]; then
+        stderr_excerpt="$(head -n "$stderr_excerpt_lines" "$STDERR_FILE")"
+    fi
+
+    DIAGNOSTIC_DIR="${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}"
+    mkdir -p "$DIAGNOSTIC_DIR"
+
+    {
+        echo "# Codex Spark Compact Diagnostic"
+        echo ""
+        echo "| Field | Value |"
+        echo "|-------|-------|"
+        echo "| Resolved mode | ${MODE} |"
+        echo "| Model | ${MODEL} |"
+        echo "| Exit code | ${codex_exit} |"
+        echo "| Failure classification | ${failure_class} |"
+        echo "| Stdout empty | ${result_empty} |"
+        echo "| Result mode | ${RESULT_MODE} |"
+        echo "| Diagnostics mode | ${DIAGNOSTICS_MODE} |"
+        echo "| Timestamp | ${TIMESTAMP} |"
+        echo ""
+        echo "## Stderr Excerpt (first ${stderr_excerpt_lines} lines)"
+        echo ""
+        if [ -n "$stderr_excerpt" ]; then
+            echo '```'
+            echo "$stderr_excerpt"
+            echo '```'
+        else
+            echo "(no stderr captured)"
+        fi
+        echo ""
+    } > "${DIAGNOSTIC_DIR}/diagnostic.md"
+
+    echo "Codex Spark diagnostic: ${DIAGNOSTIC_DIR}/diagnostic.md" >&2
+}
+
+write_full_diagnostic() {
+    local codex_exit="$1"
+    # Create a permanent diagnostic directory for full mode
+    DIAGNOSTIC_DIR="${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}"
+    mkdir -p "$DIAGNOSTIC_DIR"
+
+    # Copy evidence files from the (possibly transient) temp dir
+    local diag_report="${DIAGNOSTIC_DIR}/codex-spark.report.md"
+    local diag_result="${DIAGNOSTIC_DIR}/codex-spark.result.txt"
+    local diag_stderr="${DIAGNOSTIC_DIR}/codex-spark.stderr.log"
+
+    if [ -s "$RESULT_FILE" ]; then
+        cp "$RESULT_FILE" "$diag_result"
+    fi
+    if [ -s "$STDERR_FILE" ]; then
+        cp "$STDERR_FILE" "$diag_stderr"
+    fi
+
+    # Temporarily redirect REPORT_FILE to the diagnostic directory
+    local _orig_report="$REPORT_FILE"
+    REPORT_FILE="$diag_report"
+    write_report_header "$codex_exit" "no"
+    {
+        echo "## Result"
+        echo ""
+        echo "| Field | Value |"
+        echo "|-------|-------|"
+        echo "| Codex exit code | ${codex_exit} |"
+        echo "| Result mode | full (diagnostics=full) |"
+        echo "| Prompt | ${PROMPT_FILE} |"
+        echo "| Raw output | ${diag_result} |"
+        echo "| Stderr log | ${diag_stderr} |"
+        echo "| Strong-model fallback used | no |"
+        echo ""
+        echo "## Codex Spark Output"
+        echo ""
+        if [ -s "$diag_result" ]; then
+            cat "$diag_result"
+        else
+            echo "No stdout output captured."
+        fi
+        if [ "$codex_exit" -ne 0 ]; then
+            echo ""
+            echo "## Failure Handling"
+            echo ""
+            if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+                echo "Spark exited non-zero with an availability-style failure and was auto-disabled because it is auxiliary. The helper exits 0 so the main workflow may continue."
+            else
+                echo "Spark exited non-zero. Strong-model fallback was not used. Re-run explicitly with another model only after human approval."
+            fi
+        fi
+    } >> "$diag_report"
+    REPORT_FILE="$_orig_report"
+    echo "Codex Spark diagnostic (full): ${DIAGNOSTIC_DIR}" >&2
+}
+
 if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
     SPARK_INVOKED="no"
     SPARK_CHECKS_RUN="not run"
@@ -1638,6 +1785,12 @@ case "$RESULT_MODE" in
         if [ -s "$RESULT_FILE" ]; then
             cat "$RESULT_FILE"
         fi
+        # Classify failure for diagnostics
+        _direct_result_empty="no"
+        if [ ! -s "$RESULT_FILE" ]; then
+            _direct_result_empty="yes"
+        fi
+        DIAGNOSTIC_FAILURE_CLASS="$(classify_failure "$CODEX_STATUS" "$_direct_result_empty")"
         # On failure, report reason to stderr only (no permanent report)
         if [ "$CODEX_STATUS" -ne 0 ]; then
             if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
@@ -1645,6 +1798,25 @@ case "$RESULT_MODE" in
             else
                 echo "Codex Spark exited with code ${CODEX_STATUS}. See stderr for details." >&2
             fi
+        fi
+        # Detect empty response as explicit failure (exit 0 + empty stdout)
+        if [ "$CODEX_STATUS" -eq 0 ] && [ "$_direct_result_empty" = "yes" ]; then
+            echo "Codex Spark: empty response (exit 0 with no usable output)" >&2
+            HELPER_EXIT_STATUS=1
+        fi
+        # Write diagnostics based on mode
+        if [ "$DIAGNOSTIC_FAILURE_CLASS" != "none" ]; then
+            case "$DIAGNOSTICS_MODE" in
+                failure)
+                    write_compact_diagnostic "$CODEX_STATUS" "$_direct_result_empty" "$DIAGNOSTIC_FAILURE_CLASS"
+                    ;;
+                full)
+                    write_full_diagnostic "$CODEX_STATUS"
+                    ;;
+                off)
+                    # Strict zero-persistence
+                    ;;
+            esac
         fi
         # Auto-disable reporting goes to stderr for direct mode
         if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
