@@ -1,0 +1,36 @@
+{
+  "name": "bugfix",
+  "description": "Profile for bug fix tasks. Inherits from base; narrows scope and risk defaults.",
+  "profile_version": 1,
+  "risk": {
+    "public_api": "no",
+    "data_model": "no",
+    "security": "no",
+    "migration": "no",
+    "permission": "no",
+    "concurrency": "no",
+    "cross_module": "no",
+    "production_impact": "no"
+  },
+  "handoff": {
+    "must_do": [
+      "Identify root cause",
+      "Show before/after behavior",
+      "Verify fix does not break existing tests"
+    ],
+    "must_not_do": [
+      "Refactor unrelated code",
+      "Change public API surface",
+      "Add new features beyond the fix"
+    ],
+    "may_decide": [
+      "Minimal test addition to cover the fixed case"
+    ]
+  },
+  "stop_conditions": [
+    "scope_boundary_crossed",
+    "acceptance_unreachable",
+    "external_blocker",
+    "fix_causes_regression"
+  ]
+}

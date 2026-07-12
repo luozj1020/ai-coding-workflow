@@ -1,0 +1,50 @@
+{
+  "name": "base",
+  "description": "Base profile for all task types. Provides sensible defaults.",
+  "profile_version": 1,
+  "risk": {
+    "public_api": "unknown",
+    "data_model": "unknown",
+    "security": "unknown",
+    "migration": "unknown",
+    "permission": "unknown",
+    "concurrency": "unknown",
+    "cross_module": "unknown",
+    "production_impact": "unknown"
+  },
+  "handoff": {
+    "must_do": [
+      "Report files changed with one-line purpose per file",
+      "Report acceptance criteria mapping",
+      "Report deviations from plan"
+    ],
+    "must_not_do": [
+      "Modify files outside declared scope",
+      "Add third-party dependencies without approval",
+      "Merge or auto-merge without human review"
+    ],
+    "must_report": [
+      "Unknowns discovered during execution",
+      "Decision gates crossed",
+      "Validation results"
+    ],
+    "stop_condition": [
+      "Scope boundary crossed",
+      "Acceptance criteria cannot be met",
+      "External blocker prevents progress"
+    ]
+  },
+  "stop_conditions": [
+    "scope_boundary_crossed",
+    "acceptance_unreachable",
+    "external_blocker"
+  ],
+  "extensions": {
+    "spark": {
+      "enabled": false
+    },
+    "parallel": {
+      "enabled": false
+    }
+  }
+}

@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow/schemas/task-card-v1.schema.json",
+  "title": "Task Card v1",
+  "description": "Structured task card schema for the AI Coding Workflow. Version 1 — normative.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "mode",
+    "goal",
+    "profiles",
+    "scope",
+    "acceptance",
+    "risk",
+    "handoff",
+    "validation",
+    "stop_conditions"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Must be exactly 1 for this schema version."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique task identifier (e.g. PROJ-123, m0-schema-v1)."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["builder", "checker-test", "mixed-exception", "control-plane"],
+      "description": "Task execution mode."
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One-sentence task goal."
+    },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "description": "Ordered list of profile names to compose. First profile is lowest priority; last is highest."
+    },
+    "scope": {
+      "type": "object",
+      "required": ["write_paths"],
+      "additionalProperties": false,
+      "properties": {
+        "write_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Bounded list of paths this task may create or modify."
+        },
+        "read_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Paths this task may read but not modify."
+        },
+        "forbidden_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Paths this task must not touch."
+        }
+      },
+      "description": "Scope boundaries for the task."
+    },
+    "acceptance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable acceptance criterion identifier."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Human-readable acceptance criterion."
+          },
+          "validation_id": {
+            "type": "string",
+            "description": "Optional reference to a validation command."
+          }
+        }
+      },
+      "minItems": 1,
+      "description": "Acceptance criteria for the task."
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "public_api": {
+          "type": "string",
+          "enum": ["no", "yes", "unknown"],
+          "description": "Public API risk."
+        },
+        "data_model": {
+          "type": "string",
+          "enum": ["no", "yes", "unknown"],
+          "description": "Data model risk."
+        },
+        "security": {
+          "type": "string",
+          "enum": ["no", "yes", "unknown"],
+          "description": "Security risk."
+        },
+        "migration": {
+          "type": "string",
+          "enum": ["no", "yes", "unknown"],
+          "description": "Migration risk."
+        },
+        "permission": {
+          "type": "string",
+          "enum": ["no", "yes", "unknown"],
+          "description": "Permission risk."
+        },
+        "concurrency": {
+          "type": "string",
+          "enum": ["no", "yes", "unknown"],
+          "description": "Concurrency risk."
+        },
+        "cross_module": {
+          "type": "string",
+          "enum": ["no", "yes", "unknown"],
+          "description": "Cross-module risk."
+        },
+        "production_impact": {
+          "type": "string",
+          "enum": ["no", "yes", "unknown"],
+          "description": "Production impact risk."
+        }
+      },
+      "description": "Risk assessment for the task."
+    },
+    "handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "must_do": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Actions the executor must perform."
+        },
+        "must_not_do": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Actions the executor must not perform."
+        },
+        "may_decide": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Decisions the executor may make autonomously."
+        },
+        "must_report": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Findings the executor must report."
+        },
+        "stop_condition": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Conditions that must stop execution."
+        }
+      },
+      "description": "Handoff contract for the task."
+    },
+    "validation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "command"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Validation identifier."
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Command as argv array (not shell string)."
+          },
+          "description": {
+            "type": "string",
+            "description": "What this validation checks."
+          },
+          "local_allowed": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether this validation may be run locally."
+          }
+        }
+      },
+      "description": "Validation commands for the task."
+    },
+    "stop_conditions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Conditions that must halt execution."
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Profile-specific or task-specific extension data. Unknown top-level fields are rejected; all extensions must live here.",
+      "additionalProperties": true
+    }
+  }
+}
