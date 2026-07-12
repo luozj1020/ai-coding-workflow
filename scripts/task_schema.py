@@ -417,19 +417,23 @@ def _deep_merge(base: Any, override: Any, path: str) -> Any:
         return result
 
     if isinstance(base, list):
-        if not base and not override:
+        combined = base + override
+        if not combined:
             return []
-        if not base:
-            return deepcopy(override)
-        if not override:
-            return deepcopy(base)
 
-        # Determine if arrays contain objects with 'id'
-        first_base = base[0]
-        first_override = override[0]
-        if isinstance(first_base, dict) and "id" in first_base:
-            return _merge_arrays_of_objects(base, override, path)
-        if isinstance(first_override, dict) and "id" in first_override:
+        # Object arrays are a structured contract even when one side is
+        # empty. Validate every element before any empty-side shortcut can
+        # bypass the required stable id.
+        if any(isinstance(item, dict) for item in combined):
+            if not all(isinstance(item, dict) for item in combined):
+                raise ProfileConflictError(
+                    f"mixed scalar/object array at {path}"
+                )
+            for item in combined:
+                if not isinstance(item.get("id"), str) or not item["id"]:
+                    raise ProfileConflictError(
+                        f"object in array at {path} missing 'id' field or id is empty"
+                    )
             return _merge_arrays_of_objects(base, override, path)
 
         # Arrays of scalars
