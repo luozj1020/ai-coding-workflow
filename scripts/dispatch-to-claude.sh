@@ -1637,7 +1637,7 @@ elif [ "$CLAUDE_STATUS" -ne 0 ]; then
     progress_log "Claude exited non-zero: status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
     echo "Warning: claude exited with non-zero status $CLAUDE_STATUS. Check $STATUS_FILE" >&2
 else
-    progress_log "Claude completed successfully: elapsed_seconds=${ELAPSED}"
+    progress_log "Claude child exited 0: elapsed_seconds=${ELAPSED}; final outcome pending semantic validation"
 fi
 
 RESULT_FALLBACK_GENERATED=0
@@ -2066,6 +2066,8 @@ elif [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; th
 fi
 
 progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
+# Authoritative final outcome — emitted exactly once, after semantic validation.
+progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELAPSED}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
 {
     echo ""
     echo "[dispatch] Evidence classification: ${DISPATCH_EVIDENCE_STATE}"
