@@ -545,6 +545,33 @@ class TestCommandPassthrough(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class TestLedgerLock(unittest.TestCase):
+    def test_windows_lock_uses_single_non_truncating_open(self):
+        handle = mock.MagicMock()
+        handle.seek.side_effect = [0, None, None]
+        handle.fileno.return_value = 7
+        windows_locking = mock.Mock()
+        fake_msvcrt = mock.Mock(
+            LK_NBLCK=1,
+            LK_UNLCK=2,
+            locking=windows_locking,
+        )
+        lock_path = Path("ledger.lock")
+
+        with mock.patch.object(broker_mod, "msvcrt", fake_msvcrt), mock.patch(
+            "builtins.open", return_value=handle
+        ) as opened:
+            lock = broker_mod.LedgerLock(lock_path)
+            lock.acquire(timeout=0.1)
+            lock.release()
+
+        opened.assert_called_once_with(lock_path, "a+b")
+        handle.write.assert_called_once_with(b"\x00")
+        windows_locking.assert_has_calls(
+            [mock.call(7, fake_msvcrt.LK_NBLCK, 1), mock.call(7, fake_msvcrt.LK_UNLCK, 1)]
+        )
+
+
 class TestLedgerParseability(unittest.TestCase):
     """Ledger JSONL is parseable after concurrency and every reservation
     has legal transitions."""
@@ -559,20 +586,21 @@ class TestLedgerParseability(unittest.TestCase):
             def attempt(idx):
                 role = "codex" if idx % 2 == 0 else "claude"
                 inp = write_file(tmp, f"input-{idx}", f"input-{idx}.txt")
-                rc, _, _ = run_broker(
+                rc, _, err = run_broker(
                     tmp, role=role, stage="builder", plan_path=plan_path,
                     input_path=inp, ledger_path=ledger,
                     command=[sys.executable, "-c", f"print('concurrent-{idx}')"],
                     run_id=f"run-{idx}",
                 )
-                return rc
+                return rc, err
 
             with ThreadPoolExecutor(max_workers=4) as pool:
                 futs = [pool.submit(attempt, i) for i in range(8)]
                 results = [f.result() for f in as_completed(futs)]
 
             # All should succeed
-            self.assertTrue(all(rc == 0 for rc in results), f"Results: {results}")
+            failures = [(rc, err) for rc, err in results if rc != 0]
+            self.assertFalse(failures, f"Broker failures: {failures}")
 
             # Ledger is parseable
             records = [

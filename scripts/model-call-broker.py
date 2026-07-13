@@ -66,12 +66,10 @@ class LedgerLock:
     def acquire(self, timeout: float = 30.0) -> None:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         if msvcrt is not None:
-            # Open in r+b/w+b mode to allow read+write; ensure at least one
-            # byte exists before msvcrt.locking (Windows requires non-empty).
-            if self.lock_path.exists():
-                self._fh = open(self.lock_path, "r+b")  # noqa: SIM115
-            else:
-                self._fh = open(self.lock_path, "w+b")  # noqa: SIM115
+            # Atomically create or open without truncating.  An exists() check
+            # races with concurrent Windows broker processes, while w+b can
+            # truncate a lock file another process already opened.
+            self._fh = open(self.lock_path, "a+b")  # noqa: SIM115
             # Ensure lock file contains at least one byte
             size = self._fh.seek(0, 2)  # seek to end, returns position
             if size == 0:
