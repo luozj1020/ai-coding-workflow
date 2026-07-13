@@ -36,18 +36,60 @@ def _get_codex_binary() -> str:
     return os.environ.get("CODEX_BINARY", "codex")
 
 
-def _build_model_command(advisor: str) -> list:
-    """Build the model invocation command for the given advisor.
+def _parse_single_json_response(text: str) -> Optional[dict]:
+    """Parse model output as exactly one JSON object.
 
-    Spark uses Codex CLI with explicit model gpt-5.3-codex-spark.
-    Codex uses Codex CLI with its default model.
+    Returns the parsed dict on success, or None on any ambiguity:
+    - JSONL event stream (multiple JSON objects / lines)
+    - Markdown fences wrapping JSON
+    - Leading/trailing prose around a JSON object
+    - Non-dict top-level value
+
+    Tolerates a ``{"result": "<json>"}`` wrapper (some model CLIs wrap output).
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    # Parse the entire output. Do not recover JSON from fences or prose: the
+    # brokered advisor contract requires one unambiguous JSON object.
+    try:
+        candidate = json.loads(stripped)
+        if isinstance(candidate, dict) and "schema_version" in candidate:
+            return candidate
+        if isinstance(candidate, dict) and "result" in candidate:
+            result_str = candidate["result"]
+            if isinstance(result_str, str):
+                try:
+                    inner = json.loads(result_str)
+                    if isinstance(inner, dict) and "schema_version" in inner:
+                        return inner
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    except json.JSONDecodeError:
+        return None
+
+    return None
+
+
+def _build_model_command(advisor: str) -> list:
+    """Build the non-interactive model invocation command for the given advisor.
+
+    Uses ``codex exec`` (non-interactive stdin mode) with ``-`` to read the
+    prompt from stdin.  ``--json`` is NOT passed because the broker captures
+    stdout directly and expects a single JSON response object.
+
+    Spark: ``codex exec --model gpt-5.3-codex-spark --sandbox workspace-write -``
+    Codex: ``codex exec --sandbox read-only -``
+
     No fallback between advisors — Spark failure never falls back to Codex.
     """
     codex_bin = _get_codex_binary()
     if advisor == "spark":
-        return [codex_bin, "--model", "gpt-5.3-codex-spark", "--json"]
+        return [codex_bin, "exec", "--model", "gpt-5.3-codex-spark",
+                "--sandbox", "workspace-write", "-"]
     elif advisor == "codex":
-        return [codex_bin, "--json"]
+        return [codex_bin, "exec", "--sandbox", "read-only", "-"]
     else:
         return []
 
@@ -235,12 +277,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Build effective prompt: original + binding suffix
     effective_prompt_bytes = original_prompt_bytes + binding_suffix.encode("utf-8")
 
-    # Check that binding suffix doesn't exceed the role cap
-    # (The prompt was already bounded by prepare-advisor-continuation, so we
-    # just need to ensure the suffix fits within a reasonable margin.)
-    prompt_cap = 32 * 1024  # 32 KiB max for model prompts
+    # Role-specific prompt caps after binding suffix is appended.
+    # Spark 16 KiB, Codex 32 KiB.  UTF-8 truncation must not leave invalid bytes.
+    _ROLE_PROMPT_CAPS = {"spark": 16 * 1024, "codex": 32 * 1024}
+    prompt_cap = _ROLE_PROMPT_CAPS.get(args.advisor, 32 * 1024)
     if len(effective_prompt_bytes) > prompt_cap:
-        # Truncate the original prompt to make room for the suffix
         suffix_len = len(binding_suffix.encode("utf-8"))
         max_original = prompt_cap - suffix_len
         if max_original < 512:
@@ -250,7 +291,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "task_id": task_id,
             })
             return 2
-        effective_prompt_bytes = original_prompt_bytes[:max_original] + binding_suffix.encode("utf-8")
+        # Truncate at a valid UTF-8 boundary to avoid leaving partial sequences
+        truncated = original_prompt_bytes[:max_original]
+        # Walk back up to 3 bytes to find a valid UTF-8 boundary
+        for _back in range(4):
+            try:
+                truncated.decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                truncated = original_prompt_bytes[:max_original - _back - 1]
+        effective_prompt_bytes = truncated + binding_suffix.encode("utf-8")
+
+    # Record truncation evidence for the report
+    truncation_applied = len(effective_prompt_bytes) < len(
+        original_prompt_bytes + binding_suffix.encode("utf-8")
+    )
 
     # Write effective prompt to a temp file for broker invocation
     effective_prompt_path = output_dir / "advisor-effective-prompt.md"
@@ -263,6 +318,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Output paths
     model_output = output_dir / "advisor-model-output.json"
     model_stderr = output_dir / "advisor-model-stderr.txt"
+
+    # --- Transient writable CODEX_HOME for Spark ---
+    # The Codex CLI initializes local app-server state before contacting Spark.
+    # Advisory calls need a transient writable home while linking only the
+    # existing read-only identity/config inputs.  Mirrors run-codex-spark.sh.
+    transient_codex_home = None
+    original_codex_home = os.environ.get("CODEX_HOME", "")
+    if args.advisor == "spark":
+        import shutil as _shutil
+        transient_codex_home = output_dir / ".codex-spark-runtime"
+        transient_codex_home.mkdir(parents=True, exist_ok=True)
+        _codex_home_src = Path(original_codex_home) if original_codex_home else Path.home() / ".codex"
+        for _input in ("auth.json", "config.toml", "installation_id",
+                       "models_cache.json", "version.json"):
+            _src = _codex_home_src / _input
+            if _src.is_file():
+                _shutil.copy2(str(_src), str(transient_codex_home / _input))
+        os.environ["CODEX_HOME"] = str(transient_codex_home)
 
     # Execute via broker (reserves exactly one call with pre-generated reservation)
     exit_code = _run_model_call_broker(
@@ -278,6 +351,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         run_id=run_id,
         reservation_id=reservation_id,
     )
+
+    # Clean up transient CODEX_HOME (retain broker/result diagnostics)
+    if transient_codex_home is not None and transient_codex_home.is_dir():
+        import shutil as _shutil
+        # Remove only the copied identity files, keep the directory for diagnostics
+        for _input in ("auth.json", "config.toml", "installation_id",
+                       "models_cache.json", "version.json"):
+            _p = transient_codex_home / _input
+            if _p.is_file():
+                _p.unlink(missing_ok=True)
+        # Restore original CODEX_HOME
+        if original_codex_home:
+            os.environ["CODEX_HOME"] = original_codex_home
+        elif "CODEX_HOME" in os.environ:
+            del os.environ["CODEX_HOME"]
 
     if exit_code == 2:
         # Broker denied (budget exhausted or duplicate)
@@ -309,28 +397,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         })
         return 1
 
-    # The model output should contain the advisor response JSON.
-    # Try to extract it from the model output (which may be wrapped in
-    # model-specific JSON format).
+    # The model output must contain exactly one JSON object (the advisor
+    # response).  A JSONL event stream, Markdown fence, leading/trailing
+    # prose, or multiple objects must fail closed with a bounded diagnostic.
     model_output_text = model_output.read_text(encoding="utf-8", errors="replace")
 
-    # Try to find a JSON object in the output that looks like an advisor response
-    response_data = None
-    try:
-        # First try direct parse
-        candidate = json.loads(model_output_text)
-        if isinstance(candidate, dict) and "schema_version" in candidate:
-            response_data = candidate
-        elif isinstance(candidate, dict) and "result" in candidate:
-            # Some models wrap the output
-            result_str = candidate["result"]
-            if isinstance(result_str, str):
-                response_data = json.loads(result_str)
-    except (json.JSONDecodeError, TypeError):
-        pass
+    response_data = _parse_single_json_response(model_output_text)
 
     if response_data is None:
-        # Write the raw output for inspection
         _write_json(output_dir / "advisor-call-result.json", {
             "ok": False,
             "reason": "unparseable-model-output",
@@ -382,6 +456,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "evidence_hash": evidence_hash,
         "decision": normalized["decision"],
         "resume_eligible": normalized.get("resume_eligible", False),
+        "truncation_applied": truncation_applied,
+        "prompt_cap": prompt_cap,
         "response": normalized,
     })
 

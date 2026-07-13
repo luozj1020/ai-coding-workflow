@@ -602,9 +602,43 @@ validate_advisor_continuation() {
     fi
 
     # --- 7. Validate response resume eligibility ---
+    # Pass expected request/evidence/reservation bindings and original scope
+    # constraints so the validator enforces them, not just the shell.
     if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/validate-advisor-response.py" ]; then
+        # Extract packet scope for validator
+        local _packet_allowed_file _packet_forbidden_file
+        _packet_allowed_file="${advisor_dir}/packet-allowed-changes.json"
+        _packet_forbidden_file="${advisor_dir}/packet-forbidden-changes.json"
+        "$PYTHON_CMD" - "$advisor_packet" "$_packet_allowed_file" "$_packet_forbidden_file" <<'PYEOF' 2>/dev/null
+import json, sys
+pkt = json.load(open(sys.argv[1], encoding="utf-8"))
+with open(sys.argv[2], "w") as f:
+    json.dump(pkt.get("allowed_changes", []), f)
+with open(sys.argv[3], "w") as f:
+    json.dump(pkt.get("forbidden_paths", []), f)
+PYEOF
+
+        # Extract packet evidence_hash and request_id for validator
+        local _pkt_evidence_hash _pkt_request_id
+        _pkt_evidence_hash="$("$PYTHON_CMD" - "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("evidence_hash", ""))
+PYEOF
+)"
+        _pkt_request_id="$("$PYTHON_CMD" - "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("request_id", ""))
+PYEOF
+)"
+
         local _validation_output
         _validation_output="$("$PYTHON_CMD" "${SCRIPT_DIR}/validate-advisor-response.py" "$advisor_response" \
+            --expected-request-id "$_pkt_request_id" \
+            --expected-evidence-hash "$_pkt_evidence_hash" \
+            --original-allowed-changes "$_packet_allowed_file" \
+            --original-forbidden-changes "$_packet_forbidden_file" \
             --archive-invalid "${advisor_dir}/continuation-validation-invalid.json" 2>&1)" || {
             echo "Error: advisor-continuation: response validation failed:" >&2
             echo "$_validation_output" >&2
@@ -709,59 +743,25 @@ PYEOF
         exit 1
     fi
 
-    # --- 10. Once-only continuation claim ---
-    # Persistent consumed marker (survives shell exit / crash)
-    local _consumed_marker="${prior_root}.advisor-continue-consumed"
-    if [ -f "$_consumed_marker" ]; then
-        echo "Error: advisor-continuation: continuation already consumed for task ${prior_task_id}." >&2
-        echo "Consumed marker: ${_consumed_marker}" >&2
-        exit 1
-    fi
-
-    # Ephemeral concurrency lock (prevents concurrent claim)
-    _ADVISOR_CONTINUE_RESERVATION_DIR="${WORKTREE_ROOT}/.advisor-continue-lock-${prior_task_id}"
-    if ! mkdir "$_ADVISOR_CONTINUE_RESERVATION_DIR" 2>/dev/null; then
-        echo "Error: advisor-continuation: reservation already exists for task ${prior_task_id}." >&2
-        echo "Another dispatcher may be claiming this advisor continuation." >&2
-        exit 1
-    fi
-    echo "$$" > "${_ADVISOR_CONTINUE_RESERVATION_DIR}/pid"
-    # Ephemeral lock is cleaned on exit; consumed marker is NOT.
-    trap 'rm -rf "$_ADVISOR_CONTINUE_RESERVATION_DIR"' EXIT
-
-    # Write persistent consumed marker (atomically via temp+mv)
-    local _consumed_tmp="${_consumed_marker}.tmp.$$"
-    {
-        echo "{"
-        printf '  "task_id": "%s",\n' "$prior_task_id"
-        printf '  "reservation_id": "%s",\n' "$_response_reservation_id"
-        printf '  "request_id": "%s",\n' "$_response_request_id"
-        printf '  "consumed_by_pid": "%s",\n' "$$"
-        printf '  "consumed_at": "%s"\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')"
-        echo "}"
-    } > "$_consumed_tmp"
-    mv "$_consumed_tmp" "$_consumed_marker"
-
-    # --- 11. Check changed-path boundaries (pre-execution scope enforcement) ---
+    # --- 10. Check changed-path boundaries (pre-execution scope enforcement) ---
     # Enumerate changed paths across unstaged, staged, and untracked state.
-    # Apply both original packet scopes and response scopes.
+    # Writable scope: response allowed_changes ONLY (not union with packet).
+    # An advisor "narrow" decision restricts scope; union would defeat that.
+    # Forbidden scope: union of response forbidden_changes ∪ packet forbidden_paths.
     local _allowed_changes _forbidden_changes
-    _allowed_changes="$("$PYTHON_CMD" - "$advisor_response" "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
+    _allowed_changes="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo ""
 import json, sys
 resp = json.load(open(sys.argv[1], encoding="utf-8"))
-pkt = json.load(open(sys.argv[2], encoding="utf-8"))
-# Union: response allowed_changes ∪ packet allowed_changes
-resp_allowed = set(resp.get("allowed_changes", []))
-pkt_allowed = set(pkt.get("allowed_changes", []))
-all_allowed = sorted(resp_allowed | pkt_allowed)
-print("\n".join(all_allowed))
+# Writable scope is the validated response subset only, never broader than packet.
+resp_allowed = sorted(resp.get("allowed_changes", []))
+print("\n".join(resp_allowed))
 PYEOF
 )"
     _forbidden_changes="$("$PYTHON_CMD" - "$advisor_response" "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
 import json, sys
 resp = json.load(open(sys.argv[1], encoding="utf-8"))
 pkt = json.load(open(sys.argv[2], encoding="utf-8"))
-# Union: response forbidden_changes ∪ packet forbidden_paths
+# Forbidden scope is the union/superset.
 resp_forbidden = set(resp.get("forbidden_changes", []))
 pkt_forbidden = set(pkt.get("forbidden_paths", []))
 all_forbidden = sorted(resp_forbidden | pkt_forbidden)
@@ -830,6 +830,52 @@ PYEOF
             exit 1
         fi
     fi
+
+    # --- 11. Once-only continuation claim ---
+    # Consumed marker is written AFTER all preflight validations pass
+    # (hash, scope, bindings, decision).  This ensures scope/hash failures
+    # do not consume the continuation.
+    local _consumed_marker="${prior_root}.advisor-continue-consumed"
+    if [ -f "$_consumed_marker" ]; then
+        echo "Error: advisor-continuation: continuation already consumed for task ${prior_task_id}." >&2
+        echo "Consumed marker: ${_consumed_marker}" >&2
+        exit 1
+    fi
+
+    # Ephemeral concurrency lock (prevents concurrent claim)
+    _ADVISOR_CONTINUE_RESERVATION_DIR="${WORKTREE_ROOT}/.advisor-continue-lock-${prior_task_id}"
+    if ! mkdir "$_ADVISOR_CONTINUE_RESERVATION_DIR" 2>/dev/null; then
+        echo "Error: advisor-continuation: reservation already exists for task ${prior_task_id}." >&2
+        echo "Another dispatcher may be claiming this advisor continuation." >&2
+        exit 1
+    fi
+    echo "$$" > "${_ADVISOR_CONTINUE_RESERVATION_DIR}/pid"
+    # Ephemeral lock is cleaned on exit; consumed marker is NOT.
+    trap 'rm -rf "$_ADVISOR_CONTINUE_RESERVATION_DIR"' EXIT
+
+    # Bind consumed marker to request_id + reservation_id (safe digest)
+    local _marker_digest
+    _marker_digest="$("$PYTHON_CMD" - "$_response_request_id" "$_response_reservation_id" <<'PYEOF' 2>/dev/null || echo ""
+import hashlib, sys
+rid = sys.argv[1].strip()
+resid = sys.argv[2].strip()
+digest = hashlib.sha256(f"{rid}:{resid}".encode()).hexdigest()[:16]
+print(digest)
+PYEOF
+)"
+    # Also include task_id for diagnostics
+    local _consumed_tmp="${_consumed_marker}.tmp.$$"
+    {
+        echo "{"
+        printf '  "task_id": "%s",\n' "$prior_task_id"
+        printf '  "request_id": "%s",\n' "$_response_request_id"
+        printf '  "reservation_id": "%s",\n' "$_response_reservation_id"
+        printf '  "marker_digest": "%s",\n' "$_marker_digest"
+        printf '  "consumed_by_pid": "%s",\n' "$$"
+        printf '  "consumed_at": "%s"\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')"
+        echo "}"
+    } > "$_consumed_tmp"
+    mv "$_consumed_tmp" "$_consumed_marker"
 
     # --- 12. Extract response data for continuation card ---
     local _response_decision
