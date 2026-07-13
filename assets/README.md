@@ -618,6 +618,15 @@ The installer preserves content outside managed markers and only replaces manage
 
 ## Troubleshooting
 
+Check the effective Claude/CC Switch configuration without printing credentials:
+
+```bash
+python ai/claude-healthcheck.py
+python ai/claude-healthcheck.py --probe
+```
+
+The endpoint probe is advisory by default because DNS, proxy, and TLS failures may be transient. Use `--require-probe` only when strict automation explicitly wants a network failure to stop before dispatch. A successful Claude interaction remains the authoritative availability signal.
+
 ### Missing `ai/` After Installing the Skill
 
 Installing the Codex Skill does not automatically modify every repository. If dispatch fails because `ai/dispatch-to-claude.sh` is missing, run the installed Skill bootstrap command in that repository, then verify with:

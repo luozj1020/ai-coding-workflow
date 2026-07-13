@@ -92,6 +92,8 @@ The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VE
 | **Auto-setup repo** | Detect profiles and plan LSP/CodeGraph/Zoekt | `python scripts/install_for_codex.py --auto-setup /path/to/repo` |
 | **Auto-setup apply** | Install missing LSP tools and init CodeGraph/Zoekt | `python scripts/install_for_codex.py --auto-setup /path/to/repo --apply` |
 | **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
+| **Claude provider check** | Show the effective CC Switch endpoint/model without secrets | `python scripts/claude-healthcheck.py` |
+| **Claude endpoint probe** | Advisory network evidence; transient failure does not block dispatch | `python scripts/claude-healthcheck.py --probe` |
 | **Preview integrated run** | Inspect every phase without model calls | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 | **Execute integrated run** | Run the reviewed plan | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute` |
 
