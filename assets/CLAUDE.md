@@ -141,6 +141,10 @@ When validation fails, preserve:
 - Key original output needed for diagnosis.
 - Whether failures appear to share one root cause.
 
+### ADVISOR_REQUEST.json
+
+When blocked and requesting continuation advice, write `ADVISOR_REQUEST.json` to the worktree root with the exact schema described in the task card. The dispatcher validates this file after you exit and uses validated direction, blocker kind, and advisor-used values for attempt classification. Do not create this file for ordinary completion; it is a control-plane artifact, not implementation progress.
+
 ### Loop stop rules
 
 Stop and report when all required checks are green, max iterations are reached, the same failure repeats, a fix causes a regression, failure count stops decreasing, or the blocker is external/environmental.

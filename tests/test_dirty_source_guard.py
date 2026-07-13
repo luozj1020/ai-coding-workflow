@@ -14,6 +14,7 @@ DISPATCH = ROOT / "scripts" / "dispatch-to-claude.sh"
 CHECK_WORKTREE = ROOT / "scripts" / "check-worktree.sh"
 CLASSIFY_ATTEMPT = ROOT / "scripts" / "classify-claude-attempt.py"
 CLAUDE_HEALTHCHECK = ROOT / "scripts" / "claude-healthcheck.py"
+VALIDATE_ADVISOR_REQUEST = ROOT / "scripts" / "validate-advisor-request.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -69,8 +70,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(DISPATCH, self.repo / "scripts" / "dispatch-to-claude.sh")
         shutil.copy2(CLASSIFY_ATTEMPT, self.repo / "scripts" / "classify-claude-attempt.py")
         shutil.copy2(CLAUDE_HEALTHCHECK, self.repo / "scripts" / "claude-healthcheck.py")
+        shutil.copy2(VALIDATE_ADVISOR_REQUEST, self.repo / "scripts" / "validate-advisor-request.py")
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
-                   "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py"], cwd=self.repo)
+                   "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
+                   "scripts/validate-advisor-request.py"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
     def tearDown(self):
@@ -190,6 +193,70 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
                 "    printf 'Progress update during extension.\\n' > CLAUDE_PROGRESS.md\n"
                 "    sleep \"${FAKE_CLAUDE_POST_PROGRESS_SLEEP:-4}\"\n"
+                "    ;;\n"
+                "  advisor-request-valid)\n"
+                "    printf '# advisor request work\\n' > README.md\n"
+                "    _TASK_ID=$(python3 -c \"\n"
+                "import re, sys\n"
+                "text = open('CLAUDE_TASK_CARD.md', encoding='utf-8').read()\n"
+                "m = re.search(r'\\\"task_id\\\":\\s*\\\"([^\\\"]+)\\\"', text)\n"
+                "print(m.group(1) if m else 'unknown')\n"
+                "\" 2>/dev/null || echo unknown)\n"
+                "    cat > ADVISOR_REQUEST.json <<REQ_EOF\n"
+                "{\n"
+                "  \"schema_version\": 1,\n"
+                "  \"task_id\": \"${_TASK_ID}\",\n"
+                "  \"direction\": \"on-plan\",\n"
+                "  \"blocker\": {\n"
+                "    \"kind\": \"semantic\",\n"
+                "    \"question\": \"How should I handle this edge case?\",\n"
+                "    \"blocking\": true\n"
+                "  },\n"
+                "  \"completed_work\": \"Implemented main feature\",\n"
+                "  \"advisor_used\": false\n"
+                "}\n"
+                "REQ_EOF\n"
+                "    ;;\n"
+                "  advisor-request-malformed)\n"
+                "    printf '{not valid json' > ADVISOR_REQUEST.json\n"
+                "    ;;\n"
+                "  advisor-request-mismatch)\n"
+                "    cat > ADVISOR_REQUEST.json <<'REQ_EOF'\n"
+                "{\n"
+                "  \"schema_version\": 1,\n"
+                "  \"task_id\": \"different-dispatch-task\",\n"
+                "  \"direction\": \"on-plan\",\n"
+                "  \"blocker\": {\n"
+                "    \"kind\": \"semantic\",\n"
+                "    \"question\": \"How should I proceed?\",\n"
+                "    \"blocking\": true\n"
+                "  },\n"
+                "  \"completed_work\": \"Implemented the main feature\",\n"
+                "  \"advisor_used\": false\n"
+                "}\n"
+                "REQ_EOF\n"
+                "    ;;\n"
+                "  advisor-request-only)\n"
+                "    _TASK_ID=$(python3 -c \"\n"
+                "import re, sys\n"
+                "text = open('CLAUDE_TASK_CARD.md', encoding='utf-8').read()\n"
+                "m = re.search(r'\\\"task_id\\\":\\s*\\\"([^\\\"]+)\\\"', text)\n"
+                "print(m.group(1) if m else 'unknown')\n"
+                "\" 2>/dev/null || echo unknown)\n"
+                "    cat > ADVISOR_REQUEST.json <<REQ_EOF\n"
+                "{\n"
+                "  \"schema_version\": 1,\n"
+                "  \"task_id\": \"${_TASK_ID}\",\n"
+                "  \"direction\": \"on-plan\",\n"
+                "  \"blocker\": {\n"
+                "    \"kind\": \"semantic\",\n"
+                "    \"question\": \"How should I proceed?\",\n"
+                "    \"blocking\": true\n"
+                "  },\n"
+                "  \"completed_work\": \"No implementation yet\",\n"
+                "  \"advisor_used\": false\n"
+                "}\n"
+                "REQ_EOF\n"
                 "    ;;\n"
                 "  success)\n"
                 "    cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
@@ -1369,6 +1436,88 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertFalse(data["timeout_extension_used"])
         self.assertEqual(data["timeout_extension_seconds"], 0)
         self.assertIsNone(data["timeout_extension_reason"])
+
+    # --- ADVISOR_REQUEST.json dispatcher integration tests ---
+
+    def test_valid_advisor_request_with_implementation_makes_advisor_eligible(self):
+        """Fake Claude writes implementation diff + valid on-plan semantic request
+        using the real generated task ID -> attempt classification is advisor eligible."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_MODE": "advisor-request-valid"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Advisor request valid: yes", status)
+        self.assertIn("Advisor direction: on-plan", status)
+        self.assertIn("Advisor blocker kind: semantic", status)
+        self.assertIn("Advisor used: false", status)
+        attempt = json.loads(
+            self._artifact_path(result.stdout, "Attempt Class").read_text(encoding="utf-8")
+        )
+        self.assertTrue(attempt["advisor_continuation_eligible"])
+        self.assertIsNone(attempt["advisor_rejection_reason"])
+
+    def test_malformed_advisor_request_not_eligible_diagnostic_visible(self):
+        """Malformed ADVISOR_REQUEST.json -> not eligible, defaults used, diagnostic archived."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_MODE": "advisor-request-malformed"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Advisor request valid: no", status)
+        self.assertIn("Advisor direction: unknown", status)
+        self.assertIn("Advisor blocker kind: none", status)
+        # Check diagnostic was archived
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        # The archive is a sibling of the run worktree under .worktrees/.
+        advisor_archives = list(worktree.parent.glob("*.advisor-request"))
+        self.assertTrue(len(advisor_archives) > 0, "Expected advisor request archive directory")
+
+    def test_task_mismatched_advisor_request_rejected(self):
+        """Task-mismatched request -> not eligible, defaults used."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_MODE": "advisor-request-mismatch"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Advisor request valid: no", status)
+        self.assertIn("Advisor direction: unknown", status)
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        archives = list(worktree.parent.glob("*.advisor-request/invalid.json"))
+        self.assertTrue(archives, "Expected invalid advisor request archive")
+        diagnostic = json.loads(archives[-1].read_text(encoding="utf-8"))["diagnostic"]
+        self.assertEqual(diagnostic["reason"], "task-id-mismatch")
+
+    def test_advisor_request_only_does_not_count_as_implementation_progress(self):
+        """Request-only output -> does not count as implementation progress."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_MODE": "advisor-request-only"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Implementation changes: 0", status)
+        self.assertIn("Advisor request valid: yes", status)
+        # Should be classified as no_useful_progress since there's no diff or report
+        self.assertIn("Dispatch outcome: no_useful_progress", status)
+
+    def test_no_advisor_request_file_uses_defaults(self):
+        """No ADVISOR_REQUEST.json -> direction=unknown, blocker_kind=none, advisor_used=false."""
+        self._write_builder_task_card()
+        result = self._dispatch("task-cards/BUILDER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Advisor request valid: no", status)
+        self.assertIn("Advisor direction: unknown", status)
+        self.assertIn("Advisor blocker kind: none", status)
+        self.assertIn("Advisor used: false", status)
 
 
 if __name__ == "__main__":

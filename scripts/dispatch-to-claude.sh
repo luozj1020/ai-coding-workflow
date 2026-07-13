@@ -877,6 +877,43 @@ render_claude_task_card() {
 
 render_claude_task_card "${WORKTREE_DIR}/TASK_CARD_FULL.md" > "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
 
+# --- ADVISOR_REQUEST contract ---
+# Append to the generated task card so Claude receives the exact task ID
+# and the structured request contract.  This is a control-plane artifact;
+# it must not count as implementation progress.
+{
+    echo ""
+    echo "## ADVISOR_REQUEST Contract"
+    echo ""
+    echo "When blocked and requesting continuation advice, write \`ADVISOR_REQUEST.json\` to the worktree root with this exact structure:"
+    echo ""
+    echo '```json'
+    echo "{"
+    echo '  "schema_version": 1,'
+    printf '  "task_id": "%s",\n' "$TASK_ID"
+    echo '  "direction": "on-plan",'
+    echo '  "blocker": {'
+    echo '    "kind": "semantic",'
+    echo '    "question": "<your blocker question>",'
+    echo '    "blocking": true'
+    echo '  },'
+    echo '  "completed_work": "<summary of work completed>",'
+    echo '  "advisor_used": false'
+    echo "}"
+    echo '```'
+    echo ""
+    echo "- \`schema_version\` must be integer \`1\`."
+    echo "- \`task_id\` must exactly match the dispatch task ID above."
+    echo "- \`direction\` must be \`on-plan\` or \`off-plan\`."
+    echo "- \`blocker.kind\` must be \`semantic\`, \`transport\`, \`approval\`, \`direction\`, or \`unknown\`."
+    echo "- \`blocker.blocking\` must be \`true\` (this file represents an active blocker request)."
+    echo "- \`completed_work\` and \`blocker.question\` must be non-empty strings."
+    echo "- \`advisor_used\` must be boolean."
+    echo "- No extra fields allowed."
+    echo ""
+    echo "Ordinary completion must not create this file. It is neither acceptance nor continuation authorization."
+} >> "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+
 if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
     echo "Full task card copied to: ${WORKTREE_DIR}/TASK_CARD_FULL.md"
     echo "Compatibility task card copied to: ${WORKTREE_DIR}/TASK_CARD.md"
@@ -932,6 +969,7 @@ Rules:
 - Do NOT restate or redesign the plan. Do NOT run broad discovery.
 - Report a blocker or split when scope is insufficient. Obey the testing boundary.
 - Update `CLAUDE_REPORT.md` before finishing with: files changed, acceptance criteria mapping, syntax outcome, deviations, remaining risks.
+- When blocked and requesting continuation advice, create `ADVISOR_REQUEST.json` exactly as described in the task card.
 
 --- CLAUDE EXECUTION CARD ---
 EOF
@@ -1390,7 +1428,7 @@ approval_convergence_changes_safe() {
             *) return 1 ;;
         esac
     done < <(git status --porcelain --untracked-files=all 2>/dev/null \
-        | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true)
+        | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS|ADVISOR_REQUEST)(\.md|\.json)?$' || true)
     return 0
 }
 
@@ -1435,7 +1473,7 @@ worktree_change_count() {
     fi
     {
         git status --porcelain --untracked-files=all 2>/dev/null \
-            | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true
+            | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS|ADVISOR_REQUEST)(\.md|\.json)?$' || true
     } | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0
 }
 
@@ -1450,7 +1488,7 @@ worktree_digest() {
     fi
     {
         git status --porcelain --untracked-files=all 2>/dev/null \
-            | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)(\.md)?$' || true
+            | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS|ADVISOR_REQUEST)(\.md|\.json)?$' || true
         git diff --shortstat 2>/dev/null || true
         git diff --cached --shortstat 2>/dev/null || true
     } | sha1sum 2>/dev/null | awk '{print $1}' || true
@@ -2093,8 +2131,55 @@ if [ "$CLAUDE_CODE_LARGE_REPO_MODE" = "1" ]; then
     FILTERED_UNTRACKED_SKIPPED=1
 else
     FILTERED_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null \
-        | grep -v -E '^(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS)' || true)"
+        | grep -v -E '^(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS|ADVISOR_REQUEST)' || true)"
     FILTERED_UNTRACKED_SKIPPED=0
+fi
+
+# --- ADVISOR_REQUEST.json post-Claude validation ---
+# Validate after Claude exits. Never infer direction, blocker kind, question,
+# or advisor-used from prose/log keywords.
+ADVISOR_REQUEST_FILE="${WORKTREE_DIR}/ADVISOR_REQUEST.json"
+ADVISOR_REQUEST_VALID=0
+ADVISOR_DIRECTION="unknown"
+ADVISOR_BLOCKER_KIND="none"
+ADVISOR_USED="false"
+_ADVISOR_VALIDATOR="${SCRIPT_DIR}/validate-advisor-request.py"
+if [ -f "$ADVISOR_REQUEST_FILE" ] && [ -n "$PYTHON_CMD" ] && [ -f "$_ADVISOR_VALIDATOR" ]; then
+    _ADVISOR_ARCHIVE_DIR="${WORKTREE_ROOT}/${TASK_ID}.advisor-request"
+    mkdir -p "$_ADVISOR_ARCHIVE_DIR"
+    if "$PYTHON_CMD" "$_ADVISOR_VALIDATOR" "$ADVISOR_REQUEST_FILE" \
+        --expected-task-id "$TASK_ID" \
+        --archive-valid "${_ADVISOR_ARCHIVE_DIR}/valid.json" \
+        --archive-invalid "${_ADVISOR_ARCHIVE_DIR}/invalid.json" \
+        > "${_ADVISOR_ARCHIVE_DIR}/validation-output.json" 2>/dev/null; then
+        ADVISOR_REQUEST_VALID=1
+        _ADVISOR_VALIDATED_JSON="${_ADVISOR_ARCHIVE_DIR}/validation-output.json"
+        ADVISOR_DIRECTION="$("$PYTHON_CMD" - "$_ADVISOR_VALIDATED_JSON" <<'PYEOF' 2>/dev/null || echo "unknown"
+import json, sys
+v = json.load(open(sys.argv[1], encoding="utf-8"))
+print(v.get("direction", "unknown"))
+PYEOF
+)"
+        ADVISOR_BLOCKER_KIND="$("$PYTHON_CMD" - "$_ADVISOR_VALIDATED_JSON" <<'PYEOF' 2>/dev/null || echo "none"
+import json, sys
+v = json.load(open(sys.argv[1], encoding="utf-8"))
+print(v.get("blocker", {}).get("kind", "none"))
+PYEOF
+)"
+        ADVISOR_USED="$("$PYTHON_CMD" - "$_ADVISOR_VALIDATED_JSON" <<'PYEOF' 2>/dev/null || echo "false"
+import json, sys
+v = json.load(open(sys.argv[1], encoding="utf-8"))
+print(str(v.get("advisor_used", False)).lower())
+PYEOF
+)"
+        progress_log "ADVISOR_REQUEST.json validated: direction=${ADVISOR_DIRECTION}, blocker_kind=${ADVISOR_BLOCKER_KIND}, advisor_used=${ADVISOR_USED}"
+    else
+        progress_log "ADVISOR_REQUEST.json validation failed; using defaults: direction=unknown, blocker_kind=none, advisor_used=false"
+    fi
+elif [ -f "$ADVISOR_REQUEST_FILE" ]; then
+    progress_log "ADVISOR_REQUEST.json found but validator unavailable; using defaults"
+else
+    progress_log "No ADVISOR_REQUEST.json found; using defaults"
 fi
 
 write_untracked_patches() {
@@ -2329,8 +2414,10 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; th
     _ATTEMPT_ARGS=(
         --exit-code "$CLAUDE_STATUS" --outcome "$DISPATCH_OUTCOME"
         --diff-changes "$IMPLEMENTATION_CHANGES" --progress "$_ATTEMPT_PROGRESS"
-        --direction unknown --error-text-file "$STATUS_FILE"
+        --direction "$ADVISOR_DIRECTION" --error-text-file "$STATUS_FILE"
+        --blocker-kind "$ADVISOR_BLOCKER_KIND"
     )
+    if [ "$ADVISOR_USED" = "true" ]; then _ATTEMPT_ARGS+=(--advisor-used); fi
     if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then _ATTEMPT_ARGS+=(--valid-report); fi
     if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then _ATTEMPT_ARGS+=(--semantic-error); fi
     "$PYTHON_CMD" "${SCRIPT_DIR}/classify-claude-attempt.py" "${_ATTEMPT_ARGS[@]}" > "$ATTEMPT_CLASSIFICATION_FILE" || true
@@ -2365,6 +2452,10 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] Same-worktree retry eligible: ${ATTEMPT_SAME_WORKTREE_RETRY}"
     echo "[dispatch] Route source: ${_ROUTE_SOURCE}"
     echo "[dispatch] Route mode: ${CLAUDE_CODE_PROXY_MODE}"
+    echo "[dispatch] Advisor request valid: $([ "$ADVISOR_REQUEST_VALID" -eq 1 ] && echo yes || echo no)"
+    echo "[dispatch] Advisor direction: ${ADVISOR_DIRECTION}"
+    echo "[dispatch] Advisor blocker kind: ${ADVISOR_BLOCKER_KIND}"
+    echo "[dispatch] Advisor used: ${ADVISOR_USED}"
     if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
         echo "[dispatch] Semantic error reason: ${CLAUDE_SEMANTIC_ERROR_REASON}"
     fi
