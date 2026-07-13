@@ -4,6 +4,8 @@
 # Usage: bash ai/watch-claude.sh [claude-<timestamp>] [--interval seconds] [--lines count] [--once] [--details] [--stale-after seconds] [--wait-profile small|medium|large] [--startup-grace seconds] [--interrupt-after seconds] [--escalation-confirmations count]
 
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROCESS_STATE_HELPER="${SCRIPT_DIR}/claude-process-state.py"
 
 # Git for Windows can be launched through bin/bash.exe without the usual Unix tool PATH.
 PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
@@ -155,18 +157,14 @@ is_running() {
 
 role_state() {
     local pid_file="$1"
-    if [ ! -f "$pid_file" ]; then
-        echo "missing"
-        return
-    fi
-    local pid
-    pid="$(tr -d '[:space:]' < "$pid_file")"
-    if [ -z "$pid" ]; then
-        echo "missing"
-    elif kill -0 "$pid" 2>/dev/null; then
-        echo "running"
+    if [ -f "$PROCESS_STATE_HELPER" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$PROCESS_STATE_HELPER" --pid-file "$pid_file" --progress-file "$PROGRESS_FILE"
     else
-        echo "not-running"
+        if [ -f "$pid_file" ] && kill -0 "$(tr -d '[:space:]' < "$pid_file")" 2>/dev/null; then
+            echo "running"
+        else
+            echo "not-running"
+        fi
     fi
 }
 
@@ -322,6 +320,7 @@ LIVE_REPORT_FILE="${WORKTREE_DIR}/CLAUDE_REPORT.md"
 last_digest=""
 printed_header=0
 monitor_suspect_count=0
+LAST_OVERALL_RUNNING="no"
 
 select_claude_progress_file() {
     if [ -f "$LIVE_CLAUDE_PROGRESS_FILE" ]; then
@@ -693,15 +692,20 @@ print_snapshot() {
     # Overall running: any role alive (dispatcher/Claude/checker)
     if [ "$dispatcher_running" = "running" ] || [ "$claude_running" = "running" ] || [ "$checker_running" = "running" ]; then
         overall_running="yes"
+    elif [ "$dispatcher_running" = "visibility-unknown" ] || [ "$claude_running" = "visibility-unknown" ] || [ "$checker_running" = "visibility-unknown" ]; then
+        overall_running="unknown"
     else
         overall_running="no"
     fi
     # Execution running: Claude or Checker active (dispatcher alone = finalizing)
     if [ "$claude_running" = "running" ] || [ "$checker_running" = "running" ]; then
         running="yes"
+    elif [ "$claude_running" = "visibility-unknown" ] || [ "$checker_running" = "visibility-unknown" ]; then
+        running="unknown"
     else
         running="no"
     fi
+    LAST_OVERALL_RUNNING="$overall_running"
     last_line="$(last_dispatch_line)"
     elapsed="$(field_from_line "$last_line" "elapsed_seconds")"; elapsed="${elapsed:-0}"
     quiet="$(field_from_line "$last_line" "quiet_seconds")"; quiet="${quiet:-0}"
@@ -721,7 +725,12 @@ print_snapshot() {
     milestone="$(current_milestone "$claude_progress_source")"
     evidence="$(evidence_state "$worktree_changes" "$claude_progress_source" "$report_source")"
     reason="$(stuck_reason "$running" "$quiet" "$result_bytes" "$status_bytes" "$report_bytes" "$claude_progress_bytes" "$claude_progress_source" "$worktree_changes")"
-    action="$(recommended_action "$running" "$elapsed" "$quiet" "$result_bytes" "$status_bytes" "$claude_progress_bytes" "$worktree_changes" "$evidence")"
+    if [ "$LAST_OVERALL_RUNNING" = "unknown" ]; then
+        action="CHECK_OUTSIDE_SANDBOX_DO_NOT_REDISPATCH"
+        reason="process-visibility-unknown: PID is invisible in this sandbox while dispatch has no terminal marker"
+    else
+        action="$(recommended_action "$running" "$elapsed" "$quiet" "$result_bytes" "$status_bytes" "$claude_progress_bytes" "$worktree_changes" "$evidence")"
+    fi
     if monitor_suspect_snapshot "$running" "$elapsed" "$quiet" "$worktree_changes" "$action"; then
         monitor_suspect_count=$((monitor_suspect_count + 1))
     else
@@ -811,7 +820,10 @@ while true; do
     if [ "$ONCE" -eq 1 ]; then
         break
     fi
-    if ! any_role_is_running; then
+    if [ "$LAST_OVERALL_RUNNING" = "unknown" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Process visibility is restricted; do not redispatch. Re-run status/watch outside the sandbox."
+        break
+    elif ! any_role_is_running; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Claude process is not running; watch complete."
         break
     fi

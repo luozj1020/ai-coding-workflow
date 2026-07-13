@@ -10,7 +10,7 @@
 
 `quota-ledger.py` 管理调用预算并拦截重复 evidence；`evaluate-acceptance.py` 执行 L0 确定性验收；`select-review-tier.py` 选择 L0 本地/L1 Spark/L2 Codex；`context-cache.py` 复用有界定位证据；`check-retry-evidence.py` 阻止无新证据重试。`quota-efficient-balanced` Profile 将 Standard Review Packet 限制为 32 KB。
 
-远程 Bazel 仍由人工控制。`generate-handoff.py` 只生成预览式发布、更新和合并 target 验证指令，`validation-ingest.py` 在本地分类返回日志；这些工具不会自动 push、SSH、merge 或批准验收。
+对于 Bazel 仓库，`build-bazel-context.py` 会把有界的目标文件列表转换为候选 BUILD rule、依赖、测试 target 和窄范围验证命令，且不会执行 Bazel。远程 Bazel 仍由人工控制：`generate-handoff.py` 只生成预览式发布、更新和合并 target 验证指令，`validation-ingest.py` 在本地分类返回日志；这些工具不会自动 push、SSH、merge 或批准验收。
 
 额度优化的主入口默认只预览：
 
@@ -52,26 +52,28 @@ ai-coding-workflow 可以为仓库自动配置：
 
 ```mermaid
 flowchart TD
-    U[用户目标 / Task JSON] --> L[Lint · Compose · Validate]
-    L --> F[仓库事实 + 规范内容哈希]
-    F --> R{Express · Standard · Assured · Recovery}
-    R --> C[分层缓存 Context Packet]
-    C --> P[执行计划 + 原子模型预算]
-    P --> B[Model Call Broker]
-    B --> D[隔离 Worktree 中的 Claude Builder / Checker]
-    D --> E[自动 Evidence Builder]
-    E --> A{确定性验收}
-    A -- 机械失败 --> LR[本地 / Claude 修订]
-    A -- 语义缺口 --> S[L1 Spark 建议]
-    S --> X[必要时 L2 有界 Codex 审查]
-    A -- 全部标准满足 --> FD[最终决策]
+    U[Human · 用户目标 / Task JSON] --> L[本地工具 · Lint / Compose / Validate]
+    L --> F[Codex · 收集仓库事实]
+    F --> R{Codex + 可选 Spark 预估 · 路由}
+    R --> C[Codex · Context Packet / 任务卡]
+    C --> P[Codex · 执行计划与调用预算]
+    P --> B[控制面 · Model Call Broker]
+    B --> D[Claude Builder · 隔离实现]
+    D --> CR[Codex · 方向审查]
+    CR --> CT[Claude Checker/Test · 测试与窄范围验证]
+    CT --> E[本地工具 · 自动证据整理]
+    E --> A{本地工具 · 确定性验收}
+    A -- 机械失败 --> LR[Claude · 限定范围修订]
+    A -- 语义缺口 --> S[Spark · L1 建议审查]
+    S --> X[Codex · 必要的 L2 最终审查]
+    A -- 全部标准满足 --> FD[Codex · 最终决策]
     X --> FD
     LR --> D
     FD --> H{需要远程验证?}
-    H -- 是 --> RH[仅预览 Bazel 交接 + Validation Ingest]
-    H -- 否 --> M[人工审查和合并]
+    H -- 是 --> RH[本地工具 + Human · Bazel 交接 / 远程验证]
+    H -- 否 --> M[Human · 人工审查和合并]
     RH --> M
-    D -. 哈希 Manifest .-> RS[从 dispatch / diff / review / decision 恢复]
+    D -. 哈希 Manifest .-> RS[控制面 · 从 dispatch / diff / review / decision 恢复]
     E -. 可执行 Case .-> BM[确定性 Fake Adapter Benchmark Gate]
 ```
 
@@ -94,7 +96,8 @@ flowchart TD
 | **刷新项目 workflow** | 已经引导过的仓库 | `python scripts/install_workflow.py . --update-workflow-files` |
 | **Claude 供应商检查** | 脱敏显示 CC Switch 实际端点和模型 | `python scripts/claude-healthcheck.py` |
 | **Claude 端点探测** | 仅提供网络诊断；瞬时失败不阻断派发 | `python scripts/claude-healthcheck.py --probe` |
-| **Claude 交互探测** | 自动测试当前路线；失败后才测试另一条 | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 30` |
+| **Claude 交互探测** | 在调度网络环境中测试；受限沙箱失败只算不确定，以用户终端成功交互为准 | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 30` |
+| **跨沙箱进程检查** | 调度 PID 不可见时标记为未知，绝不能据此启动重复 Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Claude 轮次分类** | 判断失败是否计入接管阈值 | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **校验 Claude 上下文** | 检查 execution-only 上下文密度 | `python scripts/validate-claude-context.py task.md --require-complete` |
 | **预览集成运行** | 零模型调用审查所有阶段 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
@@ -881,17 +884,17 @@ bazel test //path/to:target
 bash -n scripts/*.sh
 git diff --check
 
-# 日常编辑默认
-python -m pytest -m "not slow"
+# 日常编辑默认（不运行 worktree/installer 集成测试）
+python scripts/run-tests.py quick
 
-# 按改动区域运行相关测试
-python -m pytest tests/test_run_codex_spark.py tests/test_check_worktree.py
+# 修改工作流编排时运行集成覆盖
+python scripts/run-tests.py integration
 
-# 发布前或提交前完整信心
-python -m pytest tests
+# 发布前完整覆盖（CI 中也只运行一次）
+python scripts/run-tests.py full
 ```
 
-标记为 `slow` 的测试会反复创建临时仓库、worktree 或运行 installer。它们应该在发布前、或修改 dispatcher/worktree/install 行为时运行，不适合每次小文档或 helper 改动后都跑。
+quick 层会排除创建临时仓库、worktree、调度进程或运行 installer 的 integration 文件。修改这些区域时使用 `integration`，发布前使用 `full`。PR 在 OS/Python 矩阵中只运行 quick；推送到 `main` 后，才在 Ubuntu/Python 3.12 上运行一次 full。
 
 **Workflow 质量汇总：** `ai/run-loop.sh` 还会写入 `.worktrees/loop-<timestamp>/loop-quality-summary.md` 和 `.json`。也可以手动汇总已有运行：
 
@@ -1130,7 +1133,7 @@ python ai/install_context_tools.py --apply python --manager npm --yes
 修改安装器或工作流脚本前，运行本地 smoke tests：
 
 ```powershell
-python -m unittest discover -s tests -v
+python scripts/run-tests.py quick
 ```
 
 测试只使用 Python 标准库，覆盖安装器幂等性、managed block 用户内容保留、`CLAUDE.md` import 位置，以及 Codex skill 复制时的运行时产物排除规则。

@@ -79,6 +79,32 @@ class ClaudeHealthcheckTests(unittest.TestCase):
                 self.assertEqual(health.main(["--settings", str(path), "--interaction-route", "auto", "--json"]), 0)
             self.assertEqual(probe_call.call_count, 1)
 
+    def test_failed_interaction_is_inconclusive_in_network_sandbox(self):
+        value = {"route": "inherit", "success": False, "exit_code": None,
+                 "elapsed_seconds": 30.0, "timed_out": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text('{"env":{"ANTHROPIC_BASE_URL":"https://example.cn"}}')
+            with mock.patch.object(health, "interaction_probe", return_value=value), \
+                 mock.patch.object(health.shutil, "which", return_value="claude"), \
+                 mock.patch.dict(os.environ, {"CODEX_SANDBOX_NETWORK_DISABLED": "1"}, clear=True), \
+                 mock.patch("builtins.print") as output:
+                self.assertEqual(health.main(["--settings", str(path), "--interaction-route", "inherit", "--json"]), 0)
+            payload = json.loads(output.call_args.args[0])
+            self.assertEqual(payload["interaction_conclusion"], "inconclusive-restricted-environment")
+            self.assertIsNone(payload["recommended_proxy_mode"])
+
+    def test_failed_interaction_is_failure_outside_network_sandbox(self):
+        value = {"route": "inherit", "success": False, "exit_code": 1,
+                 "elapsed_seconds": 1.0, "timed_out": False}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text('{"env":{"ANTHROPIC_BASE_URL":"https://example.cn"}}')
+            with mock.patch.object(health, "interaction_probe", return_value=value), \
+                 mock.patch.object(health.shutil, "which", return_value="claude"), \
+                 mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print"):
+                self.assertEqual(health.main(["--settings", str(path), "--interaction-route", "inherit", "--json"]), 1)
+
     def test_installer_and_doctor_register_helper(self):
         self.assertIn('"claude-healthcheck.py"', (ROOT / "scripts/install_workflow.py").read_text())
         self.assertIn("ai/claude-healthcheck.py", (ROOT / "scripts/doctor_workflow.py").read_text())

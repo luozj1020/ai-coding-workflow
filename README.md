@@ -10,7 +10,7 @@ The control plane now minimizes total completion cost, not model calls in isolat
 
 `quota-ledger.py` enforces call budgets and duplicate-evidence guards. `evaluate-acceptance.py` performs L0 deterministic checks, `select-review-tier.py` chooses L0 local/L1 Spark/L2 Codex, `context-cache.py` reuses bounded locator evidence, and `check-retry-evidence.py` blocks retries without changed evidence. The `quota-efficient-balanced` profile uses a 32 KB Standard review packet.
 
-Remote Bazel handoff remains human-controlled. `generate-handoff.py` emits preview-only publish/update/batched-validation instructions, while `validation-ingest.py` classifies returned logs locally. These helpers never push, SSH, merge, or authorize acceptance.
+For Bazel repositories, `build-bazel-context.py` turns a bounded list of source files into candidate BUILD rules, dependencies, test targets, and narrow validation commands without running Bazel. Remote Bazel handoff remains human-controlled: `generate-handoff.py` emits preview-only publish/update/batched-validation instructions, while `validation-ingest.py` classifies returned logs locally. These helpers never push, SSH, merge, or authorize acceptance.
 
 The primary quota-efficient path is preview-first:
 
@@ -52,26 +52,28 @@ ai-coding-workflow bootstraps repositories with:
 
 ```mermaid
 flowchart TD
-    U[Human goal / Task JSON] --> L[Lint · Compose · Validate]
-    L --> F[Repository facts + canonical hashes]
-    F --> R{Express · Standard · Assured · Recovery}
-    R --> C[Layered cached Context Packet]
-    C --> P[Execution plan + atomic model-call budget]
-    P --> B[Model Call Broker]
-    B --> D[Claude Builder / Checker in isolated worktree]
-    D --> E[Automatic Evidence Builder]
-    E --> A{Deterministic acceptance}
-    A -- Mechanical failure --> LR[Local / Claude revision]
-    A -- Semantic gap --> S[L1 Spark advisory]
-    S --> X[L2 bounded Codex review when required]
-    A -- All criteria satisfied --> FD[Final decision]
+    U[Human · goal / Task JSON] --> L[Local tools · lint / compose / validate]
+    L --> F[Codex · observe repository facts]
+    F --> R{Codex + optional Spark estimate · route}
+    R --> C[Codex · layered Context Packet / task card]
+    C --> P[Codex · execution plan and call budget]
+    P --> B[Control plane · Model Call Broker]
+    B --> D[Claude Builder · isolated implementation]
+    D --> CR[Codex · direction review]
+    CR --> CT[Claude Checker/Test · tests and narrow validation]
+    CT --> E[Local tools · automatic evidence]
+    E --> A{Local tools · deterministic acceptance}
+    A -- Mechanical failure --> LR[Claude · scoped revision]
+    A -- Semantic gap --> S[Spark · L1 advisory review]
+    S --> X[Codex · required L2 final review]
+    A -- All criteria satisfied --> FD[Codex · final decision]
     X --> FD
     LR --> D
     FD --> H{Remote validation required?}
-    H -- Yes --> RH[Preview-only Bazel handoff + validation ingest]
-    H -- No --> M[Human review and merge]
+    H -- Yes --> RH[Local tools + Human · Bazel handoff / remote validation]
+    H -- No --> M[Human · review and merge]
     RH --> M
-    D -. hashed manifests .-> RS[Resume from dispatch / diff / review / decision]
+    D -. hashed manifests .-> RS[Control plane · resume from dispatch / diff / review / decision]
     E -. executed cases .-> BM[Deterministic fake-adapter benchmark gates]
 ```
 
@@ -94,7 +96,8 @@ The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VE
 | **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
 | **Claude provider check** | Show the effective CC Switch endpoint/model without secrets | `python scripts/claude-healthcheck.py` |
 | **Claude endpoint probe** | Advisory network evidence; transient failure does not block dispatch | `python scripts/claude-healthcheck.py --probe` |
-| **Claude interaction probe** | Auto-test current route; alternate only after failure | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 30` |
+| **Claude interaction probe** | Test in the dispatch network context; restricted-sandbox failure is inconclusive and user-terminal success wins | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 30` |
+| **Cross-sandbox process check** | Treat invisible dispatch PIDs as unknown, never as permission to launch a duplicate Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Classify Claude round** | Decide whether a failure counts toward takeover | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **Validate Claude context** | Check execution-only packet density | `python scripts/validate-claude-context.py task.md --require-complete` |
 | **Preview integrated run** | Inspect every phase without model calls | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
@@ -920,17 +923,17 @@ If the task card says `Local validation allowed? | no`, checker reports artifact
 bash -n scripts/*.sh
 git diff --check
 
-# Fast default while editing
-python -m pytest -m "not slow"
+# Fast default while editing (no worktree/installer integration tests)
+python scripts/run-tests.py quick
 
-# Related tests for touched areas
-python -m pytest tests/test_run_codex_spark.py tests/test_check_worktree.py
+# Integration coverage when changing workflow orchestration
+python scripts/run-tests.py integration
 
-# Full release or pre-commit confidence
-python -m pytest tests
+# Full release confidence (also runs once in CI)
+python scripts/run-tests.py full
 ```
 
-Tests marked `slow` create repeated temporary repositories, worktrees, or installer runs. They should run before release or when touching dispatcher/worktree/install behavior, not after every small documentation or helper edit.
+The quick tier excludes integration files that create temporary repositories, worktrees, dispatch processes, or installer runs. Use `integration` when changing those areas and `full` before a release. Pull requests run quick across the OS/Python matrix; the full suite runs once on Ubuntu/Python 3.12 after a push to `main`.
 
 **Workflow quality summary:** `ai/run-loop.sh` also writes `.worktrees/loop-<timestamp>/loop-quality-summary.md` and `.json`. To summarize an existing run manually:
 
@@ -1229,7 +1232,7 @@ is never auto-deployed.
 Run the local smoke tests before changing installer or workflow scripts:
 
 ```powershell
-python -m unittest discover -s tests -v
+python scripts/run-tests.py quick
 ```
 
 The tests use only the Python standard library and cover installer idempotency, managed-block preservation, `CLAUDE.md` import placement, Codex skill copy exclusions, dispatch dirty-source guard behavior, proxy defaults, progress artifacts, watcher parsing, and operation helper installation. Runtime artifacts are created only under ignored workspace paths such as `.worktrees/` and are not part of the release contents.

@@ -1,0 +1,24 @@
+{
+  "labels": {
+    "integration": [
+      "test_check_worktree.py",
+      "test_clean_runtime.py",
+      "test_dirty_source_guard.py",
+      "test_doctor_workflow.py",
+      "test_install_context_tools.py",
+      "test_install_for_codex.py",
+      "test_install_workflow.py",
+      "test_run_codex_spark.py",
+      "test_run_parallel_loop.py"
+    ],
+    "slow": [
+      "test_dirty_source_guard.py",
+      "test_install_workflow.py"
+    ]
+  },
+  "tiers": {
+    "quick": {"exclude_labels": ["integration"]},
+    "integration": {"require_labels": ["integration"]},
+    "full": {}
+  }
+}

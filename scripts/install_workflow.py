@@ -72,6 +72,7 @@ POWERSHELL_SCRIPTS = [
 PYTHON_SCRIPTS = [
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
     ("claude-healthcheck.py", "ai/claude-healthcheck.py"),
+    ("claude-process-state.py", "ai/claude-process-state.py"),
     ("classify-claude-attempt.py", "ai/classify-claude-attempt.py"),
     ("validate-claude-context.py", "ai/validate-claude-context.py"),
     ("code-search-service.py", "ai/code-search-service.py"),
@@ -99,6 +100,7 @@ PYTHON_SCRIPTS = [
     ("resume-run.py", "ai/resume-run.py"),
     ("replay-run.py", "ai/replay-run.py"),
     ("detect-cpp-bazel.py", "ai/detect-cpp-bazel.py"),
+    ("build-bazel-context.py", "ai/build-bazel-context.py"),
     ("generate-handoff.py", "ai/generate-handoff.py"),
     ("learn-store.py", "ai/learn-store.py"),
     ("aiwf.py", "ai/aiwf.py"),

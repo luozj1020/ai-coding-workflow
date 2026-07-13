@@ -4,6 +4,8 @@
 # Usage: bash ai/status-claude.sh [claude-<timestamp>|/path/to/worktree]
 
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROCESS_STATE_HELPER="${SCRIPT_DIR}/claude-process-state.py"
 
 # Git for Windows can be launched through bin/bash.exe without the usual Unix tool PATH.
 # Prepending these paths is harmless on Unix and makes helper scripts stable on Windows.
@@ -130,18 +132,14 @@ file_contains() {
 
 role_state() {
     local pid_file="$1"
-    if [ ! -f "$pid_file" ]; then
-        echo "missing"
-        return
-    fi
-    local pid
-    pid="$(tr -d '[:space:]' < "$pid_file")"
-    if [ -z "$pid" ]; then
-        echo "missing"
-    elif kill -0 "$pid" 2>/dev/null; then
-        echo "running"
+    if [ -f "$PROCESS_STATE_HELPER" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$PROCESS_STATE_HELPER" --pid-file "$pid_file" --progress-file "$PROGRESS_FILE"
     else
-        echo "not-running"
+        if [ -f "$pid_file" ] && kill -0 "$(tr -d '[:space:]' < "$pid_file")" 2>/dev/null; then
+            echo "running"
+        else
+            echo "not-running"
+        fi
     fi
 }
 
@@ -409,6 +407,8 @@ echo "Checker: ${CHECKER_STATE}"
 OVERALL_RUNNING="no"
 if [ "$DISPATCHER_STATE" = "running" ] || [ "$CLAUDE_ROLE_STATE" = "running" ] || [ "$CHECKER_STATE" = "running" ]; then
     OVERALL_RUNNING="yes"
+elif [ "$DISPATCHER_STATE" = "visibility-unknown" ] || [ "$CLAUDE_ROLE_STATE" = "visibility-unknown" ] || [ "$CHECKER_STATE" = "visibility-unknown" ]; then
+    OVERALL_RUNNING="unknown"
 fi
 echo "Overall running: ${OVERALL_RUNNING}"
 
@@ -416,11 +416,15 @@ echo "Overall running: ${OVERALL_RUNNING}"
 RUNNING="no"
 if [ "$CLAUDE_ROLE_STATE" = "running" ] || [ "$CHECKER_STATE" = "running" ]; then
     RUNNING="yes"
+elif [ "$CLAUDE_ROLE_STATE" = "visibility-unknown" ] || [ "$CHECKER_STATE" = "visibility-unknown" ]; then
+    RUNNING="unknown"
 fi
 
 # Backward-compatible PROCESS_STATE
 if [ "$RUNNING" = "yes" ]; then
     PROCESS_STATE="running"
+elif [ "$RUNNING" = "unknown" ]; then
+    PROCESS_STATE="visibility-unknown"
 else
     PROCESS_STATE="not-running"
 fi
@@ -455,7 +459,11 @@ if [ -d "$WORKTREE_DIR" ]; then
     CLAUDE_PROGRESS_BYTES="$(file_size "$CLAUDE_PROGRESS_SOURCE")"
     REPORT_SOURCE="$(select_report_file)"
     EVIDENCE_STATE="$(evidence_state "$CHANGE_COUNT" "$CLAUDE_PROGRESS_SOURCE" "$REPORT_SOURCE")"
-    ACTION="$(recommended_action "$RUNNING" "$ELAPSED" "$QUIET" "$RESULT_BYTES" "$STATUS_BYTES" "$CLAUDE_PROGRESS_BYTES" "$CHANGE_COUNT" "$EVIDENCE_STATE")"
+    if [ "$OVERALL_RUNNING" = "unknown" ]; then
+        ACTION="CHECK_OUTSIDE_SANDBOX_DO_NOT_REDISPATCH"
+    else
+        ACTION="$(recommended_action "$RUNNING" "$ELAPSED" "$QUIET" "$RESULT_BYTES" "$STATUS_BYTES" "$CLAUDE_PROGRESS_BYTES" "$CHANGE_COUNT" "$EVIDENCE_STATE")"
+    fi
     RISK_SUMMARY="$(partial_risk_summary)"
     NETWORK_SUMMARY="$(latest_network_summary)"
     MONITOR_POLICY="$(monitor_policy "$RUNNING" "$ELAPSED" "$QUIET" "$CHANGE_COUNT" "$ACTION")"
@@ -465,6 +473,9 @@ if [ -d "$WORKTREE_DIR" ]; then
     echo "Network: $NETWORK_SUMMARY"
     echo "Monitor policy: $MONITOR_POLICY"
     echo "Machine monitor: monitor_level=${MONITOR_LEVEL} action=${ACTION} evidence_state=\"${EVIDENCE_STATE}\" quiet_seconds=${QUIET} suspect_count=0 running=${RUNNING} overall_running=${OVERALL_RUNNING} dispatcher=${DISPATCHER_STATE} claude=${CLAUDE_ROLE_STATE} checker=${CHECKER_STATE} elapsed_seconds=${ELAPSED} worktree_changes=${CHANGE_COUNT} network=\"${NETWORK_SUMMARY}\""
+    if [ "$OVERALL_RUNNING" = "unknown" ]; then
+        echo "Process visibility: restricted; PID absence is inconclusive. Re-run outside the sandbox and do not start a duplicate dispatch."
+    fi
     echo "Report source: $REPORT_SOURCE"
     echo "Claude progress source: $CLAUDE_PROGRESS_SOURCE"
     echo "Elapsed: ${ELAPSED}s"

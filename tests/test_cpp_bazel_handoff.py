@@ -17,12 +17,27 @@ class CppBazelHandoffTests(unittest.TestCase):
                 text=Path(d,name).read_text(); self.assertIn("echo",text)
                 if os.name != "nt":
                     subprocess.run(["bash","-n"],input=text,text=True,check=True)
+    def test_context_maps_sources_to_bounded_targets(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d); (root/"pkg").mkdir()
+            (root/"WORKSPACE").touch(); (root/"pkg/core.cc").touch(); (root/"pkg/core_test.cc").touch()
+            (root/"pkg/BUILD.bazel").write_text('''cc_library(\n    name = "core",\n    srcs = ["core.cc"],\n    deps = ["//base:util"],\n)\ncc_test(\n    name = "core_test",\n    srcs = ["core_test.cc"],\n    deps = [":core"],\n)\n''')
+            out=subprocess.check_output([sys.executable,ROOT/"scripts/build-bazel-context.py","--repo",d,"--file","pkg/core.cc","--file","pkg/core_test.cc"],text=True)
+            data=json.loads(out)
+            self.assertEqual([t["label"] for t in data["candidate_targets"]],["//pkg:core","//pkg:core_test"])
+            self.assertEqual(data["candidate_test_targets"],["//pkg:core_test"])
+            self.assertEqual(data["validation_commands"],["bazel test //pkg:core_test --test_output=errors"])
+            self.assertIn("//base:util",data["candidate_targets"][0]["deps"])
+    def test_context_does_not_escape_repository(self):
+        with tempfile.TemporaryDirectory() as d:
+            out=subprocess.check_output([sys.executable,ROOT/"scripts/build-bazel-context.py","--repo",d,"--file","../outside.cc"],text=True)
+            self.assertEqual(json.loads(out)["files"][0]["status"],"outside-repository")
     def test_hostile_task_id_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             run=subprocess.run([sys.executable,ROOT/"scripts/generate-handoff.py","../bad","--output-dir",d,"--repo-url","x","--branch","main","--sha","abcdef1"],capture_output=True)
             self.assertNotEqual(run.returncode,0)
     def test_installer_lists_assets(self):
         text=(ROOT/"scripts/install_workflow.py").read_text()
-        for name in ("detect-cpp-bazel.py","generate-handoff.py","handoff-v1.schema.json","cpp-bazel.json","manual-remote-validation.json"): self.assertIn(name,text)
+        for name in ("detect-cpp-bazel.py","build-bazel-context.py","generate-handoff.py","handoff-v1.schema.json","cpp-bazel.json","manual-remote-validation.json"): self.assertIn(name,text)
 
 if __name__=="__main__": unittest.main()

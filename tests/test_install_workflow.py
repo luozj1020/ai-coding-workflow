@@ -1017,6 +1017,29 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("dispatcher=running", line)
             self.assertIn("claude=not-running", line)
 
+    def test_watch_reports_visibility_unknown_in_restricted_sandbox(self):
+        """Invisible outer-namespace PIDs must not trigger duplicate dispatch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-visibility"
+            worktrees = self._setup_worktree(repo, task_id)
+            for suffix in ("dispatcher.pid", "claude.pid"):
+                (worktrees / f"{task_id}.{suffix}").write_text("99999999", encoding="utf-8")
+            (worktrees / f"{task_id}.progress.log").write_text(
+                "Claude process started: pid=99999999\nClaude still running: elapsed_seconds=30 quiet_seconds=0\n",
+                encoding="utf-8",
+            )
+            env = os.environ.copy()
+            env["CODEX_SANDBOX_NETWORK_DISABLED"] = "1"
+            result = subprocess.run(
+                [load_module()._find_bash(), str(repo / "ai" / "watch-claude.sh"), task_id, "--plain", "--once"],
+                cwd=str(repo), env=env, text=True, encoding="utf-8", errors="replace", capture_output=True, check=True,
+            )
+            self.assertIn("overall_running=unknown", result.stdout)
+            self.assertIn("CHECK_OUTSIDE_SANDBOX_DO_NOT_REDISPATCH", result.stdout)
+            self.assertIn("visibility-unknown", result.stdout)
+
     def test_status_claude_role_pid_display(self):
         """Status output must show Dispatcher/Claude/Checker role lines."""
         with tempfile.TemporaryDirectory() as tmp:

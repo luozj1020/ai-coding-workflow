@@ -1,22 +1,10 @@
+import json
 from pathlib import Path
 
 
-INTEGRATION_TEST_FILES = {
-    "test_check_worktree.py",
-    "test_clean_runtime.py",
-    "test_dirty_source_guard.py",
-    "test_doctor_workflow.py",
-    "test_install_context_tools.py",
-    "test_install_for_codex.py",
-    "test_install_workflow.py",
-    "test_run_codex_spark.py",
-    "test_run_parallel_loop.py",
-}
-
-SLOW_TEST_FILES = {
-    "test_dirty_source_guard.py",
-    "test_install_workflow.py",
-}
+_MANIFEST = json.loads((Path(__file__).with_name("test-tiers.json")).read_text(encoding="utf-8"))
+INTEGRATION_TEST_FILES = set(_MANIFEST["labels"]["integration"])
+SLOW_TEST_FILES = set(_MANIFEST["labels"]["slow"])
 
 
 def pytest_collection_modifyitems(config, items):

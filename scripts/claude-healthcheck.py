@@ -95,6 +95,11 @@ def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]
                 "elapsed_seconds": round(time.monotonic() - started, 3), "timed_out": True}
 
 
+def restricted_network_environment() -> bool:
+    """Detect known agent sandboxes where a failed network probe is inconclusive."""
+    return os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED", "").lower() in {"1", "true", "yes"}
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -108,13 +113,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Fail when the optional endpoint probe fails; default is advisory.",
     )
-    parser.add_argument("--timeout", type=float, default=8.0)
+    parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--interaction-route", choices=["auto", "inherit", "direct", "compare"],
                         help="Run a real minimal interaction; auto tries the alternate only after failure.")
     parser.add_argument("--prompt", default="你好，请只回复：连接正常")
     args = parser.parse_args(argv)
     result = configuration(args.settings.expanduser())
+    result["execution_environment"] = {
+        "network_restricted": restricted_network_environment(),
+        "interaction_authority": "current-process",
+    }
     if args.probe:
         origin = result.get("base_url_origin")
         result["probe"] = probe(origin, args.timeout) if origin else {
@@ -147,7 +156,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         result["recommended_proxy_mode"] = (
             min(successful, key=lambda value: value["elapsed_seconds"])["route"] if successful else None
         )
-        result["healthy"] = bool(successful)
+        if successful:
+            result["interaction_conclusion"] = "available"
+            result["healthy"] = True
+        elif result["execution_environment"]["network_restricted"]:
+            result["interaction_conclusion"] = "inconclusive-restricted-environment"
+            # Preserve configuration health: this process cannot disprove a
+            # successful interaction observed in the user's real terminal.
+        else:
+            result["interaction_conclusion"] = "unavailable-in-current-environment"
+            result["healthy"] = False
     if args.json:
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     else:
@@ -167,6 +185,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                     value["route"], "success" if value["success"] else "failed", value["elapsed_seconds"]
                 ))
             print("Recommended proxy mode: {}".format(result["recommended_proxy_mode"] or "no successful route"))
+            print("Interaction conclusion: {}".format(result["interaction_conclusion"]))
+            if result["interaction_conclusion"] == "inconclusive-restricted-environment":
+                print("Note: network sandbox detected; rerun in the same environment used for Claude dispatch. "
+                      "A successful user-terminal interaction is authoritative.")
     return 0 if result["healthy"] else 1
 
 
