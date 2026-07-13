@@ -109,6 +109,7 @@ PYTHON_SCRIPTS = [
     ("collect-task-facts.py", "ai/collect-task-facts.py"),
     ("quota-ledger.py", "ai/quota-ledger.py"),
     ("model-call-broker.py", "ai/model-call-broker.py"),
+    ("claude-route-preference.py", "ai/claude-route-preference.py"),
     ("latency-policy.py", "ai/latency-policy.py"),
     ("evaluate-acceptance.py", "ai/evaluate-acceptance.py"),
     ("select-review-tier.py", "ai/select-review-tier.py"),

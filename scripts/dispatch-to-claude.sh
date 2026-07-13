@@ -44,7 +44,16 @@ if ! command -v claude &>/dev/null; then
     exit 1
 fi
 
-CLAUDE_CODE_PROXY_MODE="${CLAUDE_CODE_PROXY_MODE:-direct}"
+# --- Route preference learning ---
+# Precedence: explicit caller env > learned preference > direct fallback.
+# Track source for logging.  Actual learned-route resolution happens after
+# PYTHON_CMD is available (needed to invoke the helper).
+if [ -n "${CLAUDE_CODE_PROXY_MODE+x}" ] && [ -n "$CLAUDE_CODE_PROXY_MODE" ]; then
+    _ROUTE_SOURCE="explicit"
+else
+    _ROUTE_SOURCE="default"
+    CLAUDE_CODE_PROXY_MODE="direct"
+fi
 CLAUDE_CODE_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-600}"
 CLAUDE_CODE_HEARTBEAT_SECONDS="${CLAUDE_CODE_HEARTBEAT_SECONDS:-30}"
 CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
@@ -1054,6 +1063,17 @@ elif command -v python &>/dev/null; then
     PYTHON_CMD="python"
 fi
 
+# --- Route preference learning (continued) ---
+# Consult the learned route helper when caller did not explicitly set the mode.
+ROUTE_PREFERENCE_HELPER="${SCRIPT_DIR}/claude-route-preference.py"
+if [ "$_ROUTE_SOURCE" = "default" ] && [ -n "$PYTHON_CMD" ] && [ -f "$ROUTE_PREFERENCE_HELPER" ]; then
+    _LEARNED_ROUTE="$("$PYTHON_CMD" "$ROUTE_PREFERENCE_HELPER" resolve --fallback "" 2>/dev/null || true)"
+    if [ "$_LEARNED_ROUTE" = "direct" ] || [ "$_LEARNED_ROUTE" = "inherit" ]; then
+        CLAUDE_CODE_PROXY_MODE="$_LEARNED_ROUTE"
+        _ROUTE_SOURCE="learned"
+    fi
+fi
+
 case "$CLAUDE_CODE_TIMEOUT_SECONDS" in
     ''|*[!0-9]*)
         echo "Error: CLAUDE_CODE_TIMEOUT_SECONDS must be a non-negative integer." >&2
@@ -1507,7 +1527,7 @@ cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
 write_network_header
-progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}"
 
 set +e
 run_claude &
@@ -2264,10 +2284,48 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] Counts toward takeover: ${ATTEMPT_COUNTS_TOWARD_TAKEOVER}"
     echo "[dispatch] Recommended action: ${ATTEMPT_RECOMMENDED_ACTION}"
     echo "[dispatch] Same-worktree retry eligible: ${ATTEMPT_SAME_WORKTREE_RETRY}"
+    echo "[dispatch] Route source: ${_ROUTE_SOURCE}"
+    echo "[dispatch] Route mode: ${CLAUDE_CODE_PROXY_MODE}"
     if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
         echo "[dispatch] Semantic error reason: ${CLAUDE_SEMANTIC_ERROR_REASON}"
     fi
 } >> "$STATUS_FILE"
+
+# --- Route preference recording ---
+# Record the route only when interaction was established (proves CLI/provider worked).
+# Do NOT record on transient-transport, unavailable, or unclassified-execution-failure.
+# Record unconditionally for model-no-progress, external-approval-blocker, direction-deviation.
+# Record other classes only with acknowledgement/blocker/useful diff/report evidence.
+# Persistence failure is advisory and must not change dispatch outcome.
+if [ -n "$PYTHON_CMD" ] && [ -f "$ROUTE_PREFERENCE_HELPER" ]; then
+    _SHOULD_RECORD_ROUTE=0
+    case "${ATTEMPT_FAILURE_CLASS:-unavailable}" in
+        transient-transport|unavailable|unclassified-execution-failure)
+            ;; # do not record
+        model-no-progress|external-approval-blocker|direction-deviation)
+            _SHOULD_RECORD_ROUTE=1
+            ;;
+        *)
+            # Record when interaction was established or useful progress was made
+            if [ "$IMPLEMENTATION_CHANGES" -gt 0 ] || \
+               [ "$VALID_CLAUDE_REPORT" -eq 1 ] || \
+               [ "${_ATTEMPT_PROGRESS:-none}" = "useful" ] || \
+               [ "${_ATTEMPT_PROGRESS:-none}" = "acknowledgement" ] || \
+               [ "${_ATTEMPT_PROGRESS:-none}" = "blocker" ]; then
+                _SHOULD_RECORD_ROUTE=1
+            fi
+            ;;
+    esac
+    if [ "$_SHOULD_RECORD_ROUTE" -eq 1 ]; then
+        _RECORD_SOURCE="dispatch-${DISPATCH_OUTCOME}"
+        if _RECORD_OUTPUT="$("$PYTHON_CMD" "$ROUTE_PREFERENCE_HELPER" record \
+            --route "$CLAUDE_CODE_PROXY_MODE" --source "$_RECORD_SOURCE" 2>&1)"; then
+            progress_log "Route preference recorded: route=${CLAUDE_CODE_PROXY_MODE}, source=${_RECORD_SOURCE}, route_source=${_ROUTE_SOURCE}"
+        else
+            progress_log "Route preference advisory: ${_RECORD_OUTPUT:-persistence failed}"
+        fi
+    fi
+fi
 
 if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then
     cp "${WORKTREE_DIR}/CLAUDE_REPORT.md" "$REPORT_FILE"

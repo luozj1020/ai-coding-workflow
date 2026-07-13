@@ -292,14 +292,18 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertEqual(lines.count("@AGENTS.md"), 1)
             self.assertLess(lines.index("@AGENTS.md"), lines.index(BEGIN_MARKER))
 
-    def test_installed_dispatch_defaults_claude_to_direct_proxy_mode(self):
+    def test_installed_dispatch_resolves_proxy_mode_with_safe_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
 
             self.run_installer(repo)
 
             dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
-            self.assertIn('CLAUDE_CODE_PROXY_MODE="${CLAUDE_CODE_PROXY_MODE:-direct}"', dispatch)
+            self.assertIn('CLAUDE_CODE_PROXY_MODE="direct"', dispatch)
+            self.assertIn('_ROUTE_SOURCE="explicit"', dispatch)
+            self.assertIn('_ROUTE_SOURCE="default"', dispatch)
+            self.assertIn('resolve --fallback ""', dispatch)
+            self.assertIn('_ROUTE_SOURCE="learned"', dispatch)
             self.assertIn('CLAUDE_CODE_PROXY_MODE" = "inherit"', dispatch)
             self.assertIn('unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY', dispatch)
             self.assertIn('unset http_proxy https_proxy all_proxy no_proxy', dispatch)
@@ -1508,6 +1512,29 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Do NOT restate or redesign the plan", dispatch)
             self.assertIn("builder_mode", dispatch)
             self.assertIn("first_progress_signal", dispatch)
+
+    def test_installed_route_preference_helper(self):
+        """Installer must copy claude-route-preference.py and the dispatcher
+        must reference it for learned route resolution."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            self.run_installer(repo)
+
+            helper = repo / "ai" / "claude-route-preference.py"
+            self.assertTrue(helper.exists(), "claude-route-preference.py should be installed")
+            content = helper.read_text(encoding="utf-8")
+            self.assertIn("resolve", content)
+            self.assertIn("record", content)
+            self.assertIn("show", content)
+            self.assertIn("schema_version", content)
+            self.assertIn("atomic", content.lower())
+
+            dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+            self.assertIn("claude-route-preference.py", dispatch)
+            self.assertIn("_ROUTE_SOURCE", dispatch)
+            self.assertIn("route_source=", dispatch)
+            self.assertIn("learned", dispatch)
 
 
 if __name__ == "__main__":
