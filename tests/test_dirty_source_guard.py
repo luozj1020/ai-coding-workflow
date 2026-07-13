@@ -12,6 +12,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DISPATCH = ROOT / "scripts" / "dispatch-to-claude.sh"
 CHECK_WORKTREE = ROOT / "scripts" / "check-worktree.sh"
+CLASSIFY_ATTEMPT = ROOT / "scripts" / "classify-claude-attempt.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -65,7 +66,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         (self.repo / "README.md").write_text("# fixture\n", encoding="utf-8")
         (self.repo / "scripts").mkdir()
         shutil.copy2(DISPATCH, self.repo / "scripts" / "dispatch-to-claude.sh")
-        self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh"], cwd=self.repo)
+        shutil.copy2(CLASSIFY_ATTEMPT, self.repo / "scripts" / "classify-claude-attempt.py")
+        self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh", "scripts/classify-claude-attempt.py"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
     def tearDown(self):
@@ -1099,6 +1101,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Implementation changes: 1", status)
         # Evidence classification should still reflect diff presence
         self.assertIn("Evidence classification: diff without report", status)
+        self.assertIn("Attempt failure class: recoverable-evidence", status)
+        self.assertIn("Counts toward takeover: false", status)
 
     def test_normal_success_result_remains_success(self):
         """exit 0 + normal result → dispatch_outcome=success"""
@@ -1112,6 +1116,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         self.assertNotIn("Semantic result error: yes", status)
         self.assertIn("Dispatch outcome: success", status)
+        self.assertIn("Attempt failure class: none", status)
+        self.assertIn("Counts toward takeover: false", status)
+        attempt = self._artifact_path(result.stdout, "Attempt Class")
+        self.assertTrue(attempt.exists())
 
     def test_diff_without_valid_report_remains_recoverable_diff_evidence(self):
         """exit 0 + normal result + diff + no valid report → diff without report"""

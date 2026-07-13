@@ -56,6 +56,29 @@ class ClaudeHealthcheckTests(unittest.TestCase):
                 self.assertEqual(health.main(["--settings", str(path), "--probe", "--json"]), 0)
                 self.assertEqual(health.main(["--settings", str(path), "--require-probe", "--json"]), 1)
 
+    def test_interaction_compare_recommends_fastest_success(self):
+        def fake(route, timeout, prompt):
+            return {"route": route, "success": True, "exit_code": 0,
+                    "elapsed_seconds": 1.0 if route == "inherit" else 2.0, "timed_out": False}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text('{"env":{"ANTHROPIC_BASE_URL":"https://example.cn"}}')
+            with mock.patch.object(health, "interaction_probe", side_effect=fake), \
+                 mock.patch.object(health.shutil, "which", return_value="claude"):
+                self.assertEqual(health.main(["--settings", str(path), "--interaction-route", "compare", "--json"]), 0)
+
+    def test_interaction_auto_stops_after_first_success(self):
+        value = {"route": "inherit", "success": True, "exit_code": 0,
+                 "elapsed_seconds": 1.0, "timed_out": False}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text('{"env":{"ANTHROPIC_BASE_URL":"https://example.cn"}}')
+            with mock.patch.object(health, "interaction_probe", return_value=value) as probe_call, \
+                 mock.patch.object(health.shutil, "which", return_value="claude"), \
+                 mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy:1"}, clear=True):
+                self.assertEqual(health.main(["--settings", str(path), "--interaction-route", "auto", "--json"]), 0)
+            self.assertEqual(probe_call.call_count, 1)
+
     def test_installer_and_doctor_register_helper(self):
         self.assertIn('"claude-healthcheck.py"', (ROOT / "scripts/install_workflow.py").read_text())
         self.assertIn("ai/claude-healthcheck.py", (ROOT / "scripts/doctor_workflow.py").read_text())

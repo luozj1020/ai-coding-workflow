@@ -60,6 +60,7 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         spec_followup = summary.get("spec_followup", {})
         root_cause_followup = summary.get("root_cause_followup", {})
         tdd_followup = summary.get("tdd_followup", {})
+        claude_attempts = summary.get("claude_attempts", {})
         runs.append(
             {
                 "run_path": summary["run_path"],
@@ -121,6 +122,10 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "root_cause_identified": root_cause_followup.get("root_cause_identified", ""),
                 "tdd_mode": tdd_followup.get("tdd_mode", ""),
                 "tdd_red_captured": tdd_followup.get("failing_test_or_failing_evidence_captured_before_production_edit", ""),
+                "claude_attempt_count": claude_attempts.get("count", 0),
+                "claude_takeover_counted": claude_attempts.get("takeover_counted", 0),
+                "claude_transient_transport": claude_attempts.get("transient_transport", 0),
+                "claude_useful_interactions": claude_attempts.get("useful_interactions", 0),
             }
         )
 
@@ -153,6 +158,10 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         "parallel_invoked_count": sum(1 for run in runs if str(run["parallel_helper_invoked"]).startswith("yes")),
         "spec_required_count": sum(1 for run in runs if str(run["spec_required"]).startswith("yes")),
         "tdd_required_count": sum(1 for run in runs if str(run["tdd_mode"]).startswith("required")),
+        "claude_attempts_total": sum(run["claude_attempt_count"] for run in runs),
+        "claude_takeover_counted_total": sum(run["claude_takeover_counted"] for run in runs),
+        "claude_transient_transport_total": sum(run["claude_transient_transport"] for run in runs),
+        "claude_useful_interactions_total": sum(run["claude_useful_interactions"] for run in runs),
         "runs": runs,
     }
 

@@ -535,6 +535,7 @@ CHECKER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker.pid"
 RUNTIME_JSON="${WORKTREE_ROOT}/${TASK_ID}.runtime.json"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 NETWORK_FILE="${WORKTREE_ROOT}/${TASK_ID}.network.log"
+ATTEMPT_CLASSIFICATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.attempt-classification.json"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
 SEEDED_PROGRESS_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"
 FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
@@ -2208,6 +2209,38 @@ elif [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; th
     DISPATCH_OUTCOME="no_useful_progress"
 fi
 
+ATTEMPT_FAILURE_CLASS="unavailable"
+ATTEMPT_COUNTS_TOWARD_TAKEOVER="unknown"
+ATTEMPT_RECOMMENDED_ACTION="inspect-evidence-before-counting"
+ATTEMPT_SAME_WORKTREE_RETRY="false"
+if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; then
+    _ATTEMPT_PROGRESS="none"
+    if [ "$DISPATCH_EVIDENCE_STATE" = "acknowledgement only" ]; then
+        _ATTEMPT_PROGRESS="acknowledgement"
+    elif [ "${FIRST_PROGRESS_SIGNAL:-}" = "blocker_recorded" ]; then
+        _ATTEMPT_PROGRESS="blocker"
+    elif [ "$IMPLEMENTATION_CHANGES" -gt 0 ] || [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then
+        _ATTEMPT_PROGRESS="useful"
+    fi
+    _ATTEMPT_ARGS=(
+        --exit-code "$CLAUDE_STATUS" --outcome "$DISPATCH_OUTCOME"
+        --diff-changes "$IMPLEMENTATION_CHANGES" --progress "$_ATTEMPT_PROGRESS"
+        --direction unknown --error-text-file "$STATUS_FILE"
+    )
+    if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then _ATTEMPT_ARGS+=(--valid-report); fi
+    if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then _ATTEMPT_ARGS+=(--semantic-error); fi
+    "$PYTHON_CMD" "${SCRIPT_DIR}/classify-claude-attempt.py" "${_ATTEMPT_ARGS[@]}" > "$ATTEMPT_CLASSIFICATION_FILE" || true
+    if [ -s "$ATTEMPT_CLASSIFICATION_FILE" ]; then
+        IFS=$'\t' read -r ATTEMPT_FAILURE_CLASS ATTEMPT_COUNTS_TOWARD_TAKEOVER ATTEMPT_RECOMMENDED_ACTION ATTEMPT_SAME_WORKTREE_RETRY < <(
+            "$PYTHON_CMD" - "$ATTEMPT_CLASSIFICATION_FILE" <<'PYEOF'
+import json, sys
+v=json.load(open(sys.argv[1], encoding="utf-8"))
+print("\t".join(str(v.get(k, "unknown")).lower() if isinstance(v.get(k), bool) else str(v.get(k, "unknown")) for k in ("failure_class", "counts_toward_takeover", "recommended_action", "same_worktree_retry_eligible")))
+PYEOF
+        )
+    fi
+fi
+
 progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
 # Authoritative final outcome — emitted exactly once, after semantic validation.
 progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELAPSED}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
@@ -2218,6 +2251,10 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] Valid Claude-owned report: $([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no)"
     echo "[dispatch] Dispatch outcome: ${DISPATCH_OUTCOME}"
     echo "[dispatch] Semantic result error: $([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
+    echo "[dispatch] Attempt failure class: ${ATTEMPT_FAILURE_CLASS}"
+    echo "[dispatch] Counts toward takeover: ${ATTEMPT_COUNTS_TOWARD_TAKEOVER}"
+    echo "[dispatch] Recommended action: ${ATTEMPT_RECOMMENDED_ACTION}"
+    echo "[dispatch] Same-worktree retry eligible: ${ATTEMPT_SAME_WORKTREE_RETRY}"
     if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
         echo "[dispatch] Semantic error reason: ${CLAUDE_SEMANTIC_ERROR_REASON}"
     fi
@@ -2318,6 +2355,7 @@ echo "Result:          $RESULT_FILE"
 echo "Raw Result:      $RAW_RESULT_FILE"
 echo "Status:          $STATUS_FILE"
 echo "Network Log:     $NETWORK_FILE"
+echo "Attempt Class:   $ATTEMPT_CLASSIFICATION_FILE"
 echo "Diffstat:        $DIFFSTAT_FILE"
 echo "Diff:            $DIFF_FILE"
 echo "Checker Report:  $CHECKER_REPORT_FILE"

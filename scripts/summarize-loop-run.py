@@ -45,6 +45,25 @@ def read_text(path: Path) -> str:
         return ""
 
 
+def summarize_attempts(paths: list[Path]) -> dict:
+    attempts = []
+    for path in paths:
+        try:
+            value = json.loads(read_text(path))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            attempts.append(value)
+    return {
+        "count": len(attempts),
+        "takeover_counted": sum(1 for value in attempts if value.get("counts_toward_takeover") is True),
+        "transient_transport": sum(1 for value in attempts if value.get("failure_class") == "transient-transport"),
+        "useful_interactions": sum(1 for value in attempts if value.get("interaction_state") == "useful-progress"),
+        "same_worktree_retry_eligible": sum(1 for value in attempts if value.get("same_worktree_retry_eligible") is True),
+        "latest": attempts[-1] if attempts else {},
+    }
+
+
 def parse_number(value: str):
     match = NUMBER_RE.search(value)
     if not match:
@@ -644,6 +663,7 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
         "events": sorted(root.rglob("loop-events.jsonl")),
         "parallel": sorted(root.rglob("parallel-summary.md")),
         "task_card": sorted(root.rglob("task-card-*.md")) + sorted(root.rglob("CLAUDE_TASK_CARD.md")),
+        "attempt": sorted(root.rglob("*.attempt-classification.json")),
     }
 
 
@@ -711,6 +731,7 @@ def summarize(path: Path) -> dict:
         codex_spark_followups,
         artifacts["spark_report"],
     )
+    claude_attempts = summarize_attempts(artifacts["attempt"])
 
     return {
         "run_path": str(path),
@@ -744,6 +765,7 @@ def summarize(path: Path) -> dict:
         },
         "artifacts": {key: len(value) for key, value in artifacts.items()},
         "claude_evidence": claude_evidence,
+        "claude_attempts": claude_attempts,
         "claude_validation_state": claude_validation_state,
         "checker_validation_state": checker_val_state,
         "checker_results": checker_results,

@@ -8,7 +8,9 @@ import os
 import shutil
 import socket
 import ssl
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -73,6 +75,26 @@ def probe(origin: str, timeout: float) -> Dict[str, Any]:
         return {"status": "unreachable", "http_status": None, "error": "timeout"}
 
 
+def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]:
+    env = os.environ.copy()
+    if route == "direct":
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            env.pop(name, None)
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--output-format", "json", prompt],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, env=env,
+        )
+        elapsed = round(time.monotonic() - started, 3)
+        return {"route": route, "success": result.returncode == 0 and bool(result.stdout.strip()),
+                "exit_code": result.returncode, "elapsed_seconds": elapsed, "timed_out": False}
+    except subprocess.TimeoutExpired:
+        return {"route": route, "success": False, "exit_code": None,
+                "elapsed_seconds": round(time.monotonic() - started, 3), "timed_out": True}
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -88,6 +110,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument("--timeout", type=float, default=8.0)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--interaction-route", choices=["auto", "inherit", "direct", "compare"],
+                        help="Run a real minimal interaction; auto tries the alternate only after failure.")
+    parser.add_argument("--prompt", default="你好，请只回复：连接正常")
     args = parser.parse_args(argv)
     result = configuration(args.settings.expanduser())
     if args.probe:
@@ -103,6 +128,26 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "status": "skipped", "http_status": None, "error": "base-url-missing"
             }
         result["healthy"] = result["healthy"] and result["probe"]["status"] == "reachable"
+    if args.interaction_route:
+        if args.interaction_route == "compare":
+            routes = ["inherit", "direct"]
+        elif args.interaction_route == "auto":
+            has_proxy = any(os.environ.get(name) for name in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"))
+            routes = ["inherit", "direct"] if has_proxy else ["direct", "inherit"]
+        else:
+            routes = [args.interaction_route]
+        interactions = []
+        for route in routes:
+            value = interaction_probe(route, args.timeout, args.prompt)
+            interactions.append(value)
+            if args.interaction_route == "auto" and value["success"]:
+                break
+        successful = [value for value in interactions if value["success"]]
+        result["interaction_probes"] = interactions
+        result["recommended_proxy_mode"] = (
+            min(successful, key=lambda value: value["elapsed_seconds"])["route"] if successful else None
+        )
+        result["healthy"] = bool(successful)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     else:
@@ -116,6 +161,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 result["probe"]["status"],
                 result["probe"]["error"] or result["probe"]["http_status"],
             ))
+        if args.interaction_route:
+            for value in result["interaction_probes"]:
+                print("Interaction {}: {} ({}s)".format(
+                    value["route"], "success" if value["success"] else "failed", value["elapsed_seconds"]
+                ))
+            print("Recommended proxy mode: {}".format(result["recommended_proxy_mode"] or "no successful route"))
     return 0 if result["healthy"] else 1
 
 

@@ -623,9 +623,13 @@ Check the effective Claude/CC Switch configuration without printing credentials:
 ```bash
 python ai/claude-healthcheck.py
 python ai/claude-healthcheck.py --probe
+python ai/claude-healthcheck.py --interaction-route auto --timeout 30
+python ai/claude-healthcheck.py --interaction-route compare --timeout 30
 ```
 
 The endpoint probe is advisory by default because DNS, proxy, and TLS failures may be transient. Use `--require-probe` only when strict automation explicitly wants a network failure to stop before dispatch. A successful Claude interaction remains the authoritative availability signal.
+
+The interaction probe sends a real minimal prompt and therefore consumes model quota, but it is a read-only runtime diagnostic and needs no human review. `auto` tries the route implied by the current proxy environment and stops on success; it tries the alternate only after failure. `compare` always consumes two calls. Apply the recommendation explicitly with `CLAUDE_CODE_PROXY_MODE=inherit|direct`; the diagnostic is not implementation or acceptance evidence.
 
 Classify a completed or failed round before counting it toward takeover:
 

@@ -21,7 +21,9 @@ def classify(
 ) -> dict:
     useful = diff_changes > 0 or valid_report or progress == "useful"
     interacted = useful or progress in {"acknowledgement", "blocker"}
-    transport = bool(TRANSPORT_RE.search(error_text)) or outcome in {"api_error", "network_error"}
+    transport = bool(TRANSPORT_RE.search(error_text)) or outcome in {
+        "api_error", "api_error_without_diff", "network_error", "timeout"
+    }
     approval = bool(APPROVAL_RE.search(error_text)) or outcome == "approval_blocked"
 
     if direction == "off-plan":

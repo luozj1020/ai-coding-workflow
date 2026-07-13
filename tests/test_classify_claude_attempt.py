@@ -23,6 +23,11 @@ class ClassifyClaudeAttemptTests(unittest.TestCase):
         self.assertFalse(result["counts_toward_takeover"])
         self.assertTrue(result["same_worktree_retry_eligible"])
 
+    def test_timeout_outcome_without_text_is_transport(self):
+        result = classify(outcome="timeout")
+        self.assertEqual(result["failure_class"], "transient-transport")
+        self.assertFalse(result["counts_toward_takeover"])
+
     def test_acknowledgement_only_counts(self):
         result = classify(exit_code=0, outcome="success", progress="acknowledgement")
         self.assertEqual(result["failure_class"], "acknowledgement-only")

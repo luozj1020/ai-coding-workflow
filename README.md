@@ -94,6 +94,7 @@ The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VE
 | **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
 | **Claude provider check** | Show the effective CC Switch endpoint/model without secrets | `python scripts/claude-healthcheck.py` |
 | **Claude endpoint probe** | Advisory network evidence; transient failure does not block dispatch | `python scripts/claude-healthcheck.py --probe` |
+| **Claude interaction probe** | Auto-test current route; alternate only after failure | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 30` |
 | **Classify Claude round** | Decide whether a failure counts toward takeover | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **Preview integrated run** | Inspect every phase without model calls | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 | **Execute integrated run** | Run the reviewed plan | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute` |
