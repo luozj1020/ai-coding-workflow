@@ -94,6 +94,7 @@ flowchart TD
 | **刷新项目 workflow** | 已经引导过的仓库 | `python scripts/install_workflow.py . --update-workflow-files` |
 | **Claude 供应商检查** | 脱敏显示 CC Switch 实际端点和模型 | `python scripts/claude-healthcheck.py` |
 | **Claude 端点探测** | 仅提供网络诊断；瞬时失败不阻断派发 | `python scripts/claude-healthcheck.py --probe` |
+| **Claude 轮次分类** | 判断失败是否计入接管阈值 | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **预览集成运行** | 零模型调用审查所有阶段 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 | **执行集成运行** | 执行已审查的计划 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute` |
 

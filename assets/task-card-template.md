@@ -56,6 +56,8 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | Ambiguity likely to cause stop-and-report? | yes/no + field |
 | If Claude is quiet, first diagnosis step | inspect progress artifacts and partial diff before declaring failure |
 | Conditions that prove real Claude no-progress | no artifact growth, no worktree change, no status output, no permission blocker, and no reported blocker after grace period |
+| Attempt accounting | classify transport / approval / acknowledgement-only / no-progress / direction-deviation; transient transport before interaction does not consume takeover threshold |
+| Same-worktree transport retry | at most one; preserve artifacts; requires no direction deviation and no conflicting useful diff |
 
 ## Worktree / Large Repo Strategy Gate
 

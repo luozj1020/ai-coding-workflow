@@ -43,6 +43,8 @@ After a Claude execution round, Codex normally reviews only. It may edit directl
 
 Claude no-progress, early exit, invalid result, or one failed attempt is evidence for a tighter next task card, not permission for Codex to patch. Prefer smaller Claude revisions with clearer acceptance criteria before takeover.
 
+Classify each failed round before retry/takeover accounting with `python ai/classify-claude-attempt.py`. DNS, connection, TLS, timeout, or API transport failure before acknowledgement/diff/report/progress is `transient-transport`: preserve the worktree, retry in place at most once, and do not count it toward the Claude no-progress takeover threshold. A transport failure after useful diff/report/progress is recoverable evidence and should be reviewed, not discarded. `acknowledgement only`, clean exit without progress, and confirmed direction deviation do count. Approval/sandbox blockers do not count as model failure. A successful Claude interaction is authoritative over an earlier advisory health probe.
+
 Dirty source or stale HEAD is a delegation blocker, not a Codex takeover trigger. Codex should first restore a reliable Claude base by committing an accepted phase, stashing/patching uncommitted source changes, refreshing workflow files, re-dispatching from updated HEAD, requesting an explicit dirty-source override, or stopping for human input. Codex may take over only when restoration is impossible/unsafe and a current-task threshold or explicit human override is recorded.
 
 Prior-session Claude failures are carry-forward context, not automatic takeover permission. A fresh task or session should re-dispatch Claude unless current-task artifacts prove the same threshold or the human explicitly asks Codex to take over.

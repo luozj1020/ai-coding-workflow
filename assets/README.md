@@ -627,6 +627,14 @@ python ai/claude-healthcheck.py --probe
 
 The endpoint probe is advisory by default because DNS, proxy, and TLS failures may be transient. Use `--require-probe` only when strict automation explicitly wants a network failure to stop before dispatch. A successful Claude interaction remains the authoritative availability signal.
 
+Classify a completed or failed round before counting it toward takeover:
+
+```bash
+python ai/classify-claude-attempt.py --exit-code 1 --outcome api_error --error-text-file .worktrees/<task>.status.txt
+```
+
+Transport failure before interaction may retry the same worktree once and does not count as Claude no-progress. Acknowledgement-only, clean exit without progress, and confirmed direction deviation do count. Approval or sandbox blockers remain external blockers.
+
 ### Missing `ai/` After Installing the Skill
 
 Installing the Codex Skill does not automatically modify every repository. If dispatch fails because `ai/dispatch-to-claude.sh` is missing, run the installed Skill bootstrap command in that repository, then verify with:
