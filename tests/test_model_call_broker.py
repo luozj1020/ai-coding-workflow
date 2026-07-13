@@ -24,6 +24,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -949,6 +950,21 @@ class TestModuleAPI(unittest.TestCase):
             self.assertTrue(broker_mod.budget_consuming({"state": state}))
         for state in ("failed", "cancelled"):
             self.assertFalse(broker_mod.budget_consuming({"state": state}))
+
+    def test_windows_shell_script_uses_bash_without_shell_true(self):
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.object(broker_mod.os, "name", "nt"), \
+             mock.patch.object(broker_mod.shutil, "which", return_value=r"C:\Git\bin\bash.exe"), \
+             mock.patch.object(broker_mod.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(
+                broker_mod.run_command(["/c/tmp/fake.sh", "arg"], None, None, None),
+                0,
+            )
+        args, kwargs = run.call_args
+        self.assertEqual(
+            args[0], [r"C:\Git\bin\bash.exe", "/c/tmp/fake.sh", "arg"]
+        )
+        self.assertFalse(kwargs["shell"])
 
 
 if __name__ == "__main__":

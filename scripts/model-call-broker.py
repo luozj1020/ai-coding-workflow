@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -538,9 +539,18 @@ def run_command(
     out_fh = open(output_path, "wb") if output_path else None
     err_fh = open(stderr_path, "wb") if stderr_path else None
 
+    effective_command = list(command)
+    if os.name == "nt" and effective_command and effective_command[0].lower().endswith(".sh"):
+        bash = shutil.which("bash")
+        if not bash:
+            raise BrokerError(
+                "Cannot execute .sh model command on Windows: bash was not found"
+            )
+        effective_command.insert(0, bash)
+
     try:
         result = subprocess.run(
-            command,
+            effective_command,
             input=input_data,
             stdout=out_fh,
             stderr=err_fh,
