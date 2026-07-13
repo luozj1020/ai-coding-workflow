@@ -15,6 +15,8 @@ CHECK_WORKTREE = ROOT / "scripts" / "check-worktree.sh"
 CLASSIFY_ATTEMPT = ROOT / "scripts" / "classify-claude-attempt.py"
 CLAUDE_HEALTHCHECK = ROOT / "scripts" / "claude-healthcheck.py"
 VALIDATE_ADVISOR_REQUEST = ROOT / "scripts" / "validate-advisor-request.py"
+VALIDATE_ADVISOR_RESPONSE = ROOT / "scripts" / "validate-advisor-response.py"
+WORKTREE_STATE_HASH = ROOT / "scripts" / "worktree_state_hash.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -71,9 +73,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(CLASSIFY_ATTEMPT, self.repo / "scripts" / "classify-claude-attempt.py")
         shutil.copy2(CLAUDE_HEALTHCHECK, self.repo / "scripts" / "claude-healthcheck.py")
         shutil.copy2(VALIDATE_ADVISOR_REQUEST, self.repo / "scripts" / "validate-advisor-request.py")
+        shutil.copy2(VALIDATE_ADVISOR_RESPONSE, self.repo / "scripts" / "validate-advisor-response.py")
+        shutil.copy2(WORKTREE_STATE_HASH, self.repo / "scripts" / "worktree_state_hash.py")
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
-                   "scripts/validate-advisor-request.py"], cwd=self.repo)
+                   "scripts/validate-advisor-request.py", "scripts/validate-advisor-response.py",
+                   "scripts/worktree_state_hash.py"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
     def tearDown(self):
@@ -103,6 +108,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "  printf '你好！\\n'\n"
                 "  exit 0\n"
                 "fi\n"
+                "if [ -n \"${FAKE_CLAUDE_INVOCATION_LOG:-}\" ]; then printf 'invoke\\n' >> \"${FAKE_CLAUDE_INVOCATION_LOG}\"; fi\n"
                 "if [ -n \"${FAKE_CLAUDE_PROMPT_CAPTURE:-}\" ]; then\n"
                 "  cat > \"${FAKE_CLAUDE_PROMPT_CAPTURE}\"\n"
                 "else\n"
@@ -421,6 +427,69 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             if line.startswith(prefix):
                 return pathlib.Path(line.split(":", 1)[1].strip())
         self.fail(f"missing artifact label {label!r} in output:\n{stdout}")
+
+    def _prepare_advisor_continuation(self):
+        task_id, request_id, reservation_id = "prior-advisor", "request-1", "reservation-1"
+        root = self.repo / ".worktrees"
+        wt, advisor_dir = root / task_id, root / (task_id + ".advisor-request")
+        root.mkdir(exist_ok=True)
+        base = self._run(["git", "rev-parse", "HEAD"]).stdout.strip()
+        self._run(["git", "worktree", "add", "-b", "prior-advisor-branch", str(wt), base])
+        (wt / "README.md").write_text("# prior implementation\n", encoding="utf-8")
+        diff_hash = self._run(
+            [sys.executable, "scripts/worktree_state_hash.py", "--worktree", str(wt)]
+        ).stdout.strip()
+        response = {
+            "schema_version": 1, "request_id": request_id, "advisor": "spark",
+            "reservation_id": reservation_id, "evidence_hash": "a" * 64,
+            "decision": "continue", "answer": "Finish the bounded change.",
+            "allowed_changes": ["README.md"], "forbidden_changes": ["forbidden/"],
+            "new_validation": [], "risk_changed": False, "resume_allowed": True,
+        }
+        packet = {
+            "task_id": task_id, "request_id": request_id, "base_commit": base,
+            "diff_hash": diff_hash, "evidence_hash": "a" * 64,
+            "allowed_changes": ["README.md"], "forbidden_paths": ["forbidden/"],
+        }
+        (wt / "advisor-packet.json").write_text(json.dumps(packet), encoding="utf-8")
+        advisor_dir.mkdir()
+        (advisor_dir / "advisor-response-validated.json").write_text(json.dumps(response), encoding="utf-8")
+        result = dict(response=response, ok=True, task_id=task_id, request_id=request_id,
+                      advisor="spark", reservation_id=reservation_id, evidence_hash="a" * 64,
+                      decision="continue", resume_eligible=True)
+        result_path = advisor_dir / "advisor-call-result.json"
+        result_path.write_text(json.dumps(result), encoding="utf-8")
+        (root / (task_id + ".runtime.json")).write_text(json.dumps({
+            "worktree": str(wt), "source_repository": str(self.repo),
+            "base_commit": base, "branch": "prior-advisor-branch",
+        }), encoding="utf-8")
+        self._write_task_card()
+        return task_id, result_path, result, root / (task_id + ".advisor-continue-consumed")
+
+    def test_advisor_continuation_binds_broker_result_and_runs_once(self):
+        task_id, result_path, result_data, marker = self._prepare_advisor_continuation()
+        invocation_log = self.case_root / "claude-invocations.log"
+        env = {"CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID": task_id,
+               "CLAUDE_CODE_ALLOW_DIRTY_SOURCE": "1",
+               "FAKE_CLAUDE_INVOCATION_LOG": str(invocation_log)}
+        result_data["reservation_id"] = "mismatched"
+        result_path.write_text(json.dumps(result_data), encoding="utf-8")
+        rejected = self._dispatch(extra_env=env)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertFalse(invocation_log.exists())
+        self.assertFalse(marker.exists())
+
+        result_data["reservation_id"] = "reservation-1"
+        result_path.write_text(json.dumps(result_data), encoding="utf-8")
+        accepted = self._dispatch(extra_env=env)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr + accepted.stdout)
+        self.assertEqual(invocation_log.read_text(encoding="utf-8").splitlines(), ["invoke"])
+        consumed = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual((consumed["request_id"], consumed["reservation_id"]),
+                         ("request-1", "reservation-1"))
+        duplicate = self._dispatch(extra_env=env)
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertEqual(invocation_log.read_text(encoding="utf-8").splitlines(), ["invoke"])
 
     def test_clean_repo_with_tracked_task_card_succeeds(self):
         self._write_task_card()

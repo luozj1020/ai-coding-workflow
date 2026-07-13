@@ -44,6 +44,15 @@ if ! command -v claude &>/dev/null; then
     exit 1
 fi
 
+# Continuation validation runs before the main dispatch setup reaches its
+# legacy interpreter detection block, so resolve Python before either path.
+PYTHON_CMD=""
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+fi
+
 # --- Route preference learning ---
 # Precedence: explicit caller env > learned preference > direct fallback.
 # Track source for logging.  Actual learned-route resolution happens after
@@ -600,6 +609,39 @@ validate_advisor_continuation() {
             exit 1
         fi
     fi
+    advisor_dir="$(dirname "$advisor_response")"
+    advisor_result="${advisor_dir}/advisor-call-result.json"
+    if [ ! -f "$advisor_result" ]; then
+        echo "Error: advisor-continuation: advisor-call-result.json not found: ${advisor_result}" >&2
+        exit 1
+    fi
+
+    # Bind the separately stored response to the successful brokered call.
+    local _broker_reservation_id
+    _broker_reservation_id="$("$PYTHON_CMD" - "$advisor_packet" "$advisor_response" "$advisor_result" "$prior_task_id" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+packet, response, result = [json.load(open(p, encoding="utf-8")) for p in sys.argv[1:4]]
+task_id = sys.argv[4]
+checks = {
+    "ok": result.get("ok") is True,
+    "resume_eligible": result.get("resume_eligible") is True,
+    "task_id": result.get("task_id") == task_id,
+    "request_id": result.get("request_id") == packet.get("request_id") == response.get("request_id"),
+    "evidence_hash": result.get("evidence_hash") == packet.get("evidence_hash") == response.get("evidence_hash"),
+    "reservation_id": result.get("reservation_id") == response.get("reservation_id"),
+    "advisor": result.get("advisor") == response.get("advisor"),
+    "decision": result.get("decision") == response.get("decision"),
+    "response": result.get("response") == response,
+}
+if not all(checks.values()):
+    raise SystemExit("binding mismatch: " + ",".join(k for k, v in checks.items() if not v))
+print(result["reservation_id"])
+PYEOF
+)"
+    if [ -z "$_broker_reservation_id" ]; then
+        echo "Error: advisor-continuation: advisor call result does not match packet/response bindings." >&2
+        exit 1
+    fi
 
     # --- 7. Validate response resume eligibility ---
     # Pass expected request/evidence/reservation bindings and original scope
@@ -637,6 +679,7 @@ PYEOF
         _validation_output="$("$PYTHON_CMD" "${SCRIPT_DIR}/validate-advisor-response.py" "$advisor_response" \
             --expected-request-id "$_pkt_request_id" \
             --expected-evidence-hash "$_pkt_evidence_hash" \
+            --expected-reservation-id "$_broker_reservation_id" \
             --original-allowed-changes "$_packet_allowed_file" \
             --original-forbidden-changes "$_packet_forbidden_file" \
             --archive-invalid "${advisor_dir}/continuation-validation-invalid.json" 2>&1)" || {
@@ -646,12 +689,9 @@ PYEOF
         }
         # Check resume_eligible
         local _resume_eligible
-        _resume_eligible="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo "false"
-import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-print(str(data.get("resume_eligible", False)).lower())
-PYEOF
-)"
+        _resume_eligible="$(printf '%s' "$_validation_output" | "$PYTHON_CMD" -c \
+            'import json,sys; print(str(json.load(sys.stdin).get("resume_eligible", False)).lower())' \
+            2>/dev/null || echo "false")"
         if [ "$_resume_eligible" != "true" ]; then
             echo "Error: advisor-continuation: response is not resume-eligible (resume_eligible=false)." >&2
             exit 1
@@ -1200,8 +1240,9 @@ create_dispatch_worktree() {
     fi
 }
 
-# Skip worktree creation if retry-in-place already provided a valid worktree.
-if [ -z "${_RETRY_WORKTREE_DIR:-}" ]; then
+# Skip worktree creation when retry/advisor continuation already supplied a
+# validated worktree with preserved implementation progress.
+if [ -z "${_RETRY_WORKTREE_DIR:-}" ] && [ -z "${_ADVISOR_CONTINUE_WORKTREE_DIR:-}" ]; then
     if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
         BRANCH_NAME="claude-managed-reuse"
     elif [ -n "${AI_CODING_WORKFLOW_DAG_BRANCH_NAME:-}" ]; then
