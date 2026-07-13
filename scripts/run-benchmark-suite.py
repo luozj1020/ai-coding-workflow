@@ -394,6 +394,39 @@ def compute_aggregate_gates(
     }
 
 
+def compute_legacy_ledger_metrics(path: Optional[str]) -> Dict[str, Any]:
+    """Preserve the v1 ledger summary consumed by existing automation."""
+    if not path:
+        return {}
+    records: List[Dict[str, Any]] = []
+    try:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                value = json.loads(line)
+                if isinstance(value, dict):
+                    records.append(value)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"error": str(exc)}
+    accepted = [r for r in records if r.get("accepted") is True]
+    accepted_task_ids = {str(r.get("task_id", "")) for r in accepted}
+    codex_task_ids = {
+        str(r.get("task_id", "")) for r in records if str(r.get("model", "")).lower() == "codex"
+    }
+    zero_codex = len(accepted_task_ids - codex_task_ids)
+    validation_passed = sum(
+        1 for r in accepted if r.get("validation_status") == "passed"
+    )
+    return {
+        "accepted_tasks": len(accepted_task_ids),
+        "zero_codex_completion_rate": (
+            zero_codex / len(accepted_task_ids) if accepted_task_ids else 0.0
+        ),
+        "first_pass_success_rate": (
+            validation_passed / len(accepted) if accepted else 0.0
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -405,6 +438,7 @@ def main() -> int:
     p.add_argument("--cases", default="benchmarks/cases", help="Cases directory.")
     p.add_argument("--output", help="Write results to this file.")
     p.add_argument("--baseline", help="Baseline metrics file for gate comparison.")
+    p.add_argument("--ledger", help="Optional v1 JSONL ledger for compatibility metrics.")
     p.add_argument(
         "--case-id", action="append", default=[], help="Run only these case IDs."
     )
@@ -474,6 +508,7 @@ def main() -> int:
         "timestamp": int(time.time()),
         "cases_dir": str(root),
         "total_cases": len(results),
+        "count": len(results),
         "results": results,
         "aggregates": aggregates,
         "adapter_calls": {
@@ -481,6 +516,7 @@ def main() -> int:
             "spark": spark.call_count,
             "codex": codex.call_count,
         },
+        "metrics": compute_legacy_ledger_metrics(a.ledger),
     }
 
     # Write output
@@ -495,9 +531,9 @@ def main() -> int:
 
     # Summary
     passed = sum(1 for r in results if r.get("status") == "passed")
-    print(f"\nSummary: {passed}/{len(results)} cases passed")
+    print(f"Summary: {passed}/{len(results)} cases passed", file=sys.stderr)
     if baseline:
-        print(f"All gates passed: {aggregates.get('all_passed')}")
+        print(f"All gates passed: {aggregates.get('all_passed')}", file=sys.stderr)
 
     return 0
 

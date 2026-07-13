@@ -39,12 +39,12 @@ class OptimizationE0Tests(unittest.TestCase):
     def test_manifest_and_event_integrity_block_resume(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d); (root/"artifact-manifest.json").write_text(json.dumps({"schema_version":1,"entries":[{"path":"../escape","sha256":"","size":-1}]}))
-            entries, manifest_errors=resume.validate_manifest(root); self.assertTrue(manifest_errors)
+            entries, manifest_errors, has_corruption=resume.validate_manifest(root); self.assertTrue(manifest_errors); self.assertTrue(has_corruption)
             one=events.build_event(run_id="r",task_id="t",event="setup_complete")
             two=events.build_event(run_id="other",task_id="t",event="dispatch_complete",phase="dispatch",parent_event_id="bad")
             (root/"loop-events.jsonl").write_text("\n".join(json.dumps(x) for x in (one,two)))
             loaded,event_errors=resume.load_events(root); self.assertTrue(event_errors)
-            plan=resume.build_resume_plan(root,loaded,entries,manifest_errors,event_errors)
+            plan=resume.build_resume_plan(root,loaded,entries,manifest_errors,event_errors,has_corruption)
             self.assertFalse(plan["resume_safe"])
 
 if __name__=="__main__": unittest.main()

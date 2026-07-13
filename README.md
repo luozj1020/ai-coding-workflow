@@ -12,7 +12,17 @@ The control plane now minimizes total completion cost, not model calls in isolat
 
 Remote Bazel handoff remains human-controlled. `generate-handoff.py` emits preview-only publish/update/batched-validation instructions, while `validation-ingest.py` classifies returned logs locally. These helpers never push, SSH, merge, or authorize acceptance.
 
-The integrated path is:
+The primary quota-efficient path is preview-first:
+
+```bash
+python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1
+# Review the routing, context, execution plan, and dispatch preview first.
+python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute
+```
+
+`aiwf run` performs lint → profile composition and validation → repository facts → deterministic routing → cached Context Packet → execution plan → broker-mediated Claude dispatch → automatic Evidence Builder → deterministic acceptance → Review Ladder → remote-handoff/final decision → ledger and benchmark metrics. Every phase writes hashed artifacts so resume can continue from dispatch, partial diff, review, or decision without repeating a completed Claude call.
+
+The lower-level control-plane commands remain available:
 
 ```bash
 python scripts/aiwf.py efficient prepare --hints task-hints.json --task-card task.md --output-dir .ai-workflow/runs/T-1
@@ -21,7 +31,7 @@ python scripts/aiwf.py dispatch-efficient --plan .ai-workflow/runs/T-1/execution
 python scripts/aiwf.py efficient review --plan .ai-workflow/runs/T-1/execution-plan.json --evidence evidence.json --milestone final-candidate --output .ai-workflow/runs/T-1/review.json
 ```
 
-`prepare` writes a reusable layered Context Packet and retry baseline. `dispatch-efficient` enforces the Claude call budget and refuses retries without changed evidence; Express Lane alone can generate a reviewed `mixed-exception` single-pass card. `review` runs deterministic acceptance, emits incremental evidence, and authorizes Codex only at configured milestones. `aiwf loop` remains the legacy compatible loop.
+`prepare` writes a reusable layered Context Packet and retry baseline. `dispatch-efficient` streams output while preserving stdout/stderr/progress evidence, enforces the Claude call budget, and refuses retries without changed evidence. Express Lane alone can generate a reviewed `mixed-exception` single-pass card. `review` runs deterministic acceptance before L1 Spark/L2 Codex. `aiwf loop` is retained only as `legacy-full-codex-review` compatibility mode.
 
 ## What it does
 
@@ -42,52 +52,27 @@ ai-coding-workflow bootstraps repositories with:
 
 ```mermaid
 flowchart TD
-    U[Human goal] --> O[OBSERVE<br/>LSP · locator · Zoekt/rg · bounded CodeGraph]
-    O --> R{ROUTE before task card}
-
-    R -- Tiny and clear --> F{Deterministic fast-path gate}
-    R -- Size or cost unclear --> SE[Spark execution-cost estimator<br/>short brief · direct result]
-    SE --> F
-    R -- Multiple work units --> PA[Local parallel opportunity check<br/>zero token]
-    PA -- serial-obvious --> P[Codex PLAN<br/>spec · task card · acceptance · ownership]
-    PA -- parallel-candidate --> PP[Spark parallel-planner<br/>one bounded advisory call]
-    PP --> PG[Codex/human reviews DAG<br/>scopes · contracts · base commit · validation owner]
-
-    F -- Safe local change --> C[Codex scoped edit]
-    F -- Delegate or spec-first --> P
-    P --> D[Serial DISPATCH<br/>balanced by default]
-    D --> W{Worktree strategy gate}
-    W -- Normal or high risk --> FW[Fresh worktree<br/>full evidence]
-    W -- Exact low-risk serial task --> RW[Managed reuse or retry-in-place<br/>explicit evidence tradeoff]
-    FW --> B[Claude Builder<br/>scoped implementation]
-    RW --> B
-
-    PG --> PV{Deterministic parallel validation}
-    PV -- Rejected --> SF[Printed serial fallback order<br/>no automatic execution]
-    SF --> P
-    PV -- Accepted --> PD[Explicit flat or DAG dispatch<br/>max concurrency 2]
-    PD --> MB[Independent Claude Builders<br/>isolated worktrees]
-    MB --> AR[Serial aggregate review<br/>no automatic merge]
-
-    B --> R1[Codex direction review]
-    R1 -- Revise or split --> P
-    R1 -- Accepted direction --> K[Claude Checker/Test<br/>assigned tests and exact validation]
-    C --> V[Deterministic verification]
-    K --> V
-    AR --> V
-
-    V --> E[Evidence packet<br/>runtime identity · role PIDs · diff · reports · checks]
-    E --> R2{Codex final review}
-    R2 -- Accept --> H[Human review and merge]
-    R2 -- Revise --> P
-    R2 -- Stop condition --> X[Preserve artifacts and escalate]
-
-    classDef auxiliary fill:#eef6ff,stroke:#3973ac,color:#102a43;
-    classDef execution fill:#fff7e6,stroke:#b7791f,color:#4a2c00;
-    classDef decision fill:#f3e8ff,stroke:#805ad5,color:#2d1b4e;
-    class SE,PP auxiliary;
-    class B,MB,K,C,V,PD execution;
-    class R,F,W,PA,PV,R1,R2 decision;
+    U[Human goal / Task JSON] --> L[Lint · Compose · Validate]
+    L --> F[Repository facts + canonical hashes]
+    F --> R{Express · Standard · Assured · Recovery}
+    R --> C[Layered cached Context Packet]
+    C --> P[Execution plan + atomic model-call budget]
+    P --> B[Model Call Broker]
+    B --> D[Claude Builder / Checker in isolated worktree]
+    D --> E[Automatic Evidence Builder]
+    E --> A{Deterministic acceptance}
+    A -- Mechanical failure --> LR[Local / Claude revision]
+    A -- Semantic gap --> S[L1 Spark advisory]
+    S --> X[L2 bounded Codex review when required]
+    A -- All criteria satisfied --> FD[Final decision]
+    X --> FD
+    LR --> D
+    FD --> H{Remote validation required?}
+    H -- Yes --> RH[Preview-only Bazel handoff + validation ingest]
+    H -- No --> M[Human review and merge]
+    RH --> M
+    D -. hashed manifests .-> RS[Resume from dispatch / diff / review / decision]
+    E -. executed cases .-> BM[Deterministic fake-adapter benchmark gates]
 ```
 
 The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**. ROUTE happens before full task-card authoring: obvious work stays on the zero-model serial path, uncertain cost may use a short Spark estimate, and only plausible multi-scope work reaches the optional parallel planner. Spark remains advisory and never dispatches, accepts, or merges. Codex owns routing, planning, and review; Claude Builder owns delegated edits; Claude Checker/Test owns assigned test work. Parallel builders remain isolated and converge through serial aggregate review. Runtime identity, progress, role PID, diff, reports, and checker artifacts keep interrupted work recoverable; human review and merge remain separate.
@@ -107,6 +92,8 @@ The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VE
 | **Auto-setup repo** | Detect profiles and plan LSP/CodeGraph/Zoekt | `python scripts/install_for_codex.py --auto-setup /path/to/repo` |
 | **Auto-setup apply** | Install missing LSP tools and init CodeGraph/Zoekt | `python scripts/install_for_codex.py --auto-setup /path/to/repo --apply` |
 | **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
+| **Preview integrated run** | Inspect every phase without model calls | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
+| **Execute integrated run** | Run the reviewed plan | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute` |
 
 These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create or refresh the target repository's `ai/` directory. Already bootstrapped projects keep local copies of `ai/dispatch-to-claude.sh`, `ai/task-card-template.md`, and other workflow files. Use `update_skill.py --bootstrap-current` or `install_workflow.py . --update-workflow-files` to refresh those local copies after updating the Skill.
 

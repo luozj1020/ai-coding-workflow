@@ -1439,8 +1439,11 @@ claude_is_running() {
 }
 
 run_claude() {
-    if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ]; then
-        # Internal bypass for tests/bootstrap to avoid broker recursion.
+    if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ] || [ ! -f "${SCRIPT_DIR}/model-call-broker.py" ]; then
+        # Internal bypass for tests/bootstrap to avoid broker recursion.  The
+        # missing-helper branch preserves compatibility with old bootstrapped
+        # projects and standalone dispatcher fixtures; refreshed installs use
+        # the broker by default.
         if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
             claude -p \
                 --permission-mode acceptEdits \
@@ -1636,8 +1639,11 @@ while claude_is_running; do
     if [ "$CLAUDE_CODE_TIMEOUT_SECONDS" -gt 0 ] && [ "$ELAPSED" -ge "$CLAUDE_CODE_TIMEOUT_SECONDS" ]; then
         if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 0 ] && \
            [ "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS" -gt 0 ] && \
-           progress_is_growing "$LAST_WORKTREE_DIGEST" "$REPORT_BYTES" "$CLAUDE_PROGRESS_BYTES"; then
-            # Base deadline reached but progress is actively growing — extend once.
+           [ "$FIRST_PROGRESS_DETECTED" -eq 1 ]; then
+            # A substantive diff/report/progress/blocker was observed during
+            # the base window.  Snapshot the deadline state and extend once;
+            # subsequent growth is measured from this snapshot.  Comparing
+            # the deadline state with itself would always reject extension.
             TIMEOUT_EXTENSION_ACTIVE=1
             TIMEOUT_EXTENSION_STARTED_EPOCH="$NOW_EPOCH"
             TIMEOUT_EXTENSION_DEADLINE=$((NOW_EPOCH + CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS))

@@ -12,7 +12,17 @@
 
 远程 Bazel 仍由人工控制。`generate-handoff.py` 只生成预览式发布、更新和合并 target 验证指令，`validation-ingest.py` 在本地分类返回日志；这些工具不会自动 push、SSH、merge 或批准验收。
 
-完整集成入口：
+额度优化的主入口默认只预览：
+
+```bash
+python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1
+# 先审查路由、Context、执行计划和 dispatch preview。
+python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute
+```
+
+`aiwf run` 串联 lint → Profile 组合与重验 → 仓库事实 → 确定性路由 → 缓存 Context Packet → 执行计划 → Broker 调度 Claude → 自动 Evidence Builder → 确定性验收 → Review Ladder → 远程交接/最终决策 → Ledger 与 Benchmark 指标。每一阶段都写入带内容哈希的产物，因此可从 dispatch、partial diff、review 或 decision 恢复，而不重复调用已经完成的 Claude。
+
+底层控制面命令继续保留：
 
 ```bash
 python scripts/aiwf.py efficient prepare --hints task-hints.json --task-card task.md --output-dir .ai-workflow/runs/T-1
@@ -21,7 +31,7 @@ python scripts/aiwf.py dispatch-efficient --plan .ai-workflow/runs/T-1/execution
 python scripts/aiwf.py efficient review --plan .ai-workflow/runs/T-1/execution-plan.json --evidence evidence.json --milestone final-candidate --output .ai-workflow/runs/T-1/review.json
 ```
 
-`prepare` 生成可缓存的 L0/L1/L2 Context Packet 和重试基线；`dispatch-efficient` 强制 Claude 调用预算并拒绝无新证据重试，只有 Express Lane 能生成经确定性门控的 `mixed-exception` 单轮卡；`review` 执行本地验收、输出增量 evidence，并且只在配置的 milestone 授权 Codex。`aiwf loop` 继续作为兼容旧流程的入口。
+`prepare` 生成可缓存的 L0/L1/L2 Context Packet 和重试基线；`dispatch-efficient` 实时输出并同步保存 stdout/stderr/progress，强制 Claude 调用预算并拒绝无新证据重试。只有 Express Lane 能生成经确定性门控的 `mixed-exception` 单轮卡；`review` 先执行确定性验收，再决定 L1 Spark/L2 Codex。`aiwf loop` 仅作为 `legacy-full-codex-review` 兼容入口。
 
 ## 功能说明
 
@@ -42,52 +52,27 @@ ai-coding-workflow 可以为仓库自动配置：
 
 ```mermaid
 flowchart TD
-    U[用户目标] --> O[OBSERVE 观察<br/>LSP · locator · Zoekt/rg · 有界 CodeGraph]
-    O --> R{任务卡前 ROUTE 路由}
-
-    R -- 微小且明确 --> F{确定性快速路径 Gate}
-    R -- 规模或成本不明确 --> SE[Spark 执行成本预估<br/>短简报 · 直接回传]
-    SE --> F
-    R -- 多个工作单元 --> PA[本地并行机会判断<br/>零 Token]
-    PA -- serial-obvious --> P[Codex PLAN 规划<br/>spec · 任务卡 · 验收 · 责任]
-    PA -- parallel-candidate --> PP[Spark parallel-planner<br/>一次受限的建议调用]
-    PP --> PG[Codex/人工审查 DAG<br/>范围 · contracts · Base commit · 验证责任]
-
-    F -- 安全的局部修改 --> C[Codex 范围内直接修改]
-    F -- 委派或先写 spec --> P
-    P --> D[串行 DISPATCH<br/>默认 balanced]
-    D --> W{Worktree 策略 Gate}
-    W -- 普通或高风险 --> FW[Fresh worktree<br/>完整证据]
-    W -- 精确低风险串行任务 --> RW[Managed reuse 或原地重试<br/>显式证据取舍]
-    FW --> B[Claude Builder<br/>范围内实现]
-    RW --> B
-
-    PG --> PV{确定性并行校验}
-    PV -- 拒绝 --> SF[输出串行回退顺序<br/>不自动执行]
-    SF --> P
-    PV -- 通过 --> PD[显式 flat 或 DAG 派发<br/>最大并发 2]
-    PD --> MB[独立 Claude Builders<br/>隔离 worktrees]
-    MB --> AR[串行聚合审查<br/>不自动合并]
-
-    B --> R1[Codex 方向审查]
-    R1 -- 修订或拆分 --> P
-    R1 -- 方向接受 --> K[Claude Checker/Test<br/>分配的测试和精确验证]
-    C --> V[确定性验证]
-    K --> V
-    AR --> V
-
-    V --> E[证据包<br/>runtime identity · 角色 PID · diff · 报告 · checks]
-    E --> R2{Codex 最终审查}
-    R2 -- 接受 --> H[人工审查和合并]
-    R2 -- 修订 --> P
-    R2 -- 命中停止条件 --> X[保留证据并升级处理]
-
-    classDef auxiliary fill:#eef6ff,stroke:#3973ac,color:#102a43;
-    classDef execution fill:#fff7e6,stroke:#b7791f,color:#4a2c00;
-    classDef decision fill:#f3e8ff,stroke:#805ad5,color:#2d1b4e;
-    class SE,PP auxiliary;
-    class B,MB,K,C,V,PD execution;
-    class R,F,W,PA,PV,R1,R2 decision;
+    U[用户目标 / Task JSON] --> L[Lint · Compose · Validate]
+    L --> F[仓库事实 + 规范内容哈希]
+    F --> R{Express · Standard · Assured · Recovery}
+    R --> C[分层缓存 Context Packet]
+    C --> P[执行计划 + 原子模型预算]
+    P --> B[Model Call Broker]
+    B --> D[隔离 Worktree 中的 Claude Builder / Checker]
+    D --> E[自动 Evidence Builder]
+    E --> A{确定性验收}
+    A -- 机械失败 --> LR[本地 / Claude 修订]
+    A -- 语义缺口 --> S[L1 Spark 建议]
+    S --> X[必要时 L2 有界 Codex 审查]
+    A -- 全部标准满足 --> FD[最终决策]
+    X --> FD
+    LR --> D
+    FD --> H{需要远程验证?}
+    H -- 是 --> RH[仅预览 Bazel 交接 + Validation Ingest]
+    H -- 否 --> M[人工审查和合并]
+    RH --> M
+    D -. 哈希 Manifest .-> RS[从 dispatch / diff / review / decision 恢复]
+    E -. 可执行 Case .-> BM[确定性 Fake Adapter Benchmark Gate]
 ```
 
 完整控制循环为 **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**。ROUTE 位于完整任务卡之前：明显任务走零模型串行路径，成本不明确时可使用一次短 Spark 预估，只有疑似存在多个独立范围的任务才进入可选并行规划。Spark 始终只提供建议，不负责派发、验收或合并。Codex负责路由、规划和审查；Claude Builder负责委派实现；Claude Checker/Test负责被分配的测试。并行 Builder使用隔离 worktree，最终仍通过串行聚合审查汇合；人工审查和合并与自动派发保持分离。
@@ -107,6 +92,8 @@ flowchart TD
 | **自动配置仓库（预览）** | 检测语言、规模以及 LSP/CodeGraph/Zoekt 计划 | `python scripts/install_for_codex.py --auto-setup /path/to/repo` |
 | **自动配置仓库（执行）** | 安装缺失工具并初始化适用索引 | `python scripts/install_for_codex.py --auto-setup /path/to/repo --apply` |
 | **刷新项目 workflow** | 已经引导过的仓库 | `python scripts/install_workflow.py . --update-workflow-files` |
+| **预览集成运行** | 零模型调用审查所有阶段 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
+| **执行集成运行** | 执行已审查的计划 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute` |
 
 安装 Skill 只会让 Codex 发现该 workflow，不会自动在目标仓库创建或刷新 `ai/` 目录。已经引导过的项目会保留本地的 `ai/dispatch-to-claude.sh`、`ai/task-card-template.md` 等 workflow 副本。更新 Skill 后，需要使用 `update_skill.py --bootstrap-current` 或 `install_workflow.py . --update-workflow-files` 刷新这些本地副本。
 

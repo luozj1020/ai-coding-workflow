@@ -205,8 +205,12 @@ class RunContext:
         """Record an artifact in the manifest."""
         if path.exists():
             raw = path.read_bytes()
+            try:
+                manifest_path = str(path.resolve().relative_to(self.run_dir.resolve()))
+            except ValueError:
+                manifest_path = path.name
             entry = {
-                "path": str(path),
+                "path": manifest_path,
                 "size": len(raw),
                 "sha256": content_hash(raw),
                 "content_type": "application/json" if is_json else "text/plain",
@@ -358,11 +362,16 @@ def phase_facts(ctx: RunContext) -> None:
         collect_facts = _load_module("collect_task_facts", "collect-task-facts.py")
         extensions = ctx.composed.get("extensions", {})
         routing_hints = extensions.get("routing_hints", {}) if isinstance(extensions, dict) else {}
+        hints_path = ctx.run_dir / "routing-hints.json"
+        hints_path.write_text(
+            json.dumps(routing_hints if isinstance(routing_hints, dict) else {}, sort_keys=True),
+            encoding="utf-8",
+        )
         ctx.facts = collect_facts.collect_facts(
             composed_path,
+            hints_path=hints_path,
             profiles_dir=ctx.profiles_dir,
             repo=ctx.repo,
-            hints=routing_hints if isinstance(routing_hints, dict) else {},
         )
     except Exception as exc:
         raise PhaseError("facts", "failed", str(exc))
