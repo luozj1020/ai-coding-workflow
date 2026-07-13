@@ -380,6 +380,9 @@ Advisor timing rules:
 | Spark model | gpt-5.3-codex-spark |
 | Budget mode | balanced (default) / aggressive / conservative |
 | Pipeline stage | auto / preflight / midflight / postflight |
+| Pre-task-card routing | invoked / skipped |
+| Preflight skip reason | none / skip.sized_tiny_fastpath / skip.explicit_gate_off / skip.budget_zero / skip.model_unavailable |
+| Postflight required for non-empty diff? | yes / no, deterministic evidence already closes milestone |
 | Roles used | <!-- comma-separated list of Spark roles invoked --> |
 | Call cap recommendation | at most 3 short Spark helper invocations per task (workflow recommendation, not enforcement) |
 | Quota rationale | separate Spark quota / latency / cost / not applicable |
@@ -419,6 +422,9 @@ Advisor timing rules:
 | Stop conditions | unclear scope / non-availability helper failure / explicit require-spark failure |
 
 Spark rules:
+- For non-Express work, pre-task-card Spark routing is the default. Skip only with a stable reason code and preserve that reason in execution evidence.
+- `aiwf efficient prepare` is model-free but emits the invoke/skip decision. `aiwf dispatch-efficient --execute` runs a planned non-Express `preflight-bundle` before Claude, persists minimal evidence plus `spark-dispatch.json`, and continues if Spark auto-disables or fails. Preview invokes no model.
+- Use `postflight-bundle` to compress non-empty diff/report evidence before semantic Codex review unless deterministic evidence already closes the milestone.
 - When `Spark purpose` is `auto`, use stage routing / bundle selection; prefer an explicit `Spark purpose` when Codex already knows the needed support role. Use `auto` only for low-risk helper routing when task size or artifact type is uncertain.
 - `--mode auto` resolves to an applicable stage bundle: ordinary pre-Builder use resolves to `preflight-bundle`, diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility.
 - Budget mode (`AI_SPARK_BUDGET_MODE` / `--budget-mode`): `balanced` is the default, `aggressive` enables additional revision drafting on failure, and `conservative` uses legacy single-role routing.

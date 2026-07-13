@@ -97,14 +97,14 @@ If doctor reports `workflow-version` warnings, the repository is still using old
 Core loop:
 
 1. OBSERVE: gather low-token context with LSP, CodeGraph, MCP, and targeted snippets.
-2. ROUTE: before writing a full task card, send a 20–40 line task brief to Spark `execution-cost-estimator` or `preflight-bundle`; choose Codex fast path, task-card/Claude dispatch, spec-first, or clarification.
+2. ROUTE: before writing a full task card, use a 20–40 line Spark `execution-cost-estimator` or `preflight-bundle` brief for every non-obvious-tiny task; deterministic Express/tiny work may skip only with `skip.sized_tiny_fastpath`. Choose Codex fast path, task-card/Claude dispatch, spec-first, or clarification and record the invoke/skip reason.
 3. PLAN: only when routing requires delegation, create or revise a task card from `ai/task-card-template.md`; for ambiguous work, first create a short spec with `ai/init-spec.py` and fill `Spec Gate`.
 4. DISPATCH: run `bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md`.
-5. VERIFY: Claude edits in an isolated worktree and produces report/checker evidence.
+5. VERIFY: Claude edits in an isolated worktree; Spark compresses non-empty diff/report evidence with `postflight-bundle` before Codex review when deterministic evidence does not already close the milestone.
 6. REVIEW: run `bash ai/review-with-codex.sh ...` or `bash ai/run-loop.sh ...`.
 7. LEARN: carry accept/revise/split/reject decisions into the next iteration.
 
-For quota/latency optimized runs, prefer the integrated control plane: `aiwf efficient prepare` creates the reviewed lane/budget plan plus layered cached Context Packet; `aiwf dispatch-efficient` is preview-only unless `--execute` is explicit and enforces Claude budgets/new-evidence retries; `aiwf efficient review` evaluates a milestone with incremental evidence and selects L0 local, L1 Spark, or L2 Codex. Only deterministic Express Lane plans may combine Builder and exact narrow validation in one mixed-exception card. `aiwf loop` remains the legacy compatible loop.
+For quota/latency optimized runs, prefer the integrated control plane: `aiwf efficient prepare` creates the reviewed lane/budget plan, layered cached Context Packet, and explicit Spark invoke/skip decision; `aiwf dispatch-efficient` is preview-only unless `--execute` is explicit, then runs planned non-Express Spark preflight before Claude and records `spark-dispatch.json`; `aiwf efficient review` evaluates a milestone with incremental evidence and selects L0 local, L1 Spark, or L2 Codex. Spark failure/auto-disable is recorded and does not trigger a strong-model fallback. Only deterministic Express Lane plans may combine Builder and exact narrow validation in one mixed-exception card. `aiwf loop` remains the legacy compatible loop.
 
 ## Hot-Path Rules
 

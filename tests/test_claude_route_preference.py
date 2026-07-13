@@ -48,7 +48,10 @@ class TestStatePath(unittest.TestCase):
             os.environ.pop("XDG_STATE_HOME", None)
             os.environ.pop("LOCALAPPDATA", None)
             path = mod._state_path()
-            self.assertIn(".local/state/ai-coding-workflow/claude-route.json", str(path))
+            self.assertEqual(
+                path.parts[-4:],
+                (".local", "state", "ai-coding-workflow", "claude-route.json"),
+            )
 
 
 class TestResolve(unittest.TestCase):

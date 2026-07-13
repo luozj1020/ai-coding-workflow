@@ -1351,6 +1351,34 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("pre-task-card brief input is only supported", result.stderr)
 
+    def test_task_card_drafter_accepts_pre_task_card_brief(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            fake_codex = tmp_path / "codex.sh"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "cat > \"$CODEX_FAKE_STDIN\"\n"
+                "echo '# Draft task card'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+            prompt = tmp_path / "prompt.md"
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_FAKE_STDIN"] = bash_path(prompt)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), "--brief", "Add a bounded feature",
+                 "--mode", "task-card-drafter", "--result-mode", "direct"],
+                cwd=str(repo), env=env, text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("# Draft task card", result.stdout)
+            self.assertIn("Input type: pre-task-card brief", prompt.read_text(encoding="utf-8"))
+
     def test_direct_temp_cwd_is_writable_and_removed_after_exit(self):
         """Direct mode: temp cwd is outside source, writable, and removed after exit."""
         with tempfile.TemporaryDirectory() as tmp:

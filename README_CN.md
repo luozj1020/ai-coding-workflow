@@ -31,7 +31,7 @@ python scripts/aiwf.py dispatch-efficient --plan .ai-workflow/runs/T-1/execution
 python scripts/aiwf.py efficient review --plan .ai-workflow/runs/T-1/execution-plan.json --evidence evidence.json --milestone final-candidate --output .ai-workflow/runs/T-1/review.json
 ```
 
-`prepare` 生成可缓存的 L0/L1/L2 Context Packet 和重试基线；`dispatch-efficient` 实时输出并同步保存 stdout/stderr/progress，强制 Claude 调用预算并拒绝无新证据重试。只有 Express Lane 能生成经确定性门控的 `mixed-exception` 单轮卡；`review` 先执行确定性验收，再决定 L1 Spark/L2 Codex。`aiwf loop` 仅作为 `legacy-full-codex-review` 兼容入口。
+`prepare` 生成可缓存的 L0/L1/L2 Context Packet、重试基线和机器可读的 Spark 决策。非 Express 计划默认安排一次 `preflight-bundle`；Express/tiny、显式关闭和零预算跳过都会记录稳定原因码。加入 `--execute` 后，`dispatch-efficient` 会先运行计划中的 Spark 预检，再调度 Claude，保存 minimal Spark 证据和 `spark-dispatch.json`；Spark 自动禁用或失败时主流程继续。预览模式仍保持零模型调用。只有 Express Lane 能生成经确定性门控的 `mixed-exception` 单轮卡；`review` 先执行确定性验收，再决定 L1 Spark/L2 Codex。`aiwf loop` 仅作为 `legacy-full-codex-review` 兼容入口。
 
 ## 功能说明
 
@@ -40,7 +40,7 @@ ai-coding-workflow 可以为仓库自动配置：
 - `CLAUDE.md` - Claude Code 执行规则
 - 任务卡和证据包模板
 - Codex + Claude Code 工作流的安全调度/审查/循环脚本
-- 默认可选开启的 Codex Spark 辅助脚本，用 `gpt-5.3-codex-spark` 做任务规模分类、任务卡审查、计划拆分、验证规划、失败归因、证据检查、并行 DAG 规划、极小范围隔离 micro-builder 或窄范围可审计 controlled-builder 工作
+- 非 Express 路由和机械审查默认使用 Codex Spark 辅助通道，tiny 任务必须记录显式跳过原因；同时支持任务卡审查、计划拆分、验证规划、失败归因、并行 DAG 规划、极小范围隔离 micro-builder 或窄范围可审计 controlled-builder 工作
 - Execution profiles：默认省 token 的 balanced、完整上下文的 safe，以及显式大仓加速的 fast-large-repo
 - 大型仓库调度选项：受管 worktree 复用，以及减少昂贵的未跟踪文件扫描
 - 本地验证 gate，以及从任务卡 validation fenced block 自动抽取命令
@@ -54,12 +54,13 @@ ai-coding-workflow 可以为仓库自动配置：
 flowchart TD
     U[Human · 用户目标 / Task JSON] --> L[本地工具 · Lint / Compose / Validate]
     L --> F[Codex · 收集仓库事实]
-    F --> R{Codex + 可选 Spark 预估 · 路由}
+    F --> R{Codex + Spark 预检 · 路由}
     R --> C[Codex · Context Packet / 任务卡]
     C --> P[Codex · 执行计划与调用预算]
     P --> B[控制面 · Model Call Broker]
     B --> D[Claude Builder · 隔离实现]
-    D --> CR[Codex · 方向审查]
+    D --> SP[Spark · 机械后检]
+    SP --> CR[Codex · 方向审查]
     CR --> CT[Claude Checker/Test · 测试与窄范围验证]
     CT --> E[本地工具 · 自动证据整理]
     E --> A{本地工具 · 确定性验收}
@@ -77,7 +78,7 @@ flowchart TD
     E -. 可执行 Case .-> BM[确定性 Fake Adapter Benchmark Gate]
 ```
 
-完整控制循环为 **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**。ROUTE 位于完整任务卡之前：明显任务走零模型串行路径，成本不明确时可使用一次短 Spark 预估，只有疑似存在多个独立范围的任务才进入可选并行规划。Spark 始终只提供建议，不负责派发、验收或合并。Codex负责路由、规划和审查；Claude Builder负责委派实现；Claude Checker/Test负责被分配的测试。并行 Builder使用隔离 worktree，最终仍通过串行聚合审查汇合；人工审查和合并与自动派发保持分离。
+完整控制循环为 **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**。ROUTE 位于完整任务卡之前：确定性的 Express/tiny 任务记录 `skip.sized_tiny_fastpath`，其余任务默认使用一次短 Spark 预检。实现完成后，Spark 可压缩 diff 证据并进行机械后检，再交给 Codex 做方向和最终审查。Spark 始终只提供建议，不负责派发、验收或合并。Codex负责路由、规划和审查；Claude Builder负责委派实现；Claude Checker/Test负责被分配的测试。并行 Builder使用隔离 worktree，最终仍通过串行聚合审查汇合；人工审查和合并与自动派发保持分离。
 
 ## 常用动作
 
@@ -538,7 +539,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 大型仓库派发前应填写 `Claude Context Packet`。它应该很小、面向执行：目标文件/模块、相关符号、source-of-truth 示例、Claude 不应读取或修改的路径、已知约束，以及窄验证命令。如果这个 packet 不完整，Claude 应 stop-and-report，而不是重新广域扫描整个仓库。
 
-**默认可选开启：在执行规划中使用 Codex Spark**
+**默认辅助通道：在规划前和实现后使用 Codex Spark**
 
 如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；优先用更便宜的 Spark 额度判断任务规模和路由，再消耗更贵的 Codex/Claude 强模型上下文。已经知道所需辅助角色时，优先显式传 `--mode`；只有需要低风险自动路由时才用 `auto`。预算模式由 `AI_SPARK_BUDGET_MODE` / `--budget-mode` 控制：`balanced`（默认）、`aggressive`（失败时额外启用修订起草职责）、`conservative`（传统单角色路由）。建议每个任务最多调用三次短 Spark helper——预检、可选的定向/失败角色、后检——这是工作流建议，不是跨进程守护或状态强制。如果 CLI、模型权限、auth、网络、Spark 额度不可用，或本地 helper 因 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
 

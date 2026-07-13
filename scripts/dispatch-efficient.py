@@ -236,7 +236,60 @@ def _tee_subprocess(cmd, stdin_data=None, stdout_path=None, stderr_path=None, cw
             err_fh.close()
 
 
-def main():
+def _spark_auto_disabled(report_path: Path) -> bool:
+    if not report_path.exists():
+        return False
+    text = report_path.read_text(encoding="utf-8", errors="replace").lower()
+    return "| spark auto-disabled? | yes |" in text
+
+
+def _run_spark_preflight(plan: dict, card: Path, out: Path) -> dict:
+    policy = plan.get("spark", {})
+    record = {
+        "schema_version": 1,
+        "attempted": False,
+        "invoked": False,
+        "stage": policy.get("stage", "preflight"),
+        "mode": policy.get("mode", "preflight-bundle"),
+        "exit_code": None,
+        "auto_disabled": False,
+        "continued_to_claude": True,
+        "skip_reason": policy.get("skip_reason"),
+    }
+    if not policy.get("invoke", False):
+        return record
+
+    helper = HERE / "run-codex-spark.sh"
+    record["attempted"] = True
+    if not helper.exists():
+        record["exit_code"] = 127
+        record["auto_disabled"] = True
+        record["skip_reason"] = "skip.helper_missing"
+        return record
+
+    spark_out = out / "spark-preflight"
+    cmd = [
+        "bash", str(helper), str(card),
+        "--mode", record["mode"],
+        "--result-mode", "minimal",
+        "--output", str(spark_out),
+    ]
+    exit_code = _tee_subprocess(
+        cmd,
+        stdout_path=str(out / "spark-preflight.stdout"),
+        stderr_path=str(out / "spark-preflight.stderr"),
+    )
+    record["exit_code"] = exit_code
+    record["invoked"] = exit_code == 0
+    record["auto_disabled"] = exit_code != 0 or _spark_auto_disabled(
+        spark_out / "codex-spark.report.md"
+    )
+    if exit_code != 0:
+        record["skip_reason"] = "skip.spark_failed"
+    return record
+
+
+def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--plan", required=True)
     p.add_argument("--task-card", required=True)
@@ -246,7 +299,7 @@ def main():
     p.add_argument("--current-context")
     p.add_argument("--failure-log")
     p.add_argument("--execute", action="store_true")
-    a = p.parse_args()
+    a = p.parse_args(argv)
 
     plan = json.loads(Path(a.plan).read_text())
     card = Path(a.task_card)
@@ -294,12 +347,19 @@ def main():
         "single_pass": plan["execution"].get("single_pass_allowed", False),
         "call_index": len(calls) + 1,
         "execute": a.execute,
+        "spark": plan.get("spark", {}),
     }
     (out / "dispatch-preview.json").write_text(json.dumps(preview, sort_keys=True, indent=2) + "\n")
     print(json.dumps(preview, sort_keys=True, indent=2))
 
     if not a.execute:
         return 0
+
+    spark_record = _run_spark_preflight(plan, dispatch_card, out)
+    (out / "spark-dispatch.json").write_text(
+        json.dumps(spark_record, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     # --- Execute: real-time tee ---
     start = time.time()

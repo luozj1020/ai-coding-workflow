@@ -322,9 +322,9 @@ fi
 
 if [ "$INPUT_KIND" = "brief" ]; then
     case "$MODE" in
-        auto|task-size-classifier|execution-cost-estimator|preflight-bundle|observe-synthesizer) ;;
+        auto|task-size-classifier|execution-cost-estimator|preflight-bundle|observe-synthesizer|task-card-drafter) ;;
         *)
-            echo "Error: pre-task-card brief input is only supported by auto, task-size-classifier, execution-cost-estimator, preflight-bundle, or observe-synthesizer." >&2
+            echo "Error: pre-task-card brief input is only supported by auto, task-size-classifier, execution-cost-estimator, preflight-bundle, observe-synthesizer, or task-card-drafter." >&2
             exit 1
             ;;
     esac

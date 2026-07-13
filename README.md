@@ -31,7 +31,7 @@ python scripts/aiwf.py dispatch-efficient --plan .ai-workflow/runs/T-1/execution
 python scripts/aiwf.py efficient review --plan .ai-workflow/runs/T-1/execution-plan.json --evidence evidence.json --milestone final-candidate --output .ai-workflow/runs/T-1/review.json
 ```
 
-`prepare` writes a reusable layered Context Packet and retry baseline. `dispatch-efficient` streams output while preserving stdout/stderr/progress evidence, enforces the Claude call budget, and refuses retries without changed evidence. Express Lane alone can generate a reviewed `mixed-exception` single-pass card. `review` runs deterministic acceptance before L1 Spark/L2 Codex. `aiwf loop` is retained only as `legacy-full-codex-review` compatibility mode.
+`prepare` writes a reusable layered Context Packet, retry baseline, and machine-readable Spark decision. Non-Express plans default to one `preflight-bundle`; Express/tiny, explicit-off, and zero-budget skips carry stable reason codes. With `--execute`, `dispatch-efficient` runs the planned Spark preflight before Claude, persists minimal Spark evidence plus `spark-dispatch.json`, and continues safely if Spark auto-disables or fails. Preview remains zero-model. Express Lane alone can generate a reviewed `mixed-exception` single-pass card. `review` runs deterministic acceptance before L1 Spark/L2 Codex. `aiwf loop` is retained only as `legacy-full-codex-review` compatibility mode.
 
 ## What it does
 
@@ -40,7 +40,7 @@ ai-coding-workflow bootstraps repositories with:
 - `CLAUDE.md` - Claude Code execution rules
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
-- Default-on optional Codex Spark helper for `gpt-5.3-codex-spark` task-size classification, task-card audits, plan splitting, validation planning, failure triage, review/evidence checks, parallel DAG planning, tiny isolated micro-builder work, and narrow auditable controlled-builder work
+- Default Spark auxiliary lane for non-Express routing and mechanical review, with explicit tiny-task skip reasons; also supports task-card audits, plan splitting, validation planning, failure triage, parallel DAG planning, tiny isolated micro-builder work, and narrow auditable controlled-builder work
 - Execution profiles for token-saving balanced dispatch, safe full-context dispatch, and explicit fast large-repository dispatch
 - Large-repository dispatch options for managed worktree reuse and reduced expensive untracked-file scans
 - Local-validation gates and task-card validation command extraction
@@ -54,12 +54,13 @@ ai-coding-workflow bootstraps repositories with:
 flowchart TD
     U[Human · goal / Task JSON] --> L[Local tools · lint / compose / validate]
     L --> F[Codex · observe repository facts]
-    F --> R{Codex + optional Spark estimate · route}
+    F --> R{Codex + Spark preflight · route}
     R --> C[Codex · layered Context Packet / task card]
     C --> P[Codex · execution plan and call budget]
     P --> B[Control plane · Model Call Broker]
     B --> D[Claude Builder · isolated implementation]
-    D --> CR[Codex · direction review]
+    D --> SP[Spark · mechanical postflight]
+    SP --> CR[Codex · direction review]
     CR --> CT[Claude Checker/Test · tests and narrow validation]
     CT --> E[Local tools · automatic evidence]
     E --> A{Local tools · deterministic acceptance}
@@ -77,7 +78,7 @@ flowchart TD
     E -. executed cases .-> BM[Deterministic fake-adapter benchmark gates]
 ```
 
-The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**. ROUTE happens before full task-card authoring: obvious work stays on the zero-model serial path, uncertain cost may use a short Spark estimate, and only plausible multi-scope work reaches the optional parallel planner. Spark remains advisory and never dispatches, accepts, or merges. Codex owns routing, planning, and review; Claude Builder owns delegated edits; Claude Checker/Test owns assigned test work. Parallel builders remain isolated and converge through serial aggregate review. Runtime identity, progress, role PID, diff, reports, and checker artifacts keep interrupted work recoverable; human review and merge remain separate.
+The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**. ROUTE happens before full task-card authoring. Deterministic Express/tiny work records `skip.sized_tiny_fastpath`; other tasks use a short Spark preflight by default. After implementation, Spark may compress diff evidence and perform a mechanical postflight before Codex direction/final review. Spark remains advisory and never dispatches, accepts, or merges. Codex owns routing, planning, and review; Claude Builder owns delegated edits; Claude Checker/Test owns assigned test work. Parallel builders remain isolated and converge through serial aggregate review. Runtime identity, progress, role PID, diff, reports, and checker artifacts keep interrupted work recoverable; human review and merge remain separate.
 
 ## Common actions
 
@@ -563,7 +564,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 For large repositories, fill `Claude Context Packet` before dispatch. Keep it execution-facing and small: target files/modules, relevant symbols, source-of-truth examples, paths Claude must not read or modify, known constraints, and narrow validation commands. Use `python ai/locate-code.py "symbol or behavior" --path src --max-files 12` to build this packet cheaply. If this packet is incomplete, Claude should stop and report instead of rediscovering the whole repository.
 
-**Default-on optional: use Codex Spark during execution planning**
+**Default auxiliary lane: use Codex Spark before planning and after implementation**
 
 If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave `Codex Spark Gate` at `auto` for eligible tasks. Spark is auxiliary, not a default Claude replacement; use its cheaper quota for uncertain task-size routing before spending stronger Codex/Claude context. Prefer an explicit `--mode` when you already know the needed support role, and use `auto` when routing is the point. Budget mode is controlled by `AI_SPARK_BUDGET_MODE` / `--budget-mode`: `balanced` (default), `aggressive` (enables additional revision drafting on failure), `conservative` (legacy single-role routing). Recommend at most three short Spark helper invocations per task — a preflight call, an optional targeted or failure role call, and a postflight call — as a workflow recommendation, not cross-process daemon or state enforcement. If the CLI, model access, auth, network, or Spark quota is unavailable, the helper writes an auto-disabled report and exits 0 so the main Claude/Codex workflow can continue:
 

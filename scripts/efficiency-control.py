@@ -30,9 +30,23 @@ def prepare(args):
     route = router.route(hints); task_id = hints.get("task_id") or Path(args.task_card).stem
     # Copy single-pass eligibility from Router — never re-derive
     single = route["execution"]["single_pass_allowed"]
-    spark_use = (not hints.get("local_tools_sufficient", False) and hints.get("spark_may_change_route", False)
-                 and (hints.get("spark_may_avoid_codex", False) or hints.get("spark_may_avoid_retry", False))
-                 and route["budget"]["spark_calls"] > 0)
+    spark_gate = str(hints.get("spark_gate", "auto")).lower()
+    if spark_gate == "off":
+        spark_use = False
+        spark_skip_reason = "skip.explicit_gate_off"
+        spark_reason = "Spark was explicitly disabled for this task"
+    elif route["lane"] == "express":
+        spark_use = False
+        spark_skip_reason = "skip.sized_tiny_fastpath"
+        spark_reason = "deterministic Express task uses the tiny fast path"
+    elif route["budget"]["spark_calls"] <= 0:
+        spark_use = False
+        spark_skip_reason = "skip.budget_zero"
+        spark_reason = "routing budget does not permit a Spark call"
+    else:
+        spark_use = True
+        spark_skip_reason = None
+        spark_reason = "non-Express work receives a Spark preflight before Claude dispatch"
     levels = {
         "L0": {"files": hints.get("target_files", []), "symbols": hints.get("symbols", []), "targets": hints.get("build_targets", [])},
         "L1": {"snippets": hints.get("reference_snippets", []), "call_paths": hints.get("call_paths", []), "constraints": hints.get("constraints", [])},
@@ -42,7 +56,7 @@ def prepare(args):
     plan = {"schema_version": 1, "generated_at": int(time.time()), "task_id": task_id, "lane": route["lane"], "budget": route["budget"],
             "execution": {"builder_checker_split": route["execution"]["builder_checker_split"], "single_pass_allowed": single, "single_pass_reason": route["execution"]["single_pass_reason"], "max_iterations": 2 if hints.get("latency_mode", "interactive") == "interactive" else 3, "require_new_evidence_for_retry": True},
             "review": {"reserved_for": route["budget"].get("codex_reserved_for", []), "milestones": ["implementation-complete", "validation-complete", "final-candidate"], "incremental": True},
-            "spark": {"invoke": bool(spark_use), "reason": "may change route and avoid stronger/retry call" if spark_use else "local tools sufficient or result cannot change route", "max_calls": 1},
+            "spark": {"invoke": bool(spark_use), "stage": "preflight", "mode": "preflight-bundle", "reason": spark_reason, "skip_reason": spark_skip_reason, "max_calls": 1},
             "context": {"cache_key": digest(cache_identity), "levels": levels, "default_level": "L1", "allow_l2_on_gap": True},
             "legacy_loop_compatible": True, "automatic_model_invocation": False, "automatic_merge": False}
     output = Path(args.output_dir)
