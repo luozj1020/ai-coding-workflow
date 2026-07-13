@@ -299,10 +299,10 @@ class TestCLI(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.returncode, 1)
             plan = json.loads(output_path.read_text())
-            self.assertIn("resume_type", plan)
-            self.assertIn("resume_safe", plan)
+            self.assertEqual(plan["resume_type"], "requires-human")
+            self.assertFalse(plan["resume_safe"])
 
 
 class TestPython39Compat(unittest.TestCase):
