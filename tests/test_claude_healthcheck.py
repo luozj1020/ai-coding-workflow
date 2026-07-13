@@ -105,6 +105,19 @@ class ClaudeHealthcheckTests(unittest.TestCase):
                  mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print"):
                 self.assertEqual(health.main(["--settings", str(path), "--interaction-route", "inherit", "--json"]), 1)
 
+    def test_explicit_settings_skips_path_home_on_cleared_env(self):
+        """Windows regression: --settings flag must not trigger Path.home()."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text(json.dumps({"env": {
+                "ANTHROPIC_BASE_URL": "https://example.cn",
+            }}), encoding="utf-8")
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 mock.patch("pathlib.Path.home", side_effect=RuntimeError("should not be called")), \
+                 mock.patch.object(health.shutil, "which", return_value="claude"):
+                result = health.main(["--settings", str(path), "--json"])
+            self.assertEqual(result, 0)
+
     def test_installer_and_doctor_register_helper(self):
         self.assertIn('"claude-healthcheck.py"', (ROOT / "scripts/install_workflow.py").read_text())
         self.assertIn("ai/claude-healthcheck.py", (ROOT / "scripts/doctor_workflow.py").read_text())

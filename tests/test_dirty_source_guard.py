@@ -1072,11 +1072,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(data.get("builder_mode"), "execution-only")
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         self.assertIn("First-progress timed out: yes", status)
+        self.assertIn("Counts toward takeover: false", status)
         self.assertNotIn("acceptance", status.lower())
-        self.assertNotIn("takeover", status.lower())
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertNotIn("acceptance", progress.lower())
-        self.assertNotIn("takeover", progress.lower())
 
 
     # --- Semantic result error detection and dispatch outcome tests ---

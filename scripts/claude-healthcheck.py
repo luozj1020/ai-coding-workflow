@@ -105,7 +105,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--settings",
         type=Path,
-        default=Path.home() / ".claude" / "settings.json",
+        default=None,
     )
     parser.add_argument("--probe", action="store_true", help="Probe configured API origin without credentials.")
     parser.add_argument(
@@ -119,7 +119,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="Run a real minimal interaction; auto tries the alternate only after failure.")
     parser.add_argument("--prompt", default="你好，请只回复：连接正常")
     args = parser.parse_args(argv)
-    result = configuration(args.settings.expanduser())
+    settings_path = args.settings.expanduser() if args.settings is not None else Path.home() / ".claude" / "settings.json"
+    result = configuration(settings_path)
     result["execution_environment"] = {
         "network_restricted": restricted_network_environment(),
         "interaction_authority": "current-process",

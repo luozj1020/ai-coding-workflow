@@ -180,7 +180,7 @@ class TestNamedHashCategories(unittest.TestCase):
             p = Path(td) / "changes.diff"
             p.write_text("diff --git a/foo b/foo\n", encoding="utf-8")
             h = evidence_hash_mod.hash_diff(str(p))
-            self.assertEqual(h, evidence_hash_mod.content_hash("diff --git a/foo b/foo\n"))
+            self.assertEqual(h, evidence_hash_mod.content_hash(p.read_bytes()))
 
     def test_acceptance_hash(self):
         self.assertEqual(len(evidence_hash_mod.hash_acceptance({"status": "passed"})), 64)
@@ -406,13 +406,8 @@ class TestDispatchTee(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             stdout_path = Path(td) / "out.txt"
             stderr_path = Path(td) / "err.txt"
-            # Script that exits with code 42
-            script = Path(td) / "fake.sh"
-            script.write_text("#!/bin/bash\necho hello\necho error >&2\nexit 42\n")
-            os.chmod(script, 0o755)
-
             rc = dispatch_mod._tee_subprocess(
-                ["bash", str(script)],
+                [sys.executable, "-c", "import sys; print('hello'); print('error', file=sys.stderr); sys.exit(42)"],
                 stdout_path=str(stdout_path),
                 stderr_path=str(stderr_path),
             )
@@ -425,13 +420,8 @@ class TestDispatchTee(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             stdout_path = Path(td) / "out.txt"
             stderr_path = Path(td) / "err.txt"
-            script = Path(td) / "fake.sh"
-            # Use 'echo ... >&2' so bash writes to stderr, not execute 'errstuff'
-            script.write_text("#!/bin/bash\necho OUT\necho errstuff >&2\n")
-            os.chmod(script, 0o755)
-
             dispatch_mod._tee_subprocess(
-                ["bash", str(script)],
+                [sys.executable, "-c", "import sys; print('OUT'); print('errstuff', file=sys.stderr)"],
                 stdout_path=str(stdout_path),
                 stderr_path=str(stderr_path),
             )
