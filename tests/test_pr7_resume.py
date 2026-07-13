@@ -160,6 +160,19 @@ class TestResumeTypes(unittest.TestCase):
             self.assertEqual(plan["resume_type"], "requires-human")
             self.assertFalse(plan["resume_safe"])
 
+    def test_setup_only_no_dispatch_incomplete_requires_human(self):
+        """safe_phase=setup without dispatch_incomplete → requires-human, not partial-diff."""
+        events = [
+            make_event(event="setup_complete", phase="setup"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = make_run_dir(tmp, events=events)
+            plan = resume_run.build_resume_plan(
+                run_dir, events, [], [], [], False
+            )
+            self.assertEqual(plan["resume_type"], "requires-human")
+            self.assertFalse(plan["resume_safe"])
+
 
 class TestReviewFailedRecoverable(unittest.TestCase):
     """Test that review_failed alone is recoverable (not corruption)."""

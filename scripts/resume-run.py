@@ -287,8 +287,8 @@ def determine_resume_type(
     if dispatch_complete:
         return RESUME_FROM_DISPATCH
 
-    # Partial diff exists (dispatch incomplete)
-    if safe_phase == "setup" or has_event(events, "dispatch_incomplete"):
+    # Partial diff exists — requires explicit dispatch_incomplete event
+    if has_event(events, "dispatch_incomplete"):
         return RESUME_FROM_PARTIAL_DIFF
 
     # Ambiguous state — require human
