@@ -460,7 +460,7 @@ validate_retry_in_place() {
         while IFS= read -r _uf; do
             [ -z "$_uf" ] && continue
             case "$_uf" in
-                TASK_CARD.md|TASK_CARD_FULL.md|CLAUDE_TASK_CARD.md|CLAUDE_PROMPT.md|CLAUDE_REPORT.md|CLAUDE_PROGRESS.md)
+                TASK_CARD.md|TASK_CARD_FULL.md|CLAUDE_TASK_CARD.md|CLAUDE_PROMPT.md|CLAUDE_REPORT.md|CLAUDE_PROGRESS.md|ADVISOR_REQUEST.json|advisor-packet.json|advisor-packet.md|advisor-response-*.json|advisor-decision.json)
                     ;; # known dispatcher control file; allowed
                 *)
                     _unknown_untracked="${_unknown_untracked}${_uf}\n" ;;
@@ -492,6 +492,267 @@ validate_retry_in_place() {
     [ -n "$_RETRY_BRANCH" ] || _RETRY_BRANCH="claude-task-retry-${prior_task_id}"
 }
 
+# --- Advisor continuation validation ---
+# Validate a prior run's artifacts for safe advisor-continuation reuse.
+# Sets _ADVISOR_CONTINUE_TASK_ID, _ADVISOR_CONTINUE_WORKTREE_DIR, _ADVISOR_CONTINUE_BRANCH,
+# _ADVISOR_CONTINUE_RESPONSE on success.
+# On any ambiguity, fails closed with an actionable error.
+# This path is separate from clean transient retry (retry-in-place).
+validate_advisor_continuation() {
+    local prior_task_id="$1"
+    local prior_root="${WORKTREE_ROOT}/${prior_task_id}"
+
+    local prior_runtime="${prior_root}.runtime.json"
+    local prior_dispatcher_pid="${prior_root}.dispatcher.pid"
+    local prior_claude_pid="${prior_root}.claude.pid"
+    local prior_pid="${prior_root}.pid"
+    local prior_checker_pid="${prior_root}.checker.pid"
+
+    # --- 1. Resolve prior runtime ---
+    if [ ! -f "$prior_runtime" ]; then
+        echo "Error: advisor-continuation: prior runtime.json not found: ${prior_runtime}" >&2
+        exit 1
+    fi
+
+    local wt source_repo base_commit strategy
+    wt="$(sed -n 's/.*"worktree"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    source_repo="$(sed -n 's/.*"source_repository"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    base_commit="$(sed -n 's/.*"base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    _ADVISOR_CONTINUE_BRANCH="$(sed -n 's/.*"branch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+
+    if [ -z "$wt" ] || [ -z "$source_repo" ] || [ -z "$base_commit" ]; then
+        echo "Error: advisor-continuation: prior runtime.json is malformed." >&2
+        exit 1
+    fi
+
+    # --- 2. Worktree must be under .worktrees/ boundary ---
+    case "$wt" in
+        "${WORKTREE_ROOT}/"*) ;;
+        *)
+            echo "Error: advisor-continuation: prior worktree outside .worktrees/ boundary: ${wt}" >&2
+            exit 1
+            ;;
+    esac
+
+    # Worktree must exist and be a valid git worktree
+    if [ ! -d "$wt" ]; then
+        echo "Error: advisor-continuation: prior worktree missing: ${wt}" >&2
+        exit 1
+    fi
+    if ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "Error: advisor-continuation: not a valid git worktree: ${wt}" >&2
+        exit 1
+    fi
+
+    # --- 3. Source repository must match ---
+    if [ "$source_repo" != "$REPO_ROOT" ]; then
+        echo "Error: advisor-continuation: source repository mismatch: recorded=${source_repo} current=${REPO_ROOT}" >&2
+        exit 1
+    fi
+
+    # --- 4. Require all recorded processes inactive ---
+    local pid_val
+    for _pid_file in "$prior_dispatcher_pid" "$prior_claude_pid" "$prior_pid" "$prior_checker_pid"; do
+        if [ -f "$_pid_file" ]; then
+            pid_val="$(tr -d '[:space:]' < "$_pid_file")"
+            if [ -n "$pid_val" ] && kill -0 "$pid_val" 2>/dev/null; then
+                echo "Error: advisor-continuation: process ${pid_val} (from ${_pid_file}) is still running." >&2
+                exit 1
+            fi
+        fi
+    done
+
+    # --- 5. Base commit must match ---
+    if [ "$base_commit" != "$BASE_COMMIT" ]; then
+        echo "Error: advisor-continuation: recorded base commit does not match current HEAD: recorded=${base_commit} current=${BASE_COMMIT}" >&2
+        exit 1
+    fi
+
+    # Worktree HEAD must equal recorded base
+    local wt_head
+    wt_head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+    if [ "$wt_head" != "$base_commit" ]; then
+        echo "Error: advisor-continuation: worktree HEAD does not match recorded base: worktree=${wt_head} base=${base_commit}" >&2
+        exit 1
+    fi
+
+    # --- 6. Resolve advisor packet and validated response ---
+    local advisor_dir="${prior_root}.advisor-request"
+    local advisor_packet="${wt}/advisor-packet.json"
+    local advisor_response="${advisor_dir}/advisor-response-validated.json"
+    local advisor_result="${advisor_dir}/advisor-call-result.json"
+
+    # The advisor packet must exist in the worktree
+    if [ ! -f "$advisor_packet" ]; then
+        echo "Error: advisor-continuation: advisor-packet.json not found in worktree: ${wt}" >&2
+        exit 1
+    fi
+
+    # The validated response must exist (from advisor-call or prepare-advisor-continuation)
+    if [ ! -f "$advisor_response" ]; then
+        # Fall back: check the output dir from advisor-call
+        local _advisor_output_dir="${WORKTREE_ROOT}/${prior_task_id}.advisor-output"
+        if [ -f "${_advisor_output_dir}/advisor-response-validated.json" ]; then
+            advisor_response="${_advisor_output_dir}/advisor-response-validated.json"
+        else
+            echo "Error: advisor-continuation: validated advisor response not found." >&2
+            echo "Expected: ${advisor_response} or ${_advisor_output_dir}/advisor-response-validated.json" >&2
+            exit 1
+        fi
+    fi
+
+    # --- 7. Validate response resume eligibility ---
+    if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/validate-advisor-response.py" ]; then
+        local _validation_output
+        _validation_output="$("$PYTHON_CMD" "${SCRIPT_DIR}/validate-advisor-response.py" "$advisor_response" \
+            --archive-invalid "${advisor_dir}/continuation-validation-invalid.json" 2>&1)" || {
+            echo "Error: advisor-continuation: response validation failed:" >&2
+            echo "$_validation_output" >&2
+            exit 1
+        }
+        # Check resume_eligible
+        local _resume_eligible
+        _resume_eligible="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo "false"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(str(data.get("resume_eligible", False)).lower())
+PYEOF
+)"
+        if [ "$_resume_eligible" != "true" ]; then
+            echo "Error: advisor-continuation: response is not resume-eligible (resume_eligible=false)." >&2
+            exit 1
+        fi
+    else
+        echo "Error: advisor-continuation: response validator unavailable." >&2
+        exit 1
+    fi
+
+    # --- 8. Check diff/evidence hash binding ---
+    local _packet_diff_hash _packet_evidence_hash _response_evidence_hash
+    _packet_diff_hash="$("$PYTHON_CMD" - "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("diff_hash", ""))
+PYEOF
+)"
+    _packet_evidence_hash="$("$PYTHON_CMD" - "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("evidence_hash", ""))
+PYEOF
+)"
+    _response_evidence_hash="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("evidence_hash", ""))
+PYEOF
+)"
+
+    # Evidence hash must match between packet and response
+    if [ -n "$_packet_evidence_hash" ] && [ -n "$_response_evidence_hash" ] && \
+       [ "$_packet_evidence_hash" != "$_response_evidence_hash" ]; then
+        echo "Error: advisor-continuation: evidence hash mismatch: packet=${_packet_evidence_hash} response=${_response_evidence_hash}" >&2
+        exit 1
+    fi
+
+    # --- 9. Atomic reservation: prevent concurrent claim ---
+    _ADVISOR_CONTINUE_RESERVATION_DIR="${WORKTREE_ROOT}/.advisor-continue-lock-${prior_task_id}"
+    if ! mkdir "$_ADVISOR_CONTINUE_RESERVATION_DIR" 2>/dev/null; then
+        echo "Error: advisor-continuation: reservation already exists for task ${prior_task_id}." >&2
+        echo "Another dispatcher may be claiming this advisor continuation." >&2
+        exit 1
+    fi
+    echo "$$" > "${_ADVISOR_CONTINUE_RESERVATION_DIR}/pid"
+    trap 'rm -rf "$_ADVISOR_CONTINUE_RESERVATION_DIR"' EXIT
+
+    # --- 10. Check changed-path boundaries ---
+    # All changed paths must be inside allowed_changes and outside forbidden_changes
+    local _allowed_changes _forbidden_changes _changed_files
+    _allowed_changes="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print("\n".join(data.get("allowed_changes", [])))
+PYEOF
+)"
+    _forbidden_changes="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+forbidden = data.get("forbidden_changes", [])
+# Also include packet forbidden paths
+try:
+    packet = json.load(open(sys.argv[2] if len(sys.argv) > 2 else "/dev/null", encoding="utf-8"))
+    forbidden = list(set(forbidden + packet.get("forbidden_paths", [])))
+except Exception:
+    pass
+print("\n".join(forbidden))
+PYEOF
+)"
+
+    # Get current worktree changes
+    _changed_files="$(git -C "$wt" diff --name-only 2>/dev/null || true)"
+    if [ -n "$_changed_files" ] && [ -n "$_allowed_changes" ]; then
+        local _violation=""
+        while IFS= read -r _cf; do
+            [ -z "$_cf" ] && continue
+            # Check if changed file is inside any allowed path
+            local _allowed=0
+            while IFS= read -r _ac; do
+                [ -z "$_ac" ] && continue
+                if [ "$_cf" = "$_ac" ] || [[ "$_cf" == "${_ac}/"* ]]; then
+                    _allowed=1
+                    break
+                fi
+            done <<< "$_allowed_changes"
+            if [ "$_allowed" -eq 0 ]; then
+                _violation="${_violation}  ${_cf}\n"
+            fi
+        done <<< "$_changed_files"
+        if [ -n "$_violation" ]; then
+            echo "Error: advisor-continuation: changed files outside allowed scope:" >&2
+            printf '%b' "$_violation" >&2
+            exit 1
+        fi
+    fi
+
+    # Check forbidden paths are not changed
+    if [ -n "$_changed_files" ] && [ -n "$_forbidden_changes" ]; then
+        local _forbidden_violation=""
+        while IFS= read -r _cf; do
+            [ -z "$_cf" ] && continue
+            while IFS= read -r _fp; do
+                [ -z "$_fp" ] && continue
+                if [ "$_cf" = "$_fp" ] || [[ "$_cf" == "${_fp}/"* ]]; then
+                    _forbidden_violation="${_forbidden_violation}  ${_cf}\n"
+                    break
+                fi
+            done <<< "$_forbidden_changes"
+        done <<< "$_changed_files"
+        if [ -n "$_forbidden_violation" ]; then
+            echo "Error: advisor-continuation: changed files in forbidden paths:" >&2
+            printf '%b' "$_forbidden_violation" >&2
+            exit 1
+        fi
+    fi
+
+    # --- 11. Extract response data for continuation card ---
+    local _response_decision _response_answer
+    _response_decision="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo "unknown"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("decision", "unknown"))
+PYEOF
+)"
+    if [ "$_response_decision" = "stop" ] || [ "$_response_decision" = "split" ]; then
+        echo "Error: advisor-continuation: response decision is '${_response_decision}', not resumable." >&2
+        exit 1
+    fi
+
+    _ADVISOR_CONTINUE_RESPONSE="$advisor_response"
+    _ADVISOR_CONTINUE_TASK_ID="$prior_task_id"
+    _ADVISOR_CONTINUE_WORKTREE_DIR="$wt"
+    [ -n "$_ADVISOR_CONTINUE_BRANCH" ] || _ADVISOR_CONTINUE_BRANCH="claude-advisor-continue-${prior_task_id}"
+}
+
 # --- Spec item 3: retry-in-place setup ---
 # If CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID is set, validate and reuse prior worktree.
 # On success, TASK_ID and WORKTREE_DIR are set from prior run's runtime.json.
@@ -517,6 +778,21 @@ if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
     echo "$$" > "${_RETRY_RESERVATION_DIR}/pid"
     trap 'rm -rf "$_RETRY_RESERVATION_DIR"' EXIT
     echo "Worktree reuse (retry-in-place): $WORKTREE_DIR (prior task: $_RETRY_TASK_ID, new task: $TASK_ID)"
+elif [ -n "${CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID:-}" ]; then
+    # --- Advisor continuation setup ---
+    # Validate and reuse prior worktree with advisor response artifacts.
+    # On failure, exits with actionable error (fail closed).
+    _ADVISOR_CONTINUE_TASK_ID=""
+    _ADVISOR_CONTINUE_WORKTREE_DIR=""
+    _ADVISOR_CONTINUE_BRANCH=""
+    _ADVISOR_CONTINUE_RESPONSE=""
+    _ADVISOR_CONTINUE_RESERVATION_DIR=""
+    validate_advisor_continuation "$CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID"
+    # Continuation must receive a new unique TASK_ID; prior ID is for provenance.
+    TASK_ID="claude-advisor-${TIMESTAMP}-${RAND_SUFFIX}"
+    WORKTREE_DIR="$_ADVISOR_CONTINUE_WORKTREE_DIR"
+    BRANCH_NAME="$_ADVISOR_CONTINUE_BRANCH"
+    echo "Worktree reuse (advisor-continuation): $WORKTREE_DIR (prior task: $_ADVISOR_CONTINUE_TASK_ID, new task: $TASK_ID)"
 else
     # --- Normal worktree setup (fresh or reuse-managed) ---
     if [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
@@ -913,6 +1189,131 @@ render_claude_task_card "${WORKTREE_DIR}/TASK_CARD_FULL.md" > "${WORKTREE_DIR}/C
     echo ""
     echo "Ordinary completion must not create this file. It is neither acceptance nor continuation authorization."
 } >> "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+
+# --- Advisor continuation card generation ---
+# When in advisor continuation mode, replace the task card with a minimal
+# continuation execution card that says continue from current progress,
+# do not re-plan, and includes only validated answer/scope/new validation.
+if [ -n "${_ADVISOR_CONTINUE_RESPONSE:-}" ] && [ -f "${_ADVISOR_CONTINUE_RESPONSE:-/dev/null}" ]; then
+    _build_advisor_continuation_card() {
+        local response_file="$1"
+        local task_id="$2"
+        local prior_task_id="$3"
+        local completed_work="$4"
+
+        local decision answer advisor
+        decision="$("$PYTHON_CMD" - "$response_file" <<'PYEOF' 2>/dev/null || echo "continue"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("decision", "continue"))
+PYEOF
+)"
+        answer="$("$PYTHON_CMD" - "$response_file" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("answer", ""))
+PYEOF
+)"
+        advisor="$("$PYTHON_CMD" - "$response_file" <<'PYEOF' 2>/dev/null || echo "unknown"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("advisor", "unknown"))
+PYEOF
+)"
+
+        cat <<CARD_EOF
+<!-- Advisor continuation card: do not re-plan -->
+# Advisor Continuation Card: ${task_id}
+
+**Prior Task:** ${prior_task_id}
+**Advisor:** ${advisor}
+**Decision:** ${decision}
+
+## Instructions
+
+This is a **same-worktree advisor continuation**. Do not create a new worktree.
+Do not re-plan; continue from current progress.
+
+## Advisor Answer
+
+${answer}
+
+## Completed Work (prior run)
+
+${completed_work}
+
+## Allowed Changes
+CARD_EOF
+
+        "$PYTHON_CMD" - "$response_file" <<'PYEOF' 2>/dev/null
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+changes = data.get("allowed_changes", [])
+if changes:
+    for c in changes:
+        print(f"- \`{c}\`")
+else:
+    print("(none)")
+PYEOF
+
+        echo ""
+        echo "## Forbidden Changes"
+
+        "$PYTHON_CMD" - "$response_file" <<'PYEOF' 2>/dev/null
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+forbidden = data.get("forbidden_changes", [])
+if forbidden:
+    for f in forbidden:
+        print(f"- \`{f}\`")
+else:
+    print("(none)")
+PYEOF
+
+        echo ""
+        echo "## New Validation Commands"
+
+        "$PYTHON_CMD" - "$response_file" <<'PYEOF' 2>/dev/null
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+cmds = data.get("new_validation", [])
+if cmds:
+    for c in cmds:
+        print(f"- \`{c}\`")
+else:
+    print("(none)")
+PYEOF
+
+        cat <<'RULES_EOF'
+
+## Rules
+
+- Do **not** repeat planning; continue from current progress.
+- Update `CLAUDE_PROGRESS.md` with your continuation status.
+- Update `CLAUDE_REPORT.md` when finished.
+- Respect the allowed/forbidden changes listed above.
+RULES_EOF
+    }
+
+    # Load completed_work from the advisor packet
+    _prior_completed_work="$("$PYTHON_CMD" - "${WORKTREE_DIR}/advisor-packet.json" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("completed_work", ""))
+PYEOF
+)"
+
+    _build_advisor_continuation_card \
+        "$_ADVISOR_CONTINUE_RESPONSE" \
+        "$TASK_ID" \
+        "$_ADVISOR_CONTINUE_TASK_ID" \
+        "$_prior_completed_work" \
+        > "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+
+    if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
+        echo "Advisor continuation card rendered to: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+    fi
+fi
 
 if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
     echo "Full task card copied to: ${WORKTREE_DIR}/TASK_CARD_FULL.md"
