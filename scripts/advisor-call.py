@@ -27,6 +27,60 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _get_codex_binary() -> str:
+    """Return the Codex CLI binary path.
+
+    Respects CODEX_BINARY env var for deterministic testing without
+    shell interpolation.  Falls back to 'codex' on PATH.
+    """
+    return os.environ.get("CODEX_BINARY", "codex")
+
+
+def _build_model_command(advisor: str) -> list:
+    """Build the model invocation command for the given advisor.
+
+    Spark uses Codex CLI with explicit model gpt-5.3-codex-spark.
+    Codex uses Codex CLI with its default model.
+    No fallback between advisors — Spark failure never falls back to Codex.
+    """
+    codex_bin = _get_codex_binary()
+    if advisor == "spark":
+        return [codex_bin, "--model", "gpt-5.3-codex-spark", "--json"]
+    elif advisor == "codex":
+        return [codex_bin, "--json"]
+    else:
+        return []
+
+
+def _build_binding_suffix(
+    *,
+    request_id: str,
+    evidence_hash: str,
+    reservation_id: str,
+    advisor: str,
+) -> str:
+    """Build the binding suffix appended to the advisor prompt.
+
+    Tells the model the exact request_id, evidence_hash, reservation_id,
+    advisor enum, and strict response schema requirements.
+    """
+    return (
+        "\n\n--- BINDING CONTEXT (do not modify) ---\n"
+        f"request_id: {request_id}\n"
+        f"evidence_hash: {evidence_hash}\n"
+        f"reservation_id: {reservation_id}\n"
+        f"advisor: {advisor}\n"
+        "schema_version: 1\n"
+        "\n"
+        "You MUST include these exact values in your JSON response.\n"
+        "Your response MUST be a single JSON object with exactly these fields:\n"
+        "schema_version, request_id, advisor, reservation_id, evidence_hash,\n"
+        "decision, answer, allowed_changes, forbidden_changes, new_validation,\n"
+        "risk_changed, resume_allowed.\n"
+        "--- END BINDING CONTEXT ---\n"
+    )
+
+
 def _run_model_call_broker(
     *,
     role: str,
@@ -39,6 +93,7 @@ def _run_model_call_broker(
     ledger_path: Path,
     plan_path: Optional[Path] = None,
     run_id: Optional[str] = None,
+    reservation_id: Optional[str] = None,
 ) -> int:
     """Run the model-call-broker with the given arguments. Returns exit code."""
     cmd = [
@@ -56,16 +111,11 @@ def _run_model_call_broker(
         cmd += ["--plan", str(plan_path)]
     if run_id:
         cmd += ["--run-id", run_id]
+    if reservation_id:
+        cmd += ["--reservation-id", reservation_id]
 
-    # The actual model command depends on the role
-    if role == "spark":
-        model_cmd = ["spark", "--json"]
-    elif role == "codex":
-        model_cmd = ["codex", "exec", "--json"]
-    elif role == "human":
-        # Human mode: no model call, just validate an explicitly supplied response
-        return 0
-    else:
+    model_cmd = _build_model_command(role)
+    if not model_cmd:
         return 3  # Unknown role
 
     cmd += ["--"] + model_cmd
@@ -165,8 +215,46 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     # For model advisors (spark/codex): broker-mediated execution
+
+    # Generate stable unique reservation_id before broker invocation
+    reservation_id = f"advisor-{uuid.uuid4().hex[:16]}"
+    run_id = f"advisor-{uuid.uuid4().hex[:12]}"
+
     # Compute input hash
     input_hash = _content_hash(args.prompt.read_bytes())
+
+    # Read original prompt and append binding suffix
+    original_prompt_bytes = args.prompt.read_bytes()
+    binding_suffix = _build_binding_suffix(
+        request_id=request_id,
+        evidence_hash=evidence_hash,
+        reservation_id=reservation_id,
+        advisor=args.advisor,
+    )
+
+    # Build effective prompt: original + binding suffix
+    effective_prompt_bytes = original_prompt_bytes + binding_suffix.encode("utf-8")
+
+    # Check that binding suffix doesn't exceed the role cap
+    # (The prompt was already bounded by prepare-advisor-continuation, so we
+    # just need to ensure the suffix fits within a reasonable margin.)
+    prompt_cap = 32 * 1024  # 32 KiB max for model prompts
+    if len(effective_prompt_bytes) > prompt_cap:
+        # Truncate the original prompt to make room for the suffix
+        suffix_len = len(binding_suffix.encode("utf-8"))
+        max_original = prompt_cap - suffix_len
+        if max_original < 512:
+            _write_json(output_dir / "advisor-call-result.json", {
+                "ok": False,
+                "reason": "binding-suffix-too-large",
+                "task_id": task_id,
+            })
+            return 2
+        effective_prompt_bytes = original_prompt_bytes[:max_original] + binding_suffix.encode("utf-8")
+
+    # Write effective prompt to a temp file for broker invocation
+    effective_prompt_path = output_dir / "advisor-effective-prompt.md"
+    effective_prompt_path.write_bytes(effective_prompt_bytes)
 
     # Write the evidence file (the packet JSON)
     evidence_path = output_dir / "advisor-evidence.json"
@@ -176,20 +264,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     model_output = output_dir / "advisor-model-output.json"
     model_stderr = output_dir / "advisor-model-stderr.txt"
 
-    run_id = f"advisor-{uuid.uuid4().hex[:12]}"
-
-    # Execute via broker (reserves exactly one call)
+    # Execute via broker (reserves exactly one call with pre-generated reservation)
     exit_code = _run_model_call_broker(
         role=args.advisor,
         stage="advisor-call",
         task_id=task_id,
-        input_path=args.prompt,
+        input_path=effective_prompt_path,
         evidence_path=evidence_path,
         output_path=model_output,
         stderr_path=model_stderr,
         ledger_path=args.ledger,
         plan_path=args.plan,
         run_id=run_id,
+        reservation_id=reservation_id,
     )
 
     if exit_code == 2:
@@ -271,6 +358,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         str(raw_response_path),
         expected_request_id=request_id,
         expected_evidence_hash=evidence_hash,
+        expected_reservation_id=reservation_id,
         original_allowed_changes=original_allowed,
         original_forbidden_changes=original_forbidden,
     )
@@ -284,13 +372,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         })
         return 1
 
-    # Success — write the validated result
+    # Success — write the validated result with actual reservation_id
     _write_json(output_dir / "advisor-call-result.json", {
         "ok": True,
         "task_id": task_id,
         "request_id": request_id,
         "advisor": args.advisor,
-        "reservation_id": run_id,
+        "reservation_id": reservation_id,
         "evidence_hash": evidence_hash,
         "decision": normalized["decision"],
         "resume_eligible": normalized.get("resume_eligible", False),

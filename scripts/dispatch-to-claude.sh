@@ -495,7 +495,7 @@ validate_retry_in_place() {
 # --- Advisor continuation validation ---
 # Validate a prior run's artifacts for safe advisor-continuation reuse.
 # Sets _ADVISOR_CONTINUE_TASK_ID, _ADVISOR_CONTINUE_WORKTREE_DIR, _ADVISOR_CONTINUE_BRANCH,
-# _ADVISOR_CONTINUE_RESPONSE on success.
+# _ADVISOR_CONTINUE_RESPONSE, _ADVISOR_CONTINUE_RESERVATION_ID on success.
 # On any ambiguity, fails closed with an actionable error.
 # This path is separate from clean transient retry (retry-in-place).
 validate_advisor_continuation() {
@@ -562,7 +562,7 @@ validate_advisor_continuation() {
         fi
     done
 
-    # --- 5. Base commit must match ---
+    # --- 5. Base commit must match exactly ---
     if [ "$base_commit" != "$BASE_COMMIT" ]; then
         echo "Error: advisor-continuation: recorded base commit does not match current HEAD: recorded=${base_commit} current=${BASE_COMMIT}" >&2
         exit 1
@@ -627,24 +627,65 @@ PYEOF
         exit 1
     fi
 
-    # --- 8. Check diff/evidence hash binding ---
-    local _packet_diff_hash _packet_evidence_hash _response_evidence_hash
-    _packet_diff_hash="$("$PYTHON_CMD" - "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
+    # --- 8. Recompute canonical state hash and require exact diff_hash match ---
+    if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/worktree_state_hash.py" ]; then
+        local _current_state_hash
+        _current_state_hash="$("$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" --worktree "$wt" 2>/dev/null || echo "")"
+        if [ -z "$_current_state_hash" ]; then
+            echo "Error: advisor-continuation: failed to compute current worktree state hash." >&2
+            exit 1
+        fi
+        local _packet_diff_hash
+        _packet_diff_hash="$("$PYTHON_CMD" - "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 print(data.get("diff_hash", ""))
 PYEOF
 )"
+        if [ -z "$_packet_diff_hash" ]; then
+            echo "Error: advisor-continuation: packet missing diff_hash." >&2
+            exit 1
+        fi
+        if [ "$_current_state_hash" != "$_packet_diff_hash" ]; then
+            echo "Error: advisor-continuation: worktree state hash mismatch: current=${_current_state_hash} packet=${_packet_diff_hash}" >&2
+            echo "The worktree has changed since the advisor packet was prepared." >&2
+            exit 1
+        fi
+    else
+        echo "Error: advisor-continuation: worktree state hash helper unavailable." >&2
+        exit 1
+    fi
+
+    # --- 9. Validate response bindings: evidence_hash, reservation_id, request_id ---
+    local _packet_evidence_hash _response_evidence_hash _response_reservation_id _response_request_id _packet_request_id
     _packet_evidence_hash="$("$PYTHON_CMD" - "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 print(data.get("evidence_hash", ""))
 PYEOF
 )"
+    _packet_request_id="$("$PYTHON_CMD" - "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("request_id", ""))
+PYEOF
+)"
     _response_evidence_hash="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo ""
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 print(data.get("evidence_hash", ""))
+PYEOF
+)"
+    _response_reservation_id="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("reservation_id", ""))
+PYEOF
+)"
+    _response_request_id="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+print(data.get("request_id", ""))
 PYEOF
 )"
 
@@ -655,7 +696,29 @@ PYEOF
         exit 1
     fi
 
-    # --- 9. Atomic reservation: prevent concurrent claim ---
+    # Request ID must match between packet and response
+    if [ -n "$_packet_request_id" ] && [ -n "$_response_request_id" ] && \
+       [ "$_packet_request_id" != "$_response_request_id" ]; then
+        echo "Error: advisor-continuation: request ID mismatch: packet=${_packet_request_id} response=${_response_request_id}" >&2
+        exit 1
+    fi
+
+    # Reservation ID must be present in response
+    if [ -z "$_response_reservation_id" ]; then
+        echo "Error: advisor-continuation: response missing reservation_id." >&2
+        exit 1
+    fi
+
+    # --- 10. Once-only continuation claim ---
+    # Persistent consumed marker (survives shell exit / crash)
+    local _consumed_marker="${prior_root}.advisor-continue-consumed"
+    if [ -f "$_consumed_marker" ]; then
+        echo "Error: advisor-continuation: continuation already consumed for task ${prior_task_id}." >&2
+        echo "Consumed marker: ${_consumed_marker}" >&2
+        exit 1
+    fi
+
+    # Ephemeral concurrency lock (prevents concurrent claim)
     _ADVISOR_CONTINUE_RESERVATION_DIR="${WORKTREE_ROOT}/.advisor-continue-lock-${prior_task_id}"
     if ! mkdir "$_ADVISOR_CONTINUE_RESERVATION_DIR" 2>/dev/null; then
         echo "Error: advisor-continuation: reservation already exists for task ${prior_task_id}." >&2
@@ -663,37 +726,66 @@ PYEOF
         exit 1
     fi
     echo "$$" > "${_ADVISOR_CONTINUE_RESERVATION_DIR}/pid"
+    # Ephemeral lock is cleaned on exit; consumed marker is NOT.
     trap 'rm -rf "$_ADVISOR_CONTINUE_RESERVATION_DIR"' EXIT
 
-    # --- 10. Check changed-path boundaries ---
-    # All changed paths must be inside allowed_changes and outside forbidden_changes
-    local _allowed_changes _forbidden_changes _changed_files
-    _allowed_changes="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo ""
+    # Write persistent consumed marker (atomically via temp+mv)
+    local _consumed_tmp="${_consumed_marker}.tmp.$$"
+    {
+        echo "{"
+        printf '  "task_id": "%s",\n' "$prior_task_id"
+        printf '  "reservation_id": "%s",\n' "$_response_reservation_id"
+        printf '  "request_id": "%s",\n' "$_response_request_id"
+        printf '  "consumed_by_pid": "%s",\n' "$$"
+        printf '  "consumed_at": "%s"\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')"
+        echo "}"
+    } > "$_consumed_tmp"
+    mv "$_consumed_tmp" "$_consumed_marker"
+
+    # --- 11. Check changed-path boundaries (pre-execution scope enforcement) ---
+    # Enumerate changed paths across unstaged, staged, and untracked state.
+    # Apply both original packet scopes and response scopes.
+    local _allowed_changes _forbidden_changes
+    _allowed_changes="$("$PYTHON_CMD" - "$advisor_response" "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
 import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-print("\n".join(data.get("allowed_changes", [])))
+resp = json.load(open(sys.argv[1], encoding="utf-8"))
+pkt = json.load(open(sys.argv[2], encoding="utf-8"))
+# Union: response allowed_changes ∪ packet allowed_changes
+resp_allowed = set(resp.get("allowed_changes", []))
+pkt_allowed = set(pkt.get("allowed_changes", []))
+all_allowed = sorted(resp_allowed | pkt_allowed)
+print("\n".join(all_allowed))
 PYEOF
 )"
-    _forbidden_changes="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo ""
+    _forbidden_changes="$("$PYTHON_CMD" - "$advisor_response" "$advisor_packet" <<'PYEOF' 2>/dev/null || echo ""
 import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-forbidden = data.get("forbidden_changes", [])
-# Also include packet forbidden paths
-try:
-    packet = json.load(open(sys.argv[2] if len(sys.argv) > 2 else "/dev/null", encoding="utf-8"))
-    forbidden = list(set(forbidden + packet.get("forbidden_paths", [])))
-except Exception:
-    pass
-print("\n".join(forbidden))
+resp = json.load(open(sys.argv[1], encoding="utf-8"))
+pkt = json.load(open(sys.argv[2], encoding="utf-8"))
+# Union: response forbidden_changes ∪ packet forbidden_paths
+resp_forbidden = set(resp.get("forbidden_changes", []))
+pkt_forbidden = set(pkt.get("forbidden_paths", []))
+all_forbidden = sorted(resp_forbidden | pkt_forbidden)
+print("\n".join(all_forbidden))
 PYEOF
 )"
 
-    # Get current worktree changes
-    _changed_files="$(git -C "$wt" diff --name-only 2>/dev/null || true)"
+    # Enumerate all changed paths: unstaged + staged + untracked
+    local _unstaged_files _staged_files _untracked_files _changed_files
+    _unstaged_files="$(git -C "$wt" diff --name-only 2>/dev/null || true)"
+    _staged_files="$(git -C "$wt" diff --cached --name-only 2>/dev/null || true)"
+    _untracked_files="$(git -C "$wt" ls-files --others --exclude-standard 2>/dev/null || true)"
+    _changed_files="$(printf '%s\n%s\n%s\n' "$_unstaged_files" "$_staged_files" "$_untracked_files" | sort -u | sed '/^$/d')"
+
+    # Check all changed files are inside allowed scope
     if [ -n "$_changed_files" ] && [ -n "$_allowed_changes" ]; then
         local _violation=""
         while IFS= read -r _cf; do
             [ -z "$_cf" ] && continue
+            # Skip known control artifacts
+            case "$_cf" in
+                CLAUDE_PROGRESS.md|CLAUDE_REPORT.md|CLAUDE_TASK_CARD.md|CLAUDE_PROMPT.md|TASK_CARD.md|TASK_CARD_FULL.md|ADVISOR_REQUEST.json|advisor-*.json|advisor-*.md|truncation-manifest.json)
+                    continue ;;
+            esac
             # Check if changed file is inside any allowed path
             local _allowed=0
             while IFS= read -r _ac; do
@@ -719,6 +811,11 @@ PYEOF
         local _forbidden_violation=""
         while IFS= read -r _cf; do
             [ -z "$_cf" ] && continue
+            # Skip known control artifacts
+            case "$_cf" in
+                CLAUDE_PROGRESS.md|CLAUDE_REPORT.md|CLAUDE_TASK_CARD.md|CLAUDE_PROMPT.md|TASK_CARD.md|TASK_CARD_FULL.md|ADVISOR_REQUEST.json|advisor-*.json|advisor-*.md|truncation-manifest.json)
+                    continue ;;
+            esac
             while IFS= read -r _fp; do
                 [ -z "$_fp" ] && continue
                 if [ "$_cf" = "$_fp" ] || [[ "$_cf" == "${_fp}/"* ]]; then
@@ -734,8 +831,8 @@ PYEOF
         fi
     fi
 
-    # --- 11. Extract response data for continuation card ---
-    local _response_decision _response_answer
+    # --- 12. Extract response data for continuation card ---
+    local _response_decision
     _response_decision="$("$PYTHON_CMD" - "$advisor_response" <<'PYEOF' 2>/dev/null || echo "unknown"
 import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -748,9 +845,95 @@ PYEOF
     fi
 
     _ADVISOR_CONTINUE_RESPONSE="$advisor_response"
+    _ADVISOR_CONTINUE_RESERVATION_ID="$_response_reservation_id"
     _ADVISOR_CONTINUE_TASK_ID="$prior_task_id"
     _ADVISOR_CONTINUE_WORKTREE_DIR="$wt"
+    _ADVISOR_CONTINUE_FORBIDDEN_CHANGES="$_forbidden_changes"
+    _ADVISOR_CONTINUE_ALLOWED_CHANGES="$_allowed_changes"
     [ -n "$_ADVISOR_CONTINUE_BRANCH" ] || _ADVISOR_CONTINUE_BRANCH="claude-advisor-continue-${prior_task_id}"
+}
+
+# --- Post-execution scope enforcement for advisor continuation ---
+# Recomputes changed paths after Claude exits and validates against
+# the validated allowed/forbidden boundaries.  A violation produces
+# non-zero semantic failure, remains isolated, and never reports acceptance/merge.
+post_run_scope_enforcement() {
+    local _wt="$1"
+    local _allowed="$2"
+    local _forbidden="$3"
+    local _prior_task_id="$4"
+
+    if [ -z "$_wt" ] || [ ! -d "$_wt" ]; then
+        echo "Error: post-run scope enforcement: worktree missing: ${_wt}" >&2
+        return 1
+    fi
+
+    # Enumerate all changed paths after Claude execution
+    local _unstaged_files _staged_files _untracked_files _changed_files
+    _unstaged_files="$(git -C "$_wt" diff --name-only 2>/dev/null || true)"
+    _staged_files="$(git -C "$_wt" diff --cached --name-only 2>/dev/null || true)"
+    _untracked_files="$(git -C "$_wt" ls-files --others --exclude-standard 2>/dev/null || true)"
+    _changed_files="$(printf '%s\n%s\n%s\n' "$_unstaged_files" "$_staged_files" "$_untracked_files" | sort -u | sed '/^$/d')"
+
+    if [ -z "$_changed_files" ]; then
+        return 0  # No changes — clean
+    fi
+
+    # Check all changed files are inside allowed scope
+    if [ -n "$_allowed" ]; then
+        local _violation=""
+        while IFS= read -r _cf; do
+            [ -z "$_cf" ] && continue
+            # Skip known control artifacts
+            case "$_cf" in
+                CLAUDE_PROGRESS.md|CLAUDE_REPORT.md|CLAUDE_TASK_CARD.md|CLAUDE_PROMPT.md|TASK_CARD.md|TASK_CARD_FULL.md|ADVISOR_REQUEST.json|advisor-*.json|advisor-*.md|truncation-manifest.json)
+                    continue ;;
+            esac
+            local _allowed_match=0
+            while IFS= read -r _ac; do
+                [ -z "$_ac" ] && continue
+                if [ "$_cf" = "$_ac" ] || [[ "$_cf" == "${_ac}/"* ]]; then
+                    _allowed_match=1
+                    break
+                fi
+            done <<< "$_allowed"
+            if [ "$_allowed_match" -eq 0 ]; then
+                _violation="${_violation}  ${_cf}\n"
+            fi
+        done <<< "$_changed_files"
+        if [ -n "$_violation" ]; then
+            echo "Error: post-run scope violation: changed files outside allowed scope:" >&2
+            printf '%b' "$_violation" >&2
+            return 1
+        fi
+    fi
+
+    # Check forbidden paths are not changed
+    if [ -n "$_forbidden" ]; then
+        local _forbidden_violation=""
+        while IFS= read -r _cf; do
+            [ -z "$_cf" ] && continue
+            # Skip known control artifacts
+            case "$_cf" in
+                CLAUDE_PROGRESS.md|CLAUDE_REPORT.md|CLAUDE_TASK_CARD.md|CLAUDE_PROMPT.md|TASK_CARD.md|TASK_CARD_FULL.md|ADVISOR_REQUEST.json|advisor-*.json|advisor-*.md|truncation-manifest.json)
+                    continue ;;
+            esac
+            while IFS= read -r _fp; do
+                [ -z "$_fp" ] && continue
+                if [ "$_cf" = "$_fp" ] || [[ "$_cf" == "${_fp}/"* ]]; then
+                    _forbidden_violation="${_forbidden_violation}  ${_cf}\n"
+                    break
+                fi
+            done <<< "$_forbidden"
+        done <<< "$_changed_files"
+        if [ -n "$_forbidden_violation" ]; then
+            echo "Error: post-run scope violation: changed files in forbidden paths:" >&2
+            printf '%b' "$_forbidden_violation" >&2
+            return 1
+        fi
+    fi
+
+    return 0
 }
 
 # --- Spec item 3: retry-in-place setup ---
@@ -787,6 +970,9 @@ elif [ -n "${CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID:-}" ]; then
     _ADVISOR_CONTINUE_BRANCH=""
     _ADVISOR_CONTINUE_RESPONSE=""
     _ADVISOR_CONTINUE_RESERVATION_DIR=""
+    _ADVISOR_CONTINUE_RESERVATION_ID=""
+    _ADVISOR_CONTINUE_FORBIDDEN_CHANGES=""
+    _ADVISOR_CONTINUE_ALLOWED_CHANGES=""
     validate_advisor_continuation "$CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID"
     # Continuation must receive a new unique TASK_ID; prior ID is for provenance.
     TASK_ID="claude-advisor-${TIMESTAMP}-${RAND_SUFFIX}"
@@ -2766,6 +2952,25 @@ VALID_CLAUDE_REPORT=0
 if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
     VALID_CLAUDE_REPORT=1
 fi
+
+# --- Post-execution scope enforcement for advisor continuation ---
+# After Claude exits, recompute changed paths/state and enforce the validated
+# allowed/forbidden boundaries.  A violation produces non-zero semantic failure,
+# remains isolated and never reports acceptance/merge.
+ADVISOR_POST_RUN_SCOPE_VIOLATION=0
+if [ -n "${_ADVISOR_CONTINUE_TASK_ID:-}" ] && [ -n "${_ADVISOR_CONTINUE_RESPONSE:-}" ]; then
+    if ! post_run_scope_enforcement \
+        "$WORKTREE_DIR" \
+        "${_ADVISOR_CONTINUE_ALLOWED_CHANGES:-}" \
+        "${_ADVISOR_CONTINUE_FORBIDDEN_CHANGES:-}" \
+        "${_ADVISOR_CONTINUE_TASK_ID}"; then
+        ADVISOR_POST_RUN_SCOPE_VIOLATION=1
+        progress_log "Post-run scope enforcement FAILED: advisor continuation task ${_ADVISOR_CONTINUE_TASK_ID} violated allowed/forbidden boundaries"
+    else
+        progress_log "Post-run scope enforcement PASSED: advisor continuation task ${_ADVISOR_CONTINUE_TASK_ID}"
+    fi
+fi
+
 DISPATCH_EVIDENCE_STATE="$(classify_dispatch_evidence "$IMPLEMENTATION_CHANGES" "$VALID_CLAUDE_REPORT" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
 if [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ] && \
    [ "${RESULT_FALLBACK_GENERATED:-0}" -eq 1 ] && \
@@ -2775,9 +2980,12 @@ if [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ] && \
 fi
 # Compute dispatch outcome for orchestrator consumption.
 # Allows distinguishing: success, api_error_with_diff, api_error_without_diff,
-# approval_blocked, timeout, fallback, no_useful_progress.
+# approval_blocked, timeout, fallback, no_useful_progress, scope_violation.
 DISPATCH_OUTCOME="success"
-if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
+if [ "${ADVISOR_POST_RUN_SCOPE_VIOLATION:-0}" -eq 1 ]; then
+    # Post-run scope violation is a semantic failure; never report acceptance/merge.
+    DISPATCH_OUTCOME="scope_violation"
+elif [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
     if [ "$IMPLEMENTATION_CHANGES" -gt 0 ]; then
         DISPATCH_OUTCOME="api_error_with_diff"
     else
@@ -2857,6 +3065,7 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] Advisor direction: ${ADVISOR_DIRECTION}"
     echo "[dispatch] Advisor blocker kind: ${ADVISOR_BLOCKER_KIND}"
     echo "[dispatch] Advisor used: ${ADVISOR_USED}"
+    echo "[dispatch] Advisor post-run scope violation: $([ "${ADVISOR_POST_RUN_SCOPE_VIOLATION:-0}" -eq 1 ] && echo yes || echo no)"
     if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
         echo "[dispatch] Semantic error reason: ${CLAUDE_SEMANTIC_ERROR_REASON}"
     fi

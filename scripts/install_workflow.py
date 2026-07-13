@@ -124,6 +124,7 @@ PYTHON_SCRIPTS = [
     ("route-recovery.py", "ai/route-recovery.py"),
     ("review-ladder.py", "ai/review-ladder.py"),
     ("evidence_hash.py", "ai/evidence_hash.py"),
+    ("worktree_state_hash.py", "ai/worktree_state_hash.py"),
     ("evidence-builder.py", "ai/evidence-builder.py"),
     ("run-workflow.py", "ai/run-workflow.py"),
     ("validate-advisor-request.py", "ai/validate-advisor-request.py"),

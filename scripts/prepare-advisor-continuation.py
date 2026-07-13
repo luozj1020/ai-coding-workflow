@@ -14,8 +14,13 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+from worktree_state_hash import compute_worktree_state_hash as _compute_worktree_state_hash
 
 MAX_EVIDENCE_FILE_BYTES = 100 * 1024  # 100 KB per evidence file
 MAX_TOTAL_EVIDENCE_BYTES = 500 * 1024  # 500 KB total
@@ -76,20 +81,13 @@ def _load_evidence(
 
 
 def _compute_diff_hash(worktree: Path) -> str:
-    """Compute a hash of the current worktree diff state."""
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--stat"],
-            cwd=str(worktree),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        diff_stat = result.stdout or ""
-        return _content_hash(diff_stat.encode("utf-8"))
-    except (OSError, subprocess.SubprocessError):
-        return _content_hash(b"diff-unavailable")
+    """Compute canonical worktree-state hash for continuation binding.
+
+    Deterministically binds HEAD identity, unstaged/staged diff content,
+    untracked file paths and bytes, and binary changes.  Excludes only
+    known workflow control artifacts.
+    """
+    return _compute_worktree_state_hash(worktree)
 
 
 def _compute_evidence_hash(evidence_entries: List[Dict]) -> str:
