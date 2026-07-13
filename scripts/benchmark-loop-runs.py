@@ -69,6 +69,7 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "elapsed_seconds": summary["speed"]["elapsed_seconds_from_progress"],
                 "claude_startup_seconds": summary["speed"].get("claude_startup_seconds"),
                 "claude_execution_seconds": summary["speed"].get("claude_execution_seconds"),
+                "claude_first_progress_seconds": summary["speed"].get("first_substantive_progress_seconds"),
                 "checker_seconds": summary["speed"].get("checker_seconds"),
                 "artifact_finalization_seconds": summary["speed"].get("artifact_finalization_seconds"),
                 "input_tokens": cost_value(summary["cost"], "input_tokens"),
@@ -162,6 +163,10 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         "claude_takeover_counted_total": sum(run["claude_takeover_counted"] for run in runs),
         "claude_transient_transport_total": sum(run["claude_transient_transport"] for run in runs),
         "claude_useful_interactions_total": sum(run["claude_useful_interactions"] for run in runs),
+        "claude_effective_implementation_rate": round(
+            sum(run["claude_useful_interactions"] for run in runs)
+            / sum(run["claude_attempt_count"] for run in runs), 3
+        ) if sum(run["claude_attempt_count"] for run in runs) else 0.0,
         "runs": runs,
     }
 

@@ -73,6 +73,7 @@ PYTHON_SCRIPTS = [
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
     ("claude-healthcheck.py", "ai/claude-healthcheck.py"),
     ("classify-claude-attempt.py", "ai/classify-claude-attempt.py"),
+    ("validate-claude-context.py", "ai/validate-claude-context.py"),
     ("code-search-service.py", "ai/code-search-service.py"),
     ("clean_runtime.py", "ai/clean_runtime.py"),
     ("install_context_tools.py", "ai/install_context_tools.py"),

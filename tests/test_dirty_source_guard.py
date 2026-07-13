@@ -936,7 +936,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("## Acceptance Criteria", claude_card)
         self.assertNotIn("execution-only view", claude_card.lower())
 
-    def test_execution_only_defaults_to_timeout_120_renders_smaller_card_with_short_prompt(self):
+    def test_execution_only_defaults_to_timeout_60_renders_smaller_card_with_short_prompt(self):
         self._write_builder_task_card()
         capture = self.case_root / "execution-only-prompt.md"
         result = self._dispatch(
@@ -947,7 +947,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("First Progress:  120s timeout", result.stdout)
+        self.assertIn("First Progress:  60s timeout", result.stdout)
         self.assertIn("Builder Mode:    execution-only", result.stdout)
         worktree = self._artifact_path(result.stdout, "Worktree")
         claude_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
@@ -963,6 +963,21 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("execution-only Builder mode", prompt)
         self.assertIn("Do NOT restate or redesign the plan", prompt)
         self.assertIn("--- CLAUDE EXECUTION CARD ---", prompt)
+
+    def test_auto_builder_mode_uses_execution_only_only_with_explicit_gates(self):
+        task = self._write_builder_task_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Claude Context Packet\n\n| Field | Value |\n|---|---|\n"
+                "| Context is sufficient for execution? | yes |\n"
+                "| Execution-only eligible? | yes |\n"
+            )
+        self._run(["git", "add", "task-cards/BUILDER.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add auto builder task"], cwd=self.repo)
+        result = self._dispatch("task-cards/BUILDER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Builder Mode:    execution-only", result.stdout)
+        self.assertIn("First Progress:  60s timeout", result.stdout)
 
     def test_seed_only_stopped_at_short_deadline(self):
         self._write_builder_task_card()

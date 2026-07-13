@@ -96,6 +96,7 @@ flowchart TD
 | **Claude 端点探测** | 仅提供网络诊断；瞬时失败不阻断派发 | `python scripts/claude-healthcheck.py --probe` |
 | **Claude 交互探测** | 自动测试当前路线；失败后才测试另一条 | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 30` |
 | **Claude 轮次分类** | 判断失败是否计入接管阈值 | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
+| **校验 Claude 上下文** | 检查 execution-only 上下文密度 | `python scripts/validate-claude-context.py task.md --require-complete` |
 | **预览集成运行** | 零模型调用审查所有阶段 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 | **执行集成运行** | 执行已审查的计划 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute` |
 

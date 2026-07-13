@@ -292,7 +292,7 @@ Execution cost rules:
 
 Execution-only Builder mode renders a minimal `CLAUDE_TASK_CARD.md` with only execution-relevant sections (ID, Task Mode, Claude Context Packet, Goal, Handoff Contract, Acceptance Criteria, Testing Responsibility, Validation Contract, Required Report). The full card is preserved as `TASK_CARD_FULL.md`. Use execution-only only when target files are exact, the change is mechanical, and no acknowledgement or architecture discovery is needed. Otherwise use standard mode.
 
-The first-progress timeout stops the Claude child if no substantive progress is detected within the configured seconds. Substantive progress means: implementation worktree change, non-seeded progress update, valid non-seeded report, or blocker/stop/split/approval recorded. Seed-only silence is not progress. In standard mode the timeout defaults to 0 (disabled); in execution-only mode it defaults to 120 seconds.
+The first-progress timeout stops the Claude child if no substantive progress is detected within the configured seconds. Substantive progress means: implementation worktree change, non-seeded progress update, valid non-seeded report, or blocker/stop/split/approval recorded. Seed-only silence is not progress. In standard mode the timeout defaults to 0 (disabled); in execution-only mode it defaults to 60 seconds.
 
 ## Claude Context Packet
 
@@ -310,6 +310,7 @@ The first-progress timeout stops the Claude child if no substantive progress is 
 | Known constraints | |
 | Narrow validation commands | |
 | Context is sufficient for execution? | yes/no |
+| Execution-only eligible? | yes only for one responsibility, exact targets/symbols, known reference pattern, no architecture discovery, and narrow validation |
 | Escalate before broad search if | missing target file / symbol not found / contract unclear / validation unavailable |
 
 ## Control-Plane Exception Rationale

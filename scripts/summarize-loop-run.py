@@ -118,6 +118,14 @@ def parse_progress_seconds(paths: list[Path]) -> int | None:
     return int((max(timestamps) - min(timestamps)).total_seconds())
 
 
+def parse_first_progress_seconds(paths: list[Path]) -> int | None:
+    pattern = re.compile(r"First substantive progress detected:.*elapsed_seconds=(\d+)")
+    values = []
+    for path in paths:
+        values.extend(int(match.group(1)) for match in pattern.finditer(read_text(path)))
+    return min(values) if values else None
+
+
 def parse_progress_stage_seconds(paths: list[Path]) -> dict[str, int | None]:
     stages: dict[str, datetime] = {}
     for path in paths:
@@ -740,6 +748,7 @@ def summarize(path: Path) -> dict:
         "speed": {
             "elapsed_seconds_from_progress": elapsed_seconds,
             "progress_logs": len(artifacts["progress"]),
+            "first_substantive_progress_seconds": parse_first_progress_seconds(artifacts["progress"]),
             **stage_seconds,
         },
         "cost": usage_total,

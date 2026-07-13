@@ -257,23 +257,32 @@ case "$CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE" in
         exit 1
         ;;
 esac
-CLAUDE_CODE_BUILDER_MODE="${CLAUDE_CODE_BUILDER_MODE:-standard}"
+CLAUDE_CODE_BUILDER_MODE="${CLAUDE_CODE_BUILDER_MODE:-auto}"
 case "$CLAUDE_CODE_BUILDER_MODE" in
-    standard|execution-only) ;;
+    auto|standard|execution-only) ;;
     *)
-        echo "Error: CLAUDE_CODE_BUILDER_MODE must be 'standard' or 'execution-only'." >&2
+        echo "Error: CLAUDE_CODE_BUILDER_MODE must be 'auto', 'standard', or 'execution-only'." >&2
         exit 1
         ;;
 esac
+if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
+    if [ "$_PARSED_TASK_MODE" = "builder" ] && \
+       grep -Eiq '^\|[[:space:]]*Execution-only eligible\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD" && \
+       grep -Eiq '^\|[[:space:]]*Context is sufficient for execution\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
+        CLAUDE_CODE_BUILDER_MODE="execution-only"
+    else
+        CLAUDE_CODE_BUILDER_MODE="standard"
+    fi
+fi
 # Execution-only mode is only allowed for task mode builder.
 if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] && [ "$_PARSED_TASK_MODE" != "builder" ]; then
     echo "Error: CLAUDE_CODE_BUILDER_MODE=execution-only requires task mode 'builder', found '${_PARSED_TASK_MODE:-unknown}'." >&2
     exit 1
 fi
-# First-progress timeout: default 0 (disabled) in standard mode, 120 in execution-only.
+# First-progress timeout: default 0 (disabled) in standard mode, 60 in execution-only.
 if [ -z "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
     if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
-        CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=120
+        CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=60
     else
         CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=0
     fi
