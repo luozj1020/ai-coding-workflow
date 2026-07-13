@@ -59,7 +59,12 @@ flowchart TD
     C --> P[Codex · 执行计划与调用预算]
     P --> B[控制面 · Model Call Broker]
     B --> D[Claude Builder · 隔离实现]
-    D --> SP[Spark · 机械后检]
+    D --> Q{已有有效进展且遇到语义阻塞?}
+    Q -- 否 --> SP[Spark · 机械后检]
+    Q -- 是 --> AP[本地工具 · 有界 Advisor Packet]
+    AP --> AV[Advisor · 一次只读回答]
+    AV --> D
+    D -. 零可用输出 .-> HP[本地工具 · 固定 你好 API 探针]
     SP --> CR[Codex · 方向审查]
     CR --> CT[Claude Checker/Test · 测试与窄范围验证]
     CT --> E[本地工具 · 自动证据整理]
@@ -78,7 +83,7 @@ flowchart TD
     E -. 可执行 Case .-> BM[确定性 Fake Adapter Benchmark Gate]
 ```
 
-完整控制循环为 **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**。ROUTE 位于完整任务卡之前：确定性的 Express/tiny 任务记录 `skip.sized_tiny_fastpath`，其余任务默认使用一次短 Spark 预检。实现完成后，Spark 可压缩 diff 证据并进行机械后检，再交给 Codex 做方向和最终审查。Spark 始终只提供建议，不负责派发、验收或合并。Codex负责路由、规划和审查；Claude Builder负责委派实现；Claude Checker/Test负责被分配的测试。并行 Builder使用隔离 worktree，最终仍通过串行聚合审查汇合；人工审查和合并与自动派发保持分离。
+完整控制循环为 **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**。ROUTE 位于完整任务卡之前：确定性的 Express/tiny 任务记录 `skip.sized_tiny_fastpath`，其余任务默认使用一次短 Spark 预检。实现完成后，Spark 可压缩 diff 证据并进行机械后检，再交给 Codex 做方向和最终审查。Builder 已有有效、方向正确的进展且只剩一个明确语义阻塞时，可接收一次有界 Advisor 回答并在同一 worktree 继续；零进展、传输故障、审批阻塞和方向偏离均不符合条件。出现零可用输出时，调度器会先在同一路由执行固定 `claude -p '你好'`，再进行模型失败归因。Spark 始终只提供建议，不负责派发、验收或合并。Codex负责路由、规划和审查；Claude Builder负责委派实现；Claude Checker/Test负责被分配的测试。并行 Builder使用隔离 worktree，最终仍通过串行聚合审查汇合；人工审查和合并与自动派发保持分离。
 
 ## 常用动作
 
@@ -97,7 +102,8 @@ flowchart TD
 | **刷新项目 workflow** | 已经引导过的仓库 | `python scripts/install_workflow.py . --update-workflow-files` |
 | **Claude 供应商检查** | 脱敏显示 CC Switch 实际端点和模型 | `python scripts/claude-healthcheck.py` |
 | **Claude 端点探测** | 仅提供网络诊断；瞬时失败不阻断派发 | `python scripts/claude-healthcheck.py --probe` |
-| **Claude 交互探测** | 在调度网络环境中测试；受限沙箱失败只算不确定，以用户终端成功交互为准 | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 30` |
+| **Claude 交互探测** | 在调度网络环境中发送固定 `你好`；受限沙箱失败只算不确定，以用户终端成功交互为准 | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 40` |
+| **Advisor 延续包** | 一个语义阻塞得到回答后，在同一 worktree 继续已有有效实现 | `python scripts/aiwf.py advisor-continuation --help` |
 | **跨沙箱进程检查** | 调度 PID 不可见时标记为未知，绝不能据此启动重复 Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Claude 轮次分类** | 判断失败是否计入接管阈值 | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **校验 Claude 上下文** | 检查 execution-only 上下文密度 | `python scripts/validate-claude-context.py task.md --require-complete` |

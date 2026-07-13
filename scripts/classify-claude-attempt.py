@@ -18,6 +18,7 @@ APPROVAL_RE = re.compile(r"approval|permission|sandbox|not permitted", re.I)
 def classify(
     *, exit_code: int, outcome: str, semantic_error: bool, diff_changes: int,
     valid_report: bool, progress: str, direction: str, error_text: str,
+    blocker_kind: str = "none", advisor_used: bool = False,
 ) -> dict:
     useful = diff_changes > 0 or valid_report or progress == "useful"
     interacted = useful or progress in {"acknowledgement", "blocker"}
@@ -42,6 +43,21 @@ def classify(
     else:
         failure, action, counts = "unclassified-execution-failure", "inspect-evidence-before-counting", False
 
+    # Advisor continuation eligibility
+    rejection_reason = None
+    if not useful:
+        rejection_reason = "no-useful-evidence"
+    elif direction != "on-plan":
+        rejection_reason = "direction-not-on-plan"
+    elif blocker_kind != "semantic":
+        rejection_reason = "blocker-not-semantic"
+    elif transport:
+        rejection_reason = "transport-failure"
+    elif approval:
+        rejection_reason = "approval-blocked"
+    elif advisor_used:
+        rejection_reason = "advisor-already-used"
+
     return {
         "schema_version": 1,
         "interaction_state": "useful-progress" if useful else ("established" if interacted else "not-established"),
@@ -50,6 +66,8 @@ def classify(
         "recommended_action": action,
         "same_worktree_retry_eligible": failure == "transient-transport",
         "successful_interaction_is_authoritative": True,
+        "advisor_continuation_eligible": rejection_reason is None,
+        "advisor_rejection_reason": rejection_reason,
     }
 
 
@@ -62,6 +80,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--valid-report", action="store_true")
     p.add_argument("--progress", choices=["none", "acknowledgement", "blocker", "useful"], default="none")
     p.add_argument("--direction", choices=["unknown", "on-plan", "off-plan"], default="unknown")
+    p.add_argument("--blocker-kind", choices=["none", "semantic", "transport", "approval", "direction", "unknown"], default="none")
+    p.add_argument("--advisor-used", action="store_true")
     p.add_argument("--error-text-file", type=Path)
     args = p.parse_args(argv)
     error_text = ""
@@ -71,6 +91,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         exit_code=args.exit_code, outcome=args.outcome, semantic_error=args.semantic_error,
         diff_changes=args.diff_changes, valid_report=args.valid_report, progress=args.progress,
         direction=args.direction, error_text=error_text,
+        blocker_kind=args.blocker_kind, advisor_used=args.advisor_used,
     ), sort_keys=True))
     return 0
 

@@ -362,12 +362,18 @@ Loop type guide:
 | Reconcile conflicts with local evidence? | yes/no |
 | Fallback if advisor unavailable or cap reached | proceed conservatively / stop-and-report / ask human |
 | Advisor evidence artifact | CLAUDE_PROGRESS.md / CLAUDE_REPORT.md / review artifact / other |
+| In-place continuation eligible? | no / yes: useful progress + on-plan + semantic blocker |
+| Continuation phase already used advisor? | no / yes |
+| Semantic blocker question | |
+| Retained worktree and scope | |
+| Continuation forbidden paths | |
 
 Advisor timing rules:
 - Do not ask for a low-context advisor opinion before basic read-only orientation.
 - Treat advisor guidance as high-value input, not unquestionable truth.
 - If local evidence conflicts with advisor guidance, record the conflict and reconcile before changing direction.
 - If the advisor result is redacted or unavailable to Codex, report the advice category, whether it was followed, and any stop reason/truncation signal.
+- In-place continuation is fail-closed and limited to one advisor answer per phase. Zero progress, transport, approval, direction deviation, repeat use, unsafe evidence, or unresolved scope expansion must stop instead of generating a continuation card.
 
 ## Codex Spark Gate
 

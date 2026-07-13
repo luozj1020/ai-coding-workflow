@@ -14,6 +14,28 @@ spec.loader.exec_module(health)
 
 
 class ClaudeHealthcheckTests(unittest.TestCase):
+    def test_interaction_probe_uses_fixed_minimal_prompt(self):
+        completed = mock.Mock(returncode=0, stdout="你好！\n", stderr="")
+        with mock.patch.object(health.subprocess, "run", return_value=completed) as run, \
+             mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid"}, clear=True):
+            result = health.interaction_probe("direct", 40, "你好")
+        self.assertTrue(result["success"])
+        self.assertEqual(run.call_args.args[0], ["claude", "-p", "你好"])
+        self.assertNotIn("HTTPS_PROXY", run.call_args.kwargs["env"])
+
+    def test_default_interaction_prompt_is_hello(self):
+        value = {"route": "inherit", "success": True, "exit_code": 0,
+                 "elapsed_seconds": 0.1, "timed_out": False}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text('{"env":{"ANTHROPIC_BASE_URL":"https://example.cn"}}')
+            with mock.patch.object(health, "interaction_probe", return_value=value) as probe_call, \
+                 mock.patch.object(health.shutil, "which", return_value="claude"), \
+                 mock.patch("builtins.print"):
+                self.assertEqual(health.main(["--settings", str(path),
+                                              "--interaction-route", "inherit", "--json"]), 0)
+        self.assertEqual(probe_call.call_args.args[2], "你好")
+
     def test_config_is_redacted(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"

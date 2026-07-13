@@ -58,6 +58,7 @@ CLAUDE_CODE_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-600}"
 CLAUDE_CODE_HEARTBEAT_SECONDS="${CLAUDE_CODE_HEARTBEAT_SECONDS:-30}"
 CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-300}"
+CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS="${CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS:-40}"
 if [ "$CLAUDE_CODE_PROXY_MODE" != "direct" ] && [ "$CLAUDE_CODE_PROXY_MODE" != "inherit" ]; then
     echo "Error: CLAUDE_CODE_PROXY_MODE must be 'direct' or 'inherit'." >&2
     exit 1
@@ -554,6 +555,7 @@ RUNTIME_JSON="${WORKTREE_ROOT}/${TASK_ID}.runtime.json"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 NETWORK_FILE="${WORKTREE_ROOT}/${TASK_ID}.network.log"
 ATTEMPT_CLASSIFICATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.attempt-classification.json"
+INTERACTION_HEALTH_FILE="${WORKTREE_ROOT}/${TASK_ID}.interaction-health.json"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
 SEEDED_PROGRESS_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"
 FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
@@ -561,9 +563,10 @@ FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
 for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
          "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
          "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$DISPATCHER_PID_FILE" "$CLAUDE_PID_FILE" "$CHECKER_PID_FILE" \
-         "$PROGRESS_FILE" "$NETWORK_FILE"; do
+         "$PROGRESS_FILE" "$NETWORK_FILE" "$INTERACTION_HEALTH_FILE"; do
     mkdir -p "$(dirname "$f")"
 done
+: > "$INTERACTION_HEALTH_FILE"
 
 TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
 if [ -z "$TASK_CARD_REL" ]; then
@@ -1102,10 +1105,48 @@ case "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS" in
         exit 1
         ;;
 esac
+case "$CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*|0)
+        echo "Error: CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS must be a positive integer." >&2
+        exit 1
+        ;;
+esac
 
 progress_log() {
     local message="$1"
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message" | tee -a "$PROGRESS_FILE"
+}
+
+ZERO_OUTPUT_PROBE_CONCLUSION="not-run"
+ZERO_OUTPUT_PROBE_AUTHORITATIVE="no"
+run_zero_output_interaction_probe() {
+    local helper="${SCRIPT_DIR}/claude-healthcheck.py"
+    if [ -z "$PYTHON_CMD" ] || [ ! -f "$helper" ]; then
+        progress_log "Zero-output interaction probe skipped: healthcheck helper unavailable"
+        return 0
+    fi
+    progress_log "Zero-output detected; checking Claude API with fixed prompt via route=${CLAUDE_CODE_PROXY_MODE}"
+    "$PYTHON_CMD" "$helper" --interaction-route "$CLAUDE_CODE_PROXY_MODE" \
+        --timeout "$CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS" --prompt '你好' --json \
+        > "$INTERACTION_HEALTH_FILE" 2>/dev/null || true
+    if [ ! -s "$INTERACTION_HEALTH_FILE" ]; then
+        ZERO_OUTPUT_PROBE_CONCLUSION="unavailable-in-current-environment"
+        progress_log "Zero-output interaction probe returned no diagnostic output"
+        return 0
+    fi
+    ZERO_OUTPUT_PROBE_CONCLUSION="$("$PYTHON_CMD" - "$INTERACTION_HEALTH_FILE" <<'PYEOF' 2>/dev/null || true
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(value.get("interaction_conclusion", "unavailable-in-current-environment"))
+except (OSError, ValueError, TypeError):
+    print("unavailable-in-current-environment")
+PYEOF
+)"
+    if [ "$ZERO_OUTPUT_PROBE_CONCLUSION" = "available" ]; then
+        ZERO_OUTPUT_PROBE_AUTHORITATIVE="yes"
+    fi
+    progress_log "Zero-output interaction probe: conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}, artifact=${INTERACTION_HEALTH_FILE}"
 }
 
 redact_network_value() {
@@ -1434,11 +1475,24 @@ stop_claude() {
             frontier="$next_frontier"
         done
     fi
-    progress_log "Stopping Claude (${reason}) after ${elapsed}s; sending TERM to pid=${CLAUDE_PID} descendants=${descendants:-none}"
-    if [ -n "$descendants" ]; then
-        kill $descendants 2>/dev/null || true
+    progress_log "Stopping Claude (${reason}) after ${elapsed}s; draining leaf processes before wrapper pid=${CLAUDE_PID} descendants=${descendants:-none}"
+    # Stop leaf workers first. When model-call-broker is present this gives it
+    # a chance to observe the child exit and persist a failed reservation,
+    # instead of leaving a permanent `running` record that blocks retry.
+    local leaves=""
+    if [ -n "$descendants" ] && command -v pgrep >/dev/null 2>&1; then
+        local descendant
+        for descendant in $descendants; do
+            if [ -z "$(pgrep -P "$descendant" 2>/dev/null || true)" ]; then
+                leaves="${leaves} ${descendant}"
+            fi
+        done
     fi
-    kill "$CLAUDE_PID" 2>/dev/null || true
+    if [ -n "$leaves" ]; then
+        kill $leaves 2>/dev/null || true
+    else
+        kill "$CLAUDE_PID" 2>/dev/null || true
+    fi
     sleep 5
     if [ -n "$descendants" ]; then
         local descendant
@@ -1449,8 +1503,13 @@ stop_claude() {
         done
     fi
     if kill -0 "$CLAUDE_PID" 2>/dev/null; then
-        progress_log "Claude still alive after TERM; sending KILL to pid=${CLAUDE_PID}"
-        kill -9 "$CLAUDE_PID" 2>/dev/null || true
+        progress_log "Claude wrapper still alive after drain; sending TERM to pid=${CLAUDE_PID}"
+        kill "$CLAUDE_PID" 2>/dev/null || true
+        sleep 1
+        if kill -0 "$CLAUDE_PID" 2>/dev/null; then
+            progress_log "Claude wrapper still alive after TERM; sending KILL to pid=${CLAUDE_PID}"
+            kill -9 "$CLAUDE_PID" 2>/dev/null || true
+        fi
     fi
 }
 
@@ -1494,7 +1553,7 @@ run_claude() {
         local broker_args=(
             --role claude
             --stage builder
-            --task-id "claude-$(basename "$TASK_CARD")"
+            --task-id "${_RETRY_TASK_ID:-$TASK_ID}"
             --ledger "${REPO_ROOT}/.ai-workflow/model-calls.jsonl"
             --input CLAUDE_PROMPT.md
             --output "$RESULT_FILE"
@@ -1502,6 +1561,10 @@ run_claude() {
         )
         if [ -f "execution-plan.json" ]; then
             broker_args+=(--plan execution-plan.json)
+        elif [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
+            # Legacy dispatches have no explicit execution plan. Permit one
+            # auditable retry of a failed/cancelled reservation, and no more.
+            broker_args+=(--max-calls 2 --retry-failed)
         fi
         if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
             python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
@@ -2218,6 +2281,12 @@ if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
     VALID_CLAUDE_REPORT=1
 fi
 DISPATCH_EVIDENCE_STATE="$(classify_dispatch_evidence "$IMPLEMENTATION_CHANGES" "$VALID_CLAUDE_REPORT" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
+if [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ] && \
+   [ "${RESULT_FALLBACK_GENERATED:-0}" -eq 1 ] && \
+   [ "${FIRST_PROGRESS_DETECTED:-0}" -eq 0 ] && \
+   [ "$DISPATCH_EVIDENCE_STATE" != "acknowledgement only" ]; then
+    run_zero_output_interaction_probe
+fi
 # Compute dispatch outcome for orchestrator consumption.
 # Allows distinguishing: success, api_error_with_diff, api_error_without_diff,
 # approval_blocked, timeout, fallback, no_useful_progress.
@@ -2230,6 +2299,12 @@ if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
     fi
 elif [ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ]; then
     DISPATCH_OUTCOME="approval_blocked"
+elif [ "$ZERO_OUTPUT_PROBE_CONCLUSION" = "unavailable-in-current-environment" ] || \
+     [ "$ZERO_OUTPUT_PROBE_CONCLUSION" = "inconclusive-restricted-environment" ]; then
+    # A failed minimal interaction means this round cannot be attributed to
+    # model execution. In a restricted sandbox the evidence is inconclusive,
+    # but it still must not count toward takeover.
+    DISPATCH_OUTCOME="network_error"
 elif [ "$CLAUDE_TIMED_OUT" -eq 1 ] || [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] || [ "${CLAUDE_FIRST_PROGRESS_TIMED_OUT:-0}" -eq 1 ]; then
     DISPATCH_OUTCOME="timeout"
 elif [ "$RESULT_FALLBACK_GENERATED" -eq 1 ]; then
@@ -2271,6 +2346,7 @@ PYEOF
 fi
 
 progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
+progress_log "Zero-output API attribution: conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
 # Authoritative final outcome — emitted exactly once, after semantic validation.
 progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELAPSED}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
 {
@@ -2283,6 +2359,9 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] Attempt failure class: ${ATTEMPT_FAILURE_CLASS}"
     echo "[dispatch] Counts toward takeover: ${ATTEMPT_COUNTS_TOWARD_TAKEOVER}"
     echo "[dispatch] Recommended action: ${ATTEMPT_RECOMMENDED_ACTION}"
+    echo "[dispatch] Zero-output API probe: ${ZERO_OUTPUT_PROBE_CONCLUSION}"
+    echo "[dispatch] Zero-output API probe authoritative: ${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
+    echo "[dispatch] Interaction health artifact: ${INTERACTION_HEALTH_FILE}"
     echo "[dispatch] Same-worktree retry eligible: ${ATTEMPT_SAME_WORKTREE_RETRY}"
     echo "[dispatch] Route source: ${_ROUTE_SOURCE}"
     echo "[dispatch] Route mode: ${CLAUDE_CODE_PROXY_MODE}"
@@ -2299,6 +2378,9 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
 # Persistence failure is advisory and must not change dispatch outcome.
 if [ -n "$PYTHON_CMD" ] && [ -f "$ROUTE_PREFERENCE_HELPER" ]; then
     _SHOULD_RECORD_ROUTE=0
+    if [ "$ZERO_OUTPUT_PROBE_CONCLUSION" != "not-run" ]; then
+        : # The diagnostic probe never updates learned route preference.
+    else
     case "${ATTEMPT_FAILURE_CLASS:-unavailable}" in
         transient-transport|unavailable|unclassified-execution-failure)
             ;; # do not record
@@ -2316,6 +2398,7 @@ if [ -n "$PYTHON_CMD" ] && [ -f "$ROUTE_PREFERENCE_HELPER" ]; then
             fi
             ;;
     esac
+    fi
     if [ "$_SHOULD_RECORD_ROUTE" -eq 1 ]; then
         _RECORD_SOURCE="dispatch-${DISPATCH_OUTCOME}"
         if _RECORD_OUTPUT="$("$PYTHON_CMD" "$ROUTE_PREFERENCE_HELPER" record \
@@ -2423,6 +2506,7 @@ echo "Raw Result:      $RAW_RESULT_FILE"
 echo "Status:          $STATUS_FILE"
 echo "Network Log:     $NETWORK_FILE"
 echo "Attempt Class:   $ATTEMPT_CLASSIFICATION_FILE"
+echo "API Probe:       $INTERACTION_HEALTH_FILE"
 echo "Diffstat:        $DIFFSTAT_FILE"
 echo "Diff:            $DIFF_FILE"
 echo "Checker Report:  $CHECKER_REPORT_FILE"

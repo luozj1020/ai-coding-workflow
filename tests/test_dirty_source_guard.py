@@ -13,6 +13,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 DISPATCH = ROOT / "scripts" / "dispatch-to-claude.sh"
 CHECK_WORKTREE = ROOT / "scripts" / "check-worktree.sh"
 CLASSIFY_ATTEMPT = ROOT / "scripts" / "classify-claude-attempt.py"
+CLAUDE_HEALTHCHECK = ROOT / "scripts" / "claude-healthcheck.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -67,7 +68,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         (self.repo / "scripts").mkdir()
         shutil.copy2(DISPATCH, self.repo / "scripts" / "dispatch-to-claude.sh")
         shutil.copy2(CLASSIFY_ATTEMPT, self.repo / "scripts" / "classify-claude-attempt.py")
-        self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh", "scripts/classify-claude-attempt.py"], cwd=self.repo)
+        shutil.copy2(CLAUDE_HEALTHCHECK, self.repo / "scripts" / "claude-healthcheck.py")
+        self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
+                   "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
     def tearDown(self):
@@ -92,6 +95,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         with open(fake, "w", encoding="utf-8", newline="\n") as f:
             f.write(
                 "#!/usr/bin/env bash\n"
+                "if [[ \"$*\" == *\"你好\"* ]]; then\n"
+                "  if [ \"${FAKE_CLAUDE_HEALTHCHECK_FAIL:-0}\" = 1 ]; then exit 42; fi\n"
+                "  printf '你好！\\n'\n"
+                "  exit 0\n"
+                "fi\n"
                 "if [ -n \"${FAKE_CLAUDE_PROMPT_CAPTURE:-}\" ]; then\n"
                 "  cat > \"${FAKE_CLAUDE_PROMPT_CAPTURE}\"\n"
                 "else\n"
@@ -994,6 +1002,59 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("first_progress_timeout", progress.lower())
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         self.assertIn("First-progress timed out: yes", status)
+
+    def test_zero_output_runs_fixed_api_probe_before_attribution(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "seed-only",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        probe_path = self._artifact_path(result.stdout, "API Probe")
+        probe = json.loads(probe_path.read_text(encoding="utf-8"))
+        self.assertEqual(probe["interaction_conclusion"], "available")
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("fixed prompt", progress)
+        self.assertIn("conclusion=available", progress)
+
+    def test_failed_zero_output_probe_does_not_count_toward_takeover(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "seed-only",
+                "FAKE_CLAUDE_HEALTHCHECK_FAIL": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Dispatch outcome: network_error", status)
+        self.assertIn("Counts toward takeover: false", status)
+        probe = json.loads(self._artifact_path(result.stdout, "API Probe").read_text(encoding="utf-8"))
+        self.assertEqual(probe["interaction_conclusion"], "unavailable-in-current-environment")
+
+    def test_useful_result_skips_zero_output_probe(self):
+        self._write_builder_task_card()
+        result = self._dispatch("task-cards/BUILDER.md", {"FAKE_CLAUDE_MODE": "success"})
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(self._artifact_path(result.stdout, "API Probe").stat().st_size, 0)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("conclusion=not-run", progress)
+
+    def test_retry_broker_arguments_preserve_logical_task_and_plan_budget(self):
+        dispatch = DISPATCH.read_text(encoding="utf-8")
+        self.assertIn('--task-id "${_RETRY_TASK_ID:-$TASK_ID}"', dispatch)
+        self.assertIn('broker_args+=(--max-calls 2 --retry-failed)', dispatch)
+        self.assertIn('if [ -f "execution-plan.json" ]', dispatch)
+        self.assertIn('elif [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]', dispatch)
+        self.assertIn('if [ "$ZERO_OUTPUT_PROBE_CONCLUSION" != "not-run" ]', dispatch)
+        self.assertIn('The diagnostic probe never updates learned route preference', dispatch)
 
     def test_source_diff_prevents_first_progress_timeout(self):
         self._write_builder_task_card()

@@ -59,7 +59,12 @@ flowchart TD
     C --> P[Codex · execution plan and call budget]
     P --> B[Control plane · Model Call Broker]
     B --> D[Claude Builder · isolated implementation]
-    D --> SP[Spark · mechanical postflight]
+    D --> Q{Useful progress + semantic blocker?}
+    Q -- No --> SP[Spark · mechanical postflight]
+    Q -- Yes --> AP[Local tools · bounded advisor packet]
+    AP --> AV[Advisor · one read-only answer]
+    AV --> D
+    D -. Zero usable output .-> HP[Local tools · fixed 你好 API probe]
     SP --> CR[Codex · direction review]
     CR --> CT[Claude Checker/Test · tests and narrow validation]
     CT --> E[Local tools · automatic evidence]
@@ -78,7 +83,7 @@ flowchart TD
     E -. executed cases .-> BM[Deterministic fake-adapter benchmark gates]
 ```
 
-The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**. ROUTE happens before full task-card authoring. Deterministic Express/tiny work records `skip.sized_tiny_fastpath`; other tasks use a short Spark preflight by default. After implementation, Spark may compress diff evidence and perform a mechanical postflight before Codex direction/final review. Spark remains advisory and never dispatches, accepts, or merges. Codex owns routing, planning, and review; Claude Builder owns delegated edits; Claude Checker/Test owns assigned test work. Parallel builders remain isolated and converge through serial aggregate review. Runtime identity, progress, role PID, diff, reports, and checker artifacts keep interrupted work recoverable; human review and merge remain separate.
+The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW → LEARN**. ROUTE happens before full task-card authoring. Deterministic Express/tiny work records `skip.sized_tiny_fastpath`; other tasks use a short Spark preflight by default. After implementation, Spark may compress diff evidence and perform a mechanical postflight before Codex direction/final review. A Builder with useful on-plan progress and one concrete semantic blocker may receive one bounded advisor answer and continue in the same worktree; zero-progress, transport, approval, and off-plan rounds are ineligible. Zero usable output triggers the fixed `claude -p '你好'` diagnostic in the same route before model-failure attribution. Spark remains advisory and never dispatches, accepts, or merges. Codex owns routing, planning, and review; Claude Builder owns delegated edits; Claude Checker/Test owns assigned test work. Parallel builders remain isolated and converge through serial aggregate review. Runtime identity, progress, role PID, diff, reports, and checker artifacts keep interrupted work recoverable; human review and merge remain separate.
 
 ## Common actions
 
@@ -97,7 +102,8 @@ The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VE
 | **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
 | **Claude provider check** | Show the effective CC Switch endpoint/model without secrets | `python scripts/claude-healthcheck.py` |
 | **Claude endpoint probe** | Advisory network evidence; transient failure does not block dispatch | `python scripts/claude-healthcheck.py --probe` |
-| **Claude interaction probe** | Test in the dispatch network context; restricted-sandbox failure is inconclusive and user-terminal success wins | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 30` |
+| **Claude interaction probe** | Send fixed `你好` in the dispatch network context; restricted-sandbox failure is inconclusive and user-terminal success wins | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 40` |
+| **Advisor continuation packet** | Continue useful on-plan work after one semantic blocker answer | `python scripts/aiwf.py advisor-continuation --help` |
 | **Cross-sandbox process check** | Treat invisible dispatch PIDs as unknown, never as permission to launch a duplicate Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Classify Claude round** | Decide whether a failure counts toward takeover | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **Validate Claude context** | Check execution-only packet density | `python scripts/validate-claude-context.py task.md --require-complete` |

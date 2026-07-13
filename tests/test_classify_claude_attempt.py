@@ -11,7 +11,8 @@ spec.loader.exec_module(mod)
 
 def classify(**overrides):
     values = dict(exit_code=1, outcome="failure", semantic_error=False, diff_changes=0,
-                  valid_report=False, progress="none", direction="unknown", error_text="")
+                  valid_report=False, progress="none", direction="unknown", error_text="",
+                  blocker_kind="none", advisor_used=False)
     values.update(overrides)
     return mod.classify(**values)
 
@@ -52,6 +53,45 @@ class ClassifyClaudeAttemptTests(unittest.TestCase):
         result = classify(exit_code=0, outcome="success")
         self.assertEqual(result["failure_class"], "model-no-progress")
         self.assertTrue(result["counts_toward_takeover"])
+
+    # --- advisor continuation eligibility ---
+
+    def test_useful_onplan_semantic_eligible(self):
+        result = classify(diff_changes=1, direction="on-plan", blocker_kind="semantic")
+        self.assertTrue(result["advisor_continuation_eligible"])
+        self.assertIsNone(result["advisor_rejection_reason"])
+
+    def test_zero_progress_rejected(self):
+        result = classify(exit_code=0, outcome="success", direction="on-plan", blocker_kind="semantic")
+        self.assertFalse(result["advisor_continuation_eligible"])
+        self.assertEqual(result["advisor_rejection_reason"], "no-useful-evidence")
+
+    def test_transport_failure_rejected(self):
+        result = classify(diff_changes=1, direction="on-plan", blocker_kind="semantic",
+                          error_text="API Error: connection timed out")
+        self.assertFalse(result["advisor_continuation_eligible"])
+        self.assertEqual(result["advisor_rejection_reason"], "transport-failure")
+
+    def test_approval_failure_rejected(self):
+        result = classify(diff_changes=1, direction="on-plan", blocker_kind="semantic",
+                          error_text="command requires permission approval")
+        self.assertFalse(result["advisor_continuation_eligible"])
+        self.assertEqual(result["advisor_rejection_reason"], "approval-blocked")
+
+    def test_offplan_rejected(self):
+        result = classify(diff_changes=1, direction="off-plan", blocker_kind="semantic")
+        self.assertFalse(result["advisor_continuation_eligible"])
+        self.assertEqual(result["advisor_rejection_reason"], "direction-not-on-plan")
+
+    def test_advisor_already_used_rejected(self):
+        result = classify(diff_changes=1, direction="on-plan", blocker_kind="semantic", advisor_used=True)
+        self.assertFalse(result["advisor_continuation_eligible"])
+        self.assertEqual(result["advisor_rejection_reason"], "advisor-already-used")
+
+    def test_non_semantic_blocker_rejected(self):
+        result = classify(diff_changes=1, direction="on-plan", blocker_kind="transport")
+        self.assertFalse(result["advisor_continuation_eligible"])
+        self.assertEqual(result["advisor_rejection_reason"], "blocker-not-semantic")
 
 
 if __name__ == "__main__":

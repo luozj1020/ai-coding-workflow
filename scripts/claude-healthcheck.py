@@ -83,7 +83,7 @@ def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]
     started = time.monotonic()
     try:
         result = subprocess.run(
-            ["claude", "-p", "--output-format", "json", prompt],
+            ["claude", "-p", prompt],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, env=env,
         )
@@ -117,7 +117,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--interaction-route", choices=["auto", "inherit", "direct", "compare"],
                         help="Run a real minimal interaction; auto tries the alternate only after failure.")
-    parser.add_argument("--prompt", default="你好，请只回复：连接正常")
+    parser.add_argument("--prompt", default="你好")
     args = parser.parse_args(argv)
     settings_path = args.settings.expanduser() if args.settings is not None else Path.home() / ".claude" / "settings.json"
     result = configuration(settings_path)
