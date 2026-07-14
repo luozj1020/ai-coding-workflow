@@ -284,6 +284,22 @@ case "$CLAUDE_CODE_BUILDER_MODE" in
         exit 1
         ;;
 esac
+CLAUDE_CODE_TOOL_PROFILE="${CLAUDE_CODE_TOOL_PROFILE:-auto}"
+case "$CLAUDE_CODE_TOOL_PROFILE" in
+    auto|default|minimal-builder|locator-builder|checker|diagnostic) ;;
+    *)
+        echo "Error: CLAUDE_CODE_TOOL_PROFILE must be 'auto', 'default', 'minimal-builder', 'locator-builder', 'checker', or 'diagnostic'." >&2
+        exit 1
+        ;;
+esac
+CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST="${CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST:-1}"
+case "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" in
+    0|1) ;;
+    *)
+        echo "Error: CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
 if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
     if [ "$_PARSED_TASK_MODE" = "builder" ] && \
        grep -Eiq '^\|[[:space:]]*Execution-only eligible\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD" && \
@@ -298,6 +314,31 @@ if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] && [ "$_PARSED_TASK_MODE" 
     echo "Error: CLAUDE_CODE_BUILDER_MODE=execution-only requires task mode 'builder', found '${_PARSED_TASK_MODE:-unknown}'." >&2
     exit 1
 fi
+
+# --- Tool profile resolution ---
+# Resolve auto after task mode and builder mode are both known.
+_TOOL_PROFILE_DERIVATION="explicit"
+if [ "$CLAUDE_CODE_TOOL_PROFILE" = "auto" ]; then
+    _TOOL_PROFILE_DERIVATION="auto-resolved"
+    if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
+        CLAUDE_CODE_TOOL_PROFILE="minimal-builder"
+    elif [ "$_PARSED_TASK_MODE" = "checker-test" ]; then
+        CLAUDE_CODE_TOOL_PROFILE="checker"
+    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "standard" ]; then
+        CLAUDE_CODE_TOOL_PROFILE="locator-builder"
+    else
+        CLAUDE_CODE_TOOL_PROFILE="default"
+    fi
+fi
+
+# --- Tool profile CLI flag support detection ---
+# Detect --tools / --allowedTools support once per dispatch.
+# If unsupported, degrade to legacy/default tools and record unsupported-cli.
+_TOOL_PROFILE_SUPPORTED=0
+if claude --help 2>&1 | grep -q -- '--tools'; then
+    _TOOL_PROFILE_SUPPORTED=1
+fi
+
 # First-progress timeout: accept both spellings with _SECONDS precedence.
 # If CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS is unset and
 # CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT is set, use the latter as the value.
@@ -1303,6 +1344,9 @@ fi
     echo "- Evidence mode: ${CLAUDE_CODE_EVIDENCE_MODE}"
     echo "- Checker broad discovery: ${CLAUDE_CODE_CHECKER_DISCOVER}"
     echo "- Builder mode: ${CLAUDE_CODE_BUILDER_MODE}"
+    echo "- Tool profile: ${CLAUDE_CODE_TOOL_PROFILE} (${_TOOL_PROFILE_DERIVATION})"
+    echo "- Tool profile CLI supported: $([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no)"
+    echo "- Task validation allowlist: $([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo enabled || echo disabled)"
     echo "- First-progress timeout: ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s (source: ${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default})"
     echo "- Progress extension seconds: ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s"
     echo ""
@@ -1351,6 +1395,10 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '    "pid": "%s"\n' "$PID_FILE"
     echo "  },"
     printf '  "builder_mode": "%s",\n' "$CLAUDE_CODE_BUILDER_MODE"
+    printf '  "tool_profile": "%s",\n' "$CLAUDE_CODE_TOOL_PROFILE"
+    printf '  "tool_profile_derivation": "%s",\n' "$_TOOL_PROFILE_DERIVATION"
+    printf '  "tool_profile_supported": %s,\n' "$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo true || echo false)"
+    printf '  "task_validation_allowlist": %s,\n' "$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo true || echo false)"
     printf '  "first_progress_timeout_seconds": %s,\n' "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS"
     printf '  "first_progress_timeout_source": "%s",\n' "${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default}"
     printf '  "base_timeout_seconds": %s,\n' "$CLAUDE_CODE_TIMEOUT_SECONDS"
@@ -2312,23 +2360,31 @@ claude_is_running() {
 }
 
 run_claude() {
+    # Common Claude CLI arguments shared by all invocation paths.
+    # Tool profile arrays (_CLAUDE_TOOLS_ARGS, _CLAUDE_ALLOWED_ARGS) are
+    # constructed before this function is called and applied identically
+    # in direct/inherit and broker/bypass branches.
+    local claude_base_args=(
+        -p
+        --permission-mode acceptEdits
+        --output-format json
+        "${_CLAUDE_TOOLS_ARGS[@]}"
+        "${_CLAUDE_ALLOWED_ARGS[@]}"
+    )
+
     if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ] || [ ! -f "${SCRIPT_DIR}/model-call-broker.py" ]; then
         # Internal bypass for tests/bootstrap to avoid broker recursion.  The
         # missing-helper branch preserves compatibility with old bootstrapped
         # projects and standalone dispatcher fixtures; refreshed installs use
         # the broker by default.
         if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
-            claude -p \
-                --permission-mode acceptEdits \
-                --output-format json \
+            claude "${claude_base_args[@]}" \
                 < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
         else
             (
                 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
                 unset http_proxy https_proxy all_proxy no_proxy
-                claude -p \
-                    --permission-mode acceptEdits \
-                    --output-format json \
+                claude "${claude_base_args[@]}" \
                     < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
             )
         fi
@@ -2352,13 +2408,13 @@ run_claude() {
         fi
         if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
             python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
-                claude -p --permission-mode acceptEdits --output-format json
+                claude "${claude_base_args[@]}"
         else
             (
                 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
                 unset http_proxy https_proxy all_proxy no_proxy
                 python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
-                    claude -p --permission-mode acceptEdits --output-format json
+                    claude "${claude_base_args[@]}"
             )
         fi
     fi
@@ -2374,7 +2430,113 @@ cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
 write_network_header
-progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}"
+
+# --- Tool profile argument construction ---
+# Build arrays for --tools and --allowedTools based on resolved profile.
+# These arrays are applied identically in all four Claude invocation paths
+# (direct/inherit and broker/bypass).
+_CLAUDE_TOOLS_ARGS=()
+_CLAUDE_ALLOWED_ARGS=()
+_TOOL_PROFILE_AVAILABLE_TOOLS=""
+_TOOL_PROFILE_ALLOWLIST_COUNT=0
+
+if [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && [ "$CLAUDE_CODE_TOOL_PROFILE" != "default" ]; then
+    case "$CLAUDE_CODE_TOOL_PROFILE" in
+        minimal-builder)
+            _CLAUDE_TOOLS_ARGS=(--tools "Read,Edit,Write,Bash")
+            ;;
+        locator-builder)
+            _CLAUDE_TOOLS_ARGS=(--tools "Read,Edit,Write,Grep,Glob,Bash")
+            ;;
+        checker)
+            _CLAUDE_TOOLS_ARGS=(--tools "Read,Edit,Write,Grep,Glob,Bash")
+            ;;
+        diagnostic)
+            _CLAUDE_TOOLS_ARGS=(--tools "Read,Grep,Glob,Bash")
+            ;;
+    esac
+
+    # For non-default profiles, allow Read/Edit/Write when present.
+    # Do not auto-allow unrestricted Bash.
+    _TOOL_PROFILE_AVAILABLE_TOOLS=""
+    case "$CLAUDE_CODE_TOOL_PROFILE" in
+        minimal-builder)   _TOOL_PROFILE_AVAILABLE_TOOLS="Read,Edit,Write,Bash" ;;
+        locator-builder)   _TOOL_PROFILE_AVAILABLE_TOOLS="Read,Edit,Write,Grep,Glob,Bash" ;;
+        checker)           _TOOL_PROFILE_AVAILABLE_TOOLS="Read,Edit,Write,Grep,Glob,Bash" ;;
+        diagnostic)        _TOOL_PROFILE_AVAILABLE_TOOLS="Read,Grep,Glob,Bash" ;;
+    esac
+
+    # Build allowedTools: allow Read, Edit, Write for profiles that include them.
+    _allow_parts=()
+    case "$_TOOL_PROFILE_AVAILABLE_TOOLS" in
+        *Read*)  _allow_parts+=("Read") ;;
+    esac
+    case "$_TOOL_PROFILE_AVAILABLE_TOOLS" in
+        *Edit*)  _allow_parts+=("Edit") ;;
+    esac
+    case "$_TOOL_PROFILE_AVAILABLE_TOOLS" in
+        *Write*) _allow_parts+=("Write") ;;
+    esac
+
+    # Checker profile: extract validation commands from task card.
+    _TOOL_PROFILE_ALLOWLIST_COUNT=0
+    if [ "$CLAUDE_CODE_TOOL_PROFILE" = "checker" ] && [ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" = "1" ]; then
+        _TASK_CARD_FILE="${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+        if [ -f "$_TASK_CARD_FILE" ] && [ -n "$PYTHON_CMD" ]; then
+            _VALIDATION_CMDS="$("$PYTHON_CMD" - "$_TASK_CARD_FILE" <<'PYEOF' 2>/dev/null || echo ""
+import re, sys
+
+MAX_COMMANDS = 12
+MAX_CMD_LEN = 500
+# Unsafe shell composition/redirection operators
+UNSAFE_RE = re.compile(r'[;&|`><\x00-\x08\x0e-\x1f]')
+
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+
+# Find fenced blocks whose info string contains "validation" or "check"
+blocks = re.finditer(r'```[^\n]*(?:validation|check)[^\n]*\n(.*?)```', text, re.I | re.S)
+
+commands = []
+for block in blocks:
+    for line in block.group(1).splitlines():
+        line = line.strip()
+        # Skip empty lines and comments
+        if not line or line.startswith('#'):
+            continue
+        # Reject unsafe commands
+        if UNSAFE_RE.search(line):
+            continue
+        # Bound by length
+        if len(line) > MAX_CMD_LEN:
+            continue
+        commands.append(line)
+        if len(commands) >= MAX_COMMANDS:
+            break
+    if len(commands) >= MAX_COMMANDS:
+        break
+
+for cmd in commands:
+    print(cmd)
+PYEOF
+)"
+
+            if [ -n "$_VALIDATION_CMDS" ]; then
+                while IFS= read -r _vcmd; do
+                    [ -z "$_vcmd" ] && continue
+                    _allow_parts+=("Bash(${_vcmd})")
+                    _TOOL_PROFILE_ALLOWLIST_COUNT=$((_TOOL_PROFILE_ALLOWLIST_COUNT + 1))
+                done <<< "$_VALIDATION_CMDS"
+            fi
+        fi
+    fi
+
+    if [ ${#_allow_parts[@]} -gt 0 ]; then
+        _CLAUDE_ALLOWED_ARGS=(--allowedTools "$(IFS=,; echo "${_allow_parts[*]}")")
+    fi
+fi
+
+progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_count=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no)"
 
 set +e
 run_claude &
@@ -3597,6 +3759,7 @@ echo "Large Repo Mode: $CLAUDE_CODE_LARGE_REPO_MODE"
 echo "Prompt Profile:  $CLAUDE_CODE_PROMPT_PROFILE"
 echo "Evidence Mode:   $CLAUDE_CODE_EVIDENCE_MODE"
 echo "Builder Mode:    $CLAUDE_CODE_BUILDER_MODE"
+echo "Tool Profile:    $CLAUDE_CODE_TOOL_PROFILE (${_TOOL_PROFILE_DERIVATION})"
 echo "First Progress:  ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s timeout"
 echo "Progress Ext:    ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s"
 echo "Dispatch Outcome:${DISPATCH_OUTCOME}"
