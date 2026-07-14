@@ -2243,23 +2243,29 @@ file_contains() {
 # Returns 0 (true) if there is meaningful progress growth; 1 otherwise.
 # Tracks actual implementation/progress changes, not merely seeded files or a live PID.
 progress_is_growing() {
-    local now_digest now_report_bytes now_progress_bytes
+    local now_digest now_report_bytes now_progress_bytes now_report_hash now_progress_hash
     # 1. Worktree changes (diff from base)
     now_digest="$(worktree_digest)"
     if [ "$now_digest" != "${1:-}" ]; then
         return 0
     fi
-    # 2. Report file growth (non-seeded content, size increased)
+    # 2. Valid report content changed. Hash comparison catches rewrites that
+    # keep or reduce the byte count; size growth remains a cheap positive path.
     now_report_bytes="$(file_size "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
-    if [ "$now_report_bytes" -gt "${2:-0}" ] && valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
-        return 0
+    if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
+        now_report_hash="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
+        if [ "$now_report_bytes" -gt "${2:-0}" ] || [ "$now_report_hash" != "${4:-}" ]; then
+            return 0
+        fi
     fi
-    # 3. Progress file growth (non-seeded content, size increased)
+    # 3. Non-seeded progress content changed, including shorter rewrites.
     now_progress_bytes="$(file_size "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
-    if [ "$now_progress_bytes" -gt "${3:-0}" ] && \
-       [ -s "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" ] && \
+    if [ -s "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" ] && \
        ! file_contains "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "$SEEDED_PROGRESS_MARKER"; then
-        return 0
+        now_progress_hash="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
+        if [ "$now_progress_bytes" -gt "${3:-0}" ] || [ "$now_progress_hash" != "${5:-}" ]; then
+            return 0
+        fi
     fi
     return 1
 }
@@ -2698,6 +2704,8 @@ TIMEOUT_EXTENSION_REASON=""
 EXTENSION_START_WORKTREE_DIGEST=""
 EXTENSION_START_REPORT_BYTES=0
 EXTENSION_START_PROGRESS_BYTES=0
+EXTENSION_START_REPORT_HASH=""
+EXTENSION_START_PROGRESS_HASH=""
 # --- Second active-progress extension tracking ---
 # When the first extension deadline fires and progress is still growing,
 # grant exactly one more bounded wait round.  Never repeated.
@@ -2847,7 +2855,7 @@ while claude_is_running; do
         if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 1 ] && [ "$NOW_EPOCH" -ge "$TIMEOUT_EXTENSION_DEADLINE" ]; then
             # Guard: skip if second extension is already active (deadline already set).
             if [ "$SECOND_EXTENSION_ACTIVE" -eq 0 ]; then
-                if ! progress_is_growing "$EXTENSION_START_WORKTREE_DIGEST" "$EXTENSION_START_REPORT_BYTES" "$EXTENSION_START_PROGRESS_BYTES"; then
+                if ! progress_is_growing "$EXTENSION_START_WORKTREE_DIGEST" "$EXTENSION_START_REPORT_BYTES" "$EXTENSION_START_PROGRESS_BYTES" "$EXTENSION_START_REPORT_HASH" "$EXTENSION_START_PROGRESS_HASH"; then
                     CLAUDE_TIMED_OUT=1
                     stop_claude "runtime timeout (extension expired, no progress)" "$ELAPSED"
                     break
@@ -2884,6 +2892,8 @@ while claude_is_running; do
                 EXTENSION_START_WORKTREE_DIGEST="$LAST_WORKTREE_DIGEST"
                 EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
                 EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
+                EXTENSION_START_REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
+                EXTENSION_START_PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
                 progress_log "Timeout extension started: base_timeout=${CLAUDE_CODE_TIMEOUT_SECONDS}s, extension=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s, deadline_epoch=${TIMEOUT_EXTENSION_DEADLINE}, reason=${TIMEOUT_EXTENSION_REASON}, recent_activity_seconds=${_RECENT_ACTIVITY_SECONDS}"
             else
                 CLAUDE_TIMED_OUT=1
