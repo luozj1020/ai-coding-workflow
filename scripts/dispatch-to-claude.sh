@@ -3812,7 +3812,6 @@ fi
 
 DISPATCH_EVIDENCE_STATE="$(classify_dispatch_evidence "$IMPLEMENTATION_CHANGES" "$VALID_CLAUDE_REPORT" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
 if [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ] && \
-   [ "${RESULT_FALLBACK_GENERATED:-0}" -eq 1 ] && \
    [ "${FIRST_PROGRESS_DETECTED:-0}" -eq 0 ] && \
    [ "$DISPATCH_EVIDENCE_STATE" != "acknowledgement only" ]; then
     if [ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && [ -s "$INTERACTION_HEALTH_FILE" ]; then
@@ -3906,6 +3905,7 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] API probe mode: ${CLAUDE_CODE_API_PROBE_MODE}"
     echo "[dispatch] Probe environment: ${CLAUDE_CODE_PROBE_ENVIRONMENT}"
     echo "[dispatch] First-progress action: ${CLAUDE_CODE_FIRST_PROGRESS_ACTION}"
+    echo "[dispatch] First-progress timed out: $([ "${CLAUDE_FIRST_PROGRESS_TIMED_OUT:-0}" -eq 1 ] && echo yes || echo no)"
     echo "[dispatch] Observation probe ran: $([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"
     echo "[dispatch] Startup probe conclusion: ${_STARTUP_PROBE_CONCLUSION:-not-run}"
     echo "[dispatch] Startup interaction health artifact: ${STARTUP_INTERACTION_HEALTH_FILE}"

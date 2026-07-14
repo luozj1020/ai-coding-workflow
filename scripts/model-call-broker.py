@@ -628,6 +628,24 @@ def record_diagnostic(
 # ---------------------------------------------------------------------------
 
 
+def _is_python_script(path: str) -> bool:
+    """Return True if *path* looks like a Python script.
+
+    Checks the extension (.py/.pyw) first.  For extensionless files (common in
+    test fixtures), reads the first 256 bytes and looks for a shebang mentioning
+    *python*.  Returns False when the file does not exist or cannot be read.
+    """
+    lower = path.lower()
+    if lower.endswith((".py", ".pyw")):
+        return True
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(256)
+        return head.startswith(b"#!") and b"python" in head.split(b"\n", 1)[0]
+    except OSError:
+        return False
+
+
 def run_command(
     command: Sequence[str],
     input_data: Optional[bytes],
@@ -639,13 +657,20 @@ def run_command(
     err_fh = open(stderr_path, "wb") if stderr_path else None
 
     effective_command = list(command)
-    if os.name == "nt" and effective_command and effective_command[0].lower().endswith(".sh"):
-        bash = shutil.which("bash")
-        if not bash:
-            raise BrokerError(
-                "Cannot execute .sh model command on Windows: bash was not found"
-            )
-        effective_command.insert(0, bash)
+    if os.name == "nt" and effective_command:
+        cmd0 = effective_command[0]
+        if cmd0.lower().endswith(".sh"):
+            bash = shutil.which("bash")
+            if not bash:
+                raise BrokerError(
+                    "Cannot execute .sh model command on Windows: bash was not found"
+                )
+            effective_command.insert(0, bash)
+        elif _is_python_script(cmd0) and not cmd0.lower().endswith((".py", ".pyw")):
+            # Windows CreateProcess cannot execute an extensionless script
+            # directly.  If the file has a Python shebang, launch it through
+            # the current interpreter so the CI fixture works cross-platform.
+            effective_command.insert(0, sys.executable)
 
     try:
         result = subprocess.run(

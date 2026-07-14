@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
@@ -35,20 +36,28 @@ def _is_within(child: Path, parent: Path) -> bool:
 
 
 def _path_is_safe(path_str: str) -> bool:
-    """Check that a path string is a valid relative path (no absolute, no traversal)."""
+    """Check that a path string is a valid relative path (no absolute, no traversal).
+
+    Uses cross-flavour detection so paths like /etc/passwd (POSIX absolute),
+    C:\\... or C:/... (Windows drive), and \\\\server\\... (UNC) are rejected
+    on every host OS, not only on the native platform.
+    """
     if not path_str or not path_str.strip():
         return False
-    p = Path(path_str)
-    # Reject absolute paths
-    if p.is_absolute():
+    # Reject native-platform absolute paths
+    if Path(path_str).is_absolute():
+        return False
+    # Reject POSIX-style absolute paths (starting with /) on any platform.
+    if path_str.startswith("/"):
+        return False
+    # Reject Windows drive-absolute paths (C:\\..., C:/...) and UNC paths (\\\\...)
+    if re.match(r'[A-Za-z]:[/\\]|\\\\', path_str):
         return False
     # Reject path traversal
     try:
-        # Resolve and check for .. components
-        parts = p.parts
+        parts = Path(path_str).parts
         if any(part == ".." for part in parts):
             return False
-        # Must have at least one part
         if not parts:
             return False
     except (ValueError, OSError):

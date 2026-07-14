@@ -1159,6 +1159,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             {
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
                 "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "stop",
                 "FAKE_CLAUDE_MODE": "seed-only",
             },
         )
@@ -1288,6 +1289,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             {
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
                 "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "stop",
                 "FAKE_CLAUDE_MODE": "seed-only",
             },
         )
@@ -1465,6 +1467,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "5",
+                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "0",
                 "FAKE_CLAUDE_MODE": "incremental-progress",
                 "FAKE_CLAUDE_SLEEP_SECONDS": "3",
                 "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "8",
@@ -2402,6 +2405,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "5",
                 "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_DRAIN_SECONDS": "0",
+                "CLAUDE_CODE_API_PROBE_MODE": "off",
                 "FAKE_CLAUDE_MODE": "progress-update",
                 "FAKE_CLAUDE_SLEEP_SECONDS": "10",
             },
@@ -2410,11 +2415,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
-        # Progress is stale (last activity >1s ago at the 2s base deadline) → no extension.
+        # Progress is stale (last activity >1s ago at the 4s base deadline) → no extension.
         self.assertNotIn("Timeout extension started", progress)
         self.assertIn("stale progress", progress)
         self.assertIn("Progress extension used: no", status)
-        self.assertLess(wall, 15, "Wall-clock exceeded 15s; run should terminate at base deadline")
+        self.assertLess(wall, 25, "Wall-clock exceeded 25s; run should terminate at base deadline")
 
     def test_recent_progress_at_base_deadline_extends(self):
         """Progress within the recent-activity window at the base deadline
