@@ -60,6 +60,11 @@ Options:
   --allow-dirty-source
                     Allow micro-builder dispatch from a dirty source repo
   --require-spark   Treat Spark unavailability as a hard helper failure
+  --execution-env ENV
+                    Execution environment: auto, host, or sandbox (default: auto).
+                    auto: detect restricted sandbox from CODEX_SANDBOX_NETWORK_DISABLED.
+                    host: caller asserts outside-sandbox authority; unsets inherited marker.
+                    sandbox: preserve inherited marker and existing invocation behavior.
   -h, --help        Show this help
 
 Environment:
@@ -76,6 +81,7 @@ Environment:
   AI_SPARK_BUDGET_MODE=aggressive|balanced|conservative
   CODEX_FAST_PATH_MAX_DIFF_LINES=100
   CODEX_SPARK_ROUTING_EVENT=initial|revision|narrow|retry|next-phase
+  CODEX_SPARK_EXECUTION_ENV=auto|host|sandbox
 EOF
 }
 
@@ -114,6 +120,7 @@ MAX_DIFF_LINES=""
 FAST_PATH_MAX_DIFF_LINES="${CODEX_FAST_PATH_MAX_DIFF_LINES:-100}"
 ROUTING_EVENT="${CODEX_SPARK_ROUTING_EVENT:-initial}"
 EXPLICIT_OUTPUT="no"
+EXECUTION_ENV="${CODEX_SPARK_EXECUTION_ENV:-auto}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -202,6 +209,11 @@ while [ $# -gt 0 ]; do
         --require-spark)
             REQUIRE_SPARK="1"
             shift
+            ;;
+        --execution-env)
+            [ $# -ge 2 ] || { echo "Error: --execution-env requires a value." >&2; exit 1; }
+            EXECUTION_ENV="$2"
+            shift 2
             ;;
         -h|--help)
             usage
@@ -322,6 +334,11 @@ fi
 case "$ROUTING_EVENT" in
     initial|revision|narrow|retry|next-phase) ;;
     *) echo "Error: --routing-event must be initial, revision, narrow, retry, or next-phase." >&2; exit 1 ;;
+esac
+
+case "$EXECUTION_ENV" in
+    auto|host|sandbox) ;;
+    *) echo "Error: invalid --execution-env: $EXECUTION_ENV (expected auto, host, or sandbox)" >&2; exit 1 ;;
 esac
 
 if [ "$INPUT_KIND" = "task-card" ] && [ ! -f "$TASK_CARD" ]; then
@@ -912,6 +929,7 @@ write_report_header() {
         echo "| Spark model response received? | ${SPARK_MODEL_RESPONSE_RECEIVED} |"
         echo "| Spark purpose used | ${MODE} |"
         echo "| Spark requested mode | ${REQUESTED_MODE} |"
+        echo "| Execution environment requested | ${EXECUTION_ENV} |"
         echo "| Result mode | ${RESULT_MODE} |"
         echo "| Spark model used | ${MODEL} |"
         echo "| Spark budget mode requested | ${REQUESTED_BUDGET_MODE} |"
@@ -1110,11 +1128,17 @@ write_compact_diagnostic() {
     local codex_exit="$1"
     local result_empty="$2"
     local failure_class="$3"
-    local stderr_excerpt_lines=20
-    local stderr_excerpt=""
+    local stderr_excerpt_lines=15
+    local stderr_head=""
+    local stderr_tail=""
+    local stderr_total_lines=0
 
     if [ -s "$STDERR_FILE" ]; then
-        stderr_excerpt="$(head -n "$stderr_excerpt_lines" "$STDERR_FILE" | redact_secrets)"
+        stderr_total_lines="$(wc -l < "$STDERR_FILE")"
+        stderr_head="$(head -n "$stderr_excerpt_lines" "$STDERR_FILE" | redact_secrets)"
+        if [ "$stderr_total_lines" -gt "$stderr_excerpt_lines" ]; then
+            stderr_tail="$(tail -n "$stderr_excerpt_lines" "$STDERR_FILE" | redact_secrets)"
+        fi
     fi
 
     DIAGNOSTIC_DIR="${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}"
@@ -1127,6 +1151,7 @@ write_compact_diagnostic() {
         echo "|-------|-------|"
         echo "| Resolved mode | ${MODE} |"
         echo "| Model | ${MODEL} |"
+        echo "| Execution environment | ${EXECUTION_ENV} |"
         echo "| Exit code | ${codex_exit} |"
         echo "| Failure classification | ${failure_class} |"
         echo "| Stdout empty | ${result_empty} |"
@@ -1134,14 +1159,24 @@ write_compact_diagnostic() {
         echo "| Diagnostics mode | ${DIAGNOSTICS_MODE} |"
         echo "| Timestamp | ${TIMESTAMP} |"
         echo ""
-        echo "## Stderr Excerpt (first ${stderr_excerpt_lines} lines, redacted)"
+        echo "## Stderr Excerpt (redacted)"
         echo ""
-        if [ -n "$stderr_excerpt" ]; then
+        echo "### Head (first ${stderr_excerpt_lines} lines)"
+        echo ""
+        if [ -n "$stderr_head" ]; then
             echo '```'
-            echo "$stderr_excerpt"
+            echo "$stderr_head"
             echo '```'
         else
             echo "(no stderr captured)"
+        fi
+        if [ -n "$stderr_tail" ]; then
+            echo ""
+            echo "### Tail (last ${stderr_excerpt_lines} lines of ${stderr_total_lines} total)"
+            echo ""
+            echo '```'
+            echo "$stderr_tail"
+            echo '```'
         fi
         echo ""
     } > "${DIAGNOSTIC_DIR}/diagnostic.md"
@@ -1184,6 +1219,7 @@ write_full_diagnostic() {
         echo "failure_class=${DIAGNOSTIC_FAILURE_CLASS}"
         echo "mode=${MODE}"
         echo "model=${MODEL}"
+        echo "execution_env=${EXECUTION_ENV}"
         echo "result_mode=${RESULT_MODE}"
         echo "diagnostics_mode=${DIAGNOSTICS_MODE}"
         echo "auto_disabled=${SPARK_AUTO_DISABLED}"
@@ -1202,6 +1238,7 @@ write_full_diagnostic() {
         echo "|-------|-------|"
         echo "| Codex exit code | ${codex_exit} |"
         echo "| Failure classification | ${DIAGNOSTIC_FAILURE_CLASS} |"
+        echo "| Execution environment | ${EXECUTION_ENV} |"
         echo "| Result mode | full (diagnostics=full) |"
         echo "| Prompt | ${diag_prompt} |"
         echo "| Raw output | ${diag_result} |"
@@ -1230,6 +1267,51 @@ write_full_diagnostic() {
     REPORT_FILE="$_orig_report"
     echo "Codex Spark diagnostic (full): ${DIAGNOSTIC_DIR}" >&2
 }
+
+# ---------------------------------------------------------------------------
+# Execution environment auto-detection.
+# In auto mode, a truthy CODEX_SANDBOX_NETWORK_DISABLED means the parent
+# sandbox restricts network. Making a real model call would be futile.
+# ---------------------------------------------------------------------------
+
+_NETWORK_RESTRICTED="no"
+if [ "$EXECUTION_ENV" = "auto" ]; then
+    case "${CODEX_SANDBOX_NETWORK_DISABLED:-}" in
+        1|true|TRUE|True|yes|YES|Yes)
+            _NETWORK_RESTRICTED="yes" ;;
+    esac
+fi
+
+if [ "$EXECUTION_ENV" = "auto" ] && [ "$_NETWORK_RESTRICTED" = "yes" ]; then
+    if [ "$REQUIRE_SPARK" = "1" ]; then
+        SPARK_INVOKED="no"
+        SPARK_CHECKS_RUN="not run"
+        HELPER_EXIT_STATUS=1
+        if [ "$RESULT_MODE" = "direct" ]; then
+            echo "Error: Spark required but execution environment is network-restricted (CODEX_SANDBOX_NETWORK_DISABLED is set). Re-run from a host terminal: env -u CODEX_SANDBOX_NETWORK_DISABLED bash $0 $*" >&2
+            exit 1
+        fi
+        write_report_header "1" "no"
+        {
+            echo "## Result"
+            echo ""
+            echo "Spark required (--require-spark) but execution environment is network-restricted."
+            echo ""
+            echo "CODEX_SANDBOX_NETWORK_DISABLED is set in the inherited environment."
+            echo "The sandbox cannot grant external network authority."
+            echo ""
+            echo "Re-run from a host terminal with the marker unset:"
+            echo ""
+            echo '```'
+            echo "env -u CODEX_SANDBOX_NETWORK_DISABLED bash $0 <args>"
+            echo '```'
+        } >> "$REPORT_FILE"
+        echo "Error: Spark required but execution environment is network-restricted." >&2
+        echo "Codex Spark report: $REPORT_FILE" >&2
+        exit 1
+    fi
+    auto_disable_spark "auto-detected restricted sandbox (CODEX_SANDBOX_NETWORK_DISABLED is set); re-run with --execution-env host from an authorized terminal or unset the marker" "not-run"
+fi
 
 if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
     SPARK_INVOKED="no"
@@ -1491,6 +1573,12 @@ append_artifact_excerpts
 set +e
 (
     cd "$RUN_DIR"
+    # In host mode, remove the inherited sandbox network restriction from the
+    # real model subprocess. The caller asserts it already has outside-sandbox
+    # authority. This does not affect the parent shell or escape the sandbox.
+    if [ "$EXECUTION_ENV" = "host" ]; then
+        unset CODEX_SANDBOX_NETWORK_DISABLED
+    fi
     broker_args=(
         --role spark --stage builder
         --task-id "spark-$(basename "$RUN_DIR")"
