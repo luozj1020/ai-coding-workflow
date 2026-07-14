@@ -137,8 +137,17 @@ def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]
                 "usage_extracted": False, "cost_usd": "unavailable"}
 
 
-def restricted_network_environment() -> bool:
-    """Detect known agent sandboxes where a failed network probe is inconclusive."""
+def restricted_network_environment(probe_environment: str = "auto") -> bool:
+    """Detect known agent sandboxes where a failed network probe is inconclusive.
+
+    probe_environment: "auto" checks the inherited env var, "host" forces
+    unrestricted (ignores CODEX_SANDBOX_NETWORK_DISABLED), "sandbox" forces
+    restricted regardless of env.
+    """
+    if probe_environment == "host":
+        return False
+    if probe_environment == "sandbox":
+        return True
     return os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED", "").lower() in {"1", "true", "yes"}
 
 
@@ -160,11 +169,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--interaction-route", choices=["auto", "inherit", "direct", "compare"],
                         help="Run a real minimal interaction; auto tries the alternate only after failure.")
     parser.add_argument("--prompt", default="你好")
+    parser.add_argument(
+        "--probe-environment",
+        choices=["auto", "host", "sandbox"],
+        default="auto",
+        help="Override execution environment detection: host ignores inherited sandbox marker, sandbox forces restricted.",
+    )
     args = parser.parse_args(argv)
     settings_path = args.settings.expanduser() if args.settings is not None else Path.home() / ".claude" / "settings.json"
     result = configuration(settings_path)
+    _probe_env = args.probe_environment
+    _resolved_restricted = restricted_network_environment(_probe_env)
     result["execution_environment"] = {
-        "network_restricted": restricted_network_environment(),
+        "network_restricted": _resolved_restricted,
+        "probe_environment_requested": _probe_env,
+        "probe_environment_resolved": "sandbox" if _resolved_restricted else "host",
         "interaction_authority": "current-process",
     }
     if args.probe:

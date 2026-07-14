@@ -82,6 +82,9 @@ case "$CLAUDE_CODE_NETWORK_MONITOR" in
 esac
 CLAUDE_CODE_NETWORK_HEALTHCHECK_URL="${CLAUDE_CODE_NETWORK_HEALTHCHECK_URL:-}"
 CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS="${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS:-5}"
+CLAUDE_CODE_API_PROBE_MODE="${CLAUDE_CODE_API_PROBE_MODE:-always}"
+CLAUDE_CODE_PROBE_ENVIRONMENT="${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}"
+CLAUDE_CODE_FIRST_PROGRESS_ACTION="${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}"
 CLAUDE_CODE_EXECUTION_PROFILE="${CLAUDE_CODE_EXECUTION_PROFILE:-balanced}"
 case "$CLAUDE_CODE_EXECUTION_PROFILE" in
     safe)
@@ -208,6 +211,27 @@ CLAUDE_CODE_CHECKER_COMMANDS="${CLAUDE_CODE_CHECKER_COMMANDS:-}"
 case "$CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS" in
     ''|*[!0-9]*)
         echo "Error: CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS must be a non-negative integer." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_API_PROBE_MODE" in
+    always|failure-only|off) ;;
+    *)
+        echo "Error: CLAUDE_CODE_API_PROBE_MODE must be 'always', 'failure-only', or 'off'." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_PROBE_ENVIRONMENT" in
+    auto|host|sandbox) ;;
+    *)
+        echo "Error: CLAUDE_CODE_PROBE_ENVIRONMENT must be 'auto', 'host', or 'sandbox'." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" in
+    observe|stop) ;;
+    *)
+        echo "Error: CLAUDE_CODE_FIRST_PROGRESS_ACTION must be 'observe' or 'stop'." >&2
         exit 1
         ;;
 esac
@@ -1162,6 +1186,7 @@ PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 NETWORK_FILE="${WORKTREE_ROOT}/${TASK_ID}.network.log"
 ATTEMPT_CLASSIFICATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.attempt-classification.json"
 INTERACTION_HEALTH_FILE="${WORKTREE_ROOT}/${TASK_ID}.interaction-health.json"
+STARTUP_INTERACTION_HEALTH_FILE="${WORKTREE_ROOT}/${TASK_ID}.startup-interaction-health.json"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
 SEEDED_PROGRESS_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"
 FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
@@ -1190,7 +1215,13 @@ if [ "$CLAUDE_CODE_LARGE_REPO_MODE" = "1" ]; then
     DIRTY_UNTRACKED=""
     DIRTY_UNTRACKED_SKIPPED=1
 else
-    DIRTY_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null | grep -v -E "^\.worktrees/" | grep -vxF "$TASK_CARD_REL" || true)"
+    DIRTY_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null \
+        | grep -v -E "^\.worktrees/" \
+        | grep -vxF "$TASK_CARD_REL" \
+        | grep -vxF ".ai-workflow/model-calls.jsonl" \
+        | grep -vxF ".ai-workflow/model-calls.lock" \
+        | grep -vxF ".ai-workflow/run-ledger.lock" \
+        || true)"
     DIRTY_UNTRACKED_SKIPPED=0
 fi
 
@@ -1228,6 +1259,7 @@ fi
 # Initialize runtime evidence only after source preflight succeeds. Failed
 # dirty-source checks must remain artifact-free.
 : > "$INTERACTION_HEALTH_FILE"
+: > "$STARTUP_INTERACTION_HEALTH_FILE"
 echo "$$" > "$DISPATCHER_PID_FILE"
 
 create_dispatch_worktree() {
@@ -1352,7 +1384,10 @@ fi
     echo "- Tool profile CLI supported: $([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no)"
     echo "- Task validation allowlist: $([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo enabled || echo disabled)"
     echo "- First-progress timeout: ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s (source: ${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default})"
+    echo "- First-progress action: ${CLAUDE_CODE_FIRST_PROGRESS_ACTION}"
     echo "- Progress extension seconds: ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s"
+    echo "- API probe mode: ${CLAUDE_CODE_API_PROBE_MODE}"
+    echo "- Probe environment: ${CLAUDE_CODE_PROBE_ENVIRONMENT}"
     echo ""
     echo "## Tracked Changes (git diff --stat)"
     DIFF_OUT="$(git diff --stat 2>/dev/null || true)"
@@ -1406,7 +1441,10 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "first_progress_timeout_seconds": %s,\n' "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS"
     printf '  "first_progress_timeout_source": "%s",\n' "${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default}"
     printf '  "base_timeout_seconds": %s,\n' "$CLAUDE_CODE_TIMEOUT_SECONDS"
-    printf '  "progress_extension_seconds": %s\n' "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
+    printf '  "progress_extension_seconds": %s,\n' "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
+    printf '  "probe_mode": "%s",\n' "$CLAUDE_CODE_API_PROBE_MODE"
+    printf '  "probe_environment": "%s",\n' "$CLAUDE_CODE_PROBE_ENVIRONMENT"
+    printf '  "first_progress_action": "%s"\n' "$CLAUDE_CODE_FIRST_PROGRESS_ACTION"
     echo "}"
 } > "$_RUNTIME_TMP"
 mv "$_RUNTIME_TMP" "$RUNTIME_JSON"
@@ -1904,22 +1942,42 @@ progress_log() {
 
 ZERO_OUTPUT_PROBE_CONCLUSION="not-run"
 ZERO_OUTPUT_PROBE_AUTHORITATIVE="no"
-run_zero_output_interaction_probe() {
+_LAST_PROBE_CONCLUSION=""
+_LAST_PROBE_AUTHORITATIVE="no"
+_OBSERVATION_PROBE_RAN=0
+_OBSERVATION_PROBE_CONCLUSION=""
+_OBSERVATION_PROBE_AUTHORITATIVE="no"
+
+# Unified interaction probe for startup and zero-output phases.
+# Accepts phase: "startup", "zero-output", or "observation".
+# Writes to the caller-supplied artifact file.
+# Sets _LAST_PROBE_CONCLUSION and _LAST_PROBE_AUTHORITATIVE.
+# Caller is responsible for promoting to ZERO_OUTPUT_PROBE_* when appropriate.
+run_interaction_probe() {
+    local phase="$1"
+    local artifact_file="$2"
     local helper="${SCRIPT_DIR}/claude-healthcheck.py"
+    _LAST_PROBE_CONCLUSION=""
+    _LAST_PROBE_AUTHORITATIVE="no"
     if [ -z "$PYTHON_CMD" ] || [ ! -f "$helper" ]; then
-        progress_log "Zero-output interaction probe skipped: healthcheck helper unavailable"
+        progress_log "Interaction probe (${phase}) skipped: healthcheck helper unavailable"
         return 0
     fi
-    progress_log "Zero-output detected; checking Claude API with fixed prompt via route=${CLAUDE_CODE_PROXY_MODE}"
+    local probe_env_args=()
+    if [ -n "${CLAUDE_CODE_PROBE_ENVIRONMENT:-}" ] && [ "$CLAUDE_CODE_PROBE_ENVIRONMENT" != "auto" ]; then
+        probe_env_args=(--probe-environment "$CLAUDE_CODE_PROBE_ENVIRONMENT")
+    fi
+    progress_log "Interaction probe (${phase}): checking Claude API with fixed prompt via route=${CLAUDE_CODE_PROXY_MODE}, environment=${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}"
     "$PYTHON_CMD" "$helper" --interaction-route "$CLAUDE_CODE_PROXY_MODE" \
         --timeout "$CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS" --prompt '你好' --json \
-        > "$INTERACTION_HEALTH_FILE" 2>/dev/null || true
-    if [ ! -s "$INTERACTION_HEALTH_FILE" ]; then
-        ZERO_OUTPUT_PROBE_CONCLUSION="unavailable-in-current-environment"
-        progress_log "Zero-output interaction probe returned no diagnostic output"
+        "${probe_env_args[@]}" \
+        > "$artifact_file" 2>/dev/null || true
+    if [ ! -s "$artifact_file" ]; then
+        _LAST_PROBE_CONCLUSION="unavailable-in-current-environment"
+        progress_log "Interaction probe (${phase}) returned no diagnostic output"
         return 0
     fi
-    ZERO_OUTPUT_PROBE_CONCLUSION="$("$PYTHON_CMD" - "$INTERACTION_HEALTH_FILE" <<'PYEOF' 2>/dev/null || true
+    _LAST_PROBE_CONCLUSION="$("$PYTHON_CMD" - "$artifact_file" <<'PYEOF' 2>/dev/null || true
 import json, sys
 try:
     value = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -1928,17 +1986,17 @@ except (OSError, ValueError, TypeError):
     print("unavailable-in-current-environment")
 PYEOF
 )"
-    if [ "$ZERO_OUTPUT_PROBE_CONCLUSION" = "available" ]; then
-        ZERO_OUTPUT_PROBE_AUTHORITATIVE="yes"
+    if [ "$_LAST_PROBE_CONCLUSION" = "available" ]; then
+        _LAST_PROBE_AUTHORITATIVE="yes"
     fi
-    progress_log "Zero-output interaction probe: conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}, artifact=${INTERACTION_HEALTH_FILE}"
+    progress_log "Interaction probe (${phase}): conclusion=${_LAST_PROBE_CONCLUSION}, authoritative=${_LAST_PROBE_AUTHORITATIVE}, artifact=${artifact_file}"
 
     # Record diagnostic ledger entry for the real probe attempt.
     # Each real probe attempt is accounted as diagnostic and does not reduce
     # Builder quota or affect takeover/success classification.
     # Diagnostic recording is advisory; failure cannot change dispatch outcome.
     if [ -f "${SCRIPT_DIR}/model-call-broker.py" ]; then
-        _DIAG_COUNTS="$("$PYTHON_CMD" - "$INTERACTION_HEALTH_FILE" \
+        _DIAG_COUNTS="$("$PYTHON_CMD" - "$artifact_file" \
             "${SCRIPT_DIR}/model-call-broker.py" "${_RETRY_TASK_ID:-$TASK_ID}" \
             "${REPO_ROOT}/.ai-workflow/model-calls.jsonl" <<'PYEOF' 2>/dev/null || true
 import json, subprocess, sys
@@ -1953,7 +2011,7 @@ try:
             continue
         cmd = [
             sys.executable, broker,
-            "--role", "claude", "--stage", "zero-output-healthcheck",
+            "--role", "claude", "--stage", "interaction-healthcheck",
             "--task-id", task_id, "--ledger", ledger, "--diagnostic",
             "--diagnostic-success", str(bool(probe.get("success"))).lower(),
             "--diagnostic-elapsed", str(probe.get("elapsed_seconds", 0)),
@@ -1981,7 +2039,7 @@ print(f"{recorded}\t{failed}")
 PYEOF
 )"
         IFS=$'\t' read -r _DIAG_RECORDED _DIAG_FAILED <<< "${_DIAG_COUNTS:-0\t1}"
-        progress_log "Diagnostic ledger records: recorded=${_DIAG_RECORDED:-0}, failed=${_DIAG_FAILED:-1}"
+        progress_log "Diagnostic ledger records (${phase}): recorded=${_DIAG_RECORDED:-0}, failed=${_DIAG_FAILED:-1}"
     fi
 }
 
@@ -2435,7 +2493,7 @@ cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
 write_network_header
-progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
 
 # --- Tool profile argument construction ---
 # Build arrays for --tools and --allowedTools based on resolved profile.
@@ -2578,6 +2636,15 @@ fi
 
 progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no)"
 
+# --- Unified interaction probe: startup phase ---
+# Advisory only: startup probe failure must not prevent dispatch.
+_STARTUP_PROBE_CONCLUSION="not-run"
+if [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ]; then
+    run_interaction_probe "startup" "$STARTUP_INTERACTION_HEALTH_FILE"
+    _STARTUP_PROBE_CONCLUSION="$_LAST_PROBE_CONCLUSION"
+    progress_log "Startup interaction probe: conclusion=${_STARTUP_PROBE_CONCLUSION} (advisory; dispatch continues)"
+fi
+
 set +e
 run_claude &
 CLAUDE_PID=$!
@@ -2680,9 +2747,24 @@ while claude_is_running; do
             progress_log "First substantive progress detected: signal=${_FP_SIGNAL}, elapsed_seconds=${ELAPSED}"
         elif [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
              [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ]; then
-            CLAUDE_FIRST_PROGRESS_TIMED_OUT=1
-            stop_claude "first_progress_timeout after ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s" "$ELAPSED"
-            break
+            if [ "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" = "observe" ]; then
+                # Observation mode: run probe at most once for attribution, record event, continue.
+                # Only run the observation probe when probe_mode=always; failure-only
+                # defers probing to confirmed zero-output at finalization.
+                if [ "$_OBSERVATION_PROBE_RAN" -eq 0 ] && [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ]; then
+                    _OBSERVATION_PROBE_RAN=1
+                    run_interaction_probe "observation" "$INTERACTION_HEALTH_FILE"
+                    _OBSERVATION_PROBE_CONCLUSION="$_LAST_PROBE_CONCLUSION"
+                    _OBSERVATION_PROBE_AUTHORITATIVE="$_LAST_PROBE_AUTHORITATIVE"
+                    progress_log "First-progress observation probe: conclusion=${_OBSERVATION_PROBE_CONCLUSION}, artifact=${INTERACTION_HEALTH_FILE}"
+                fi
+                progress_log "First-progress observation: no substantive progress within ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s; continuing to base timeout (action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, probe_mode=${CLAUDE_CODE_API_PROBE_MODE})"
+            else
+                # Legacy stop mode
+                CLAUDE_FIRST_PROGRESS_TIMED_OUT=1
+                stop_claude "first_progress_timeout after ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s" "$ELAPSED"
+                break
+            fi
         fi
     fi
 
@@ -2780,10 +2862,12 @@ ELAPSED=$((END_EPOCH - START_EPOCH))
 # Git Bash can lose visibility of a background wrapper PID while its script
 # descendant is still running.  If that makes the monitor leave its loop, use
 # the completed run's elapsed time to preserve the first-progress contract.
+# In observe mode, do not mark as first-progress timeout (no kill occurred).
 if [ "$CLAUDE_FIRST_PROGRESS_TIMED_OUT" -eq 0 ] && \
    [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && \
    [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
-   [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ]; then
+   [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ] && \
+   [ "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" != "observe" ]; then
     CLAUDE_FIRST_PROGRESS_TIMED_OUT=1
     progress_log "First-progress timeout reconciled after child exit: elapsed_seconds=${ELAPSED}, timeout_seconds=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}"
 fi
@@ -2901,7 +2985,10 @@ PYEOF
             "${CLAUDE_CODE_BUILDER_MODE:-standard}" "${FIRST_PROGRESS_SIGNAL:-}" \
             "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS:-0}" \
             "${TIMEOUT_EXTENSION_ACTIVE:-0}" "${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-0}" \
-            "${TIMEOUT_EXTENSION_REASON:-}" <<'PYEOF'
+            "${TIMEOUT_EXTENSION_REASON:-}" \
+            "${CLAUDE_CODE_API_PROBE_MODE:-always}" "${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}" \
+            "${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}" "${_OBSERVATION_PROBE_RAN:-0}" \
+            <<'PYEOF'
 import json
 import sys
 from pathlib import Path
@@ -2925,7 +3012,11 @@ from pathlib import Path
     extension_active,
     extension_seconds,
     extension_reason,
-) = sys.argv[1:19]
+    probe_mode,
+    probe_environment,
+    first_progress_action,
+    observation_probe_ran,
+) = sys.argv[1:23]
 
 payload = {
     "type": "claude_dispatch_fallback",
@@ -2939,6 +3030,10 @@ payload = {
     "builder_mode": builder_mode,
     "first_progress_signal": first_progress_signal or None,
     "first_progress_timeout_seconds": int(first_progress_timeout),
+    "first_progress_action": first_progress_action,
+    "probe_mode": probe_mode,
+    "probe_environment": probe_environment,
+    "observation_probe_ran": observation_probe_ran == "1",
     "timeout_extension_used": extension_active == "1",
     "timeout_extension_seconds": int(extension_seconds) if extension_active == "1" else 0,
     "timeout_extension_reason": extension_reason if extension_active == "1" else None,
@@ -2965,6 +3060,10 @@ PYEOF
             echo "  \"builder_mode\": \"${CLAUDE_CODE_BUILDER_MODE:-standard}\","
             echo "  \"first_progress_signal\": \"${FIRST_PROGRESS_SIGNAL:-}\","
             echo "  \"first_progress_timeout_seconds\": ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS:-0},"
+            echo "  \"first_progress_action\": \"${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}\","
+            echo "  \"probe_mode\": \"${CLAUDE_CODE_API_PROBE_MODE:-always}\","
+            echo "  \"probe_environment\": \"${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}\","
+            echo "  \"observation_probe_ran\": $([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo true || echo false),"
             echo "  \"timeout_extension_used\": $([ "${TIMEOUT_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo true || echo false),"
             echo "  \"timeout_extension_seconds\": $([ "${TIMEOUT_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo "${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-0}" || echo 0),"
             _ext_reason=""
@@ -3344,7 +3443,16 @@ if [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ] && \
    [ "${RESULT_FALLBACK_GENERATED:-0}" -eq 1 ] && \
    [ "${FIRST_PROGRESS_DETECTED:-0}" -eq 0 ] && \
    [ "$DISPATCH_EVIDENCE_STATE" != "acknowledgement only" ]; then
-    run_zero_output_interaction_probe
+    if [ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && [ -s "$INTERACTION_HEALTH_FILE" ]; then
+        # Reuse observation-stage probe result; do not run a second probe.
+        progress_log "Reusing observation-stage probe result: artifact=${INTERACTION_HEALTH_FILE}, conclusion=${_OBSERVATION_PROBE_CONCLUSION:-unknown}, reuse=current-dispatch"
+        ZERO_OUTPUT_PROBE_CONCLUSION="${_OBSERVATION_PROBE_CONCLUSION:-unknown}"
+        ZERO_OUTPUT_PROBE_AUTHORITATIVE="${_OBSERVATION_PROBE_AUTHORITATIVE:-no}"
+    elif [ "$CLAUDE_CODE_API_PROBE_MODE" != "off" ]; then
+        run_interaction_probe "zero-output" "$INTERACTION_HEALTH_FILE"
+        ZERO_OUTPUT_PROBE_CONCLUSION="$_LAST_PROBE_CONCLUSION"
+        ZERO_OUTPUT_PROBE_AUTHORITATIVE="$_LAST_PROBE_AUTHORITATIVE"
+    fi
 fi
 # Compute dispatch outcome for orchestrator consumption.
 # Allows distinguishing: success, api_error_with_diff, api_error_without_diff,
@@ -3409,8 +3517,8 @@ PYEOF
     fi
 fi
 
-progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
-progress_log "Zero-output API attribution: conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
+progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no), probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, observation_probe_ran=$([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"
+progress_log "API attribution: startup_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}, zero_output_conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
 # Authoritative final outcome — emitted exactly once, after semantic validation.
 progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELAPSED}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
 {
@@ -3423,6 +3531,12 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] Attempt failure class: ${ATTEMPT_FAILURE_CLASS}"
     echo "[dispatch] Counts toward takeover: ${ATTEMPT_COUNTS_TOWARD_TAKEOVER}"
     echo "[dispatch] Recommended action: ${ATTEMPT_RECOMMENDED_ACTION}"
+    echo "[dispatch] API probe mode: ${CLAUDE_CODE_API_PROBE_MODE}"
+    echo "[dispatch] Probe environment: ${CLAUDE_CODE_PROBE_ENVIRONMENT}"
+    echo "[dispatch] First-progress action: ${CLAUDE_CODE_FIRST_PROGRESS_ACTION}"
+    echo "[dispatch] Observation probe ran: $([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"
+    echo "[dispatch] Startup probe conclusion: ${_STARTUP_PROBE_CONCLUSION:-not-run}"
+    echo "[dispatch] Startup interaction health artifact: ${STARTUP_INTERACTION_HEALTH_FILE}"
     echo "[dispatch] Zero-output API probe: ${ZERO_OUTPUT_PROBE_CONCLUSION}"
     echo "[dispatch] Zero-output API probe authoritative: ${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
     echo "[dispatch] Interaction health artifact: ${INTERACTION_HEALTH_FILE}"
@@ -3748,6 +3862,11 @@ else
         echo "- First-progress timed out: $([ "${CLAUDE_FIRST_PROGRESS_TIMED_OUT:-0}" -eq 1 ] && echo yes || echo no)"
         echo "- First-progress signal: ${FIRST_PROGRESS_SIGNAL:-none}"
         echo "- Builder mode: ${CLAUDE_CODE_BUILDER_MODE:-standard}"
+        echo "- API probe mode: ${CLAUDE_CODE_API_PROBE_MODE:-always}"
+        echo "- Probe environment: ${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}"
+        echo "- First-progress action: ${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}"
+        echo "- Observation probe ran: $([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"
+        echo "- Startup probe conclusion: ${_STARTUP_PROBE_CONCLUSION:-not-run}"
         echo "- Approval-blocked early convergence: $([ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ] && echo yes || echo no)"
         echo "- Fallback result generated: $([ "$RESULT_FALLBACK_GENERATED" -eq 1 ] && echo yes || echo no)"
         echo "- Dispatch outcome: ${DISPATCH_OUTCOME}"
@@ -3766,6 +3885,8 @@ else
         echo "- Claude execution card: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
         echo "- Status log: $STATUS_FILE"
         echo "- Network log: $NETWORK_FILE"
+        echo "- Startup interaction health: $STARTUP_INTERACTION_HEALTH_FILE"
+        echo "- Interaction health: $INTERACTION_HEALTH_FILE"
         echo "- Diffstat: $DIFFSTAT_FILE"
         echo "- Diff: $DIFF_FILE"
         echo "- Checker report: $CHECKER_REPORT_FILE"
@@ -3810,6 +3931,7 @@ echo "Raw Result:      $RAW_RESULT_FILE"
 echo "Status:          $STATUS_FILE"
 echo "Network Log:     $NETWORK_FILE"
 echo "Attempt Class:   $ATTEMPT_CLASSIFICATION_FILE"
+echo "Startup Probe:   $STARTUP_INTERACTION_HEALTH_FILE"
 echo "API Probe:       $INTERACTION_HEALTH_FILE"
 if [ -n "$ADVISOR_CONTINUATION_AUDIT_FILE" ]; then
 echo "Audit:           $ADVISOR_CONTINUATION_AUDIT_FILE"
