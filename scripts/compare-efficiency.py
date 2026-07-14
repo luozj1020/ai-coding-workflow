@@ -54,17 +54,21 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
     """
     # --- Sample sufficiency checks ---
     missing = []
-    # Codex calls: need baseline sample
+    # Codex calls: need both baseline and candidate samples
     bc = baseline.get("total_codex_calls", baseline.get("model_calls", {}).get("codex", 0))
     cc = candidate.get("total_codex_calls", candidate.get("model_calls", {}).get("codex", 0))
     if not _has_samples(baseline, "total_codex_calls") and not baseline.get("model_calls", {}).get("codex"):
         missing.append("baseline_codex_calls")
+    if not _has_samples(candidate, "total_codex_calls") and not candidate.get("model_calls", {}).get("codex"):
+        missing.append("candidate_codex_calls")
 
-    # Latency: need baseline sample for delta computation
+    # Latency: need both baseline and candidate samples for delta computation
     b_latency = baseline.get("p50_latency_seconds", baseline.get("elapsed_seconds", 0))
     c_latency = candidate.get("p50_latency_seconds", candidate.get("elapsed_seconds", 0))
     if not _has_samples(baseline, "p50_latency_seconds") and not _has_samples(baseline, "elapsed_seconds"):
         missing.append("baseline_latency")
+    if not _has_samples(candidate, "p50_latency_seconds") and not _has_samples(candidate, "elapsed_seconds"):
+        missing.append("candidate_latency")
 
     # First-pass: need both samples
     b_first_pass = baseline.get("first_pass_rate", baseline.get("first_pass_success_rate", 0))
@@ -75,6 +79,37 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
         missing.append("candidate_first_pass_rate")
 
     # --- Advisor continuation metrics ---
+    # Sufficiency: require numeric samples from both sides
+    if not (_has_samples(baseline, "full_redispatch_avoided_total")
+            or _has_samples(baseline, "full_redispatch_avoided")):
+        missing.append("baseline_redispatch")
+    if not (_has_samples(candidate, "full_redispatch_avoided_total")
+            or _has_samples(candidate, "full_redispatch_avoided")):
+        missing.append("candidate_redispatch")
+    if not (_has_samples(baseline, "advisor_continuation_succeeded_total")
+            or _has_samples(baseline, "continuation_succeeded")):
+        missing.append("baseline_continuation_success")
+    if not (_has_samples(candidate, "advisor_continuation_succeeded_total")
+            or _has_samples(candidate, "continuation_succeeded")):
+        missing.append("candidate_continuation_success")
+    if not (_has_samples(baseline, "reexploration_yes_total")
+            or _has_samples(baseline, "reexploration_yes")):
+        missing.append("baseline_reexploration")
+    if not (_has_samples(candidate, "reexploration_yes_total")
+            or _has_samples(candidate, "reexploration_yes")):
+        missing.append("candidate_reexploration")
+
+    # Quality gate samples
+    if not _has_samples(baseline, "false_accepts"):
+        missing.append("baseline_false_accepts")
+    if not _has_samples(candidate, "false_accepts"):
+        missing.append("candidate_false_accepts")
+    if not _has_samples(baseline, "scope_violations"):
+        missing.append("baseline_scope_violations")
+    if not _has_samples(candidate, "scope_violations"):
+        missing.append("candidate_scope_violations")
+
+    # --- Value extraction (samples validated above) ---
     b_redispatch = baseline.get("full_redispatch_avoided_total",
                                 baseline.get("full_redispatch_avoided", 0))
     c_redispatch = candidate.get("full_redispatch_avoided_total",
@@ -100,7 +135,7 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
     c_scope = candidate.get("scope_violations", 0)
     quality = c_false_accepts <= b_false_accepts and c_scope <= b_scope
 
-    # Human touches (manual operations)
+    # Human touches (manual operations) — outside insufficiency requirements
     b_human = baseline.get("human_touches", baseline.get("manual_operations", 0))
     c_human = candidate.get("human_touches", candidate.get("manual_operations", 0))
     human = c_human <= b_human
@@ -110,6 +145,9 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
 
     # Re-exploration non-regression (candidate <= baseline or both zero)
     reexploration_gate = (c_reexploration or 0) <= (b_reexploration or 0)
+
+    # Redispatch avoidance non-regression (candidate >= baseline or both zero)
+    redispatch_gate = (c_redispatch or 0) >= (b_redispatch or 0)
 
     # Existing gates
     quota_gate = reduction is not None and reduction >= 0.30
@@ -122,7 +160,7 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
 
     all_gates = all([
         quota_gate, latency_gate, first_pass_gate, quality_gate, human_gate,
-        continuation_gate, reexploration_gate,
+        continuation_gate, reexploration_gate, redispatch_gate,
     ])
 
     if insufficient_data:
@@ -142,6 +180,7 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
         and human
         and continuation_gate
         and reexploration_gate
+        and redispatch_gate
     )
 
     return {
@@ -155,6 +194,7 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
         "human_touch_gate_pass": human_gate,
         "continuation_gate_pass": continuation_gate,
         "reexploration_gate_pass": reexploration_gate,
+        "redispatch_gate_pass": redispatch_gate,
         "pareto_candidate": pareto,
         "insufficient_data": insufficient_data,
         "missing_samples": missing,

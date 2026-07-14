@@ -36,6 +36,31 @@ run_benchmark = load_module("run_benchmark", SCRIPTS / "run-benchmark-suite.py")
 compare_efficiency = load_module("compare_efficiency", SCRIPTS / "compare-efficiency.py")
 
 
+def make_pass_pair():
+    """Return (baseline, candidate) dicts that satisfy all gates with sufficient data."""
+    baseline = {
+        "total_codex_calls": 10,
+        "p50_latency_seconds": 1.0,
+        "first_pass_rate": 0.8,
+        "false_accepts": 0,
+        "scope_violations": 0,
+        "full_redispatch_avoided_total": 3,
+        "advisor_continuation_succeeded_total": 5,
+        "reexploration_yes_total": 1,
+    }
+    candidate = {
+        "total_codex_calls": 5,
+        "p50_latency_seconds": 1.0,
+        "first_pass_rate": 0.85,
+        "false_accepts": 0,
+        "scope_violations": 0,
+        "full_redispatch_avoided_total": 4,
+        "advisor_continuation_succeeded_total": 6,
+        "reexploration_yes_total": 0,
+    }
+    return baseline, candidate
+
+
 class TestCaseSchema(unittest.TestCase):
     """Test case schema validation."""
 
@@ -288,35 +313,19 @@ class TestCompareEfficiency(unittest.TestCase):
 
     def test_compare_executed_results(self):
         """compare-efficiency.py works with executed case results."""
-        baseline = {
-            "current": {
-                "total_codex_calls": 10,
-                "p50_latency_seconds": 1.0,
-                "first_pass_rate": 0.8,
-                "false_accepts": 0,
-                "scope_violations": 0,
-            }
-        }
-        candidate = {
-            "current": {
-                "total_codex_calls": 5,
-                "p50_latency_seconds": 1.1,
-                "first_pass_rate": 0.8,
-                "false_accepts": 0,
-                "scope_violations": 0,
-            }
-        }
+        b, c = make_pass_pair()
+        baseline = {"current": b}
+        candidate = {"current": c}
         with tempfile.TemporaryDirectory() as tmp:
             baseline_path = Path(tmp) / "baseline.json"
             candidate_path = Path(tmp) / "candidate.json"
             baseline_path.write_text(json.dumps(baseline))
             candidate_path.write_text(json.dumps(candidate))
 
-            result = compare_efficiency.compare(
-                baseline["current"], candidate["current"]
-            )
+            result = compare_efficiency.compare(b, c)
             self.assertIn("codex_call_reduction", result)
             self.assertIn("all_gates_pass", result)
+            self.assertIn("redispatch_gate_pass", result)
 
     def test_compare_legacy_format(self):
         """compare-efficiency.py works with legacy ledger format."""
@@ -326,17 +335,24 @@ class TestCompareEfficiency(unittest.TestCase):
             "first_pass_success_rate": 0.8,
             "false_accepts": 0,
             "scope_violations": 0,
+            "full_redispatch_avoided": 3,
+            "continuation_succeeded": 5,
+            "reexploration_yes": 1,
         }
         candidate_metrics = {
             "model_calls": {"codex": 5, "claude": 5, "spark": 3},
-            "elapsed_seconds": 110,
-            "first_pass_success_rate": 0.8,
+            "elapsed_seconds": 100,
+            "first_pass_success_rate": 0.85,
             "false_accepts": 0,
             "scope_violations": 0,
+            "full_redispatch_avoided": 4,
+            "continuation_succeeded": 6,
+            "reexploration_yes": 0,
         }
         result = compare_efficiency.compare(baseline_metrics, candidate_metrics)
         self.assertIn("codex_call_reduction", result)
         self.assertTrue(result["quota_gate_pass"])
+        self.assertTrue(result["redispatch_gate_pass"])
 
     def test_insufficient_data_when_baseline_missing(self):
         """Reports insufficient-data when required baseline samples are absent."""
@@ -375,41 +391,17 @@ class TestCompareEfficiency(unittest.TestCase):
 
     def test_pass_status_when_all_gates_pass(self):
         """Reports pass when all gates pass with sufficient data."""
-        baseline = {
-            "total_codex_calls": 10,
-            "p50_latency_seconds": 1.0,
-            "first_pass_rate": 0.8,
-            "false_accepts": 0,
-            "scope_violations": 0,
-        }
-        candidate = {
-            "total_codex_calls": 5,
-            "p50_latency_seconds": 1.0,
-            "first_pass_rate": 0.85,
-            "false_accepts": 0,
-            "scope_violations": 0,
-        }
+        baseline, candidate = make_pass_pair()
         result = compare_efficiency.compare(baseline, candidate)
         self.assertEqual(result["status"], "pass")
         self.assertTrue(result["all_gates_pass"])
         self.assertFalse(result["insufficient_data"])
+        self.assertTrue(result["redispatch_gate_pass"])
 
     def test_fail_status_when_gate_fails(self):
         """Reports fail when a gate fails with sufficient data."""
-        baseline = {
-            "total_codex_calls": 10,
-            "p50_latency_seconds": 1.0,
-            "first_pass_rate": 0.8,
-            "false_accepts": 0,
-            "scope_violations": 0,
-        }
-        candidate = {
-            "total_codex_calls": 9,
-            "p50_latency_seconds": 1.0,
-            "first_pass_rate": 0.85,
-            "false_accepts": 0,
-            "scope_violations": 0,
-        }
+        baseline, candidate = make_pass_pair()
+        candidate["total_codex_calls"] = 9  # fails quota gate (10% < 30%)
         result = compare_efficiency.compare(baseline, candidate)
         self.assertEqual(result["status"], "fail")
         self.assertFalse(result["all_gates_pass"])
@@ -417,51 +409,65 @@ class TestCompareEfficiency(unittest.TestCase):
 
     def test_continuation_gate(self):
         """Continuation success non-regression is evaluated."""
-        baseline = {
-            "total_codex_calls": 10,
-            "p50_latency_seconds": 1.0,
-            "first_pass_rate": 0.8,
-            "false_accepts": 0,
-            "scope_violations": 0,
-            "full_redispatch_avoided_total": 3,
-            "advisor_continuation_succeeded_total": 5,
-            "reexploration_yes_total": 1,
-        }
-        candidate = {
-            "total_codex_calls": 5,
-            "p50_latency_seconds": 1.0,
-            "first_pass_rate": 0.85,
-            "false_accepts": 0,
-            "scope_violations": 0,
-            "full_redispatch_avoided_total": 4,
-            "advisor_continuation_succeeded_total": 6,
-            "reexploration_yes_total": 0,
-        }
+        baseline, candidate = make_pass_pair()
         result = compare_efficiency.compare(baseline, candidate)
         self.assertTrue(result["continuation_gate_pass"])
         self.assertTrue(result["reexploration_gate_pass"])
+        self.assertTrue(result["redispatch_gate_pass"])
 
     def test_reexploration_gate_regression(self):
         """Re-exploration increase is caught as a regression."""
-        baseline = {
-            "total_codex_calls": 10,
-            "p50_latency_seconds": 1.0,
-            "first_pass_rate": 0.8,
-            "false_accepts": 0,
-            "scope_violations": 0,
-            "reexploration_yes_total": 0,
-        }
-        candidate = {
-            "total_codex_calls": 5,
-            "p50_latency_seconds": 1.0,
-            "first_pass_rate": 0.85,
-            "false_accepts": 0,
-            "scope_violations": 0,
-            "reexploration_yes_total": 3,
-        }
+        baseline, candidate = make_pass_pair()
+        candidate["reexploration_yes_total"] = 3  # regression: 3 > 1
         result = compare_efficiency.compare(baseline, candidate)
         self.assertFalse(result["reexploration_gate_pass"])
         self.assertEqual(result["status"], "fail")
+
+    def test_redispatch_gate_pass(self):
+        """Redispatch avoidance non-regression passes when candidate >= baseline."""
+        baseline, candidate = make_pass_pair()
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertTrue(result["redispatch_gate_pass"])
+
+    def test_redispatch_gate_regression(self):
+        """Redispatch avoidance regression fails the gate."""
+        baseline, candidate = make_pass_pair()
+        candidate["full_redispatch_avoided_total"] = 2  # regression: 2 < 3
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertFalse(result["redispatch_gate_pass"])
+        self.assertEqual(result["status"], "fail")
+
+    def test_missing_candidate_codex_calls_is_insufficient(self):
+        """Missing candidate codex_calls prevents pass."""
+        baseline, candidate = make_pass_pair()
+        del candidate["total_codex_calls"]
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertEqual(result["status"], "insufficient-data")
+        self.assertIn("candidate_codex_calls", result["missing_samples"])
+
+    def test_missing_candidate_latency_is_insufficient(self):
+        """Missing candidate latency prevents pass."""
+        baseline, candidate = make_pass_pair()
+        del candidate["p50_latency_seconds"]
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertEqual(result["status"], "insufficient-data")
+        self.assertIn("candidate_latency", result["missing_samples"])
+
+    def test_missing_candidate_continuation_is_insufficient(self):
+        """Missing candidate continuation_success prevents pass."""
+        baseline, candidate = make_pass_pair()
+        del candidate["advisor_continuation_succeeded_total"]
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertEqual(result["status"], "insufficient-data")
+        self.assertIn("candidate_continuation_success", result["missing_samples"])
+
+    def test_missing_candidate_redispatch_is_insufficient(self):
+        """Missing candidate redispatch prevents pass."""
+        baseline, candidate = make_pass_pair()
+        del candidate["full_redispatch_avoided_total"]
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertEqual(result["status"], "insufficient-data")
+        self.assertIn("candidate_redispatch", result["missing_samples"])
 
 
 class TestCLI(unittest.TestCase):
@@ -499,10 +505,8 @@ class TestCLI(unittest.TestCase):
 
     def test_compare_enforce_fail(self):
         """--enforce returns exit 1 for failed gates."""
-        baseline = {"total_codex_calls": 10, "p50_latency_seconds": 1.0,
-                     "first_pass_rate": 0.8, "false_accepts": 0, "scope_violations": 0}
-        candidate = {"total_codex_calls": 9, "p50_latency_seconds": 1.0,
-                     "first_pass_rate": 0.85, "false_accepts": 0, "scope_violations": 0}
+        baseline, candidate = make_pass_pair()
+        candidate["total_codex_calls"] = 9  # fails quota gate
         with tempfile.TemporaryDirectory() as tmp:
             bp = Path(tmp) / "b.json"
             cp = Path(tmp) / "c.json"
@@ -517,10 +521,7 @@ class TestCLI(unittest.TestCase):
 
     def test_compare_enforce_pass(self):
         """--enforce returns exit 0 when all gates pass."""
-        baseline = {"total_codex_calls": 10, "p50_latency_seconds": 1.0,
-                     "first_pass_rate": 0.8, "false_accepts": 0, "scope_violations": 0}
-        candidate = {"total_codex_calls": 5, "p50_latency_seconds": 1.0,
-                     "first_pass_rate": 0.85, "false_accepts": 0, "scope_violations": 0}
+        baseline, candidate = make_pass_pair()
         with tempfile.TemporaryDirectory() as tmp:
             bp = Path(tmp) / "b.json"
             cp = Path(tmp) / "c.json"
@@ -535,10 +536,8 @@ class TestCLI(unittest.TestCase):
 
     def test_compare_no_enforce_default_exit_zero(self):
         """Without --enforce, exit 0 even when gates fail (report-only mode)."""
-        baseline = {"total_codex_calls": 10, "p50_latency_seconds": 1.0,
-                     "first_pass_rate": 0.8, "false_accepts": 0, "scope_violations": 0}
-        candidate = {"total_codex_calls": 9, "p50_latency_seconds": 1.0,
-                     "first_pass_rate": 0.85, "false_accepts": 0, "scope_violations": 0}
+        baseline, candidate = make_pass_pair()
+        candidate["total_codex_calls"] = 9  # fails quota gate
         with tempfile.TemporaryDirectory() as tmp:
             bp = Path(tmp) / "b.json"
             cp = Path(tmp) / "c.json"
