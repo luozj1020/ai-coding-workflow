@@ -31,7 +31,7 @@ python scripts/aiwf.py dispatch-efficient --plan .ai-workflow/runs/T-1/execution
 python scripts/aiwf.py efficient review --plan .ai-workflow/runs/T-1/execution-plan.json --evidence evidence.json --milestone final-candidate --output .ai-workflow/runs/T-1/review.json
 ```
 
-`prepare` 生成可缓存的 L0/L1/L2 Context Packet、重试基线和机器可读的 Spark 决策。非 Express 计划默认安排一次 `preflight-bundle`；Express/tiny、显式关闭和零预算跳过都会记录稳定原因码。加入 `--execute` 后，`dispatch-efficient` 会先运行计划中的 Spark 预检，再调度 Claude，保存 minimal Spark 证据和 `spark-dispatch.json`；Spark 自动禁用或失败时主流程继续。预览模式仍保持零模型调用。只有 Express Lane 能生成经确定性门控的 `mixed-exception` 单轮卡；`review` 先执行确定性验收，再决定 L1 Spark/L2 Codex。`aiwf loop` 仅作为 `legacy-full-codex-review` 兼容入口。
+`prepare` 生成可缓存的 L0/L1/L2 Context Packet、重试基线和机器可读的 Spark 决策。Spark `auto` 模式为值触发：评估确定性信号（路由置信度不足、上下文不完整、调用可能避免 Claude 重试或 Codex 审查、diff 偏离预测、验收为部分通过、失败归因不明），仅在至少一个信号存在时触发 `preflight-bundle`；否则跳过原因为 `skip.no_expected_decision_value`。Express/tiny、显式关闭和零预算跳过都会记录稳定原因码。加入 `--execute` 后，`dispatch-efficient` 仅在值信号触发时运行 Spark 预检，再调度 Claude，保存 minimal Spark 证据和 `spark-dispatch.json`；Spark 自动禁用或失败时主流程继续。预览模式仍保持零模型调用。只有 Express Lane 能生成经确定性门控的 `mixed-exception` 单轮卡；`review` 先执行确定性验收，再决定 L1 Spark/L2 Codex。`aiwf loop` 仅作为 `legacy-full-codex-review` 兼容入口。
 
 ## 功能说明
 
@@ -553,7 +553,7 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 
 如果你的 Codex 额度中 `gpt-5.3-codex-spark` 和强模型额度分开计算，适合的任务可以让 `Codex Spark Gate` 保持 `auto`。Spark 是辅助层，不是默认替代 Claude；优先用更便宜的 Spark 额度判断任务规模和路由，再消耗更贵的 Codex/Claude 强模型上下文。已经知道所需辅助角色时，优先显式传 `--mode`；需要普通阶段自动路由时使用 `auto`。预算模式由 `AI_SPARK_BUDGET_MODE` / `--budget-mode` 控制：`balanced`（默认）、`aggressive`（失败时额外启用修订起草职责）、`conservative`（传统单角色路由）。建议每个任务最多调用三次短 Spark helper——预检、可选的定向/失败角色、后检——这是工作流建议，不是跨进程守护或状态强制。如果 CLI、模型权限、auth、网络、Spark 额度不可用，或本地 helper 因 app-server 初始化需要写权限而失败，helper 会写入 auto-disabled report 并返回 0，让主 Claude/Codex 流程继续：
 
-- `auto`：阶段路由 / 包选择。解析为适用的阶段包：普通 Builder 前使用解析为 `preflight-bundle`，diff/report/evidence 使用解析为 `postflight-bundle`，Checker/Test 保持 `validation-planner`，失败/无报告证据包含失败归因。在 aggressive 预算模式下，失败证据还额外启用修订起草职责。
+- `auto`：阶段路由 / 包选择。`auto` 模式为值触发：普通 Builder 前评估确定性信号（路由置信度不足、上下文不完整、调用可能避免 Claude 重试或 Codex 审查、diff 偏离预测、验收为部分通过、失败归因不明），仅在至少一个信号存在时触发 `preflight-bundle`；否则跳过原因为 `skip.no_expected_decision_value`。其他阶段解析不变：diff/report/evidence 使用解析为 `postflight-bundle`，Checker/Test 保持 `validation-planner`，失败/无报告证据包含失败归因。在 aggressive 预算模式下，失败证据还额外启用修订起草职责。
 - `task-size-classifier`：判断任务是 tiny/small/medium/large/unknown，并建议 `codex-fast-path`、`spark-review-only`、`spark-micro-builder`、`claude-builder`、`checker-test`、`spec-first` 或 `human-clarification`。可用时包含执行成本字段。
 - `execution-cost-estimator`：只读模式，预测 diff 范围/文件数和相对直接/委托工作量。首次、revision、收窄、重试、重派和下一阶段任务卡在编写前都必须重新估算，可用 `--routing-event initial|revision|narrow|retry|next-phase` 标记；不能复用上一张卡的 owner 决策。Spark 原始行数上界默认乘 1.5，测试/夹具、shell/进程编排和跨平台任务乘 2.0。owner 通常只依据校准后规模/文件数、上下文充分度、方案明确度、置信度和派发开销；风险标志与验证复杂度提高审查、验证、隔离或审批强度，不得把任务从 Codex 推向 Claude。如果人工/策略显式使用风险作为 owner override，高风险任务只能倾向 Codex。范围、方案和上下文稳定时，实际修改量可以超过预测。
 
@@ -938,6 +938,8 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
 ```
 
 benchmark 会聚合每次运行的 decision、quality score、elapsed time、dispatch 阶段耗时、token/cost、stability findings，并读取任务卡和报告中的 loop type、benchmark tags、advisor usage、Spark invocation/auto-disable/fallback 状态、Spark task-size classification / routing / confidence 与 parallel-dispatch usage。dispatch 阶段耗时包括 Claude startup、Claude execution、checker time 和 artifact finalization，前提是 progress log 中存在这些事件。
+
+**效率证据强制执行：** `python scripts/compare-efficiency.py BASELINE CANDIDATE --enforce` 评估真实聚合证据（Codex 调用减少、时延、首次通过率、质量门控、延续成功、redispatch 避免和重新探索指标）。使用 `--enforce` 时，若 Advisor 效率证据不足或门控失败，脚本返回非零退出码；它必须不虚构 Token/时间节省。
 
 **追加式 loop 事件：** `ai/run-loop.sh` 会写入 `.worktrees/loop-<timestamp>/loop-events.jsonl`，记录 run start、iteration start、dispatch complete、review complete、decision、revision task created 和 stop reason。它保留恢复上下文，不重写旧观察。
 
