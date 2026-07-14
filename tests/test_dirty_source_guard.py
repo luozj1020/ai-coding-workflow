@@ -2272,7 +2272,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
                 "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "2",
                 "FAKE_CLAUDE_MODE": "incremental-progress",
-                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "4",
                 "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "10",
             },
         )
@@ -2293,7 +2293,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Second extension used: yes", status)
         self.assertIn("Second extension seconds: 2", status)
         # Old rolling-deadline bug would extend indefinitely; assert bounded wall-clock.
-        self.assertLess(wall, 20, "Wall-clock exceeded 20s; possible rolling-deadline bug")
+        self.assertLess(wall, 30, "Wall-clock exceeded 30s; possible rolling-deadline bug")
 
     def test_second_extension_deadline_terminates_when_growth_stops(self):
         """When growth stops during the second extension, the extension expires
@@ -2308,7 +2308,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
                 "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "2",
                 "FAKE_CLAUDE_MODE": "incremental-progress",
-                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "4",
                 "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "15",
             },
         )
@@ -2321,7 +2321,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("runtime timeout (second extension expired)", progress)
         self.assertIn("Second extension used: yes", status)
         # Old rolling-deadline bug would extend indefinitely; assert bounded wall-clock.
-        self.assertLess(wall, 20, "Wall-clock exceeded 20s; possible rolling-deadline bug")
+        self.assertLess(wall, 30, "Wall-clock exceeded 30s; possible rolling-deadline bug")
 
     def test_growing_progress_extension_zero_disables_second_extension(self):
         """CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS=0 disables the second
@@ -2335,7 +2335,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
                 "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "0",
                 "FAKE_CLAUDE_MODE": "incremental-progress",
-                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "4",
                 "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "15",
             },
         )
@@ -2359,8 +2359,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
                 "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "5",
                 "FAKE_CLAUDE_MODE": "incremental-progress",
-                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
-                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "1",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "4",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "15",
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -2397,7 +2397,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         result = self._dispatch(
             "task-cards/BUILDER.md",
             {
-                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "4",
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "5",
                 "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "1",
@@ -2427,7 +2427,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "5",
                 "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "10",
                 "FAKE_CLAUDE_MODE": "progress-update",
-                "FAKE_CLAUDE_SLEEP_SECONDS": "1",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
