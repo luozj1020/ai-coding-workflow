@@ -63,7 +63,7 @@ import sys
 # Capture argv
 capture = {{"argv": sys.argv, "stdin": sys.stdin.read()}}
 
-with open("{capture_file}", "w") as f:
+with open({str(capture_file)!r}, "w") as f:
     json.dump(capture, f, indent=2)
 
 # Write response to stdout
@@ -426,7 +426,7 @@ capture = {{
     "cwd": os.getcwd(),
     "codex_home": os.environ.get("CODEX_HOME", ""),
 }}
-with open("{capture_file}", "w") as f:
+with open({str(capture_file)!r}, "w") as f:
     json.dump(capture, f, indent=2)
 response_json = {response_json!r}
 if response_json is None:
