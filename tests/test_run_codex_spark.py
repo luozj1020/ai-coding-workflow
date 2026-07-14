@@ -8,6 +8,18 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run-codex-spark.sh"
+_INHERITED_NETWORK_DISABLED = None
+
+
+def setUpModule():
+    """Keep fake-Codex tests independent of the outer Codex sandbox."""
+    global _INHERITED_NETWORK_DISABLED
+    _INHERITED_NETWORK_DISABLED = os.environ.pop("CODEX_SANDBOX_NETWORK_DISABLED", None)
+
+
+def tearDownModule():
+    if _INHERITED_NETWORK_DISABLED is not None:
+        os.environ["CODEX_SANDBOX_NETWORK_DISABLED"] = _INHERITED_NETWORK_DISABLED
 
 
 def bash_exe() -> str:
@@ -2590,6 +2602,241 @@ class SparkSchemaInvalidTests(unittest.TestCase):
             f"expected one diagnostic dir, found: {diag_entries}")
         diag_text = (diag_entries[0] / "diagnostic.md").read_text(encoding="utf-8")
         self.assertIn("schema-invalid", diag_text)
+
+
+class SparkExecutionEnvTests(unittest.TestCase):
+    """Focused regression tests for --execution-env host/sandbox/auto."""
+
+    def _make_repo_with_task_card(self, tmp_path, task_card_text="# Task\n"):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+        task_card = repo / "task-card.md"
+        task_card.write_text(task_card_text, encoding="utf-8")
+        return repo, task_card
+
+    def _make_fake_codex(self, tmp_path, output_text="spark ok", exit_code=0, stderr_text=""):
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_codex = fake_bin / "codex"
+        script = "#!/usr/bin/env bash\ncat > /dev/null\n"
+        if stderr_text:
+            script += f"echo '{stderr_text}' >&2\n"
+        if output_text:
+            script += f"echo '{output_text}'\n"
+        script += f"exit {exit_code}\n"
+        fake_codex.write_text(script, encoding="utf-8")
+        fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+        return fake_codex
+
+    def test_invalid_execution_env_exits_nonzero(self):
+        """Invalid --execution-env value exits non-zero and invokes zero fake calls."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path)
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--execution-env", "invalid-env", "--result-mode", "direct"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("invalid", result.stderr.lower())
+
+    def test_restricted_auto_optional_disables_with_zero_calls(self):
+        """Restricted optional auto: zero fake calls, invoked=no, actionable guidance."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path)
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_SANDBOX_NETWORK_DISABLED"] = "1"
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--result-mode", "full", "--output",
+                 bash_path(repo / ".worktrees" / "spark-test")],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (repo / ".worktrees" / "spark-test" / "codex-spark.report.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("| Spark invoked? | no |", report)
+            self.assertIn("| Spark calls used | 0 |", report)
+            self.assertIn("| Spark auto-disabled? | yes |", report)
+            self.assertIn("auto-detected restricted sandbox", report)
+            self.assertIn("re-run with --execution-env host", report)
+            # Resolved environment should reflect restricted sandbox
+            self.assertIn("| Execution environment resolved | sandbox-restricted |", report)
+
+    def test_restricted_auto_required_exits_nonzero(self):
+        """Restricted auto required: non-zero exit, zero fake calls."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, _task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path)
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_SANDBOX_NETWORK_DISABLED"] = "1"
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), "--brief", "SENSITIVE_BRIEF_SENTINEL",
+                 "--require-spark", "--result-mode", "full", "--output",
+                 bash_path(repo / ".worktrees" / "spark-test")],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("network-restricted", result.stderr)
+            self.assertNotIn("SENSITIVE_BRIEF_SENTINEL", result.stderr)
+            report = (repo / ".worktrees" / "spark-test" / "codex-spark.report.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("<args>", report)
+            self.assertNotIn("SENSITIVE_BRIEF_SENTINEL", report)
+            self.assertIn("| Spark invoked? | no |", report)
+            self.assertIn("| Spark calls used | 0 |", report)
+
+    def test_host_execution_removes_marker_and_reports_host(self):
+        """Host mode: unsets CODEX_SANDBOX_NETWORK_DISABLED, reports host."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo \"marker=${CODEX_SANDBOX_NETWORK_DISABLED:-unset}\" >&2\n"
+                "echo 'host result'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_SANDBOX_NETWORK_DISABLED"] = "1"
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--execution-env", "host", "--result-mode", "full",
+                 "--output", bash_path(repo / ".worktrees" / "spark-test")],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (repo / ".worktrees" / "spark-test" / "codex-spark.report.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("| Execution environment resolved | host |", report)
+            self.assertIn("| Execution environment requested | host |", report)
+            stderr_log = (repo / ".worktrees" / "spark-test" / "codex-spark.stderr.log").read_text(
+                encoding="utf-8"
+            )
+            # Marker should be unset in the subprocess
+            self.assertIn("marker=unset", stderr_log)
+
+    def test_sandbox_execution_preserves_marker_and_reports_sandbox(self):
+        """Sandbox mode: preserves CODEX_SANDBOX_NETWORK_DISABLED, reports sandbox."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo \"marker=${CODEX_SANDBOX_NETWORK_DISABLED:-unset}\" >&2\n"
+                "echo 'sandbox result'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+            env = os.environ.copy()
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_SANDBOX_NETWORK_DISABLED"] = "1"
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--execution-env", "sandbox", "--result-mode", "full",
+                 "--output", bash_path(repo / ".worktrees" / "spark-test")],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (repo / ".worktrees" / "spark-test" / "codex-spark.report.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("| Execution environment resolved | sandbox |", report)
+            self.assertIn("| Execution environment requested | sandbox |", report)
+            stderr_log = (repo / ".worktrees" / "spark-test" / "codex-spark.stderr.log").read_text(
+                encoding="utf-8"
+            )
+            # Marker should be preserved in the subprocess
+            self.assertIn("marker=1", stderr_log)
+
+    def test_unrestricted_auto_calls_fake_and_reports_auto_unrestricted(self):
+        """Unrestricted auto: calls fake codex and reports auto-unrestricted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path, output_text="auto result")
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            # Ensure no restriction marker
+            env.pop("CODEX_SANDBOX_NETWORK_DISABLED", None)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--result-mode", "full", "--output",
+                 bash_path(repo / ".worktrees" / "spark-test")],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (repo / ".worktrees" / "spark-test" / "codex-spark.report.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("| Execution environment resolved | auto-unrestricted |", report)
+            self.assertIn("| Spark calls used | 1 |", report)
+
+    def test_compact_diagnostic_under_explicit_sandbox_persists_redacted(self):
+        """Compact diagnostic under explicit sandbox/direct mode persists head+tail
+        redacted diagnostic with credential sentinel absent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path, output_text="", exit_code=1,
+                stderr_text="api_key=SECRET123\nquota exceeded for model\n"
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--execution-env", "sandbox", "--diagnostics", "failure",
+                 "--result-mode", "direct"],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("auto-disabled", result.stderr)
+            worktrees_dir = repo / ".worktrees"
+            self.assertTrue(worktrees_dir.exists(), ".worktrees should exist")
+            diag_entries = list(worktrees_dir.glob("spark-diagnostic-*"))
+            self.assertEqual(len(diag_entries), 1,
+                f"expected exactly one diagnostic dir, found: {diag_entries}")
+            diag_text = (diag_entries[0] / "diagnostic.md").read_text(encoding="utf-8")
+            self.assertIn("availability-failure", diag_text)
+            self.assertIn("| Execution environment | sandbox |", diag_text)
+            # Credential sentinel must be absent (redacted)
+            self.assertNotIn("SECRET123", diag_text)
+            # Redacted marker present
+            self.assertIn("[REDACTED]", diag_text)
+            # Stderr excerpt should be present (head+tail)
+            self.assertIn("Stderr Excerpt", diag_text)
 
 
 if __name__ == "__main__":

@@ -567,6 +567,8 @@ bash ai/run-codex-spark.sh \
   --result-mode direct
 ```
 
+当父 Codex 环境设置了 `CODEX_SANDBOX_NETWORK_DISABLED=1` 时，默认 `--execution-env auto` 会在不消耗 Spark 调用的情况下快速停止。不要发送探针；应在已经获得授权的 host 执行边界中重跑原始工作请求，并使用 `--execution-env host`，helper 只会为真实模型子进程移除继承的沙箱标记。仅在仍受限的沙箱内取消该变量不能恢复网络。需要有意保留标记时使用 `--execution-env sandbox`。持久化报告会记录请求和解析后的执行环境，紧凑失败诊断会保留经过脱敏的 stderr 头尾。
+
 revision、收窄、重试、重派、拆分子任务或下一阶段卡必须重复此步骤，并改用对应的 `--routing-event`。只有 Spark 经济建议和确定性 owner gate 都倾向 Codex 时，才直接编辑并省略完整任务卡；否则再编写面向下游的精简执行卡。
 - `review-only`：快速只读审查任务卡或实现方向。
 - `task-card-audit`：派发前检查缺失 gate、职责混合、验收不清和可能导致 Claude 卡住的风险。

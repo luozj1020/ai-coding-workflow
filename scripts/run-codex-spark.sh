@@ -341,6 +341,19 @@ case "$EXECUTION_ENV" in
     *) echo "Error: invalid --execution-env: $EXECUTION_ENV (expected auto, host, or sandbox)" >&2; exit 1 ;;
 esac
 
+# Resolve execution environment after CLI parsing.
+# For explicit host/sandbox, use the requested value. For auto, detect whether
+# the inherited sandbox restricts network access.
+RESOLVED_EXECUTION_ENV="$EXECUTION_ENV"
+if [ "$EXECUTION_ENV" = "auto" ]; then
+    case "${CODEX_SANDBOX_NETWORK_DISABLED:-}" in
+        1|true|TRUE|True|yes|YES|Yes)
+            RESOLVED_EXECUTION_ENV="sandbox-restricted" ;;
+        *)
+            RESOLVED_EXECUTION_ENV="auto-unrestricted" ;;
+    esac
+fi
+
 if [ "$INPUT_KIND" = "task-card" ] && [ ! -f "$TASK_CARD" ]; then
     echo "Error: task card not found: $TASK_CARD" >&2
     exit 1
@@ -930,6 +943,7 @@ write_report_header() {
         echo "| Spark purpose used | ${MODE} |"
         echo "| Spark requested mode | ${REQUESTED_MODE} |"
         echo "| Execution environment requested | ${EXECUTION_ENV} |"
+        echo "| Execution environment resolved | ${RESOLVED_EXECUTION_ENV} |"
         echo "| Result mode | ${RESULT_MODE} |"
         echo "| Spark model used | ${MODEL} |"
         echo "| Spark budget mode requested | ${REQUESTED_BUDGET_MODE} |"
@@ -1151,7 +1165,7 @@ write_compact_diagnostic() {
         echo "|-------|-------|"
         echo "| Resolved mode | ${MODE} |"
         echo "| Model | ${MODEL} |"
-        echo "| Execution environment | ${EXECUTION_ENV} |"
+        echo "| Execution environment | ${RESOLVED_EXECUTION_ENV} |"
         echo "| Exit code | ${codex_exit} |"
         echo "| Failure classification | ${failure_class} |"
         echo "| Stdout empty | ${result_empty} |"
@@ -1219,7 +1233,7 @@ write_full_diagnostic() {
         echo "failure_class=${DIAGNOSTIC_FAILURE_CLASS}"
         echo "mode=${MODE}"
         echo "model=${MODEL}"
-        echo "execution_env=${EXECUTION_ENV}"
+        echo "execution_env=${RESOLVED_EXECUTION_ENV}"
         echo "result_mode=${RESULT_MODE}"
         echo "diagnostics_mode=${DIAGNOSTICS_MODE}"
         echo "auto_disabled=${SPARK_AUTO_DISABLED}"
@@ -1238,7 +1252,7 @@ write_full_diagnostic() {
         echo "|-------|-------|"
         echo "| Codex exit code | ${codex_exit} |"
         echo "| Failure classification | ${DIAGNOSTIC_FAILURE_CLASS} |"
-        echo "| Execution environment | ${EXECUTION_ENV} |"
+        echo "| Execution environment | ${RESOLVED_EXECUTION_ENV} |"
         echo "| Result mode | full (diagnostics=full) |"
         echo "| Prompt | ${diag_prompt} |"
         echo "| Raw output | ${diag_result} |"
@@ -1288,7 +1302,7 @@ if [ "$EXECUTION_ENV" = "auto" ] && [ "$_NETWORK_RESTRICTED" = "yes" ]; then
         SPARK_CHECKS_RUN="not run"
         HELPER_EXIT_STATUS=1
         if [ "$RESULT_MODE" = "direct" ]; then
-            echo "Error: Spark required but execution environment is network-restricted (CODEX_SANDBOX_NETWORK_DISABLED is set). Re-run from a host terminal: env -u CODEX_SANDBOX_NETWORK_DISABLED bash $0 $*" >&2
+            echo "Error: Spark required but execution environment is network-restricted (CODEX_SANDBOX_NETWORK_DISABLED is set). Re-run from a host terminal: env -u CODEX_SANDBOX_NETWORK_DISABLED bash $0 <args>" >&2
             exit 1
         fi
         write_report_header "1" "no"
@@ -1310,6 +1324,7 @@ if [ "$EXECUTION_ENV" = "auto" ] && [ "$_NETWORK_RESTRICTED" = "yes" ]; then
         echo "Codex Spark report: $REPORT_FILE" >&2
         exit 1
     fi
+    SPARK_INVOKED="no"
     auto_disable_spark "auto-detected restricted sandbox (CODEX_SANDBOX_NETWORK_DISABLED is set); re-run with --execution-env host from an authorized terminal or unset the marker" "not-run"
 fi
 

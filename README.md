@@ -593,6 +593,8 @@ bash ai/run-codex-spark.sh \
   --result-mode direct
 ```
 
+When the parent Codex environment exports `CODEX_SANDBOX_NETWORK_DISABLED=1`, the default `--execution-env auto` fails fast without spending a Spark call. Do not use a probe. Re-run the original work request through an already-authorized host execution boundary with `--execution-env host`; the helper then removes only the inherited sandbox marker for the real model subprocess. Merely unsetting the variable inside a still-restricted sandbox does not restore network access. Use `--execution-env sandbox` to preserve the marker intentionally. Persistent reports record both requested and resolved execution environments, and compact failure diagnostics retain redacted stderr head and tail context.
+
 `--brief-file PATH` and `--stdin-brief` are also supported. Brief input is limited to early read-only routing modes. Repeat this route step before every revised, narrowed, retried, re-dispatched, split-child, or next-phase card with the matching `--routing-event`. If Spark recommends Codex fast path and the deterministic owner gate passes, Codex edits directly without generating a full task card. Otherwise Codex uses the estimate to author the smaller, execution-specific task card sent downstream.
 - `review-only`: quick read-only critique of the task card or likely direction.
 - `task-card-audit`: check missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
