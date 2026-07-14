@@ -1054,6 +1054,30 @@ CLAUDE_CODE_TIMEOUT_SECONDS=600 CLAUDE_CODE_HEARTBEAT_SECONDS=15 \
 
 ---
 
+## Claude External Integrations
+
+Claude's built-in tool profiles (Bash, Edit, file operations) are automatic. External MCP servers and plugins are default-off and must be explicitly declared per task card.
+
+Fill `Claude External Integration Gate` in the task card when the task needs repository-local MCP config files or plugin directories:
+
+| Gate rule | Behavior |
+|-----------|----------|
+| Missing gate or `External integrations allowed?` = `no` | Dispatcher uses `--bare`; no `--mcp-config` or `--plugin-dir` arguments are passed |
+| `External integrations allowed?` = `yes` | Only declared repository-relative existing paths are accepted |
+| `Strict MCP isolation?` | Must be `yes` whenever integrations are allowed |
+
+When integrations are allowed:
+
+- **Paths are validated after the worktree exists.** The dispatcher rejects absolute paths, empty entries, `..` traversal, control characters, and paths resolving outside the worktree.
+- **MCP entries** must be existing repository-relative `.json` files. **Plugin entries** must be existing repository-relative directories or `.zip` files.
+- **Paths are passed as arrays, preserving case and spaces.** The dispatcher does not perform global config scan, `mcp list`, `plugin list`, install, enable, or download.
+- **Evidence recording** stores only the selected relative paths and any rejection category; MCP/plugin file contents and secrets are never recorded.
+- **External integrations do not widen built-in Bash/Edit permissions.** The tool profile and allowed tool set remain unchanged.
+
+**Monitoring environment:** `monitor-claude.sh start` must run in a persistent dispatch or user-terminal environment. Some Codex sandbox tool sessions reap detached children; an empty event log there is visibility/environment evidence, not Claude zero progress. Fall back to one boundary status/diff read, never duplicate dispatch.
+
+---
+
 ## Control-Plane Exception
 
 The normal role split is: Codex plans/reviews, Claude Code edits. One exception is workflow control-plane repair: if the dispatcher, installer, review script, or loop runner is the component that prevents safe delegation, Codex may make a narrowly scoped hotfix after recording a task card and verification evidence. Use this only to restore the workflow itself; route normal product/code changes back through Claude Code.

@@ -1592,5 +1592,82 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("learned", dispatch)
 
 
+    def test_external_integration_gate_propagated_to_installed_assets(self):
+        """Installed task template, AGENTS.md, and dispatch script must retain
+        the external integration gate and safety phrases."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            self.run_installer(repo)
+
+            template = (repo / "ai" / "task-card-template.md").read_text(encoding="utf-8")
+            agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
+            dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+
+            # Task template must have the Claude External Integration Gate section
+            self.assertIn("## Claude External Integration Gate", template)
+            self.assertIn("External integrations allowed?", template)
+            self.assertIn("MCP config paths", template)
+            self.assertIn("Plugin paths", template)
+            self.assertIn("Strict MCP isolation?", template)
+            self.assertIn("--bare", template)
+            self.assertIn("fail-closed", template)
+            self.assertIn("repository-relative", template)
+            self.assertIn("does not widen built-in Bash/Edit permissions", template)
+
+            # AGENTS.md managed section must document default-off external integrations
+            self.assertIn("External MCP servers and plugins are default-off", agents)
+            self.assertIn("--bare", agents)
+            self.assertIn("repository-relative", agents)
+            self.assertIn("External integrations do not widen built-in Bash/Edit", agents)
+            self.assertIn("persistent dispatch or user-terminal environment", agents)
+            self.assertIn("visibility/environment evidence", agents)
+
+            # Dispatcher must have the external integration gate variables and validation
+            self.assertIn("_EXTERNAL_INTEGRATIONS_ALLOWED", dispatch)
+            self.assertIn("_MCP_CONFIG_PATHS_RAW", dispatch)
+            self.assertIn("_PLUGIN_PATHS_RAW", dispatch)
+            self.assertIn("_STRICT_MCP_ISOLATION", dispatch)
+            self.assertIn("validate_external_integration_paths", dispatch)
+            self.assertIn("must be yes when external integrations are allowed", dispatch)
+            self.assertIn("--bare", dispatch)
+            self.assertIn("MCP config file not found", dispatch)
+            self.assertIn("plugin path not found", dispatch)
+
+    def test_readme_docs_external_integration_gate_and_monitor_environment(self):
+        """Source English and Chinese READMEs must document the external
+        integration gate and monitoring environment caveat."""
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        readme_cn = (ROOT / "README_CN.md").read_text(encoding="utf-8")
+        installed_readme = (ROOT / "assets" / "README.md").read_text(encoding="utf-8")
+
+        # English source README
+        self.assertIn("## Claude External Integrations", readme)
+        self.assertIn("default-off", readme)
+        self.assertIn("--bare", readme)
+        self.assertIn("repository-relative", readme)
+        self.assertIn("External integrations do not widen built-in Bash/Edit permissions", readme)
+        self.assertIn("does not perform global config scan", readme)
+        self.assertIn("contents and secrets are never recorded", readme)
+        self.assertIn("monitor-claude.sh start", readme)
+        self.assertIn("persistent dispatch or user-terminal environment", readme)
+        self.assertIn("visibility/environment evidence", readme)
+
+        # Chinese source README
+        self.assertIn("## Claude 外部集成", readme_cn)
+        self.assertIn("默认关闭", readme_cn)
+        self.assertIn("--bare", readme_cn)
+        self.assertIn("仓库相对", readme_cn)
+        self.assertIn("不会扩大内置 Bash/Edit 权限", readme_cn)
+        self.assertIn("monitor-claude.sh start", readme_cn)
+        self.assertIn("持久的 dispatch 或用户终端环境", readme_cn)
+
+        # Installed README (assets/README.md)
+        self.assertIn("## Claude External Integrations", installed_readme)
+        self.assertIn("default-off", installed_readme)
+        self.assertIn("--bare", installed_readme)
+        self.assertIn("repository-relative", installed_readme)
+        self.assertIn("External integrations do not widen built-in Bash/Edit permissions", installed_readme)
+
 if __name__ == "__main__":
     unittest.main()

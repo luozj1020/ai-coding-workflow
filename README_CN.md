@@ -1019,6 +1019,30 @@ CLAUDE_CODE_TIMEOUT_SECONDS=600 CLAUDE_CODE_HEARTBEAT_SECONDS=15 \
 
 ---
 
+## Claude 外部集成
+
+Claude 内置工具 profile（Bash、Edit、文件操作）是自动可用的。外部 MCP 服务器和插件默认关闭，必须在每个任务卡中显式声明。
+
+在任务卡中填写 `Claude External Integration Gate`，以启用仓库本地 MCP 配置文件或插件目录：
+
+| 门控规则 | 行为 |
+|----------|------|
+| 缺少门控或 `External integrations allowed?` = `no` | Dispatcher 使用 `--bare`；不传入 `--mcp-config` 或 `--plugin-dir` 参数 |
+| `External integrations allowed?` = `yes` | 仅接受已声明的、仓库相对路径下已存在的路径 |
+| `Strict MCP isolation?` | 当允许集成时必须为 `yes` |
+
+允许集成时：
+
+- **路径在 worktree 创建后验证。** Dispatcher 会拒绝绝对路径、空条目、`..` 路径遍历、控制字符，以及解析到 worktree 之外的路径。
+- **MCP 条目**必须是已存在的仓库相对 `.json` 文件。**插件条目**必须是已存在的仓库相对目录或 `.zip` 文件。
+- **路径以数组传递，保留大小写和空格。** Dispatcher 不会执行全局配置扫描、`mcp list`、`plugin list`、安装、启用或下载操作。
+- **证据记录**仅存储所选相对路径和拒绝类别；MCP/插件文件内容和密钥不会被记录。
+- **外部集成不会扩大内置 Bash/Edit 权限。** Tool profile 和允许的工具集保持不变。
+
+**监控环境：** `monitor-claude.sh start` 必须在持久的 dispatch 或用户终端环境中运行。某些 Codex 沙箱工具会话会回收分离的子进程；此时空的事件日志是环境/可见性证据，不是 Claude 零进展。应退而使用一次边界 status/diff 读取，不要重复 dispatch。
+
+---
+
 ## 控制面例外
 
 默认角色分工是：Codex 负责规划/审查，Claude Code 负责修改。例外情况是 workflow 控制面自身损坏：如果 dispatcher、installer、review script 或 loop runner 阻止了安全分发或证据收集，Codex 可以在记录任务卡和验证证据后做窄范围热修。该例外只用于恢复 workflow 本身；普通产品/代码修改仍应回到 Claude Code 执行。
