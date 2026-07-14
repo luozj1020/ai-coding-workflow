@@ -109,6 +109,7 @@ ai/
   run-loop.sh                 # Optional loop runner (dispatch + review)
   status-claude.sh            # Inspect Claude dispatch progress/artifacts
   watch-claude.sh             # Stream Claude progress in a terminal
+  monitor-claude.sh           # Persist material layered-monitor transitions in background
   kill-claude.sh              # Stop a Claude dispatch by PID artifact
   cleanup-worktree.sh         # Remove stopped Claude worktrees safely
   pwsh-utf8.ps1                # Configure PowerShell UTF-8 session defaults
@@ -712,6 +713,8 @@ Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones.
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
+For agent-driven runs, prefer `monitor-claude.sh start <task-id>`. It runs the layered watcher as a local background process and persists only material transitions to `.worktrees/<task-id>.monitor-events.log`; read `monitor-claude.sh tail <task-id>` once at a review/terminal boundary instead of spending Codex turns on heartbeat polling. Spark may summarize the compact event log when useful, but local monitoring itself invokes no model.
+
 Monitoring priority is intentionally conservative to avoid false kills:
 
 1. L0: compact `watch-claude.sh` heartbeat/progress only.
@@ -748,6 +751,10 @@ bash ai/status-claude.sh claude-20260701-093934
 
 # Stream progress in a terminal while Claude is running
 bash ai/watch-claude.sh claude-20260701-093934
+
+# Monitor locally in the background; read compact material events later
+bash ai/monitor-claude.sh start claude-20260701-093934
+bash ai/monitor-claude.sh tail claude-20260701-093934 --lines 30
 
 # Expand full progress tails only when needed
 bash ai/watch-claude.sh claude-20260701-093934 --details

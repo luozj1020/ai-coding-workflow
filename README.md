@@ -59,6 +59,8 @@ flowchart TD
     C --> P[Codex · execution plan and call budget]
     P --> B[Control plane · Model Call Broker]
     B --> D[Claude Builder · isolated implementation]
+    D -. heartbeat / progress / diff .-> MON[Local monitor · persist material L0–L3 transitions]
+    MON -. review-boundary event tail .-> CR
     D --> Q{Useful progress + semantic blocker?}
     Q -- No --> SP[Spark · mechanical postflight]
     Q -- Yes --> AP[Local tools · bounded advisor packet]
@@ -155,6 +157,7 @@ ai-coding-workflow/
     run-loop.sh          -> Optional loop runner (dispatch + review)
     status-claude.sh     -> Inspect Claude dispatch status and artifacts
     watch-claude.sh      -> Show CLI progress panel for running dispatches
+    monitor-claude.sh    -> Persist material layered-monitor transitions in background
     kill-claude.sh       -> Stop a recorded Claude dispatch process
     cleanup-worktree.sh  -> Remove stopped worktrees while preserving evidence
     pwsh-utf8.ps1        -> Configure PowerShell UTF-8 sessions
@@ -1028,6 +1031,8 @@ Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones.
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
+For agent-driven runs, do not wake Codex on every heartbeat. `monitor-claude.sh` runs the same layered watcher as a local background process and writes only material evidence, action/level, role, and terminal transitions to `.worktrees/<task-id>.monitor-events.log`. Codex should read the tail once at a review or terminal boundary; optionally pass that compact log to Spark for semantic summarization.
+
 Monitoring priority is intentionally conservative to avoid false kills:
 
 1. L0: compact `watch-claude.sh` heartbeat/progress only.
@@ -1064,6 +1069,11 @@ bash ai/status-claude.sh claude-20260701-093934
 
 # Stream progress in a terminal while Claude is running
 bash ai/watch-claude.sh claude-20260701-093934
+
+# Preferred for agent runs: monitor locally in the background without Codex polling
+bash ai/monitor-claude.sh start claude-20260701-093934
+bash ai/monitor-claude.sh status claude-20260701-093934
+bash ai/monitor-claude.sh tail claude-20260701-093934 --lines 30
 
 # Expand full progress tails only when needed
 bash ai/watch-claude.sh claude-20260701-093934 --details
