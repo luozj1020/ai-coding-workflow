@@ -24,6 +24,57 @@ def write_json(path, data):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
+def _evaluate_value_signals(hints: dict) -> dict:
+    """Evaluate deterministic value signals for Spark engagement.
+
+    Returns dict with 'triggered' (bool), 'trigger_codes' (list of str),
+    and 'reason' (str). Missing/unknown evidence is treated conservatively
+    as absent (no signal).
+    """
+    codes = []
+
+    # Routing confidence is not high
+    rc = hints.get("routing_confidence")
+    if rc is not None and rc != "high":
+        codes.append("signal.routing_confidence_not_high")
+
+    # Context is incomplete
+    if hints.get("context_complete") is False:
+        codes.append("signal.context_incomplete")
+
+    # Preflight may avoid a Claude retry
+    if hints.get("may_avoid_claude_retry") is True:
+        codes.append("signal.may_avoid_claude_retry")
+
+    # Preflight may avoid a Codex call/review
+    if hints.get("may_avoid_codex_call") is True:
+        codes.append("signal.may_avoid_codex_call")
+
+    # Observed diff materially deviates from prediction
+    predicted = hints.get("predicted_diff_lines")
+    observed = hints.get("observed_diff_lines")
+    if (
+        isinstance(predicted, (int, float))
+        and isinstance(observed, (int, float))
+        and predicted > 0
+        and abs(observed - predicted) / predicted > 0.20
+    ):
+        codes.append("signal.diff_deviates_from_prediction")
+
+    # Acceptance is partial
+    if hints.get("acceptance_status") == "partial":
+        codes.append("signal.acceptance_partial")
+
+    # Failure attribution is unclear
+    if hints.get("failure_attribution") == "unclear":
+        codes.append("signal.failure_attribution_unclear")
+
+    return {
+        "triggered": len(codes) > 0,
+        "trigger_codes": codes,
+    }
+
+
 def prepare(args):
     facts_path = args.facts or args.hints
     hints = json.loads(Path(facts_path).read_text(encoding="utf-8"))
@@ -35,18 +86,35 @@ def prepare(args):
         spark_use = False
         spark_skip_reason = "skip.explicit_gate_off"
         spark_reason = "Spark was explicitly disabled for this task"
+        spark_trigger_codes = []
     elif route["lane"] == "express":
         spark_use = False
         spark_skip_reason = "skip.sized_tiny_fastpath"
         spark_reason = "deterministic Express task uses the tiny fast path"
+        spark_trigger_codes = []
     elif route["budget"]["spark_calls"] <= 0:
         spark_use = False
         spark_skip_reason = "skip.budget_zero"
         spark_reason = "routing budget does not permit a Spark call"
-    else:
+        spark_trigger_codes = []
+    elif spark_gate == "on":
         spark_use = True
         spark_skip_reason = None
-        spark_reason = "non-Express work receives a Spark preflight before Claude dispatch"
+        spark_reason = "Spark explicitly enabled"
+        spark_trigger_codes = []
+    else:
+        # Auto mode: evaluate value signals
+        vs = _evaluate_value_signals(hints)
+        if vs["triggered"]:
+            spark_use = True
+            spark_skip_reason = None
+            spark_reason = "value signal present: " + ", ".join(vs["trigger_codes"])
+            spark_trigger_codes = vs["trigger_codes"]
+        else:
+            spark_use = False
+            spark_skip_reason = "skip.no_expected_decision_value"
+            spark_reason = "no value signal detected; skipping Spark to avoid cost without expected benefit"
+            spark_trigger_codes = []
     levels = {
         "L0": {"files": hints.get("target_files", []), "symbols": hints.get("symbols", []), "targets": hints.get("build_targets", [])},
         "L1": {"snippets": hints.get("reference_snippets", []), "call_paths": hints.get("call_paths", []), "constraints": hints.get("constraints", [])},
@@ -56,7 +124,7 @@ def prepare(args):
     plan = {"schema_version": 1, "generated_at": int(time.time()), "task_id": task_id, "lane": route["lane"], "budget": route["budget"],
             "execution": {"builder_checker_split": route["execution"]["builder_checker_split"], "single_pass_allowed": single, "single_pass_reason": route["execution"]["single_pass_reason"], "max_iterations": 2 if hints.get("latency_mode", "interactive") == "interactive" else 3, "require_new_evidence_for_retry": True},
             "review": {"reserved_for": route["budget"].get("codex_reserved_for", []), "milestones": ["implementation-complete", "validation-complete", "final-candidate"], "incremental": True},
-            "spark": {"invoke": bool(spark_use), "stage": "preflight", "mode": "preflight-bundle", "reason": spark_reason, "skip_reason": spark_skip_reason, "max_calls": 1},
+            "spark": {"invoke": bool(spark_use), "stage": "preflight", "mode": "preflight-bundle", "reason": spark_reason, "skip_reason": spark_skip_reason, "trigger_codes": spark_trigger_codes, "max_calls": 1},
             "context": {"cache_key": digest(cache_identity), "levels": levels, "default_level": "L1", "allow_l2_on_gap": True},
             "legacy_loop_compatible": True, "automatic_model_invocation": False, "automatic_merge": False}
     output = Path(args.output_dir)

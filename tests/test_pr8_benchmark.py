@@ -338,6 +338,131 @@ class TestCompareEfficiency(unittest.TestCase):
         self.assertIn("codex_call_reduction", result)
         self.assertTrue(result["quota_gate_pass"])
 
+    def test_insufficient_data_when_baseline_missing(self):
+        """Reports insufficient-data when required baseline samples are absent."""
+        baseline = {"false_accepts": 0, "scope_violations": 0}
+        candidate = {
+            "total_codex_calls": 5,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.9,
+            "false_accepts": 0,
+            "scope_violations": 0,
+        }
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertEqual(result["status"], "insufficient-data")
+        self.assertTrue(result["insufficient_data"])
+        self.assertTrue(len(result["missing_samples"]) > 0)
+        self.assertFalse(result["all_gates_pass"])
+
+    def test_insufficient_data_when_candidate_first_pass_missing(self):
+        """Reports insufficient-data when candidate first_pass_rate is absent."""
+        baseline = {
+            "total_codex_calls": 10,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.8,
+            "false_accepts": 0,
+            "scope_violations": 0,
+        }
+        candidate = {
+            "total_codex_calls": 5,
+            "p50_latency_seconds": 1.1,
+            "false_accepts": 0,
+            "scope_violations": 0,
+        }
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertEqual(result["status"], "insufficient-data")
+        self.assertIn("candidate_first_pass_rate", result["missing_samples"])
+
+    def test_pass_status_when_all_gates_pass(self):
+        """Reports pass when all gates pass with sufficient data."""
+        baseline = {
+            "total_codex_calls": 10,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.8,
+            "false_accepts": 0,
+            "scope_violations": 0,
+        }
+        candidate = {
+            "total_codex_calls": 5,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.85,
+            "false_accepts": 0,
+            "scope_violations": 0,
+        }
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertEqual(result["status"], "pass")
+        self.assertTrue(result["all_gates_pass"])
+        self.assertFalse(result["insufficient_data"])
+
+    def test_fail_status_when_gate_fails(self):
+        """Reports fail when a gate fails with sufficient data."""
+        baseline = {
+            "total_codex_calls": 10,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.8,
+            "false_accepts": 0,
+            "scope_violations": 0,
+        }
+        candidate = {
+            "total_codex_calls": 9,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.85,
+            "false_accepts": 0,
+            "scope_violations": 0,
+        }
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertEqual(result["status"], "fail")
+        self.assertFalse(result["all_gates_pass"])
+        self.assertFalse(result["quota_gate_pass"])
+
+    def test_continuation_gate(self):
+        """Continuation success non-regression is evaluated."""
+        baseline = {
+            "total_codex_calls": 10,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.8,
+            "false_accepts": 0,
+            "scope_violations": 0,
+            "full_redispatch_avoided_total": 3,
+            "advisor_continuation_succeeded_total": 5,
+            "reexploration_yes_total": 1,
+        }
+        candidate = {
+            "total_codex_calls": 5,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.85,
+            "false_accepts": 0,
+            "scope_violations": 0,
+            "full_redispatch_avoided_total": 4,
+            "advisor_continuation_succeeded_total": 6,
+            "reexploration_yes_total": 0,
+        }
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertTrue(result["continuation_gate_pass"])
+        self.assertTrue(result["reexploration_gate_pass"])
+
+    def test_reexploration_gate_regression(self):
+        """Re-exploration increase is caught as a regression."""
+        baseline = {
+            "total_codex_calls": 10,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.8,
+            "false_accepts": 0,
+            "scope_violations": 0,
+            "reexploration_yes_total": 0,
+        }
+        candidate = {
+            "total_codex_calls": 5,
+            "p50_latency_seconds": 1.0,
+            "first_pass_rate": 0.85,
+            "false_accepts": 0,
+            "scope_violations": 0,
+            "reexploration_yes_total": 3,
+        }
+        result = compare_efficiency.compare(baseline, candidate)
+        self.assertFalse(result["reexploration_gate_pass"])
+        self.assertEqual(result["status"], "fail")
+
 
 class TestCLI(unittest.TestCase):
     """Test CLI interface."""
@@ -354,6 +479,77 @@ class TestCLI(unittest.TestCase):
             text=True,
         )
         self.assertNotEqual(result.returncode, 0)
+
+    def test_compare_enforce_insufficient_data(self):
+        """--enforce returns exit 2 for insufficient-data."""
+        baseline = {"false_accepts": 0}
+        candidate = {"total_codex_calls": 5, "p50_latency_seconds": 1.0,
+                     "first_pass_rate": 0.9, "false_accepts": 0, "scope_violations": 0}
+        with tempfile.TemporaryDirectory() as tmp:
+            bp = Path(tmp) / "b.json"
+            cp = Path(tmp) / "c.json"
+            bp.write_text(json.dumps(baseline))
+            cp.write_text(json.dumps(candidate))
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "compare-efficiency.py"),
+                 str(bp), str(cp), "--enforce"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+
+    def test_compare_enforce_fail(self):
+        """--enforce returns exit 1 for failed gates."""
+        baseline = {"total_codex_calls": 10, "p50_latency_seconds": 1.0,
+                     "first_pass_rate": 0.8, "false_accepts": 0, "scope_violations": 0}
+        candidate = {"total_codex_calls": 9, "p50_latency_seconds": 1.0,
+                     "first_pass_rate": 0.85, "false_accepts": 0, "scope_violations": 0}
+        with tempfile.TemporaryDirectory() as tmp:
+            bp = Path(tmp) / "b.json"
+            cp = Path(tmp) / "c.json"
+            bp.write_text(json.dumps(baseline))
+            cp.write_text(json.dumps(candidate))
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "compare-efficiency.py"),
+                 str(bp), str(cp), "--enforce"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+
+    def test_compare_enforce_pass(self):
+        """--enforce returns exit 0 when all gates pass."""
+        baseline = {"total_codex_calls": 10, "p50_latency_seconds": 1.0,
+                     "first_pass_rate": 0.8, "false_accepts": 0, "scope_violations": 0}
+        candidate = {"total_codex_calls": 5, "p50_latency_seconds": 1.0,
+                     "first_pass_rate": 0.85, "false_accepts": 0, "scope_violations": 0}
+        with tempfile.TemporaryDirectory() as tmp:
+            bp = Path(tmp) / "b.json"
+            cp = Path(tmp) / "c.json"
+            bp.write_text(json.dumps(baseline))
+            cp.write_text(json.dumps(candidate))
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "compare-efficiency.py"),
+                 str(bp), str(cp), "--enforce"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0)
+
+    def test_compare_no_enforce_default_exit_zero(self):
+        """Without --enforce, exit 0 even when gates fail (report-only mode)."""
+        baseline = {"total_codex_calls": 10, "p50_latency_seconds": 1.0,
+                     "first_pass_rate": 0.8, "false_accepts": 0, "scope_violations": 0}
+        candidate = {"total_codex_calls": 9, "p50_latency_seconds": 1.0,
+                     "first_pass_rate": 0.85, "false_accepts": 0, "scope_violations": 0}
+        with tempfile.TemporaryDirectory() as tmp:
+            bp = Path(tmp) / "b.json"
+            cp = Path(tmp) / "c.json"
+            bp.write_text(json.dumps(baseline))
+            cp.write_text(json.dumps(candidate))
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "compare-efficiency.py"),
+                 str(bp), str(cp)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0)
 
     def test_run_all_cases(self):
         """Running all cases produces valid output."""

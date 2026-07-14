@@ -68,8 +68,8 @@ class SparkEngagementTests(unittest.TestCase):
                     "exact_validation": True,
                     "effective_risks": no_risks,
                 },
-                True,
-                None,
+                False,
+                "skip.no_expected_decision_value",
             ),
             (
                 {
@@ -113,6 +113,50 @@ class SparkEngagementTests(unittest.TestCase):
                 self.assertEqual(spark["skip_reason"], expected_skip)
                 self.assertEqual(spark["stage"], "preflight")
                 self.assertEqual(spark["mode"], "preflight-bundle")
+
+    def test_value_signal_triggers_spark(self):
+        """Each documented value signal independently enables Spark in auto mode."""
+        no_risks = {key: "no" for key in RISK_KEYS}
+        base = {
+            "target_files_count": 3,
+            "predicted_diff_lines": 120,
+            "exact_validation": True,
+            "effective_risks": no_risks,
+        }
+        signals = [
+            ({"routing_confidence": "medium"}, "signal.routing_confidence_not_high"),
+            ({"context_complete": False}, "signal.context_incomplete"),
+            ({"may_avoid_claude_retry": True}, "signal.may_avoid_claude_retry"),
+            ({"may_avoid_codex_call": True}, "signal.may_avoid_codex_call"),
+            ({"predicted_diff_lines": 100, "observed_diff_lines": 150}, "signal.diff_deviates_from_prediction"),
+            ({"acceptance_status": "partial"}, "signal.acceptance_partial"),
+            ({"failure_attribution": "unclear"}, "signal.failure_attribution_unclear"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, (extra, expected_code) in enumerate(signals):
+                facts = {**base, **extra}
+                spark = self.prepare(root, facts, f"VS-{index}")["spark"]
+                self.assertTrue(spark["invoke"], f"Signal {expected_code} should trigger Spark")
+                self.assertIn(expected_code, spark["trigger_codes"])
+                self.assertIsNone(spark["skip_reason"])
+
+    def test_explicit_on_overrides_no_signals(self):
+        """spark_gate=on invokes even without value signals."""
+        no_risks = {key: "no" for key in RISK_KEYS}
+        facts = {
+            "target_files_count": 3,
+            "predicted_diff_lines": 120,
+            "exact_validation": True,
+            "effective_risks": no_risks,
+            "spark_gate": "on",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spark = self.prepare(root, facts, "ON-0")["spark"]
+            self.assertTrue(spark["invoke"])
+            self.assertEqual(spark["skip_reason"], None)
+            self.assertEqual(spark["trigger_codes"], [])
 
     def test_preview_exposes_plan_without_invoking_any_model(self):
         dispatch = load_script("dispatch-efficient.py")

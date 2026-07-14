@@ -41,24 +41,56 @@ def load_metrics(path: Path) -> Dict[str, Any]:
     return data
 
 
+def _has_samples(metrics: Dict[str, Any], key: str) -> bool:
+    """Check if metrics has a usable numeric sample for a given key."""
+    val = metrics.get(key)
+    return isinstance(val, (int, float)) and not isinstance(val, bool)
+
+
 def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Compare candidate metrics against baseline.
 
-    Returns gate evaluation results.
+    Returns gate evaluation results with status: pass, fail, or insufficient-data.
     """
-    # Codex calls reduction
+    # --- Sample sufficiency checks ---
+    missing = []
+    # Codex calls: need baseline sample
     bc = baseline.get("total_codex_calls", baseline.get("model_calls", {}).get("codex", 0))
     cc = candidate.get("total_codex_calls", candidate.get("model_calls", {}).get("codex", 0))
-    reduction = (bc - cc) / bc if bc else None
+    if not _has_samples(baseline, "total_codex_calls") and not baseline.get("model_calls", {}).get("codex"):
+        missing.append("baseline_codex_calls")
 
-    # Latency delta (p50)
+    # Latency: need baseline sample for delta computation
     b_latency = baseline.get("p50_latency_seconds", baseline.get("elapsed_seconds", 0))
     c_latency = candidate.get("p50_latency_seconds", candidate.get("elapsed_seconds", 0))
-    delta = (c_latency - b_latency) / b_latency if b_latency else None
+    if not _has_samples(baseline, "p50_latency_seconds") and not _has_samples(baseline, "elapsed_seconds"):
+        missing.append("baseline_latency")
 
-    # First-pass success delta
+    # First-pass: need both samples
     b_first_pass = baseline.get("first_pass_rate", baseline.get("first_pass_success_rate", 0))
     c_first_pass = candidate.get("first_pass_rate", candidate.get("first_pass_success_rate", 0))
+    if not _has_samples(baseline, "first_pass_rate") and not _has_samples(baseline, "first_pass_success_rate"):
+        missing.append("baseline_first_pass_rate")
+    if not _has_samples(candidate, "first_pass_rate") and not _has_samples(candidate, "first_pass_success_rate"):
+        missing.append("candidate_first_pass_rate")
+
+    # --- Advisor continuation metrics ---
+    b_redispatch = baseline.get("full_redispatch_avoided_total",
+                                baseline.get("full_redispatch_avoided", 0))
+    c_redispatch = candidate.get("full_redispatch_avoided_total",
+                                 candidate.get("full_redispatch_avoided", 0))
+    b_continuation_success = baseline.get("advisor_continuation_succeeded_total",
+                                           baseline.get("continuation_succeeded", 0))
+    c_continuation_success = candidate.get("advisor_continuation_succeeded_total",
+                                            candidate.get("continuation_succeeded", 0))
+    b_reexploration = baseline.get("reexploration_yes_total",
+                                   baseline.get("reexploration_yes", 0))
+    c_reexploration = candidate.get("reexploration_yes_total",
+                                    candidate.get("reexploration_yes", 0))
+
+    # --- Gate computations ---
+    reduction = (bc - cc) / bc if bc else None
+    delta = (c_latency - b_latency) / b_latency if b_latency else None
     first_pass_delta = (c_first_pass or 0) - (b_first_pass or 0)
 
     # Quality gates (no increase)
@@ -66,7 +98,6 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
     c_false_accepts = candidate.get("false_accepts", 0)
     b_scope = baseline.get("scope_violations", 0)
     c_scope = candidate.get("scope_violations", 0)
-
     quality = c_false_accepts <= b_false_accepts and c_scope <= b_scope
 
     # Human touches (manual operations)
@@ -74,20 +105,43 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
     c_human = candidate.get("human_touches", candidate.get("manual_operations", 0))
     human = c_human <= b_human
 
-    # Gate evaluation
+    # Continuation success non-regression (candidate >= baseline or both zero)
+    continuation_gate = (c_continuation_success or 0) >= (b_continuation_success or 0)
+
+    # Re-exploration non-regression (candidate <= baseline or both zero)
+    reexploration_gate = (c_reexploration or 0) <= (b_reexploration or 0)
+
+    # Existing gates
     quota_gate = reduction is not None and reduction >= 0.30
     latency_gate = delta is None or delta <= 0.15
     first_pass_gate = first_pass_delta >= -0.05
     quality_gate = quality
     human_gate = human
 
+    insufficient_data = len(missing) > 0
+
+    all_gates = all([
+        quota_gate, latency_gate, first_pass_gate, quality_gate, human_gate,
+        continuation_gate, reexploration_gate,
+    ])
+
+    if insufficient_data:
+        status = "insufficient-data"
+    elif all_gates:
+        status = "pass"
+    else:
+        status = "fail"
+
     pareto = bool(
-        reduction is not None
+        not insufficient_data
+        and reduction is not None
         and reduction > 0
         and (delta is None or delta <= 0.15)
         and first_pass_delta >= -0.05
         and quality
         and human
+        and continuation_gate
+        and reexploration_gate
     )
 
     return {
@@ -99,10 +153,13 @@ def compare(baseline: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, An
         "first_pass_gate_pass": first_pass_gate,
         "quality_gate_pass": quality_gate,
         "human_touch_gate_pass": human_gate,
+        "continuation_gate_pass": continuation_gate,
+        "reexploration_gate_pass": reexploration_gate,
         "pareto_candidate": pareto,
-        "all_gates_pass": all([
-            quota_gate, latency_gate, first_pass_gate, quality_gate, human_gate,
-        ]),
+        "insufficient_data": insufficient_data,
+        "missing_samples": missing,
+        "all_gates_pass": all_gates and not insufficient_data,
+        "status": status,
     }
 
 
@@ -112,6 +169,8 @@ def main() -> int:
     )
     p.add_argument("baseline", help="Baseline results file.")
     p.add_argument("candidate", help="Candidate results file.")
+    p.add_argument("--enforce", action="store_true",
+                   help="Return non-zero when gates fail or evidence is insufficient.")
     a = p.parse_args()
 
     baseline_path = Path(a.baseline)
@@ -129,6 +188,12 @@ def main() -> int:
 
     result = compare(baseline, candidate)
     print(json.dumps(result, sort_keys=True, indent=2))
+
+    if a.enforce:
+        if result["status"] == "insufficient-data":
+            return 2
+        if result["status"] == "fail":
+            return 1
     return 0
 
 
