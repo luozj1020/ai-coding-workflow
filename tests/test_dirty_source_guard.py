@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -2259,33 +2260,46 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
     def test_growth_at_first_extension_deadline_starts_second_extension(self):
         """Growth at the first extension deadline starts exactly one second
-        extension; the progress log records the event."""
+        extension; the progress log records exactly one start event and the
+        run terminates at the second extension deadline."""
         self._write_builder_task_card()
+        t0 = time.monotonic()
         result = self._dispatch(
             "task-cards/BUILDER.md",
             {
                 "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
-                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "5",
+                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "2",
                 "FAKE_CLAUDE_MODE": "incremental-progress",
                 "FAKE_CLAUDE_SLEEP_SECONDS": "3",
-                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "1",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "10",
             },
         )
+        wall = time.monotonic() - t0
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         self.assertIn("Timeout extension started", progress)
-        # Growth detected at first extension deadline → second extension starts.
-        self.assertIn("Second extension started: seconds=5", progress)
+        # Exactly one second-extension start event (rolling-deadline bug would log >1).
+        self.assertEqual(
+            progress.count("Second extension started:"),
+            1,
+            f"Expected exactly one 'Second extension started:' in progress log:\n{progress}",
+        )
+        self.assertIn("Second extension started: seconds=2", progress)
+        # Must reach the second-extension expiry (not first-extension expiry).
+        self.assertIn("runtime timeout (second extension expired)", progress)
         self.assertIn("Second extension used: yes", status)
-        self.assertIn("Second extension seconds: 5", status)
+        self.assertIn("Second extension seconds: 2", status)
+        # Old rolling-deadline bug would extend indefinitely; assert bounded wall-clock.
+        self.assertLess(wall, 20, "Wall-clock exceeded 20s; possible rolling-deadline bug")
 
     def test_second_extension_deadline_terminates_when_growth_stops(self):
         """When growth stops during the second extension, the extension expires
-        and Claude is terminated."""
+        at the second-extension deadline and Claude is terminated."""
         self._write_builder_task_card()
+        t0 = time.monotonic()
         result = self._dispatch(
             "task-cards/BUILDER.md",
             {
@@ -2298,15 +2312,16 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "15",
             },
         )
+        wall = time.monotonic() - t0
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertIn("extension_active=1", progress)
-        # Either second extension expired or first extension expired after growth stopped.
-        self.assertTrue(
-            "second extension expired" in progress or "extension expired" in progress,
-            f"Expected extension expiry in progress log:\n{progress}",
-        )
+        # Must terminate at second-extension deadline specifically.
+        self.assertIn("runtime timeout (second extension expired)", progress)
+        self.assertIn("Second extension used: yes", status)
+        # Old rolling-deadline bug would extend indefinitely; assert bounded wall-clock.
+        self.assertLess(wall, 20, "Wall-clock exceeded 20s; possible rolling-deadline bug")
 
     def test_growing_progress_extension_zero_disables_second_extension(self):
         """CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS=0 disables the second
@@ -2358,6 +2373,69 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertTrue(data["second_extension_used"])
         self.assertEqual(data["second_extension_seconds"], 5)
         self.assertIsNotNone(data["second_extension_reason"])
+
+    # --- Recent activity window validation and stale-progress tests ---
+
+    def test_recent_activity_window_invalid_value_fails(self):
+        """Non-integer CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS exits with validation error."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "abc"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS must be a non-negative integer",
+            result.stderr,
+        )
+
+    def test_stale_progress_at_base_deadline_does_not_extend(self):
+        """Progress older than the recent-activity window is stale at the base
+        deadline; the run terminates without starting the first extension."""
+        self._write_builder_task_card()
+        t0 = time.monotonic()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "5",
+                "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "1",
+                "FAKE_CLAUDE_MODE": "progress-update",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+            },
+        )
+        wall = time.monotonic() - t0
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        # Progress is stale (last activity >1s ago at the 2s base deadline) → no extension.
+        self.assertNotIn("Timeout extension started", progress)
+        self.assertIn("stale progress", progress)
+        self.assertIn("Progress extension used: no", status)
+        self.assertLess(wall, 15, "Wall-clock exceeded 15s; run should terminate at base deadline")
+
+    def test_recent_progress_at_base_deadline_extends(self):
+        """Progress within the recent-activity window at the base deadline
+        triggers the first extension."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "5",
+                "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "10",
+                "FAKE_CLAUDE_MODE": "progress-update",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        # Progress is recent (last activity ≤10s ago at the 2s base deadline) → extension granted.
+        self.assertIn("Timeout extension started", progress)
+        self.assertIn("Progress extension used: yes", status)
 
     # --- Dirty-source guard: dispatcher-owned file exemption tests ---
 
