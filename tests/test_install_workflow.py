@@ -1029,6 +1029,17 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertEqual(snapshots, [snapshots[0]] if snapshots else [], stdout)
             self.assertEqual(len(snapshots), 1, stdout)
 
+    def test_monitor_helper_is_installed_with_background_lifecycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            monitor = repo / "ai" / "monitor-claude.sh"
+            self.assertTrue(monitor.exists())
+            text = monitor.read_text(encoding="utf-8")
+            for action in ("start)", "status)", "tail)", "stop)"):
+                self.assertIn(action, text)
+            self.assertIn("monitor-events.log", text)
+
     def test_watch_machine_line_overall_running_includes_dispatcher(self):
         """Watch machine line overall_running=yes when only dispatcher is alive."""
         with tempfile.TemporaryDirectory() as tmp:

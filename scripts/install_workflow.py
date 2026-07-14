@@ -59,6 +59,7 @@ SCRIPTS = [
     ("run-loop.sh", "ai/run-loop.sh"),
     ("status-claude.sh", "ai/status-claude.sh"),
     ("watch-claude.sh", "ai/watch-claude.sh"),
+    ("monitor-claude.sh", "ai/monitor-claude.sh"),
     ("kill-claude.sh", "ai/kill-claude.sh"),
     ("cleanup-worktree.sh", "ai/cleanup-worktree.sh"),
 ]
