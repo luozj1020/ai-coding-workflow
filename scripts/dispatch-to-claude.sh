@@ -1590,8 +1590,11 @@ _PLUGIN_PATHS=()
 _MCP_CONFIG_PATHS_EVIDENCE="none"
 _PLUGIN_PATHS_EVIDENCE="none"
 _EXTERNAL_INTEGRATION_REJECTION=""
+_EXTERNAL_INTEGRATION_VALID=1
 if [ "$_EXTERNAL_INTEGRATIONS_ALLOWED" = "yes" ]; then
-    validate_external_integration_paths "$WORKTREE_DIR"
+    if ! validate_external_integration_paths "$WORKTREE_DIR"; then
+        _EXTERNAL_INTEGRATION_VALID=0
+    fi
 fi
 
 {
@@ -1698,11 +1701,17 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "strict_mcp_isolation": "%s",\n' "$_STRICT_MCP_ISOLATION"
     printf '  "mcp_config_paths": "%s",\n' "${_MCP_CONFIG_PATHS_EVIDENCE}"
     printf '  "plugin_paths": "%s",\n' "${_PLUGIN_PATHS_EVIDENCE}"
-    printf '  "external_integration_rejection": "%s"\n' "${_EXTERNAL_INTEGRATION_REJECTION:-none}"
+    printf '  "external_integration_rejection": "%s",\n' "${_EXTERNAL_INTEGRATION_REJECTION:-none}"
+    printf '  "external_integration_valid": %s\n' "$([ "$_EXTERNAL_INTEGRATION_VALID" -eq 1 ] && echo true || echo false)"
     echo "}"
 } > "$_RUNTIME_TMP"
 mv "$_RUNTIME_TMP" "$RUNTIME_JSON"
 echo "Runtime identity saved to: $RUNTIME_JSON"
+
+if [ "$_EXTERNAL_INTEGRATION_VALID" -ne 1 ]; then
+    echo "External integration rejection evidence saved to: $RUNTIME_JSON" >&2
+    exit 1
+fi
 
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD.md"
 cp "$TASK_CARD" "${WORKTREE_DIR}/TASK_CARD_FULL.md"

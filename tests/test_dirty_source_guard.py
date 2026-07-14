@@ -2571,6 +2571,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         result = self._dispatch("task-cards/EXTINT.md")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("absolute", result.stderr.lower())
+        runtime_files = sorted((self.repo / ".worktrees").glob("claude-*.runtime.json"))
+        self.assertEqual(1, len(runtime_files))
+        runtime = json.loads(runtime_files[0].read_text(encoding="utf-8"))
+        self.assertFalse(runtime["external_integration_valid"])
+        self.assertEqual(runtime["external_integration_rejection"], "absolute_mcp_path")
 
     def test_external_integration_traversal_mcp_path_fails_closed(self):
         """MCP path with '..' traversal → fail before Claude is invoked."""
