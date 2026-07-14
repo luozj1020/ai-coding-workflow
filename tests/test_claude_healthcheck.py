@@ -20,7 +20,7 @@ class ClaudeHealthcheckTests(unittest.TestCase):
              mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid"}, clear=True):
             result = health.interaction_probe("direct", 40, "你好")
         self.assertTrue(result["success"])
-        self.assertEqual(run.call_args.args[0], ["claude", "-p", "你好", "--output-format", "json"])
+        self.assertEqual(run.call_args.args[0], ["claude", "-p", "你好", "--bare", "--no-session-persistence", "--output-format", "json"])
         self.assertNotIn("HTTPS_PROXY", run.call_args.kwargs["env"])
 
     def test_interaction_probe_extracts_json_usage_without_response_content(self):
@@ -164,6 +164,65 @@ class ClaudeHealthcheckTests(unittest.TestCase):
     def test_installer_and_doctor_register_helper(self):
         self.assertIn('"claude-healthcheck.py"', (ROOT / "scripts/install_workflow.py").read_text())
         self.assertIn("ai/claude-healthcheck.py", (ROOT / "scripts/doctor_workflow.py").read_text())
+
+    # --- Unified minimal API probing tests ---
+
+    def test_interaction_probe_command_includes_bare_and_no_session_persistence(self):
+        """Command includes --bare, --no-session-persistence, fixed prompt, and JSON output;
+        usage extraction is preserved."""
+        completed = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({
+                "result": "response text",
+                "usage": {"input_tokens": 7, "output_tokens": 3},
+                "total_cost_usd": 0.015,
+                "duration_ms": 90,
+                "model": "probe-model",
+            }),
+            stderr="",
+        )
+        with mock.patch.object(health.subprocess, "run", return_value=completed) as run, \
+             mock.patch.dict(os.environ, {}, clear=True):
+            result = health.interaction_probe("inherit", 40, "你好")
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[0], "claude")
+        self.assertEqual(cmd[1], "-p")
+        self.assertEqual(cmd[2], "你好")
+        self.assertIn("--bare", cmd)
+        self.assertIn("--no-session-persistence", cmd)
+        self.assertIn("--output-format", cmd)
+        self.assertIn("json", cmd)
+        # Usage extraction preserved.
+        self.assertTrue(result["success"])
+        self.assertTrue(result["usage_extracted"])
+        self.assertEqual(result["tokens_in"], 7)
+        self.assertEqual(result["tokens_out"], 3)
+        self.assertEqual(result["cost_usd"], 0.015)
+        self.assertEqual(result["model"], "probe-model")
+        self.assertNotIn("result", result)
+        self.assertNotIn("response text", json.dumps(result))
+
+    # --- Probe environment attribution tests ---
+
+    def test_probe_environment_auto_respects_sandbox_marker(self):
+        """auto mode returns restricted when CODEX_SANDBOX_NETWORK_DISABLED=1."""
+        with mock.patch.dict(os.environ, {"CODEX_SANDBOX_NETWORK_DISABLED": "1"}, clear=True):
+            self.assertTrue(health.restricted_network_environment("auto"))
+
+    def test_probe_environment_auto_returns_unrestricted_without_marker(self):
+        """auto mode returns unrestricted when sandbox marker is absent."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(health.restricted_network_environment("auto"))
+
+    def test_probe_environment_host_ignores_sandbox_marker(self):
+        """host mode returns unrestricted even when CODEX_SANDBOX_NETWORK_DISABLED=1."""
+        with mock.patch.dict(os.environ, {"CODEX_SANDBOX_NETWORK_DISABLED": "1"}, clear=True):
+            self.assertFalse(health.restricted_network_environment("host"))
+
+    def test_probe_environment_sandbox_forces_restricted(self):
+        """sandbox mode returns restricted regardless of environment."""
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(health.restricted_network_environment("sandbox"))
 
 
 if __name__ == "__main__":

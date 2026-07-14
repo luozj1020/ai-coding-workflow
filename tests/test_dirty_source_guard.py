@@ -2106,6 +2106,290 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Dispatch Complete", result.stdout)
 
+    # --- Unified API probe mode tests ---
+
+    def test_api_probe_mode_always_runs_startup_probe(self):
+        """Default always mode runs a startup interaction probe."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "seed-only",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Startup interaction probe: conclusion=", progress)
+
+    def test_api_probe_mode_failure_only_skips_startup_probe(self):
+        """failure-only mode skips the startup probe but runs zero-output probe."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_API_PROBE_MODE": "failure-only",
+                "FAKE_CLAUDE_MODE": "seed-only",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertNotIn("Startup interaction probe:", progress)
+        # Zero-output probe should still run.
+        probe_path = self._artifact_path(result.stdout, "API Probe")
+        probe = json.loads(probe_path.read_text(encoding="utf-8"))
+        self.assertIn("interaction_conclusion", probe)
+
+    def test_api_probe_mode_off_skips_all_probes(self):
+        """off mode skips all API probes; API Probe artifact is empty."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_API_PROBE_MODE": "off",
+                "FAKE_CLAUDE_MODE": "seed-only",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        probe_path = self._artifact_path(result.stdout, "API Probe")
+        self.assertEqual(probe_path.stat().st_size, 0)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertNotIn("Startup interaction probe:", progress)
+        self.assertNotIn("Interaction probe (zero-output):", progress)
+
+    def test_observation_probe_result_reused_not_duplicated_by_zero_output(self):
+        """When observation probe runs at first-progress threshold, zero-output
+        finalization reuses its result instead of running a duplicate probe."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "seed-only",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        # Observation probe should have run at first-progress threshold.
+        self.assertIn("First-progress observation probe: conclusion=", progress)
+        # At finalization, the observation result should be reused.
+        self.assertIn("Reusing observation-stage probe result", progress)
+        # A separate zero-output probe must NOT have been invoked.
+        self.assertNotIn("Interaction probe (zero-output):", progress)
+
+    # --- First-progress observe vs stop tests ---
+
+    def test_first_progress_observe_does_not_stop_at_threshold(self):
+        """observe mode continues past the first-progress threshold; Claude
+        runs until the base timeout kills it, not the first-progress timer."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "5",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "observe",
+                "FAKE_CLAUDE_MODE": "seed-only",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        # Observe mode logs the event but does not stop.
+        self.assertIn("First-progress observation:", progress)
+        # The process was NOT killed by first-progress; it ran until base timeout.
+        self.assertIn("First-progress timed out: no", status)
+
+    def test_first_progress_stop_preserves_legacy_termination(self):
+        """stop mode kills Claude at the first-progress threshold."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "30",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "stop",
+                "FAKE_CLAUDE_MODE": "seed-only",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("first_progress_timeout", progress.lower())
+        self.assertIn("First-progress timed out: yes", status)
+
+    # --- Timeout second-extension tests ---
+
+    def test_no_growth_at_first_extension_deadline_terminates(self):
+        """When no growth is detected at the first extension deadline, the run
+        terminates with 'extension expired, no progress'."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
+                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "5",
+                "FAKE_CLAUDE_MODE": "delayed-diff",
+                "FAKE_CLAUDE_PRE_DIFF_SLEEP": "0",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "20",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Timeout extension started", progress)
+        # Diff happened before extension snapshot; no new growth → terminates.
+        self.assertIn("extension expired", progress)
+        self.assertIn("Progress extension used: yes", status)
+        self.assertIn("Second extension used: no", status)
+
+    def test_growth_at_first_extension_deadline_starts_second_extension(self):
+        """Growth at the first extension deadline starts exactly one second
+        extension; the progress log records the event."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
+                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "5",
+                "FAKE_CLAUDE_MODE": "incremental-progress",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Timeout extension started", progress)
+        # Growth detected at first extension deadline → second extension starts.
+        self.assertIn("Second extension started: seconds=5", progress)
+        self.assertIn("Second extension used: yes", status)
+        self.assertIn("Second extension seconds: 5", status)
+
+    def test_second_extension_deadline_terminates_when_growth_stops(self):
+        """When growth stops during the second extension, the extension expires
+        and Claude is terminated."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
+                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "incremental-progress",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "15",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("extension_active=1", progress)
+        # Either second extension expired or first extension expired after growth stopped.
+        self.assertTrue(
+            "second extension expired" in progress or "extension expired" in progress,
+            f"Expected extension expiry in progress log:\n{progress}",
+        )
+
+    def test_growing_progress_extension_zero_disables_second_extension(self):
+        """CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS=0 disables the second
+        extension; growth at the first extension deadline terminates instead."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
+                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "0",
+                "FAKE_CLAUDE_MODE": "incremental-progress",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "15",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("extension_active=1", progress)
+        # Second extension disabled → stop at first extension deadline.
+        self.assertIn("extension expired, progress was growing, second extension disabled", progress)
+        self.assertIn("Second extension used: no", status)
+
+    def test_runtime_fallback_evidence_contains_second_extension_fields(self):
+        """Fallback result JSON includes second_extension_used, _seconds, and _reason
+        when the second extension was activated."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
+                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "5",
+                "FAKE_CLAUDE_MODE": "incremental-progress",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        result_file = self._artifact_path(result.stdout, "Result")
+        data = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertIn("second_extension_used", data)
+        self.assertIn("second_extension_seconds", data)
+        self.assertIn("second_extension_reason", data)
+        # Second extension was activated in this scenario.
+        self.assertTrue(data["second_extension_used"])
+        self.assertEqual(data["second_extension_seconds"], 5)
+        self.assertIsNotNone(data["second_extension_reason"])
+
+    # --- Dirty-source guard: dispatcher-owned file exemption tests ---
+
+    def test_dirty_source_guard_ignores_dispatcher_owned_files(self):
+        """The dirty-source guard allows exactly three dispatcher-owned .ai-workflow
+        files: model-calls.jsonl, model-calls.lock, and run-ledger.lock."""
+        self._write_task_card()
+        wf_dir = self.repo / ".ai-workflow"
+        wf_dir.mkdir(exist_ok=True)
+        (wf_dir / "model-calls.jsonl").write_text("", encoding="utf-8")
+        (wf_dir / "model-calls.lock").write_text("", encoding="utf-8")
+        (wf_dir / "run-ledger.lock").write_text("", encoding="utf-8")
+
+        result = self._dispatch()
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Dispatch Complete", result.stdout)
+
+    def test_dirty_source_guard_rejects_other_untracked_ai_workflow_file(self):
+        """An untracked .ai-workflow file other than the three dispatcher-owned
+        ones is rejected as dirty source."""
+        self._write_task_card()
+        wf_dir = self.repo / ".ai-workflow"
+        wf_dir.mkdir(exist_ok=True)
+        (wf_dir / "other-file.json").write_text("{}", encoding="utf-8")
+
+        result = self._dispatch()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("stale HEAD", result.stderr)
+        self.assertIn(".ai-workflow/other-file.json", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
