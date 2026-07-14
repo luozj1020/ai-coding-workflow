@@ -121,6 +121,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "fi\n"
                 "if [ -n \"${FAKE_CLAUDE_INVOCATION_LOG:-}\" ]; then printf 'invoke\\n' >> \"${FAKE_CLAUDE_INVOCATION_LOG}\"; fi\n"
                 "if [ -n \"${FAKE_CLAUDE_ARGV_LOG:-}\" ]; then printf '%s\\n' \"$*\" >> \"${FAKE_CLAUDE_ARGV_LOG}\"; fi\n"
+                "if [ -n \"${FAKE_CLAUDE_ARGV_NUL_LOG:-}\" ]; then printf '%s\\0' \"$@\" > \"${FAKE_CLAUDE_ARGV_NUL_LOG}\"; fi\n"
                 "if [ -n \"${FAKE_CLAUDE_PROMPT_CAPTURE:-}\" ]; then\n"
                 "  cat > \"${FAKE_CLAUDE_PROMPT_CAPTURE}\"\n"
                 "else\n"
@@ -2467,6 +2468,260 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("stale HEAD", result.stderr)
         self.assertIn(".ai-workflow/other-file.json", result.stderr)
+
+    # --- External integration gate tests ---
+
+    def _write_external_integration_card(
+        self, allowed="no", mcp_paths="none", plugin_paths="none", strict="yes"
+    ):
+        """Write a task card with a Claude External Integration Gate section."""
+        task = self.repo / "task-cards" / "EXTINT.md"
+        task.parent.mkdir(exist_ok=True)
+        task.write_text(
+            "# External Integration Test\n\n"
+            "## Task Mode\n\n"
+            "| Field | Value |\n|---|---|\n| Mode | builder |\n\n"
+            "## Claude External Integration Gate\n\n"
+            "| Field | Value |\n|---|---|\n"
+            "| External integrations allowed? | {} |\n"
+            "| MCP config paths | {} |\n"
+            "| Plugin paths | {} |\n"
+            "| Strict MCP isolation? | {} |\n\n"
+            "## Acceptance Criteria\n\n- done\n".format(
+                allowed, mcp_paths, plugin_paths, strict
+            ),
+            encoding="utf-8",
+        )
+        return task
+
+    def _commit_external_integration_fixtures(self, *paths):
+        self._run(["git", "add", *paths], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add external integration fixtures"], cwd=self.repo)
+
+    def test_external_integration_default_no_gate_appends_bare_only(self):
+        """Missing gate section → --bare only, no --mcp-config or --plugin-dir."""
+        self._write_task_card()
+        argv_log = self.case_root / "argv-ext-default.log"
+        result = self._dispatch(
+            "task-cards/PROJ.md",
+            {"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("External Integrations: no", result.stdout)
+        self.assertIn("MCP Config Paths: none", result.stdout)
+        self.assertIn("Plugin Paths: none", result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertIn("--bare", argv_content)
+            self.assertNotIn("--strict-mcp-config", argv_content)
+            self.assertNotIn("--mcp-config", argv_content)
+            self.assertNotIn("--plugin-dir", argv_content)
+
+    def test_external_integration_explicit_no_appends_bare_only(self):
+        """Explicit 'no' → --bare only, no --mcp-config or --plugin-dir."""
+        self._write_external_integration_card(allowed="no")
+        argv_log = self.case_root / "argv-ext-no.log"
+        result = self._dispatch(
+            "task-cards/EXTINT.md",
+            {"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("External Integrations: no", result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertIn("--bare", argv_content)
+            self.assertNotIn("--strict-mcp-config", argv_content)
+            self.assertNotIn("--mcp-config", argv_content)
+            self.assertNotIn("--plugin-dir", argv_content)
+
+    def test_external_integration_yes_with_valid_paths_appends_strict_and_paths(self):
+        """Valid repo-local paths → --bare --strict-mcp-config --mcp-config --plugin-dir."""
+        mcp = self.repo / "mcp-config.json"
+        mcp.write_text('{"mcpServers": {}}', encoding="utf-8")
+        plugin = self.repo / "my-plugin"
+        plugin.mkdir()
+        (plugin / "index.js").write_text("module.exports = {};", encoding="utf-8")
+        self._commit_external_integration_fixtures("mcp-config.json", "my-plugin")
+        self._write_external_integration_card(
+            allowed="yes", mcp_paths="mcp-config.json", plugin_paths="my-plugin"
+        )
+        argv_log = self.case_root / "argv-ext-valid.log"
+        result = self._dispatch(
+            "task-cards/EXTINT.md",
+            {"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("External Integrations: yes", result.stdout)
+        self.assertIn("MCP Config Paths: mcp-config.json", result.stdout)
+        self.assertIn("Plugin Paths: my-plugin", result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertIn("--bare", argv_content)
+            self.assertIn("--strict-mcp-config", argv_content)
+            self.assertIn("--mcp-config", argv_content)
+            self.assertIn("mcp-config.json", argv_content)
+            self.assertIn("--plugin-dir", argv_content)
+            self.assertIn("my-plugin", argv_content)
+
+    def test_external_integration_absolute_mcp_path_fails_closed(self):
+        """Absolute MCP path → fail before Claude is invoked."""
+        self._write_external_integration_card(
+            allowed="yes", mcp_paths="/etc/config.json"
+        )
+        result = self._dispatch("task-cards/EXTINT.md")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("absolute", result.stderr.lower())
+
+    def test_external_integration_traversal_mcp_path_fails_closed(self):
+        """MCP path with '..' traversal → fail before Claude is invoked."""
+        self._write_external_integration_card(
+            allowed="yes", mcp_paths="../outside.json"
+        )
+        result = self._dispatch("task-cards/EXTINT.md")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("traversal", result.stderr.lower())
+
+    def test_external_integration_missing_mcp_file_fails_closed(self):
+        """MCP path referencing non-existent file → fail before Claude is invoked."""
+        self._write_external_integration_card(
+            allowed="yes", mcp_paths="nonexistent.json"
+        )
+        result = self._dispatch("task-cards/EXTINT.md")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not found", result.stderr.lower())
+
+    def test_external_integration_wrong_extension_mcp_fails_closed(self):
+        """MCP config path without .json extension → fail before Claude is invoked."""
+        self._write_external_integration_card(
+            allowed="yes", mcp_paths="config.yaml"
+        )
+        result = self._dispatch("task-cards/EXTINT.md")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(".json", result.stderr)
+
+    def test_external_integration_wrong_type_plugin_fails_closed(self):
+        """Plugin path that is a regular non-.zip file → fail before Claude is invoked."""
+        (self.repo / "plugin.txt").write_text("not a plugin", encoding="utf-8")
+        self._commit_external_integration_fixtures("plugin.txt")
+        self._write_external_integration_card(
+            allowed="yes", plugin_paths="plugin.txt"
+        )
+        result = self._dispatch("task-cards/EXTINT.md")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(".zip", result.stderr)
+
+    def test_external_integration_yes_with_no_declared_integrations_fails_closed(self):
+        """'yes' with no declared integrations → fail before Claude is invoked."""
+        self._write_external_integration_card(
+            allowed="yes", mcp_paths="none", plugin_paths="none"
+        )
+        result = self._dispatch("task-cards/EXTINT.md")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no valid", result.stderr.lower())
+
+    def test_external_integration_valid_zip_plugin_accepted(self):
+        """Valid .zip plugin file is accepted."""
+        plugin_zip = self.repo / "my-plugin.zip"
+        plugin_zip.write_bytes(b"PK\x03\x04fake-zip")
+        self._commit_external_integration_fixtures("my-plugin.zip")
+        self._write_external_integration_card(
+            allowed="yes", plugin_paths="my-plugin.zip"
+        )
+        argv_log = self.case_root / "argv-ext-zip.log"
+        result = self._dispatch(
+            "task-cards/EXTINT.md",
+            {"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Plugin Paths: my-plugin.zip", result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertIn("--plugin-dir", argv_content)
+            self.assertIn("my-plugin.zip", argv_content)
+
+    def test_external_integration_multiple_mcp_config_paths(self):
+        """Multiple comma-separated MCP config paths are all passed."""
+        (self.repo / "a.json").write_text("{}", encoding="utf-8")
+        (self.repo / "b.json").write_text("{}", encoding="utf-8")
+        self._commit_external_integration_fixtures("a.json", "b.json")
+        self._write_external_integration_card(
+            allowed="yes", mcp_paths="a.json,b.json"
+        )
+        argv_log = self.case_root / "argv-ext-multi.log"
+        result = self._dispatch(
+            "task-cards/EXTINT.md",
+            {"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertIn("a.json", argv_content)
+            self.assertIn("b.json", argv_content)
+
+    def test_external_integration_evidence_in_runtime_json(self):
+        """Runtime JSON includes external integration fields."""
+        mcp = self.repo / "mcp.json"
+        mcp.write_text("{}", encoding="utf-8")
+        plugin = self.repo / "plug"
+        plugin.mkdir()
+        (plugin / "plugin.json").write_text("{}", encoding="utf-8")
+        self._write_external_integration_card(
+            allowed="yes", mcp_paths="mcp.json", plugin_paths="plug"
+        )
+        self._run(["git", "add", "task-cards/EXTINT.md", "mcp.json", "plug"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add ext task"], cwd=self.repo)
+        result = self._dispatch("task-cards/EXTINT.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime_path = self._artifact_path(result.stdout, "Runtime Identity")
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        self.assertEqual(runtime["external_integrations_allowed"], "yes")
+        self.assertEqual(runtime["strict_mcp_isolation"], "yes")
+        self.assertEqual(runtime["mcp_config_paths"], "mcp.json")
+        self.assertEqual(runtime["plugin_paths"], "plug")
+        self.assertEqual(runtime["external_integration_rejection"], "none")
+
+    def test_external_integration_default_gate_runtime_json_shows_no(self):
+        """Runtime JSON shows external_integrations_allowed=no when no gate."""
+        self._write_task_card()
+        self._run(["git", "add", "task-cards/PROJ.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+        result = self._dispatch()
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime_path = self._artifact_path(result.stdout, "Runtime Identity")
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        self.assertEqual(runtime["external_integrations_allowed"], "no")
+        self.assertEqual(runtime["mcp_config_paths"], "none")
+        self.assertEqual(runtime["plugin_paths"], "none")
+        self.assertEqual(runtime["external_integration_rejection"], "none")
+
+    def test_external_integration_preserves_case_and_spaces_as_single_arguments(self):
+        config_dir = self.repo / "Configs"
+        config_dir.mkdir()
+        (config_dir / "My MCP.json").write_text("{}", encoding="utf-8")
+        plugin_dir = self.repo / "Plugins" / "My Plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text("{}", encoding="utf-8")
+        self._commit_external_integration_fixtures("Configs", "Plugins")
+        self._write_external_integration_card(
+            allowed="yes",
+            mcp_paths="Configs/My MCP.json",
+            plugin_paths="Plugins/My Plugin",
+        )
+        argv_log = self.case_root / "argv-ext-case-space.nul"
+        result = self._dispatch(
+            "task-cards/EXTINT.md",
+            {"FAKE_CLAUDE_ARGV_NUL_LOG": str(argv_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        argv = argv_log.read_bytes().decode("utf-8").rstrip("\0").split("\0")
+        self.assertIn("Configs/My MCP.json", argv)
+        self.assertIn("Plugins/My Plugin", argv)
+
+    def test_external_integration_rejects_non_strict_authorization(self):
+        self._write_external_integration_card(allowed="yes", strict="no")
+        result = self._dispatch("task-cards/EXTINT.md")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("strict mcp isolation", result.stderr.lower())
 
 
 if __name__ == "__main__":

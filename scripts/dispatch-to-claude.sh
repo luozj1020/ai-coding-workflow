@@ -184,6 +184,49 @@ if [ -f "$TASK_CARD" ]; then
     fi
 fi
 
+# --- External integration gate parsing ---
+# Parse the "Claude External Integration Gate" section from the task card.
+# These fields control whether MCP config files and plugin directories are
+# passed to the Claude CLI invocation.  Default/missing means fail-closed:
+# --bare with no MCP/plugin paths.
+_EXTERNAL_INTEGRATIONS_ALLOWED="no"
+_MCP_CONFIG_PATHS_RAW="none"
+_PLUGIN_PATHS_RAW="none"
+_STRICT_MCP_ISOLATION="yes"
+if [ -f "$TASK_CARD" ]; then
+    _eval_gate_field() {
+        local field_pattern="$1"
+        awk -F'|' -v pat="$field_pattern" '
+            function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+            /^\|/ && NF >= 3 {
+                field = tolower(trim($2))
+                value = trim($3)
+                if (field ~ pat) { print value; exit }
+            }
+        ' "$TASK_CARD" 2>/dev/null || true
+    }
+    _val="$(_eval_gate_field '^external integrations allowed[?]?')"
+    if [ -n "$_val" ]; then _EXTERNAL_INTEGRATIONS_ALLOWED="$(printf '%s' "$_val" | tr '[:upper:]' '[:lower:]')"; fi
+    _val="$(_eval_gate_field '^mcp config paths[?]?')"
+    if [ -n "$_val" ]; then _MCP_CONFIG_PATHS_RAW="$_val"; fi
+    _val="$(_eval_gate_field '^plugin paths[?]?')"
+    if [ -n "$_val" ]; then _PLUGIN_PATHS_RAW="$_val"; fi
+    _val="$(_eval_gate_field '^strict mcp isolation[?]?')"
+    if [ -n "$_val" ]; then _STRICT_MCP_ISOLATION="$(printf '%s' "$_val" | tr '[:upper:]' '[:lower:]')"; fi
+fi
+case "$_EXTERNAL_INTEGRATIONS_ALLOWED" in
+    yes|no) ;;
+    *) echo "Error: External integrations allowed? must be yes or no." >&2; exit 1 ;;
+esac
+case "$_STRICT_MCP_ISOLATION" in
+    yes|no) ;;
+    *) echo "Error: Strict MCP isolation? must be yes or no." >&2; exit 1 ;;
+esac
+if [ "$_EXTERNAL_INTEGRATIONS_ALLOWED" = "yes" ] && [ "$_STRICT_MCP_ISOLATION" != "yes" ]; then
+    echo "Error: Strict MCP isolation? must be yes when external integrations are allowed." >&2
+    exit 1
+fi
+
 # Apply smart default only when the user did not explicitly set the strategy
 # and the profile default is fresh (safe/balanced profiles).
 if [ -z "${CLAUDE_CODE_WORKTREE_STRATEGY+x}" ] && \
@@ -1331,6 +1374,190 @@ create_dispatch_worktree() {
     fi
 }
 
+# --- External integration path validation ---
+# Validates declared MCP config and plugin paths after the worktree exists.
+# Sets: _MCP_CONFIG_PATHS, _PLUGIN_PATHS, _EXTERNAL_INTEGRATION_REJECTION
+# Rejects: absolute paths, empty entries, ".." traversal, control characters,
+# paths resolving outside worktree, missing files, wrong types/extensions.
+validate_external_integration_paths() {
+    local wt_dir="$1"
+    _MCP_CONFIG_PATHS=()
+    _PLUGIN_PATHS=()
+    _MCP_CONFIG_PATHS_EVIDENCE="none"
+    _PLUGIN_PATHS_EVIDENCE="none"
+    _EXTERNAL_INTEGRATION_REJECTION=""
+
+    if [ "$_EXTERNAL_INTEGRATIONS_ALLOWED" != "yes" ]; then
+        return 0
+    fi
+
+    local _any_valid=0
+
+    # --- Validate MCP config paths ---
+    if [ "$_MCP_CONFIG_PATHS_RAW" != "none" ]; then
+        local _mcp_list="$_MCP_CONFIG_PATHS_RAW"
+        local -a _mcp_parts=()
+        IFS=',' read -r -a _mcp_parts <<< "$_mcp_list"
+        for _mcp_entry in "${_mcp_parts[@]}"; do
+                # Trim whitespace
+                _mcp_entry="$(printf '%s' "$_mcp_entry" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+                if [ -z "$_mcp_entry" ]; then
+                    _EXTERNAL_INTEGRATION_REJECTION="empty_mcp_path"
+                    echo "Error: external integration: empty MCP config path entry." >&2
+                    return 1
+                fi
+                # Reject control characters and newlines
+                if printf '%s' "$_mcp_entry" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+                    _EXTERNAL_INTEGRATION_REJECTION="invalid_mcp_path_characters"
+                    echo "Error: external integration: MCP path contains control characters: ${_mcp_entry}" >&2
+                    return 1
+                fi
+                case "$_mcp_entry" in
+                    *'"'*|*'\'*|*'|'*)
+                        _EXTERNAL_INTEGRATION_REJECTION="unsafe_mcp_path_characters"
+                        echo "Error: external integration: MCP path contains unsupported evidence characters." >&2
+                        return 1
+                        ;;
+                esac
+                # Reject absolute paths
+                case "$_mcp_entry" in
+                    /*|[A-Za-z]:\\*|[A-Za-z]:/*)
+                        _EXTERNAL_INTEGRATION_REJECTION="absolute_mcp_path"
+                        echo "Error: external integration: absolute MCP path rejected: ${_mcp_entry}" >&2
+                        return 1
+                        ;;
+                esac
+                # Reject ".." traversal
+                case "$_mcp_entry" in
+                    *../*|*/..|..)
+                        _EXTERNAL_INTEGRATION_REJECTION="traversal_mcp_path"
+                        echo "Error: external integration: MCP path contains '..' traversal: ${_mcp_entry}" >&2
+                        return 1
+                        ;;
+                esac
+                # Must end in .json
+                case "$_mcp_entry" in
+                    *.json) ;;
+                    *)
+                        _EXTERNAL_INTEGRATION_REJECTION="mcp_not_json"
+                        echo "Error: external integration: MCP config must be .json: ${_mcp_entry}" >&2
+                        return 1
+                        ;;
+                esac
+                # Resolve and check containment within worktree
+                local _mcp_resolved
+                _mcp_resolved="$(cd "$wt_dir" && realpath -m "$_mcp_entry" 2>/dev/null || echo "")"
+                if [ -z "$_mcp_resolved" ]; then
+                    _EXTERNAL_INTEGRATION_REJECTION="mcp_resolve_failed"
+                    echo "Error: external integration: cannot resolve MCP path: ${_mcp_entry}" >&2
+                    return 1
+                fi
+                case "$_mcp_resolved" in
+                    "${wt_dir}"/*) ;;
+                    *)
+                        _EXTERNAL_INTEGRATION_REJECTION="mcp_outside_worktree"
+                        echo "Error: external integration: MCP path resolves outside worktree: ${_mcp_entry}" >&2
+                        return 1
+                        ;;
+                esac
+                # Must be a regular file
+                if [ ! -f "$_mcp_resolved" ]; then
+                    _EXTERNAL_INTEGRATION_REJECTION="mcp_missing"
+                    echo "Error: external integration: MCP config file not found: ${_mcp_entry}" >&2
+                    return 1
+                fi
+                _MCP_CONFIG_PATHS+=("$_mcp_entry")
+                _any_valid=1
+        done <<< "$_mcp_list"
+        _MCP_CONFIG_PATHS_EVIDENCE="$(IFS=,; printf '%s' "${_MCP_CONFIG_PATHS[*]}")"
+    fi
+
+    # --- Validate plugin paths ---
+    if [ "$_PLUGIN_PATHS_RAW" != "none" ]; then
+        local _plugin_list="$_PLUGIN_PATHS_RAW"
+        local -a _plugin_parts=()
+        IFS=',' read -r -a _plugin_parts <<< "$_plugin_list"
+        for _plugin_entry in "${_plugin_parts[@]}"; do
+                _plugin_entry="$(printf '%s' "$_plugin_entry" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+                if [ -z "$_plugin_entry" ]; then
+                    _EXTERNAL_INTEGRATION_REJECTION="empty_plugin_path"
+                    echo "Error: external integration: empty plugin path entry." >&2
+                    return 1
+                fi
+                if printf '%s' "$_plugin_entry" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+                    _EXTERNAL_INTEGRATION_REJECTION="invalid_plugin_path_characters"
+                    echo "Error: external integration: plugin path contains control characters: ${_plugin_entry}" >&2
+                    return 1
+                fi
+                case "$_plugin_entry" in
+                    *'"'*|*'\'*|*'|'*)
+                        _EXTERNAL_INTEGRATION_REJECTION="unsafe_plugin_path_characters"
+                        echo "Error: external integration: plugin path contains unsupported evidence characters." >&2
+                        return 1
+                        ;;
+                esac
+                case "$_plugin_entry" in
+                    /*|[A-Za-z]:\\*|[A-Za-z]:/*)
+                        _EXTERNAL_INTEGRATION_REJECTION="absolute_plugin_path"
+                        echo "Error: external integration: absolute plugin path rejected: ${_plugin_entry}" >&2
+                        return 1
+                        ;;
+                esac
+                case "$_plugin_entry" in
+                    *../*|*/..|..)
+                        _EXTERNAL_INTEGRATION_REJECTION="traversal_plugin_path"
+                        echo "Error: external integration: plugin path contains '..' traversal: ${_plugin_entry}" >&2
+                        return 1
+                        ;;
+                esac
+                local _plugin_resolved
+                _plugin_resolved="$(cd "$wt_dir" && realpath -m "$_plugin_entry" 2>/dev/null || echo "")"
+                if [ -z "$_plugin_resolved" ]; then
+                    _EXTERNAL_INTEGRATION_REJECTION="plugin_resolve_failed"
+                    echo "Error: external integration: cannot resolve plugin path: ${_plugin_entry}" >&2
+                    return 1
+                fi
+                case "$_plugin_resolved" in
+                    "${wt_dir}"/*) ;;
+                    *)
+                        _EXTERNAL_INTEGRATION_REJECTION="plugin_outside_worktree"
+                        echo "Error: external integration: plugin path resolves outside worktree: ${_plugin_entry}" >&2
+                        return 1
+                        ;;
+                esac
+                # Must be a directory or .zip file
+                if [ -d "$_plugin_resolved" ]; then
+                    : # directory is valid
+                elif [ -f "$_plugin_resolved" ]; then
+                    case "$_plugin_resolved" in
+                        *.zip) ;;
+                        *)
+                            _EXTERNAL_INTEGRATION_REJECTION="plugin_not_zip"
+                            echo "Error: external integration: plugin file must be .zip: ${_plugin_entry}" >&2
+                            return 1
+                            ;;
+                    esac
+                else
+                    _EXTERNAL_INTEGRATION_REJECTION="plugin_missing"
+                    echo "Error: external integration: plugin path not found: ${_plugin_entry}" >&2
+                    return 1
+                fi
+                _PLUGIN_PATHS+=("$_plugin_entry")
+                _any_valid=1
+        done <<< "$_plugin_list"
+        _PLUGIN_PATHS_EVIDENCE="$(IFS=,; printf '%s' "${_PLUGIN_PATHS[*]}")"
+    fi
+
+    # Require at least one valid integration when authorized
+    if [ "$_any_valid" -eq 0 ]; then
+        _EXTERNAL_INTEGRATION_REJECTION="no_integrations_declared"
+        echo "Error: external integration: 'External integrations allowed?' is 'yes' but no valid MCP or plugin paths declared." >&2
+        return 1
+    fi
+
+    return 0
+}
+
 # Skip worktree creation when retry/advisor continuation already supplied a
 # validated worktree with preserved implementation progress.
 if [ -z "${_RETRY_WORKTREE_DIR:-}" ] && [ -z "${_ADVISOR_CONTINUE_WORKTREE_DIR:-}" ]; then
@@ -1354,6 +1581,17 @@ if [ -z "${_RETRY_WORKTREE_DIR:-}" ] && [ -z "${_ADVISOR_CONTINUE_WORKTREE_DIR:-
         echo "Worktree strategy: ${CLAUDE_CODE_WORKTREE_STRATEGY}"
         echo "Branch: $BRANCH_NAME"
     fi
+fi
+
+# Validate explicitly declared integrations only after the isolated worktree
+# exists, but before writing runtime/source evidence or invoking Claude.
+_MCP_CONFIG_PATHS=()
+_PLUGIN_PATHS=()
+_MCP_CONFIG_PATHS_EVIDENCE="none"
+_PLUGIN_PATHS_EVIDENCE="none"
+_EXTERNAL_INTEGRATION_REJECTION=""
+if [ "$_EXTERNAL_INTEGRATIONS_ALLOWED" = "yes" ]; then
+    validate_external_integration_paths "$WORKTREE_DIR"
 fi
 
 {
@@ -1385,6 +1623,11 @@ fi
     echo "- Tool profile: ${CLAUDE_CODE_TOOL_PROFILE} (${_TOOL_PROFILE_DERIVATION})"
     echo "- Tool profile CLI supported: $([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no)"
     echo "- Task validation allowlist: $([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo enabled || echo disabled)"
+    echo "- External integrations allowed: ${_EXTERNAL_INTEGRATIONS_ALLOWED}"
+    echo "- Strict MCP isolation: ${_STRICT_MCP_ISOLATION}"
+    echo "- MCP config paths: ${_MCP_CONFIG_PATHS_EVIDENCE}"
+    echo "- Plugin paths: ${_PLUGIN_PATHS_EVIDENCE}"
+    echo "- External integration rejection: ${_EXTERNAL_INTEGRATION_REJECTION:-none}"
     echo "- First-progress timeout: ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s (source: ${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default})"
     echo "- First-progress action: ${CLAUDE_CODE_FIRST_PROGRESS_ACTION}"
     echo "- Progress extension seconds: ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s"
@@ -1450,7 +1693,12 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "recent_activity_window_seconds": %s,\n' "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS"
     printf '  "probe_mode": "%s",\n' "$CLAUDE_CODE_API_PROBE_MODE"
     printf '  "probe_environment": "%s",\n' "$CLAUDE_CODE_PROBE_ENVIRONMENT"
-    printf '  "first_progress_action": "%s"\n' "$CLAUDE_CODE_FIRST_PROGRESS_ACTION"
+    printf '  "first_progress_action": "%s",\n' "$CLAUDE_CODE_FIRST_PROGRESS_ACTION"
+    printf '  "external_integrations_allowed": "%s",\n' "$_EXTERNAL_INTEGRATIONS_ALLOWED"
+    printf '  "strict_mcp_isolation": "%s",\n' "$_STRICT_MCP_ISOLATION"
+    printf '  "mcp_config_paths": "%s",\n' "${_MCP_CONFIG_PATHS_EVIDENCE}"
+    printf '  "plugin_paths": "%s",\n' "${_PLUGIN_PATHS_EVIDENCE}"
+    printf '  "external_integration_rejection": "%s"\n' "${_EXTERNAL_INTEGRATION_REJECTION:-none}"
     echo "}"
 } > "$_RUNTIME_TMP"
 mv "$_RUNTIME_TMP" "$RUNTIME_JSON"
@@ -2459,6 +2707,20 @@ run_claude() {
     if [ ${#_CLAUDE_ALLOWED_ARGS[@]} -gt 0 ]; then
         claude_base_args+=("${_CLAUDE_ALLOWED_ARGS[@]}")
     fi
+    # External integration gate: always --bare; add --strict-mcp-config and
+    # explicit MCP/plugin paths only when integrations are authorized.
+    claude_base_args+=(--bare)
+    if [ "$_EXTERNAL_INTEGRATIONS_ALLOWED" = "yes" ] && [ "$_STRICT_MCP_ISOLATION" = "yes" ]; then
+        claude_base_args+=(--strict-mcp-config)
+        if [ ${#_MCP_CONFIG_PATHS[@]} -gt 0 ]; then
+            claude_base_args+=(--mcp-config "${_MCP_CONFIG_PATHS[@]}")
+        fi
+        if [ ${#_PLUGIN_PATHS[@]} -gt 0 ]; then
+            for _pdir in "${_PLUGIN_PATHS[@]}"; do
+                claude_base_args+=(--plugin-dir "$_pdir")
+            done
+        fi
+    fi
 
     if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ] || [ ! -f "${SCRIPT_DIR}/model-call-broker.py" ]; then
         # Internal bypass for tests/bootstrap to avoid broker recursion.  The
@@ -2518,7 +2780,7 @@ cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
 write_network_header
-progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, growing_progress_extension_seconds=${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, growing_progress_extension_seconds=${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
 
 # --- Tool profile argument construction ---
 # Build arrays for --tools and --allowedTools based on resolved profile.
@@ -2659,7 +2921,7 @@ PYEOF
     fi
 fi
 
-progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no)"
+progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}"
 
 # --- Unified interaction probe: startup phase ---
 # Advisory only: startup probe failure must not prevent dispatch.
@@ -4018,6 +4280,13 @@ echo ""
 echo "=== Dispatch Complete ==="
 echo "Worktree:        $WORKTREE_DIR"
 echo "Execution Profile: $CLAUDE_CODE_EXECUTION_PROFILE"
+echo "External Integrations: ${_EXTERNAL_INTEGRATIONS_ALLOWED}"
+echo "Strict MCP Isolation: ${_STRICT_MCP_ISOLATION}"
+echo "MCP Config Paths: ${_MCP_CONFIG_PATHS_EVIDENCE}"
+echo "Plugin Paths: ${_PLUGIN_PATHS_EVIDENCE}"
+if [ -n "${_EXTERNAL_INTEGRATION_REJECTION:-}" ]; then
+    echo "Integration Rejection: ${_EXTERNAL_INTEGRATION_REJECTION}"
+fi
 if [ -n "${_RETRY_TASK_ID:-}" ]; then
     echo "Worktree Strategy: retry-in-place (prior: ${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID})"
 else

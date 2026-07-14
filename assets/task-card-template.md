@@ -78,6 +78,25 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | Target-only hash diagnostics | none / `python ai/doctor_workflow.py . --hash-path <repo-relative-file>` (repeatable, max 20; does not prove global cleanliness) |
 | Renormalization policy | never automatic; human judgment required |
 
+## Claude External Integration Gate
+
+<!-- Fill before dispatch when the task needs repository-local MCP config files or plugin directories. Default/missing/empty means fail-closed: --bare with no MCP/plugin paths. When authorized, every declared path is validated after the worktree exists. -->
+
+| Field | Value |
+|-------|-------|
+| External integrations allowed? | no / yes |
+| MCP config paths | none / comma-separated list of repository-relative JSON paths |
+| Plugin paths | none / comma-separated list of repository-relative directories or .zip files |
+| Strict MCP isolation? | yes (required when integrations allowed) |
+
+Fail-closed rules:
+- Missing gate, empty gate, or `External integrations allowed?` = `no` produces `--bare` with no `--mcp-config` or `--plugin-dir` arguments.
+- `yes` validates every declared path after the worktree exists. Rejects absolute paths, empty entries, `..` traversal, newlines/control characters, and paths resolving outside the worktree.
+- MCP entries must be existing regular `.json` files. Plugin entries must be existing directories or regular `.zip` files.
+- `yes` with no valid declared integration fails closed before invoking Claude.
+- `Strict MCP isolation?` must be `yes` whenever integrations are allowed; missing means `yes`.
+- External MCP/plugin authorization does not widen built-in Bash/Edit permissions.
+
 ## Checker Reuse Risk Gate
 
 <!-- Fill before dispatch when reusing a checker worktree from a prior task-derived run. Every row must be explicit `no` to allow `reuse-managed`. Any `yes`, `unknown`, `n/a`, `duplicate`, `high`, or missing row forces `fresh`. Explicit strategy in the task card wins over this default. Existing reset safety (`CLAUDE_CODE_REUSE_WORKTREE_RESET=1`) remains unchanged. DAG or parallel tasks always stay fresh. -->
