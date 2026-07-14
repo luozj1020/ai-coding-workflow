@@ -20,8 +20,28 @@ class ClaudeHealthcheckTests(unittest.TestCase):
              mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid"}, clear=True):
             result = health.interaction_probe("direct", 40, "你好")
         self.assertTrue(result["success"])
-        self.assertEqual(run.call_args.args[0], ["claude", "-p", "你好"])
+        self.assertEqual(run.call_args.args[0], ["claude", "-p", "你好", "--output-format", "json"])
         self.assertNotIn("HTTPS_PROXY", run.call_args.kwargs["env"])
+
+    def test_interaction_probe_extracts_json_usage_without_response_content(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({
+                "result": "secret response text",
+                "usage": {"input_tokens": 4, "output_tokens": 2},
+                "total_cost_usd": 0.02,
+                "duration_ms": 120,
+                "model": "test-model",
+            }),
+            stderr="",
+        )
+        with mock.patch.object(health.subprocess, "run", return_value=completed):
+            result = health.interaction_probe("inherit", 40, "你好")
+        self.assertEqual(result["tokens_in"], 4)
+        self.assertEqual(result["tokens_out"], 2)
+        self.assertEqual(result["cost_usd"], 0.02)
+        self.assertNotIn("result", result)
+        self.assertNotIn("secret response text", json.dumps(result))
 
     def test_default_interaction_prompt_is_hello(self):
         value = {"route": "inherit", "success": True, "exit_code": 0,
@@ -35,6 +55,7 @@ class ClaudeHealthcheckTests(unittest.TestCase):
                 self.assertEqual(health.main(["--settings", str(path),
                                               "--interaction-route", "inherit", "--json"]), 0)
         self.assertEqual(probe_call.call_args.args[2], "你好")
+        self.assertEqual(probe_call.call_args.args[1], 60.0)
 
     def test_config_is_redacted(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -82,7 +82,7 @@ Phase ownership is explicit:
 | Checker/Test | Validation task dispatch and evidence review | Assigned tests, assigned validation, failure evidence |
 | Final Review | Accept / revise / split / reject; human merge stays separate | N/A unless re-dispatched |
 
-Small low-risk edits can use a Codex-only fast path instead of dispatching Claude. Use it only when the change is local, expected to touch no more than two small files, needs no broad context, has no public API/data/security/migration/permission/concurrency/cross-module contract risk, and has narrow validation or an explicit validation-skip reason. Record why Claude was not dispatched, files touched, validation evidence, and the condition that would have escalated to Claude. If scope expands or uncertainty appears, stop and return to task-card + Claude dispatch.
+Small local edits can use a Codex-only fast path instead of dispatching Claude when calibrated size, file count, context sufficiency, solution clarity, confidence, and delegation economics favor it. Risk flags normally increase review, validation, isolation, or approval rigor rather than choosing ownership. They must never push work from Codex to Claude; an explicit risk-based owner override may bias only toward Codex. Record why Claude was not dispatched, files touched, validation evidence, and the material scope/solution/context expansion that would trigger a fresh route decision.
 
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 
@@ -260,7 +260,7 @@ Bundle output uses seven compressed headings: Decision Summary, Risk Flags, Scop
 
 Use `task-size-classifier` to spend cheaper Spark quota before stronger-model context when task size is unclear. It should classify the task as `tiny`, `small`, `medium`, `large`, or `unknown` and recommend `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`. It also includes execution-cost fields when available.
 
-The `execution-cost-estimator` mode predicts diff range/files and relative direct/delegated work units for a task. Work units are relative estimates, not token-accounting measurements. Codex fast path is allowed only when the economic recommendation favors it AND the deterministic safety gate passes: <=2 files, local context, low/none validation, high confidence, no risk flags, and upper diff within the configured threshold (`--fast-path-max-diff-lines N` or `CODEX_FAST_PATH_MAX_DIFF_LINES`, default 100, valid 1..200). This is a pre-dispatch fast-path decision, not a post-Claude takeover; it never automatically edits source. The estimator is also included in `preflight-bundle` and `task-size-classifier` output.
+The `execution-cost-estimator` mode predicts diff range/files and relative direct/delegated work units for a task. Run a fresh estimate before every initial, revision, narrowed retry, re-dispatch, split-child, or next-phase task card; use `--routing-event initial|revision|narrow|retry|next-phase` and do not reuse the previous card's owner decision. Work units are relative estimates, not token-accounting measurements. The helper calibrates Spark's raw upper line estimate by 1.5x normally and 2.0x for tests/fixtures, shell/process orchestration, and cross-platform work. Codex fast path is allowed when the economic recommendation and deterministic owner gate favor it: calibrated upper bound within the configured threshold, <=2 files, local context, high confidence, and complete economics. Risk flags and validation complexity normally affect review, validation, isolation, and approval rigor rather than ownership. Risk must never push work from Codex to Claude; if a human or policy explicitly applies a risk-based owner override, it may bias high-risk work only toward Codex. Actual edits may exceed the estimate while scope, solution, and context remain stable. This is a pre-dispatch decision, not a post-Claude takeover; it never automatically edits source. The estimator is also included in `preflight-bundle` and `task-size-classifier` output.
 
 When using explicit `task-size-classifier` mode or conservative auto routing (balanced/aggressive ordinary preflight is `preflight-bundle`), the helper runs Codex from the Spark artifact directory with `workspace-write` sandbox. This gives local helper initialization a writable working directory without granting write access to the source repository, and the mode contract still forbids source edits.
 
@@ -582,7 +582,7 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
   --json-output .worktrees/workflow-benchmark.json
 ```
 
-The benchmark aggregates advisor usage, Spark invocation/auto-disable/fallback status, parallel-dispatch usage, spec adherence, root-cause evidence, and TDD fields when those tables are present in task cards or reports.
+The benchmark aggregates advisor usage, diagnostic probe usage/cost, same-worktree continuation success, avoided full redispatches, conservative re-exploration evidence, Spark invocation/auto-disable/fallback status, parallel-dispatch usage, spec adherence, root-cause evidence, and TDD fields. Estimated token/time savings remain unavailable unless an audit contains explicit numeric evidence.
 
 The benchmark aggregates decision, quality score, elapsed time, dispatch stage timings, token/cost totals, stability findings, loop type, benchmark tags, advisor usage, Spark task-size classification/routing/confidence, and other workflow metadata parsed from task cards and reports. Stage timings include Claude startup, Claude execution, checker time, and artifact finalization when dispatch progress logs contain those events.
 
@@ -623,8 +623,8 @@ Check the effective Claude/CC Switch configuration without printing credentials:
 ```bash
 python ai/claude-healthcheck.py
 python ai/claude-healthcheck.py --probe
-python ai/claude-healthcheck.py --interaction-route auto --timeout 30
-python ai/claude-healthcheck.py --interaction-route compare --timeout 30
+python ai/claude-healthcheck.py --interaction-route auto --timeout 60
+python ai/claude-healthcheck.py --interaction-route compare --timeout 60
 ```
 
 The endpoint probe is advisory by default because DNS, proxy, and TLS failures may be transient. Use `--require-probe` only when strict automation explicitly wants a network failure to stop before dispatch. A successful Claude interaction remains the authoritative availability signal.

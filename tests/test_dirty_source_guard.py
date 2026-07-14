@@ -1108,6 +1108,22 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Do NOT restate or redesign the plan", prompt)
         self.assertIn("--- CLAUDE EXECUTION CARD ---", prompt)
 
+    def test_first_progress_timeout_legacy_alias_is_honored(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT": "2",
+                "FAKE_CLAUDE_MODE": "seed-only",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("First Progress:  2s timeout", result.stdout)
+        runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
+        self.assertEqual(runtime["first_progress_timeout_seconds"], 2)
+        self.assertEqual(runtime["first_progress_timeout_source"], "alias(CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT)")
+
     def test_auto_builder_mode_uses_execution_only_only_with_explicit_gates(self):
         task = self._write_builder_task_card()
         with task.open("a", encoding="utf-8") as handle:

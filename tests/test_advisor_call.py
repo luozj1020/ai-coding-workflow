@@ -190,6 +190,37 @@ class TestMissingPrompt(unittest.TestCase):
             self.assertIn("missing-or-empty-prompt", result_data["reason"])
 
 
+class TestPacketCallCap(unittest.TestCase):
+    def test_missing_or_invalid_call_cap_fails_before_human_response_validation(self):
+        invalid_values = (None, True, "1", 0, 2)
+        for value in invalid_values:
+            with self.subTest(value=value), tempfile.TemporaryDirectory(prefix="advisor_cap_") as td:
+                tmp = Path(td)
+                packet = make_packet()
+                if value is None:
+                    packet.pop("call_cap")
+                else:
+                    packet["call_cap"] = value
+                packet_path = tmp / "advisor-packet.json"
+                packet_path.write_text(json.dumps(packet), encoding="utf-8")
+                prompt = tmp / "prompt.md"
+                prompt.write_text("bounded", encoding="utf-8")
+                response = tmp / "response.json"
+                response.write_text(json.dumps(make_valid_response()), encoding="utf-8")
+                output = tmp / "output"
+                result = subprocess.run(
+                    [
+                        sys.executable, str(ADVISOR_CALL), "--packet", str(packet_path),
+                        "--prompt", str(prompt), "--advisor", "human",
+                        "--response-file", str(response), "--output-dir", str(output),
+                    ],
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, 2)
+                data = json.loads((output / "advisor-call-result.json").read_text())
+                self.assertIn("call_cap must be integer 1", data["reason"])
+
+
 class TestCLIHelp(unittest.TestCase):
     """CLI help works."""
 

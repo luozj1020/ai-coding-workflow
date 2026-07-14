@@ -9,6 +9,10 @@ import json
 from pathlib import Path
 
 
+def explicit_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def load_summarizer():
     script = Path(__file__).resolve().with_name("summarize-loop-run.py")
     spec = importlib.util.spec_from_file_location("summarize_loop_run", script)
@@ -127,6 +131,24 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "claude_takeover_counted": claude_attempts.get("takeover_counted", 0),
                 "claude_transient_transport": claude_attempts.get("transient_transport", 0),
                 "claude_useful_interactions": claude_attempts.get("useful_interactions", 0),
+                # Advisor continuation metrics
+                "continuation_requested": summary.get("advisor_continuation", {}).get("continuation_requested", 0),
+                "continuation_accepted": summary.get("advisor_continuation", {}).get("continuation_accepted", 0),
+                "continuation_succeeded": summary.get("advisor_continuation", {}).get("continuation_succeeded", 0),
+                "same_worktree_success": summary.get("advisor_continuation", {}).get("same_worktree_success", 0),
+                "full_redispatch_avoided": summary.get("advisor_continuation", {}).get("full_redispatch_avoided", 0),
+                "estimated_tokens_avoided": summary.get("advisor_continuation", {}).get("estimated_tokens_avoided"),
+                "estimated_time_avoided": summary.get("advisor_continuation", {}).get("estimated_time_avoided"),
+                "reexploration_yes": summary.get("advisor_continuation", {}).get("reexploration_yes", 0),
+                "reexploration_no": summary.get("advisor_continuation", {}).get("reexploration_no", 0),
+                "reexploration_unknown": summary.get("advisor_continuation", {}).get("reexploration_unknown", 0),
+                # Diagnostic probe metrics
+                "diagnostic_call_count": summary.get("diagnostic_probes", {}).get("diagnostic_call_count", 0),
+                "diagnostic_success_count": summary.get("diagnostic_probes", {}).get("diagnostic_success_count", 0),
+                "diagnostic_input_tokens": summary.get("diagnostic_probes", {}).get("diagnostic_input_tokens"),
+                "diagnostic_output_tokens": summary.get("diagnostic_probes", {}).get("diagnostic_output_tokens"),
+                "diagnostic_cost_usd": summary.get("diagnostic_probes", {}).get("diagnostic_cost_usd"),
+                "diagnostic_unavailable_usage": summary.get("diagnostic_probes", {}).get("diagnostic_unavailable_usage", 0),
             }
         )
 
@@ -167,6 +189,37 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
             sum(run["claude_useful_interactions"] for run in runs)
             / sum(run["claude_attempt_count"] for run in runs), 3
         ) if sum(run["claude_attempt_count"] for run in runs) else 0.0,
+        # Advisor continuation aggregates
+        "advisor_continuation_requested_total": sum(run["continuation_requested"] for run in runs),
+        "advisor_continuation_accepted_total": sum(run["continuation_accepted"] for run in runs),
+        "advisor_continuation_succeeded_total": sum(run["continuation_succeeded"] for run in runs),
+        "same_worktree_success_total": sum(run["same_worktree_success"] for run in runs),
+        "full_redispatch_avoided_total": sum(run["full_redispatch_avoided"] for run in runs),
+        "reexploration_yes_total": sum(run["reexploration_yes"] for run in runs),
+        "reexploration_no_total": sum(run["reexploration_no"] for run in runs),
+        "reexploration_unknown_total": sum(run["reexploration_unknown"] for run in runs),
+        # Diagnostic probe aggregates (only sum explicit numeric evidence)
+        "diagnostic_calls_total": sum(run["diagnostic_call_count"] for run in runs),
+        "diagnostic_success_total": sum(run["diagnostic_success_count"] for run in runs),
+        "diagnostic_unavailable_usage_total": sum(run["diagnostic_unavailable_usage"] for run in runs),
+        "diagnostic_input_tokens_total": sum(
+            v for v in (run["diagnostic_input_tokens"] for run in runs) if explicit_number(v)
+        ) if any(explicit_number(run["diagnostic_input_tokens"]) for run in runs) else None,
+        "diagnostic_output_tokens_total": sum(
+            v for v in (run["diagnostic_output_tokens"] for run in runs) if explicit_number(v)
+        ) if any(explicit_number(run["diagnostic_output_tokens"]) for run in runs) else None,
+        "diagnostic_cost_usd_total": round(sum(
+            v for v in (run["diagnostic_cost_usd"] for run in runs) if explicit_number(v)
+        ), 6) if any(explicit_number(run["diagnostic_cost_usd"]) for run in runs) else None,
+        "estimated_tokens_avoided_total": sum(
+            v for v in (run["estimated_tokens_avoided"] for run in runs) if explicit_number(v)
+        ) if any(explicit_number(run["estimated_tokens_avoided"]) for run in runs) else None,
+        "estimated_time_avoided_total": sum(
+            v for v in (run["estimated_time_avoided"] for run in runs) if explicit_number(v)
+        ) if any(explicit_number(run["estimated_time_avoided"]) for run in runs) else None,
+        "advisor_calls_per_accepted": round(
+            sum(run["advisor_calls"] for run in runs) / accepted, 3
+        ) if accepted else 0.0,
         "runs": runs,
     }
 
@@ -209,11 +262,26 @@ def render_markdown(report: dict) -> str:
         f"| Parallel-invoked runs | {format_value(report['parallel_invoked_count'])} |",
         f"| Spec-required runs | {format_value(report['spec_required_count'])} |",
         f"| TDD-required runs | {format_value(report['tdd_required_count'])} |",
+        f"| Advisor calls per accepted | {format_value(report['advisor_calls_per_accepted'])} |",
+        f"| Continuation requested | {format_value(report['advisor_continuation_requested_total'])} |",
+        f"| Continuation succeeded | {format_value(report['advisor_continuation_succeeded_total'])} |",
+        f"| Same-worktree success | {format_value(report['same_worktree_success_total'])} |",
+        f"| Full redispatches avoided | {format_value(report['full_redispatch_avoided_total'])} |",
+        f"| Re-exploration yes | {format_value(report['reexploration_yes_total'])} |",
+        f"| Re-exploration no | {format_value(report['reexploration_no_total'])} |",
+        f"| Re-exploration unknown | {format_value(report['reexploration_unknown_total'])} |",
+        f"| Diagnostic calls | {format_value(report['diagnostic_calls_total'])} |",
+        f"| Diagnostic unavailable usage | {format_value(report['diagnostic_unavailable_usage_total'])} |",
+        f"| Diagnostic input tokens | {format_value(report['diagnostic_input_tokens_total'])} |",
+        f"| Diagnostic output tokens | {format_value(report['diagnostic_output_tokens_total'])} |",
+        f"| Diagnostic cost USD | {format_value(report['diagnostic_cost_usd_total'])} |",
+        f"| Estimated tokens avoided | {format_value(report['estimated_tokens_avoided_total'])} |",
+        f"| Estimated time avoided | {format_value(report['estimated_time_avoided_total'])} |",
         "",
         "## Runs",
         "",
-        "| Run | Decision | Quality | Seconds | Claude Startup | Claude Exec | Checker | Finalize | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Mode | Spark Size | Spark Route | Spark Confidence | Spark Model | Spark Accepted | Spark Ignored | Spark Conflicts | Spark Acceptance | Spark Invocations | Spark Calls | Spark Stages | Spark Roles | Spark Budget Req | Spark Budget Eff | Spark Provisional | Spark Strong-Review | Spark Merge-Auth | Parallel | Spec | TDD | Stability |",
-        "|-----|----------|---------|---------|----------------|-------------|---------|----------|-------|--------|------|------|------|---------|---------------|-------|------------|------------|-------------|------------------|-------------|----------------|---------------|-----------------|------------------|-------------------|-------------|--------------|-------------|------------------|------------------|-------------------|---------------------|------------------|----------|------|-----|-----------|",
+        "| Run | Decision | Quality | Seconds | Claude Startup | Claude Exec | Checker | Finalize | Input | Output | Cost | Loop | Tags | Advisor | Advisor Calls | Spark | Spark Mode | Spark Size | Spark Route | Spark Confidence | Spark Model | Spark Accepted | Spark Ignored | Spark Conflicts | Spark Acceptance | Spark Invocations | Spark Calls | Spark Stages | Spark Roles | Spark Budget Req | Spark Budget Eff | Spark Provisional | Spark Strong-Review | Spark Merge-Auth | Parallel | Spec | TDD | Stability | Cont. Req | Cont. OK | Redispatch Avoided | Reexplor. | Diag Calls | Diag In | Diag Out | Diag Cost | Diag Unavail | Saved Tokens | Saved Seconds |",
+        "|-----|----------|---------|---------|----------------|-------------|---------|----------|-------|--------|------|------|------|---------|---------------|-------|------------|------------|-------------|------------------|-------------|----------------|---------------|-----------------|------------------|-------------------|-------------|--------------|-------------|------------------|------------------|-------------------|---------------------|------------------|----------|------|-----|-----------|-----------|----------|-------------------|-----------|------------|---------|----------|-----------|--------------|--------------|---------------|---------------|",
     ]
     if report["runs"]:
         for run in report["runs"]:
@@ -234,12 +302,16 @@ def render_markdown(report: dict) -> str:
                 "{spark_helper_invocations} | {spark_total_calls} | {spark_unique_pipeline_stages} | "
                 "{spark_unique_roles} | {spark_budget_requested} | {spark_budget_effective} | "
                 "{spark_provisional_acceptance} | {spark_strong_review_required} | {spark_merge_authorized} | "
-                "{parallel_helper_invoked} | {spec_matched} | {tdd_mode} | {stability_findings} |".format(
+                "{parallel_helper_invoked} | {spec_matched} | {tdd_mode} | {stability_findings} | "
+                "{continuation_requested} | {continuation_succeeded} | {full_redispatch_avoided} | "
+                "{reexploration_yes} | {diagnostic_call_count} | {diagnostic_input_tokens} | "
+                "{diagnostic_output_tokens} | {diagnostic_cost_usd} | {diagnostic_unavailable_usage} | "
+                "{estimated_tokens_avoided} | {estimated_time_avoided} |".format(
                     **formatted
                 )
             )
     else:
-        lines.append("| no runs | UNKNOWN | 0 | unavailable | unavailable | unavailable | unavailable | unavailable | 0 | 0 | 0 | | | | 0 | | | | | | | | | | | | 0 | 0 | none | none | none | none | none | none | none | none | | | | 0 |")
+        lines.append("| no runs | UNKNOWN | 0 | unavailable | unavailable | unavailable | unavailable | unavailable | 0 | 0 | 0 | | | | 0 | | | | | | | | | | | | 0 | 0 | none | none | none | none | none | none | none | none | | | | 0 | 0 | 0 | 0 | 0 | unavailable | unavailable | unavailable | 0 | unavailable | unavailable |")
     return "\n".join(lines) + "\n"
 
 

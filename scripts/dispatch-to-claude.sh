@@ -67,7 +67,7 @@ CLAUDE_CODE_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-600}"
 CLAUDE_CODE_HEARTBEAT_SECONDS="${CLAUDE_CODE_HEARTBEAT_SECONDS:-30}"
 CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-300}"
-CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS="${CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS:-40}"
+CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS="${CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS:-60}"
 if [ "$CLAUDE_CODE_PROXY_MODE" != "direct" ] && [ "$CLAUDE_CODE_PROXY_MODE" != "inherit" ]; then
     echo "Error: CLAUDE_CODE_PROXY_MODE must be 'direct' or 'inherit'." >&2
     exit 1
@@ -298,13 +298,26 @@ if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] && [ "$_PARSED_TASK_MODE" 
     echo "Error: CLAUDE_CODE_BUILDER_MODE=execution-only requires task mode 'builder', found '${_PARSED_TASK_MODE:-unknown}'." >&2
     exit 1
 fi
-# First-progress timeout: default 0 (disabled) in standard mode, 60 in execution-only.
+# First-progress timeout: accept both spellings with _SECONDS precedence.
+# If CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS is unset and
+# CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT is set, use the latter as the value.
 if [ -z "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
-    if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
+    if [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT+x}" ] && [ -n "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT" ]; then
+        CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS="$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT"
+    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
         CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=60
     else
         CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=0
     fi
+fi
+# Record first-progress timeout alias source for status evidence.
+_FIRST_PROGRESS_TIMEOUT_SOURCE="default"
+if [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ] && \
+   [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT+x}" ] && \
+   [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" = "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT" ]; then
+    _FIRST_PROGRESS_TIMEOUT_SOURCE="alias(CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT)"
+elif [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
+    _FIRST_PROGRESS_TIMEOUT_SOURCE="env"
 fi
 case "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" in
     ''|*[!0-9]*)
@@ -1111,11 +1124,9 @@ FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
 for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
          "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
          "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$DISPATCHER_PID_FILE" "$CLAUDE_PID_FILE" "$CHECKER_PID_FILE" \
-         "$PROGRESS_FILE" "$NETWORK_FILE" "$INTERACTION_HEALTH_FILE"; do
+         "$PROGRESS_FILE" "$NETWORK_FILE"; do
     mkdir -p "$(dirname "$f")"
 done
-: > "$INTERACTION_HEALTH_FILE"
-
 TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
 if [ -z "$TASK_CARD_REL" ]; then
     TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --others --exclude-standard --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
@@ -1169,8 +1180,9 @@ if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" 
     fi
 fi
 
-# Write runtime PID evidence only after source preflight succeeds. Failed dirty
-# source checks must remain artifact-free.
+# Initialize runtime evidence only after source preflight succeeds. Failed
+# dirty-source checks must remain artifact-free.
+: > "$INTERACTION_HEALTH_FILE"
 echo "$$" > "$DISPATCHER_PID_FILE"
 
 create_dispatch_worktree() {
@@ -1291,7 +1303,7 @@ fi
     echo "- Evidence mode: ${CLAUDE_CODE_EVIDENCE_MODE}"
     echo "- Checker broad discovery: ${CLAUDE_CODE_CHECKER_DISCOVER}"
     echo "- Builder mode: ${CLAUDE_CODE_BUILDER_MODE}"
-    echo "- First-progress timeout: ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s"
+    echo "- First-progress timeout: ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s (source: ${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default})"
     echo "- Progress extension seconds: ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s"
     echo ""
     echo "## Tracked Changes (git diff --stat)"
@@ -1340,6 +1352,7 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     echo "  },"
     printf '  "builder_mode": "%s",\n' "$CLAUDE_CODE_BUILDER_MODE"
     printf '  "first_progress_timeout_seconds": %s,\n' "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS"
+    printf '  "first_progress_timeout_source": "%s",\n' "${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default}"
     printf '  "base_timeout_seconds": %s,\n' "$CLAUDE_CODE_TIMEOUT_SECONDS"
     printf '  "progress_extension_seconds": %s\n' "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
     echo "}"
@@ -1565,6 +1578,14 @@ PYEOF
 - Update `CLAUDE_PROGRESS.md` with your continuation status.
 - Update `CLAUDE_REPORT.md` when finished.
 - Respect the allowed/forbidden changes listed above.
+
+## Continuation Exploration
+
+Declare any search commands run and paths read during this continuation.
+Report `none` if no exploration was performed.
+
+- Search commands: `<commands or none>`
+- Paths read: `<paths or none>`
 RULES_EOF
     }
 
@@ -1859,6 +1880,57 @@ PYEOF
         ZERO_OUTPUT_PROBE_AUTHORITATIVE="yes"
     fi
     progress_log "Zero-output interaction probe: conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}, artifact=${INTERACTION_HEALTH_FILE}"
+
+    # Record diagnostic ledger entry for the real probe attempt.
+    # Each real probe attempt is accounted as diagnostic and does not reduce
+    # Builder quota or affect takeover/success classification.
+    # Diagnostic recording is advisory; failure cannot change dispatch outcome.
+    if [ -f "${SCRIPT_DIR}/model-call-broker.py" ]; then
+        _DIAG_COUNTS="$("$PYTHON_CMD" - "$INTERACTION_HEALTH_FILE" \
+            "${SCRIPT_DIR}/model-call-broker.py" "${_RETRY_TASK_ID:-$TASK_ID}" \
+            "${REPO_ROOT}/.ai-workflow/model-calls.jsonl" <<'PYEOF' 2>/dev/null || true
+import json, subprocess, sys
+
+recorded = failed = 0
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+    broker, task_id, ledger = sys.argv[2:5]
+    for probe in data.get("interaction_probes", []):
+        if not isinstance(probe, dict):
+            failed += 1
+            continue
+        cmd = [
+            sys.executable, broker,
+            "--role", "claude", "--stage", "zero-output-healthcheck",
+            "--task-id", task_id, "--ledger", ledger, "--diagnostic",
+            "--diagnostic-success", str(bool(probe.get("success"))).lower(),
+            "--diagnostic-elapsed", str(probe.get("elapsed_seconds", 0)),
+            "--diagnostic-route", str(probe.get("route", "unknown")),
+        ]
+        optional = (
+            ("tokens_in", "--diagnostic-tokens-in"),
+            ("tokens_out", "--diagnostic-tokens-out"),
+            ("model", "--diagnostic-model"),
+        )
+        for key, flag in optional:
+            if probe.get(key) is not None:
+                cmd.extend((flag, str(probe[key])))
+        cost = probe.get("cost_usd")
+        if cost is not None and cost != "unavailable":
+            cmd.extend(("--diagnostic-cost-usd", str(cost)))
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            recorded += 1
+        else:
+            failed += 1
+except Exception:
+    failed += 1
+print(f"{recorded}\t{failed}")
+PYEOF
+)"
+        IFS=$'\t' read -r _DIAG_RECORDED _DIAG_FAILED <<< "${_DIAG_COUNTS:-0\t1}"
+        progress_log "Diagnostic ledger records: recorded=${_DIAG_RECORDED:-0}, failed=${_DIAG_FAILED:-1}"
+    fi
 }
 
 redact_network_value() {
@@ -2302,7 +2374,7 @@ cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
 write_network_header
-progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}"
 
 set +e
 run_claude &
@@ -2323,6 +2395,9 @@ LAST_TOTAL_BYTES=0
 LAST_WORKTREE_DIGEST="$(worktree_digest)"
 FIRST_PROGRESS_DETECTED=0
 FIRST_PROGRESS_SIGNAL=""
+FIRST_PROGRESS_ELAPSED_SECONDS=""
+FIRST_WORKTREE_CHANGE_SECONDS=""
+_CONTINUATION_THRESHOLD_SECONDS=120
 INITIAL_PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
 # --- Progress-aware timeout extension tracking ---
 # When the base timeout fires, if substantive progress is growing, extend once
@@ -2356,6 +2431,9 @@ while claude_is_running; do
     if [ "$CURRENT_WORKTREE_DIGEST" != "$LAST_WORKTREE_DIGEST" ]; then
         WORKTREE_CHANGED=1
         LAST_WORKTREE_DIGEST="$CURRENT_WORKTREE_DIGEST"
+        if [ -z "$FIRST_WORKTREE_CHANGE_SECONDS" ]; then
+            FIRST_WORKTREE_CHANGE_SECONDS="$ELAPSED"
+        fi
     fi
     if [ "$TOTAL_BYTES" -ne "$LAST_TOTAL_BYTES" ] || [ "$WORKTREE_CHANGED" -eq 1 ]; then
         LAST_TOTAL_BYTES="$TOTAL_BYTES"
@@ -2396,6 +2474,7 @@ while claude_is_running; do
         if [ -n "$_FP_SIGNAL" ]; then
             FIRST_PROGRESS_DETECTED=1
             FIRST_PROGRESS_SIGNAL="$_FP_SIGNAL"
+            FIRST_PROGRESS_ELAPSED_SECONDS="$ELAPSED"
             progress_log "First substantive progress detected: signal=${_FP_SIGNAL}, elapsed_seconds=${ELAPSED}"
         elif [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
              [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ]; then
@@ -3158,6 +3237,240 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     fi
 } >> "$STATUS_FILE"
 
+# --- Advisor continuation audit ---
+# Write machine-readable conservative audit for advisor continuations only.
+# Advisory only; never changes dispatch outcome, acceptance, or merge state.
+ADVISOR_CONTINUATION_AUDIT_FILE=""
+if [ -n "${_ADVISOR_CONTINUE_TASK_ID:-}" ]; then
+    ADVISOR_CONTINUATION_AUDIT_FILE="${WORKTREE_ROOT}/${TASK_ID}.advisor-continuation-audit.json"
+
+    # Parse declared searches and paths from continuation report/progress.
+    _DECLARED_SEARCHES="unknown"
+    _DECLARED_PATHS_READ="unknown"
+    _AUDIT_REPORT_SOURCE="${WORKTREE_DIR}/CLAUDE_REPORT.md"
+    if [ ! -f "$_AUDIT_REPORT_SOURCE" ] || ! valid_claude_report_file "$_AUDIT_REPORT_SOURCE"; then
+        _AUDIT_REPORT_SOURCE="${WORKTREE_DIR}/CLAUDE_PROGRESS.md"
+    fi
+    if [ -f "$_AUDIT_REPORT_SOURCE" ] && [ -n "$PYTHON_CMD" ]; then
+        _DECLARED_SEARCHES="$("$PYTHON_CMD" - "$_AUDIT_REPORT_SOURCE" <<'PYEOF' 2>/dev/null || echo "unknown"
+import re, sys
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+m = re.search(r"Search commands:\s*`([^`]*)`", text, re.I)
+val = m.group(1).strip() if m else "unknown"
+print(val if val else "none")
+PYEOF
+)"
+        _DECLARED_PATHS_READ="$("$PYTHON_CMD" - "$_AUDIT_REPORT_SOURCE" <<'PYEOF' 2>/dev/null || echo "unknown"
+import re, sys
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+m = re.search(r"Paths read:\s*`([^`]*)`", text, re.I)
+val = m.group(1).strip() if m else "unknown"
+print(val if val else "none")
+PYEOF
+)"
+    fi
+
+    # Conservative re-exploration classification.
+    # yes: explicit unbounded root-wide search, planning-only no-diff, or very late first worktree change
+    # no:  first worktree change at or before threshold + scope passed + no broad declaration
+    # unknown: otherwise
+    _REEXPLORATION_SUSPECTED="unknown"
+    _REEXPLORATION_REASON=""
+    _CONTINUATION_SUCCEEDED=0
+    if [ "$DISPATCH_OUTCOME" = "success" ] && [ "${ADVISOR_POST_RUN_SCOPE_VIOLATION:-0}" -eq 0 ]; then
+        _CONTINUATION_SUCCEEDED=1
+    fi
+
+    # Missing declarations are distinct from an explicit `none` and must not
+    # support a definitive `no` classification.
+    _DECLARATIONS_COMPLETE=0
+    if [ "${_DECLARED_SEARCHES,,}" != "unknown" ] && \
+       [ "${_DECLARED_PATHS_READ,,}" != "unknown" ]; then
+        _DECLARATIONS_COMPLETE=1
+    fi
+    _HAS_BROAD_DECLARATION=0
+    if [ -n "$PYTHON_CMD" ]; then
+        _HAS_BROAD_DECLARATION="$("$PYTHON_CMD" - "$_DECLARED_SEARCHES" <<'PYEOF' 2>/dev/null || echo "0"
+import shlex, sys
+searches = sys.argv[1].lower().strip()
+if searches in ("unknown", "none", ""):
+    print(0)
+else:
+    broad = False
+    for part in searches.replace("&&", ";").replace("||", ";").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            words = shlex.split(part)
+        except ValueError:
+            continue
+        if not words:
+            continue
+        if words[0] == "find" and len(words) > 1 and words[1] in (".", "./", "/"):
+            broad = True
+        elif words[0] == "rg":
+            positional = [word for word in words[1:] if not word.startswith("-")]
+            if len(positional) == 1 and "--" not in words:
+                broad = True
+        elif words[:2] == ["git", "grep"]:
+            positional = [word for word in words[2:] if not word.startswith("-")]
+            if len(positional) == 1 and "--" not in words:
+                broad = True
+    print(1 if broad else 0)
+PYEOF
+)"
+    fi
+
+    if [ "$_HAS_BROAD_DECLARATION" -eq 1 ]; then
+        _REEXPLORATION_SUSPECTED="yes"
+        _REEXPLORATION_REASON="broad_search_declaration"
+    elif [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then
+        _REEXPLORATION_SUSPECTED="yes"
+        _REEXPLORATION_REASON="report_only_no_diff"
+    elif [ -n "$FIRST_WORKTREE_CHANGE_SECONDS" ] && \
+         [ "$FIRST_WORKTREE_CHANGE_SECONDS" -gt "$_CONTINUATION_THRESHOLD_SECONDS" ] && \
+         [ "$IMPLEMENTATION_CHANGES" -eq 0 ]; then
+        # Very late first worktree change with no implementation changes
+        _REEXPLORATION_SUSPECTED="yes"
+        _REEXPLORATION_REASON="late_worktree_change_no_diff"
+    elif [ -n "$FIRST_WORKTREE_CHANGE_SECONDS" ] && \
+         [ "$FIRST_WORKTREE_CHANGE_SECONDS" -le "$_CONTINUATION_THRESHOLD_SECONDS" ] && \
+         [ "${ADVISOR_POST_RUN_SCOPE_VIOLATION:-0}" -eq 0 ] && \
+         [ "$_HAS_BROAD_DECLARATION" -eq 0 ] && \
+         [ "$_DECLARATIONS_COMPLETE" -eq 1 ]; then
+        _REEXPLORATION_SUSPECTED="no"
+        _REEXPLORATION_REASON="early_change_scope_passed"
+    fi
+
+    # full_redispatch_avoided: only when same-worktree continuation succeeded
+    _FULL_REDISPATCH_AVOIDED="false"
+    if [ "$_CONTINUATION_SUCCEEDED" -eq 1 ]; then
+        _FULL_REDISPATCH_AVOIDED="true"
+    fi
+
+    # Read model_turn_count from result JSON (num_turns field)
+    _MODEL_TURN_COUNT="null"
+    if [ -n "$PYTHON_CMD" ] && [ -s "$RESULT_FILE" ]; then
+        _MODEL_TURN_COUNT="$("$PYTHON_CMD" - "$RESULT_FILE" <<'PYEOF' 2>/dev/null || echo "null"
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        data = json.load(f)
+    val = data.get("num_turns")
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        print(int(val))
+    else:
+        print("null")
+except Exception:
+    print("null")
+PYEOF
+)"
+    fi
+
+    # Write audit JSON (atomic via temp + mv).
+    # All report-derived text passes through sys.argv; the heredoc is quoted
+    # so bash never interpolates dynamic strings into Python source.
+    _AUDIT_TMP="${ADVISOR_CONTINUATION_AUDIT_FILE}.tmp.$$"
+    if [ -n "$PYTHON_CMD" ]; then
+        "$PYTHON_CMD" - \
+            "$_AUDIT_TMP" \
+            "$TASK_ID" \
+            "${_ADVISOR_CONTINUE_TASK_ID}" \
+            "${_response_request_id:-unknown}" \
+            "${_ADVISOR_CONTINUE_RESERVATION_ID:-unknown}" \
+            "$DISPATCH_OUTCOME" \
+            "${FIRST_PROGRESS_ELAPSED_SECONDS:-}" \
+            "${FIRST_PROGRESS_SIGNAL:-none}" \
+            "$IMPLEMENTATION_CHANGES" \
+            "$VALID_CLAUDE_REPORT" \
+            "$_MODEL_TURN_COUNT" \
+            "${ADVISOR_POST_RUN_SCOPE_VIOLATION:-0}" \
+            "$_DECLARED_SEARCHES" \
+            "$_DECLARED_PATHS_READ" \
+            "$_REEXPLORATION_SUSPECTED" \
+            "$_REEXPLORATION_REASON" \
+            "$_FULL_REDISPATCH_AVOIDED" \
+            "$FIRST_WORKTREE_CHANGE_SECONDS" \
+            "$_CONTINUATION_SUCCEEDED" \
+            <<'PYEOF' 2>/dev/null
+import json, sys
+
+(
+    out_file,
+    task_id,
+    prior_task_id,
+    request_id,
+    reservation_id,
+    dispatch_outcome,
+    fp_seconds_str,
+    fp_signal,
+    impl_changes_str,
+    valid_report_str,
+    model_turn_str,
+    scope_violation_str,
+    declared_searches,
+    declared_paths_read,
+    reexploration_suspected,
+    reexploration_reason,
+    full_redispatch_str,
+    wt_change_str,
+    continuation_succeeded_str,
+) = sys.argv[1:20]
+
+def int_or_none(s):
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+audit = {
+    "schema_version": 1,
+    "task_id": task_id,
+    "prior_task_id": prior_task_id,
+    "request_id": request_id,
+    "reservation_id": reservation_id,
+    "requested": True,
+    "accepted": True,
+    "succeeded": continuation_succeeded_str == "1",
+    "same_worktree": True,
+    "dispatch_outcome": dispatch_outcome,
+    "first_progress_seconds": int_or_none(fp_seconds_str),
+    "first_progress_signal": fp_signal if fp_signal != "none" else None,
+    "first_worktree_change_seconds": int_or_none(wt_change_str),
+    "implementation_change_count": int_or_none(impl_changes_str) or 0,
+    "valid_report": valid_report_str == "1",
+    "model_turn_count": int_or_none(model_turn_str),
+    "post_run_scope_result": "violation" if scope_violation_str == "1" else "passed",
+    "declared_searches": declared_searches,
+    "declared_paths_read": declared_paths_read,
+    "reexploration_suspected": reexploration_suspected,
+    "reexploration_reason": reexploration_reason or None,
+    "full_redispatch_avoided": full_redispatch_str == "true",
+    "estimated_tokens_avoided": None,
+    "estimated_time_avoided": None,
+}
+with open(out_file, "w", encoding="utf-8") as f:
+    json.dump(audit, f, indent=2, sort_keys=True)
+PYEOF
+    else
+        # Never interpolate report-derived strings without a JSON serializer.
+        printf '%s\n' \
+            '{' \
+            '  "schema_version": 1,' \
+            '  "requested": true,' \
+            '  "accepted": true,' \
+            '  "same_worktree": true,' \
+            '  "audit_status": "unavailable-python",' \
+            '  "reexploration_suspected": "unknown",' \
+            '  "estimated_tokens_avoided": null,' \
+            '  "estimated_time_avoided": null' \
+            '}' > "$_AUDIT_TMP"
+    fi
+    mv "$_AUDIT_TMP" "$ADVISOR_CONTINUATION_AUDIT_FILE"
+    progress_log "Advisor continuation audit written: ${ADVISOR_CONTINUATION_AUDIT_FILE}, reexploration=${_REEXPLORATION_SUSPECTED}, full_redispatch_avoided=${_FULL_REDISPATCH_AVOIDED}"
+fi
+
 # --- Route preference recording ---
 # Record the route only when interaction was established (proves CLI/provider worked).
 # Do NOT record on transient-transport, unavailable, or unclassified-execution-failure.
@@ -3295,6 +3608,9 @@ echo "Status:          $STATUS_FILE"
 echo "Network Log:     $NETWORK_FILE"
 echo "Attempt Class:   $ATTEMPT_CLASSIFICATION_FILE"
 echo "API Probe:       $INTERACTION_HEALTH_FILE"
+if [ -n "$ADVISOR_CONTINUATION_AUDIT_FILE" ]; then
+echo "Audit:           $ADVISOR_CONTINUATION_AUDIT_FILE"
+fi
 echo "Diffstat:        $DIFFSTAT_FILE"
 echo "Diff:            $DIFF_FILE"
 echo "Checker Report:  $CHECKER_REPORT_FILE"

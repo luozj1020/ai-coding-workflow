@@ -218,12 +218,13 @@ def make_compatibility_plan(
 # Ledger I/O (append-only JSONL, cross-process safe under lock)
 # ---------------------------------------------------------------------------
 
-VALID_STATES = ("reserved", "running", "succeeded", "failed", "cancelled")
+VALID_STATES = ("reserved", "running", "succeeded", "failed", "cancelled", "diagnostic")
 
 # Legal state transitions (append-only audit trail).
 VALID_TRANSITIONS: Dict[str, set] = {
     "reserved": {"running"},
     "running": {"succeeded", "failed", "cancelled"},
+    # diagnostic records are append-only with no transitions
 }
 
 
@@ -313,6 +314,9 @@ def validate_ledger_history(records: List[Dict[str, Any]]) -> None:
     """
     by_rid: Dict[str, List[Dict[str, Any]]] = {}
     for r in records:
+        # Diagnostic records are append-only with no transitions; skip.
+        if r.get("state") == "diagnostic":
+            continue
         rid = r.get("reservation_id")
         if rid is not None:
             by_rid.setdefault(rid, []).append(r)
@@ -489,6 +493,43 @@ def check_duplicate(
             return
 
 
+def check_request_idempotency(
+    records: List[Dict[str, Any]],
+    task_id: str,
+    request_id: str,
+    call_cap: Optional[int],
+) -> None:
+    """Reject a second allocated model call for the same task/request.
+
+    The fold is deliberately independent of role so switching from Spark to
+    Codex cannot bypass a request cap. Failed and cancelled reservations still
+    count because the model call was already allocated. Diagnostic records do
+    not carry reservations and never count.
+
+    Diagnostic (non-budget) records are excluded from the count.
+    """
+    if not request_id:
+        return
+
+    folded: Dict[str, Dict[str, Any]] = {}
+    for rec in records:
+        if rec.get("task_id") != task_id or rec.get("state") == "diagnostic":
+            continue
+        reservation_id = rec.get("reservation_id")
+        if reservation_id:
+            folded[reservation_id] = rec
+    consumed_for_request = sum(
+        1 for rec in folded.values() if rec.get("request_id") == request_id
+    )
+
+    if call_cap is not None and consumed_for_request >= call_cap:
+        raise BrokerError(
+            f"Request idempotency cap reached: request_id={request_id!r} "
+            f"has {consumed_for_request} allocated reservation(s), "
+            f"call_cap={call_cap}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Reservation allocation
 # ---------------------------------------------------------------------------
@@ -503,6 +544,9 @@ def allocate_reservation(
     evidence_hash: str,
     run_id: str,
     reservation_id: str,
+    request_id: Optional[str] = None,
+    call_cap: Optional[int] = None,
+    call_type: str = "execution_call",
 ) -> Dict[str, Any]:
     """Create a 'reserved' record for the ledger. Caller must append it."""
     call_index = count_role_calls(records, plan["task_id"], role) + 1
@@ -519,6 +563,63 @@ def allocate_reservation(
         "input_hash": input_hash,
         "evidence_hash": evidence_hash,
     }
+    if request_id:
+        record["request_id"] = request_id
+    if call_cap is not None:
+        record["effective_call_cap"] = call_cap
+    record["call_type"] = call_type
+    return record
+
+
+def record_diagnostic(
+    ledger_path: Path,
+    lock: "LedgerLock",
+    *,
+    task_id: str,
+    role: str,
+    stage: str,
+    route: str,
+    success: bool,
+    elapsed_seconds: float,
+    tokens_in: Optional[int] = None,
+    tokens_out: Optional[int] = None,
+    cost_usd: Optional[float] = None,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Append one record-only diagnostic entry to the ledger.
+
+    Diagnostic records use state='diagnostic', call_type='diagnostic_call',
+    and always set counts_toward_execution=false,
+    counts_toward_takeover=false, counts_toward_builder_success=false.
+
+    The CLI reports recording failures. Dispatcher callers decide that those
+    failures are advisory to the surrounding workflow outcome.
+    """
+    record: Dict[str, Any] = {
+        "schema_version": 1,
+        "timestamp": int(time.time()),
+        "state": "diagnostic",
+        "call_type": "diagnostic_call",
+        "task_id": task_id,
+        "role": role,
+        "stage": stage,
+        "route": route,
+        "success": success,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "counts_toward_execution": False,
+        "counts_toward_takeover": False,
+        "counts_toward_builder_success": False,
+    }
+    if tokens_in is not None:
+        record["input_tokens"] = tokens_in
+    if tokens_out is not None:
+        record["output_tokens"] = tokens_out
+    if cost_usd is not None:
+        record["total_cost_usd"] = cost_usd
+    if model is not None:
+        record["model"] = model
+    with lock:
+        append_ledger(ledger_path, record)
     return record
 
 
@@ -583,8 +684,17 @@ def execute(
     max_calls: Optional[int],
     compatibility_task_id: str,
     command: Sequence[str],
+    request_id: Optional[str] = None,
+    call_cap: Optional[int] = None,
+    call_type: str = "execution_call",
 ) -> int:
     """Full broker lifecycle. Returns child exit code."""
+    if call_cap is not None:
+        if isinstance(call_cap, bool) or not isinstance(call_cap, int) or call_cap <= 0:
+            raise PlanError("call_cap must be a positive integer")
+        if not request_id:
+            raise PlanError("call_cap requires a non-empty request_id")
+
     # 1. Load or generate plan
     if plan_path is not None:
         plan = load_plan(plan_path)
@@ -605,6 +715,9 @@ def execute(
         check_duplicate(
             records, plan["task_id"], role, input_hash, evidence_hash, retry_failed
         )
+        check_request_idempotency(
+            records, plan["task_id"], request_id, call_cap
+        )
 
         if dry_run:
             budget_key = f"{role}_calls"
@@ -617,6 +730,9 @@ def execute(
                 "task_id": plan["task_id"],
                 "input_hash": input_hash,
                 "evidence_hash": evidence_hash,
+                "request_id": request_id,
+                "call_cap": call_cap,
+                "call_type": call_type,
                 "budget_used": used,
                 "budget_max": plan["budget"].get(budget_key, 0),
                 "command": command,
@@ -627,6 +743,9 @@ def execute(
         reserved_record = allocate_reservation(
             records, plan, role, stage, input_hash, evidence_hash,
             run_id, reservation_id,
+            request_id=request_id,
+            call_cap=call_cap,
+            call_type=call_type,
         )
         append_ledger(ledger_path, reserved_record)
 
@@ -644,13 +763,15 @@ def execute(
 
     try:
         exit_code = run_command(command, input_data, output_path, stderr_path)
-    except Exception as exc:
-        # Record failure
+    except BaseException as exc:
+        # Record failures and operator interrupts so reservations never remain
+        # indefinitely in the running state.
         elapsed = time.monotonic() - start
+        interrupted = isinstance(exc, (KeyboardInterrupt, SystemExit))
         with lock:
             fail_record = {
                 **running_record,
-                "state": "failed",
+                "state": "cancelled" if interrupted else "failed",
                 "timestamp": int(time.time()),
                 "elapsed_seconds": round(elapsed, 3),
                 "exit_code": -1,
@@ -728,22 +849,78 @@ def main() -> int:
     # Legacy compatibility
     parser.add_argument("--max-calls", type=int, help="Budget override for compatibility mode (no --plan)")
 
+    # Request idempotency and call type
+    parser.add_argument("--request-id", default=None,
+                        help="Stable request identifier for idempotency enforcement")
+    parser.add_argument("--call-cap", type=int, default=None,
+                        help="Maximum budget-consuming reservations for the same request_id (additional ceiling, never raises plan budget)")
+    parser.add_argument("--call-type", default="execution_call",
+                        help="Call type label for ledger records (e.g. advisor_call, diagnostic_call)")
+
+    # Diagnostic record-only mode
+    parser.add_argument("--diagnostic", action="store_true",
+                        help="Record-only diagnostic mode: appends a diagnostic ledger entry without executing a command")
+    parser.add_argument("--diagnostic-route", default=None,
+                        help="Route label for diagnostic records (e.g. direct, inherit)")
+    parser.add_argument("--diagnostic-success", type=lambda v: v.lower() in ("true", "1", "yes"),
+                        default=None, help="Whether the diagnostic probe succeeded")
+    parser.add_argument("--diagnostic-elapsed", type=float, default=None,
+                        help="Elapsed seconds for the diagnostic probe")
+    parser.add_argument("--diagnostic-tokens-in", type=int, default=None,
+                        help="Input tokens consumed by the diagnostic probe")
+    parser.add_argument("--diagnostic-tokens-out", type=int, default=None,
+                        help="Output tokens produced by the diagnostic probe")
+    parser.add_argument("--diagnostic-cost-usd", type=float, default=None,
+                        help="Cost in USD for the diagnostic probe")
+    parser.add_argument("--diagnostic-model", default=None,
+                        help="Model name used by the diagnostic probe")
+
     # Command
     parser.add_argument("command", nargs=argparse.REMAINDER,
                         help="Command to execute (after -- separator)")
 
     args = parser.parse_args()
 
-    # Validate command
+    # Validate --max-calls requires no --plan
+    if args.max_calls is not None and args.plan is not None:
+        parser.error("--max-calls cannot be used with --plan")
+
+    # Diagnostic mode: record-only, no command needed
+    if args.diagnostic:
+        if not args.task_id or args.task_id == "compat-default":
+            parser.error("--task-id required for --diagnostic mode")
+        if args.diagnostic_route is None:
+            parser.error("--diagnostic-route required for --diagnostic mode")
+        if args.diagnostic_success is None:
+            parser.error("--diagnostic-success required for --diagnostic mode")
+        if args.diagnostic_elapsed is None:
+            parser.error("--diagnostic-elapsed required for --diagnostic mode")
+        lock = LedgerLock(args.ledger.with_suffix(".lock"))
+        try:
+            record_diagnostic(
+                args.ledger, lock,
+                task_id=args.task_id,
+                role=args.role,
+                stage=args.stage,
+                route=args.diagnostic_route,
+                success=args.diagnostic_success,
+                elapsed_seconds=args.diagnostic_elapsed,
+                tokens_in=args.diagnostic_tokens_in,
+                tokens_out=args.diagnostic_tokens_out,
+                cost_usd=args.diagnostic_cost_usd,
+                model=args.diagnostic_model,
+            )
+            return 0
+        except Exception as exc:
+            print(f"broker: diagnostic record failed: {exc}", file=sys.stderr)
+            return 3
+
+    # Validate command (required for non-diagnostic mode)
     if not args.command or args.command[0] != "--":
         parser.error("Command required after '--' separator")
     command = args.command[1:]
     if not command:
         parser.error("No command specified after '--'")
-
-    # Validate --max-calls requires no --plan
-    if args.max_calls is not None and args.plan is not None:
-        parser.error("--max-calls cannot be used with --plan")
 
     # Generate IDs
     run_id = args.run_id or f"run-{uuid.uuid4().hex[:12]}"
@@ -766,6 +943,9 @@ def main() -> int:
             max_calls=args.max_calls,
             compatibility_task_id=args.task_id,
             command=command,
+            request_id=args.request_id,
+            call_cap=args.call_cap,
+            call_type=args.call_type,
         )
     except PlanError as exc:
         print(f"broker: error: {exc}", file=sys.stderr)

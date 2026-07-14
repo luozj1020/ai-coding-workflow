@@ -37,6 +37,8 @@ Options:
   --fast-path-max-diff-lines N
                     Upper diff threshold for codex-fast-path safety (1-200,
                     default 100)
+  --routing-event EVENT
+                    Pre-card event: initial, revision, narrow, retry, or next-phase
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
   --sandbox MODE    read-only or workspace-write (default: read-only)
   --budget-mode     aggressive, balanced, or conservative (default: balanced)
@@ -73,6 +75,7 @@ Environment:
   CODEX_SPARK_REQUIRED=1
   AI_SPARK_BUDGET_MODE=aggressive|balanced|conservative
   CODEX_FAST_PATH_MAX_DIFF_LINES=100
+  CODEX_SPARK_ROUTING_EVENT=initial|revision|narrow|retry|next-phase
 EOF
 }
 
@@ -109,6 +112,7 @@ DIAGNOSTICS_MODE="${CODEX_SPARK_DIAGNOSTICS:-failure}"
 ALLOWED_WRITES=()
 MAX_DIFF_LINES=""
 FAST_PATH_MAX_DIFF_LINES="${CODEX_FAST_PATH_MAX_DIFF_LINES:-100}"
+ROUTING_EVENT="${CODEX_SPARK_ROUTING_EVENT:-initial}"
 EXPLICIT_OUTPUT="no"
 
 while [ $# -gt 0 ]; do
@@ -173,6 +177,11 @@ while [ $# -gt 0 ]; do
         --fast-path-max-diff-lines)
             [ $# -ge 2 ] || { echo "Error: --fast-path-max-diff-lines requires a value." >&2; exit 1; }
             FAST_PATH_MAX_DIFF_LINES="$2"
+            shift 2
+            ;;
+        --routing-event)
+            [ $# -ge 2 ] || { echo "Error: --routing-event requires a value." >&2; exit 1; }
+            ROUTING_EVENT="$2"
             shift 2
             ;;
         --output)
@@ -310,6 +319,10 @@ if [ "$FAST_PATH_MAX_DIFF_LINES" -gt 200 ]; then
     echo "Error: --fast-path-max-diff-lines must be at most 200." >&2
     exit 1
 fi
+case "$ROUTING_EVENT" in
+    initial|revision|narrow|retry|next-phase) ;;
+    *) echo "Error: --routing-event must be initial, revision, narrow, retry, or next-phase." >&2; exit 1 ;;
+esac
 
 if [ "$INPUT_KIND" = "task-card" ] && [ ! -f "$TASK_CARD" ]; then
     echo "Error: task card not found: $TASK_CARD" >&2
@@ -1409,8 +1422,8 @@ Operating rules:
 - End your output with these fields exactly: accepted_suggestions=<none or comma-separated>; ignored_suggestions=<none or comma-separated>; conflicts_with_claude=<none or short note>; conflicts_with_local_evidence=<none or short note>; acceptance_satisfied_by_spark=no.
 
 Mode contract:
-- task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output exactly these fields: size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown; risk_flags=none or comma-separated public-api,data-model,security,migration,permission,concurrency,cross-module,broad-context,validation-complexity; reason=one short paragraph; stop_condition=one sentence; predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification. Work units are relative estimates, not actual/billable token measurements. The configured fast-path upper diff threshold is ${FAST_PATH_MAX_DIFF_LINES} lines.
-- execution-cost-estimator: read-only mode. Estimate direct Codex editing cost versus Claude delegation overhead. Do not edit files. Output exactly these machine-readable fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short paragraph>; stop_condition=<one sentence>. Work units are relative estimates, not actual/billable token measurements. Safety rule: recommend codex-fast-path only when all are true: predicted upper diff <= ${FAST_PATH_MAX_DIFF_LINES} lines; predicted files <= 2; context scope is local; validation complexity is none or low; cost confidence is high; risk flags are none. If economic recommendation is codex-fast-path but safety eligibility is no, final recommended owner must be claude-builder, spec-first, or human-clarification — never codex-fast-path.
+- task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output exactly these fields: size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown; risk_flags=none or comma-separated public-api,data-model,security,migration,permission,concurrency,cross-module,broad-context,validation-complexity; reason=one short paragraph; stop_condition=one sentence; predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification. Work units are relative estimates, not actual/billable token measurements. Choose owner from edit size/files, context sufficiency, solution clarity, confidence, and delegation overhead only. Risk flags and validation complexity affect downstream rigor and MUST NOT push ownership from Codex to Claude. If an explicit human/policy risk override is later applied, it may bias high-risk work only toward Codex. The helper calibrates Spark's raw upper estimate after output (1.5x normally, 2.0x for tests/fixtures, shell/process orchestration, or cross-platform work) before applying the configured ${FAST_PATH_MAX_DIFF_LINES}-line threshold. Actual edits may exceed the estimate while scope, solution, and context remain stable.
+- execution-cost-estimator: read-only mode for routing event ${ROUTING_EVENT}. Estimate direct Codex editing cost versus Claude delegation overhead. Do not edit files. Output exactly these machine-readable fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short paragraph>; stop_condition=<one sentence>. Work units are relative estimates, not actual/billable token measurements. Choose economic_recommendation from edit size/files, context sufficiency, solution clarity, and delegation overhead only. Risk flags and validation complexity MUST NOT push ownership from Codex to Claude; they raise review, validation, isolation, or approval strictness. If an explicit human/policy risk override is later applied, it may bias high-risk work only toward Codex. Spark line estimates are calibrated deterministically by the helper after output (default 1.5x, 2.0x for tests/fixtures, shell/process orchestration, or cross-platform work). Actual edits may exceed the calibrated estimate when scope, solution, and context remain stable; re-route only for material scope, architecture, or unknown expansion.
 - review-only: inspect the task card and available repository context, do not edit files.
 - task-card-audit: inspect the task card for missing gates, mixed responsibilities, unclear acceptance criteria, unsafe scope, and likely Claude stall risks; do not edit files.
 - plan-splitter: propose smaller Builder/Checker task cards or independent parallelizable slices; do not edit files.
@@ -1423,7 +1436,7 @@ Mode contract:
 - observe-synthesizer: read-only synthesis of provided artifacts. Compress observations into structured findings. Do not edit files. Output structured observations with evidence citations.
 - task-card-drafter: draft a task card from the provided context and artifacts. Do not edit files. Output a structured task card proposal.
 - context-packet-builder: build a Context Packet draft from the task card and any provided artifacts. Do not edit files. Output a structured Context Packet with bounded excerpts.
-- preflight-bundle: combined preflight analysis in one invocation. Perform risk classification, bounded evidence synthesis, task-card drafting, Context Packet drafting, unknown/risk extraction, split/parallel recommendation, and execution cost estimation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action. The Decision Summary must include execution cost fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags. Work units are relative estimates, not actual/billable token measurements. The configured fast-path upper diff threshold is ${FAST_PATH_MAX_DIFF_LINES} lines.
+- preflight-bundle: combined preflight analysis in one invocation for routing event ${ROUTING_EVENT}. Perform risk classification, bounded evidence synthesis, task-card drafting, Context Packet drafting, unknown/risk extraction, split/parallel recommendation, and execution cost estimation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action. Under Decision Summary, put each execution-cost field on its own unprefixed key=value line so the helper can parse it: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags. Work units are relative estimates, not actual/billable token measurements. Choose owner from edit size/files, context sufficiency, solution clarity, confidence, and delegation overhead only. Risk flags and validation complexity affect downstream rigor and MUST NOT push ownership from Codex to Claude. If an explicit human/policy risk override is later applied, it may bias high-risk work only toward Codex. The helper calibrates Spark's raw upper estimate after output (1.5x normally, 2.0x for tests/fixtures, shell/process orchestration, or cross-platform work) before applying the configured ${FAST_PATH_MAX_DIFF_LINES}-line threshold. Actual edits may exceed the estimate while scope, solution, and context remain stable.
 - direction-precheck: check direction and boundary against the task card and provided artifacts. Do not edit files. Output direction/boundary assessment with specific risks.
 - acceptance-matrix: produce an acceptance criteria matrix from the task card. Do not edit files. Map each acceptance criterion to verification method, evidence source, and pass/fail status.
 - postflight-bundle: combined postflight analysis in one invocation. Perform direction/boundary/omission checks, acceptance mapping, evidence conflict detection, validation recommendations, and provisional accept/revise/split/escalate recommendation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
@@ -1725,6 +1738,8 @@ COST_RECOMMENDED_OWNER="not recorded"
 COST_CONFIDENCE="not recorded"
 COST_RISK_FLAGS="not recorded"
 COST_SAFETY_REASONS="not evaluated"
+COST_CALIBRATION_MULTIPLIER="1.5"
+COST_CALIBRATED_DIFF_HIGH="not recorded"
 
 if [ -s "$RESULT_FILE" ]; then
     # Helper: extract the value from a key=value line, exactly one match.
@@ -1842,14 +1857,28 @@ if [ -s "$RESULT_FILE" ]; then
     fi
 fi
 
-# Compute safety deterministically; never trust the model's safety_eligible claim.
+# Spark is intentionally optimistic on edit size. Calibrate its upper bound;
+# orchestration/test/cross-platform work uses the larger historical margin.
+if grep -Eiq 'test|fixture|shell|bash|process|orchestrat|cross-platform|windows|测试|夹具|脚本|进程|编排|跨平台' "$TASK_CARD_COPY" 2>/dev/null; then
+    COST_CALIBRATION_MULTIPLIER="2.0"
+fi
+if [ "$COST_PREDICTED_DIFF_HIGH" != "not recorded" ]; then
+    if [ "$COST_CALIBRATION_MULTIPLIER" = "2.0" ]; then
+        COST_CALIBRATED_DIFF_HIGH=$((COST_PREDICTED_DIFF_HIGH * 2))
+    else
+        COST_CALIBRATED_DIFF_HIGH=$(((COST_PREDICTED_DIFF_HIGH * 15 + 9) / 10))
+    fi
+fi
+
+# Compute owner eligibility deterministically; never trust the model's claim.
+# Risk and validation complexity affect downstream rigor, not implementation owner.
 _safety_failures=()
 if [ "$COST_PREDICTED_DIFF_LOW" = "not recorded" ] || [ "$COST_PREDICTED_DIFF_HIGH" = "not recorded" ]; then
     _safety_failures+=("missing-or-invalid-diff-estimate")
 elif [ "$COST_PREDICTED_DIFF_LOW" -gt "$COST_PREDICTED_DIFF_HIGH" ]; then
     _safety_failures+=("diff-range-reversed")
-elif [ "$COST_PREDICTED_DIFF_HIGH" -gt "$FAST_PATH_MAX_DIFF_LINES" ]; then
-    _safety_failures+=("diff-high-exceeds-${FAST_PATH_MAX_DIFF_LINES}")
+elif [ "$COST_CALIBRATED_DIFF_HIGH" -gt "$FAST_PATH_MAX_DIFF_LINES" ]; then
+    _safety_failures+=("calibrated-diff-high-exceeds-${FAST_PATH_MAX_DIFF_LINES}")
 fi
 if [ "$COST_PREDICTED_FILES" = "not recorded" ] || [ "$COST_PREDICTED_FILES" = "unknown" ]; then
     _safety_failures+=("missing-or-unknown-file-count")
@@ -1857,9 +1886,7 @@ elif [ "$COST_PREDICTED_FILES" -gt 2 ]; then
     _safety_failures+=("predicted-files-exceed-2")
 fi
 [ "$COST_CONTEXT_SCOPE" = "local" ] || _safety_failures+=("context-not-local")
-case "$COST_VALIDATION_COMPLEXITY" in none|low) ;; *) _safety_failures+=("validation-not-low") ;; esac
 [ "$COST_CONFIDENCE" = "high" ] || _safety_failures+=("confidence-not-high")
-[ "$COST_RISK_FLAGS" = "none" ] || _safety_failures+=("risk-flags-present-or-invalid")
 for _required_cost_field in "$COST_DELEGATION_OVERHEAD" "$COST_DIRECT_WORK_UNITS" "$COST_DELEGATED_WORK_UNITS" "$COST_RATIO" "$COST_ECONOMIC_RECOMMENDATION"; do
     [ "$_required_cost_field" != "not recorded" ] || _safety_failures+=("missing-required-cost-field")
 done
@@ -1900,6 +1927,14 @@ case "$RESULT_MODE" in
         # Direct mode: emit raw result to stdout, diagnostics to stderr
         if [ -s "$RESULT_FILE" ]; then
             cat "$RESULT_FILE"
+            if { [ "$MODE" = "execution-cost-estimator" ] || [ "$MODE" = "task-size-classifier" ] || [ "$MODE" = "preflight-bundle" ]; } && _estimator_schema_valid; then
+                echo "routing_event=${ROUTING_EVENT}"
+                echo "estimate_calibration_multiplier=${COST_CALIBRATION_MULTIPLIER}"
+                echo "calibrated_diff_lines_high=${COST_CALIBRATED_DIFF_HIGH}"
+                echo "deterministic_owner=${COST_RECOMMENDED_OWNER}"
+                echo "owner_ignores_risk_flags=yes"
+                echo "risk_owner_override_direction=codex-only"
+            fi
         fi
         # Classify failure for diagnostics
         _direct_result_empty="no"
@@ -1979,6 +2014,9 @@ case "$RESULT_MODE" in
             echo "| Strong-model fallback used | no |"
             echo "| Predicted diff lines (low) | ${COST_PREDICTED_DIFF_LOW} |"
             echo "| Predicted diff lines (high) | ${COST_PREDICTED_DIFF_HIGH} |"
+            echo "| Estimate calibration multiplier | ${COST_CALIBRATION_MULTIPLIER} |"
+            echo "| Calibrated diff lines (high) | ${COST_CALIBRATED_DIFF_HIGH} |"
+            echo "| Routing event | ${ROUTING_EVENT} |"
             echo "| Predicted files | ${COST_PREDICTED_FILES} |"
             echo "| Context scope | ${COST_CONTEXT_SCOPE} |"
             echo "| Validation complexity | ${COST_VALIDATION_COMPLEXITY} |"
@@ -1992,6 +2030,8 @@ case "$RESULT_MODE" in
             echo "| Recommended owner | ${COST_RECOMMENDED_OWNER} |"
             echo "| Cost confidence | ${COST_CONFIDENCE} |"
             echo "| Risk flags | ${COST_RISK_FLAGS} |"
+            echo "| Risk affects owner | no; review/validation rigor only |"
+            echo "| Explicit risk owner override | codex-only |"
             echo "| Codex fast path approved? | pending Codex review |"
             if [ -n "$CONTROLLED_BOUNDARY_FAILURE" ]; then
                 echo "| Boundary outcome | fail: ${CONTROLLED_BOUNDARY_FAILURE} |"
@@ -2038,6 +2078,9 @@ case "$RESULT_MODE" in
             echo "| Strong-model fallback used | no |"
             echo "| Predicted diff lines (low) | ${COST_PREDICTED_DIFF_LOW} |"
             echo "| Predicted diff lines (high) | ${COST_PREDICTED_DIFF_HIGH} |"
+            echo "| Estimate calibration multiplier | ${COST_CALIBRATION_MULTIPLIER} |"
+            echo "| Calibrated diff lines (high) | ${COST_CALIBRATED_DIFF_HIGH} |"
+            echo "| Routing event | ${ROUTING_EVENT} |"
             echo "| Predicted files | ${COST_PREDICTED_FILES} |"
             echo "| Context scope | ${COST_CONTEXT_SCOPE} |"
             echo "| Validation complexity | ${COST_VALIDATION_COMPLEXITY} |"
@@ -2051,6 +2094,8 @@ case "$RESULT_MODE" in
             echo "| Recommended owner | ${COST_RECOMMENDED_OWNER} |"
             echo "| Cost confidence | ${COST_CONFIDENCE} |"
             echo "| Risk flags | ${COST_RISK_FLAGS} |"
+            echo "| Risk affects owner | no; review/validation rigor only |"
+            echo "| Explicit risk owner override | codex-only |"
             echo "| Codex fast path approved? | pending Codex review |"
             if [ -n "$CONTROLLED_BOUNDARY_FAILURE" ]; then
                 echo "| Boundary outcome | fail: ${CONTROLLED_BOUNDARY_FAILURE} |"

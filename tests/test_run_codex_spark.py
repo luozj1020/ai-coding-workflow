@@ -1807,7 +1807,9 @@ risk_flags=none
 reason=local deterministic edit
 stop_condition=scope expands"""
 
-    def _run(self, output_text, *extra_args, env_extra=None, result_mode="full"):
+    def _run(self, output_text, *extra_args, env_extra=None, result_mode="full",
+             task_text="# Task\n\nSmall local edit.\n",
+             mode="execution-cost-estimator"):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = pathlib.Path(temp.name)
@@ -1815,7 +1817,7 @@ stop_condition=scope expands"""
         repo.mkdir()
         subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
         task_card = repo / "task-card.md"
-        task_card.write_text("# Task\n\nSmall local edit.\n", encoding="utf-8")
+        task_card.write_text(task_text, encoding="utf-8")
         fake = root / "codex.sh"
         fake.write_text(
             "#!/usr/bin/env bash\ncat > \"$CODEX_FAKE_STDIN\"\n"
@@ -1830,7 +1832,7 @@ stop_condition=scope expands"""
         if env_extra:
             env.update(env_extra)
         cmd = [bash_exe(), bash_path(SCRIPT), bash_path(task_card), "--mode",
-               "execution-cost-estimator", "--result-mode", result_mode]
+               mode, "--result-mode", result_mode]
         if result_mode != "direct":
             cmd.extend(["--output", bash_path(output_dir)])
         cmd.extend(extra_args)
@@ -1846,9 +1848,10 @@ stop_condition=scope expands"""
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         prompt = prompt_path.read_text(encoding="utf-8")
-        self.assertIn("predicted upper diff <= 42 lines", prompt)
         self.assertIn("relative estimates, not actual/billable token measurements", prompt)
         self.assertIn("cost_confidence=high|medium|low", prompt)
+        self.assertIn("Risk flags and validation complexity MUST NOT push ownership from Codex to Claude", prompt)
+        self.assertIn("risk override is later applied, it may bias high-risk work only toward Codex", prompt)
 
     def test_estimator_computes_safe_codex_fast_path(self):
         result, output_dir, _ = self._run(self.SAFE_OUTPUT)
@@ -1858,15 +1861,27 @@ stop_condition=scope expands"""
         self.assertIn("| Safety gate reasons | none |", report)
         self.assertIn("| Recommended owner | codex-fast-path |", report)
         self.assertIn("| Cost confidence | high |", report)
+        self.assertIn("| Estimate calibration multiplier | 1.5 |", report)
+        self.assertIn("| Calibrated diff lines (high) | 36 |", report)
+
+    def test_revision_event_and_orchestration_use_two_x_calibration(self):
+        result, output_dir, prompt_path = self._run(
+            self.SAFE_OUTPUT, "--routing-event", "revision",
+            task_text="# Task\n\nAdd shell process orchestration test fixture.\n",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("routing event revision", prompt_path.read_text(encoding="utf-8"))
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Routing event | revision |", report)
+        self.assertIn("| Estimate calibration multiplier | 2.0 |", report)
+        self.assertIn("| Calibrated diff lines (high) | 48 |", report)
 
     def test_estimator_overrides_unsafe_model_claims(self):
         replacements = {
-            "diff": ("predicted_diff_lines_high=24", "predicted_diff_lines_high=101", "diff-high-exceeds-100"),
+            "diff": ("predicted_diff_lines_high=24", "predicted_diff_lines_high=67", "calibrated-diff-high-exceeds-100"),
             "files": ("predicted_files=1", "predicted_files=3", "predicted-files-exceed-2"),
             "context": ("context_scope=local", "context_scope=bounded", "context-not-local"),
-            "validation": ("validation_complexity=low", "validation_complexity=medium", "validation-not-low"),
             "confidence": ("cost_confidence=high", "cost_confidence=medium", "confidence-not-high"),
-            "risk": ("risk_flags=none", "risk_flags=concurrency", "risk-flags-present-or-invalid"),
         }
         for name, (old, new, reason) in replacements.items():
             with self.subTest(name=name):
@@ -1877,11 +1892,22 @@ stop_condition=scope expands"""
                 self.assertIn(reason, report)
                 self.assertIn("| Recommended owner | claude-builder |", report)
 
+    def test_risk_and_validation_raise_rigor_not_owner(self):
+        output = self.SAFE_OUTPUT.replace(
+            "validation_complexity=low", "validation_complexity=high"
+        ).replace("risk_flags=none", "risk_flags=concurrency,cross-module")
+        result, output_dir, _ = self._run(output)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Safety eligible | yes |", report)
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
+        self.assertIn("| Risk affects owner | no; review/validation rigor only |", report)
+        self.assertIn("| Explicit risk owner override | codex-only |", report)
+
     def test_estimator_rejects_malformed_ratio_and_risk_flags(self):
         for old, new in (
             ("delegation_to_direct_ratio=2.67", "delegation_to_direct_ratio=1.2.3"),
             ("delegation_to_direct_ratio=2.67", "delegation_to_direct_ratio=0.0"),
-            ("risk_flags=none", "risk_flags=none,$(touch /tmp/nope)"),
         ):
             with self.subTest(value=new):
                 result, output_dir, _ = self._run(self.SAFE_OUTPUT.replace(old, new))
@@ -1889,6 +1915,14 @@ stop_condition=scope expands"""
                 report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
                 self.assertIn("| Safety eligible | no |", report)
                 self.assertIn("| Recommended owner | claude-builder |", report)
+
+        result, output_dir, _ = self._run(
+            self.SAFE_OUTPUT.replace("risk_flags=none", "risk_flags=none,$(touch /tmp/nope)")
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Risk flags | not recorded |", report)
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
 
     def test_fast_path_threshold_validation(self):
         for value in ("0", "201", "not-a-number"):
@@ -1904,10 +1938,9 @@ stop_condition=scope expands"""
             self.SAFE_OUTPUT, env_extra={"CODEX_FAST_PATH_MAX_DIFF_LINES": "12"}
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("predicted upper diff <= 12 lines", prompt_path.read_text(encoding="utf-8"))
         report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
         self.assertIn("| Safety eligible | no |", report)
-        self.assertIn("diff-high-exceeds-12", report)
+        self.assertIn("calibrated-diff-high-exceeds-12", report)
 
     def test_cost_confidence_precedes_classifier_confidence(self):
         result, output_dir, _ = self._run(self.SAFE_OUTPUT + "\nconfidence=low")
@@ -1928,7 +1961,24 @@ stop_condition=scope expands"""
     def test_direct_estimator_returns_only_model_result_and_no_artifacts(self):
         result, output_dir, _ = self._run(self.SAFE_OUTPUT, result_mode="direct")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertEqual(result.stdout.strip(), self.SAFE_OUTPUT)
+        self.assertTrue(result.stdout.startswith(self.SAFE_OUTPUT))
+        self.assertIn("estimate_calibration_multiplier=1.5", result.stdout)
+        self.assertIn("calibrated_diff_lines_high=36", result.stdout)
+        self.assertIn("owner_ignores_risk_flags=yes", result.stdout)
+        self.assertIn("risk_owner_override_direction=codex-only", result.stdout)
+        self.assertFalse(output_dir.exists())
+
+    def test_direct_preflight_appends_deterministic_calibrated_route(self):
+        result, output_dir, _ = self._run(
+            self.SAFE_OUTPUT,
+            result_mode="direct",
+            mode="preflight-bundle",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("estimate_calibration_multiplier=1.5", result.stdout)
+        self.assertIn("calibrated_diff_lines_high=36", result.stdout)
+        self.assertIn("deterministic_owner=codex-fast-path", result.stdout)
+        self.assertIn("risk_owner_override_direction=codex-only", result.stdout)
         self.assertFalse(output_dir.exists())
 
     # --- Focused tests for default 100 threshold ---
@@ -1937,9 +1987,9 @@ stop_condition=scope expands"""
         """When no --fast-path-max-diff-lines or CODEX_FAST_PATH_MAX_DIFF_LINES
         is set, the default threshold is 100. A predicted upper diff of 100 is
         still within threshold; 101 exceeds it."""
-        # 100 lines is within the default 100 threshold → safe
+        # Raw 66 calibrates to 99 and remains within the default threshold.
         output_at_100 = self.SAFE_OUTPUT.replace(
-            "predicted_diff_lines_high=24", "predicted_diff_lines_high=100"
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=66"
         )
         result, output_dir, _ = self._run(output_at_100)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -1947,15 +1997,15 @@ stop_condition=scope expands"""
         self.assertIn("| Safety eligible | yes |", report)
         self.assertIn("| Recommended owner | codex-fast-path |", report)
 
-        # 101 lines exceeds the default 100 threshold → not safe
+        # Raw 67 calibrates to 101 and exceeds the default threshold.
         output_at_101 = self.SAFE_OUTPUT.replace(
-            "predicted_diff_lines_high=24", "predicted_diff_lines_high=101"
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=67"
         )
         result2, output_dir2, _ = self._run(output_at_101)
         self.assertEqual(result2.returncode, 0, result2.stderr + result2.stdout)
         report2 = (output_dir2 / "codex-spark.report.md").read_text(encoding="utf-8")
         self.assertIn("| Safety eligible | no |", report2)
-        self.assertIn("diff-high-exceeds-100", report2)
+        self.assertIn("calibrated-diff-high-exceeds-100", report2)
         self.assertIn("| Recommended owner | claude-builder |", report2)
 
     def test_explicit_cli_override_wins_over_default(self):
@@ -1970,7 +2020,7 @@ stop_condition=scope expands"""
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
         self.assertIn("| Safety eligible | no |", report)
-        self.assertIn("diff-high-exceeds-42", report)
+        self.assertIn("calibrated-diff-high-exceeds-42", report)
 
     def test_environment_override_works_with_new_default(self):
         """CODEX_FAST_PATH_MAX_DIFF_LINES env var overrides the default 100."""
@@ -1984,7 +2034,7 @@ stop_condition=scope expands"""
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
         self.assertIn("| Safety eligible | no |", report)
-        self.assertIn("diff-high-exceeds-20", report)
+        self.assertIn("calibrated-diff-high-exceeds-20", report)
 
     def test_values_outside_1_200_remain_rejected(self):
         """Values outside the 1..200 range are still rejected."""

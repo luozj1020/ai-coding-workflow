@@ -130,8 +130,10 @@
 | Advisor consulted? | yes/no/not required |
 | Advisor role | Codex external advisor / Claude advisor tool / human domain expert / none |
 | Advisor model or person | |
+| Advisor request ID | |
 | Advisor calls used | |
 | Advisor max calls | |
+| Effective advisor call cap | 1 / unavailable |
 | Advisor timing used | after orientation / before first write / before final report / when stuck / reconcile conflict |
 | Advice summary or artifact | |
 | Advisor result visibility | plaintext / redacted / unavailable / not applicable |
@@ -144,6 +146,21 @@
 | Advisor output tokens | |
 | Advisor cost USD | |
 
+## Advisor Continuation / Diagnostic Metrics
+
+| Field | Value |
+|-------|-------|
+| Diagnostic probe calls / successes | |
+| Diagnostic input / output tokens | explicit totals / unavailable |
+| Diagnostic cost USD | explicit total / unavailable |
+| Diagnostic usage unavailable count | |
+| Continuation requested / accepted / succeeded | |
+| Same-worktree successes | |
+| Full redispatches avoided | |
+| Re-exploration evidence | yes / no / unknown + bounded reason |
+| Estimated tokens / time avoided | explicit numeric evidence / unavailable |
+| Continuation audit artifact | |
+
 ## Small Change Fast Path Follow-up
 
 <!-- Fill when Codex skipped Claude dispatch because the task met the fast-path gate. -->
@@ -152,12 +169,16 @@
 |-------|-------|
 | Fast path used? | yes/no |
 | Claude dispatch skipped? | yes/no |
+| Routing event | initial / revision / narrow / retry / next-phase |
+| Spark raw / calibrated upper estimate | raw / calibrated + 1.5 or 2.0 multiplier |
 | Files touched | |
-| Reason fast path was safe | |
-| Scope stayed within gate? | yes/no |
+| Why direct ownership was economical | |
+| Risk-driven review/validation rigor | |
+| Explicit risk owner override | none / codex-only + rationale |
+| Scope, solution, and context stayed stable? | yes/no |
 | Spark used? | no / yes + artifact |
 | Validation run | command / skipped + reason |
-| Escalation needed after edit? | no / yes + reason |
+| Fresh route needed after edit? | no / yes + material expansion reason |
 
 ## Codex Spark Follow-up
 

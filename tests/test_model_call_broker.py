@@ -94,6 +94,10 @@ def run_broker(
     retry_failed: bool = False,
     max_calls: int = None,
     run_id: str = None,
+    task_id: str = None,
+    request_id: str = None,
+    call_cap: int = None,
+    call_type: str = None,
 ) -> tuple:
     """Run broker as a subprocess. Returns (exit_code, stdout, stderr)."""
     cmd = [sys.executable, str(BROKER), "--role", role, "--stage", stage]
@@ -113,6 +117,14 @@ def run_broker(
         cmd += ["--max-calls", str(max_calls)]
     if run_id:
         cmd += ["--run-id", run_id]
+    if task_id:
+        cmd += ["--task-id", task_id]
+    if request_id:
+        cmd += ["--request-id", request_id]
+    if call_cap is not None:
+        cmd += ["--call-cap", str(call_cap)]
+    if call_type:
+        cmd += ["--call-type", call_type]
     cmd += ["--"]
     if command:
         cmd += command
@@ -123,6 +135,77 @@ def run_broker(
         cmd, capture_output=True, text=True, cwd=str(tmp), timeout=30
     )
     return result.returncode, result.stdout, result.stderr
+
+
+class TestRequestIdempotency(unittest.TestCase):
+    def test_request_cap_is_cross_role_and_fail_closed(self):
+        with tempfile.TemporaryDirectory(prefix="broker_request_") as td:
+            tmp = Path(td)
+            plan_path = write_plan(tmp, make_plan(task_id="advisor-task"))
+            ledger = tmp / "ledger.jsonl"
+            first_input = write_file(tmp, "one", "one.txt")
+            second_input = write_file(tmp, "two", "two.txt")
+
+            rc1, _, _ = run_broker(
+                tmp, role="spark", plan_path=plan_path, input_path=first_input,
+                ledger_path=ledger, request_id="request-1", call_cap=1,
+                command=[sys.executable, "-c", "raise SystemExit(1)"],
+            )
+            self.assertEqual(rc1, 1)
+
+            rc2, _, err2 = run_broker(
+                tmp, role="codex", plan_path=plan_path, input_path=second_input,
+                ledger_path=ledger, request_id="request-1", call_cap=1,
+            )
+            self.assertEqual(rc2, 2)
+            self.assertIn("Request idempotency cap reached", err2)
+
+            records = [json.loads(line) for line in ledger.read_text().splitlines()]
+            reserved = [record for record in records if record["state"] == "reserved"]
+            self.assertEqual(len(reserved), 1)
+            self.assertEqual(reserved[0]["effective_call_cap"], 1)
+            self.assertEqual(reserved[0]["call_type"], "execution_call")
+
+    def test_invalid_call_cap_fails_before_reservation(self):
+        with tempfile.TemporaryDirectory(prefix="broker_request_") as td:
+            tmp = Path(td)
+            ledger = tmp / "ledger.jsonl"
+            rc, _, err = run_broker(
+                tmp, task_id="cap-task", ledger_path=ledger,
+                request_id="request-1", call_cap=0,
+            )
+            self.assertEqual(rc, 3)
+            self.assertIn("positive integer", err)
+            self.assertFalse(ledger.exists())
+
+
+class TestDiagnosticLedger(unittest.TestCase):
+    def test_diagnostic_record_does_not_consume_execution_budget(self):
+        with tempfile.TemporaryDirectory(prefix="broker_diag_") as td:
+            tmp = Path(td)
+            ledger = tmp / "ledger.jsonl"
+            diagnostic = subprocess.run(
+                [
+                    sys.executable, str(BROKER), "--role", "claude",
+                    "--stage", "zero-output-healthcheck", "--task-id", "diag-task",
+                    "--ledger", str(ledger), "--diagnostic",
+                    "--diagnostic-route", "inherit", "--diagnostic-success", "true",
+                    "--diagnostic-elapsed", "0.5", "--diagnostic-tokens-in", "3",
+                    "--diagnostic-tokens-out", "1", "--diagnostic-cost-usd", "0.01",
+                ],
+                capture_output=True, text=True, cwd=str(tmp), timeout=30,
+            )
+            self.assertEqual(diagnostic.returncode, 0, diagnostic.stderr)
+
+            rc, _, err = run_broker(
+                tmp, task_id="diag-task", ledger_path=ledger, max_calls=1,
+            )
+            self.assertEqual(rc, 0, err)
+            records = [json.loads(line) for line in ledger.read_text().splitlines()]
+            diag = next(record for record in records if record["state"] == "diagnostic")
+            self.assertEqual(diag["call_type"], "diagnostic_call")
+            self.assertEqual(diag["input_tokens"], 3)
+            self.assertFalse(diag["counts_toward_execution"])
 
 
 # ---------------------------------------------------------------------------
@@ -970,13 +1053,13 @@ class TestModuleAPI(unittest.TestCase):
     def test_valid_states(self):
         self.assertEqual(
             set(broker_mod.VALID_STATES),
-            {"reserved", "running", "succeeded", "failed", "cancelled"},
+            {"reserved", "running", "succeeded", "failed", "cancelled", "diagnostic"},
         )
 
     def test_budget_consuming_states(self):
         for state in ("reserved", "running", "succeeded"):
             self.assertTrue(broker_mod.budget_consuming({"state": state}))
-        for state in ("failed", "cancelled"):
+        for state in ("failed", "cancelled", "diagnostic"):
             self.assertFalse(broker_mod.budget_consuming({"state": state}))
 
     def test_windows_shell_script_uses_bash_without_shell_true(self):

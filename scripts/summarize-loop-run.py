@@ -50,7 +50,7 @@ def summarize_attempts(paths: list[Path]) -> dict:
     for path in paths:
         try:
             value = json.loads(read_text(path))
-        except json.JSONDecodeError:
+        except (OSError, json.JSONDecodeError, TypeError):
             continue
         if isinstance(value, dict):
             attempts.append(value)
@@ -672,6 +672,8 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
         "parallel": sorted(root.rglob("parallel-summary.md")),
         "task_card": sorted(root.rglob("task-card-*.md")) + sorted(root.rglob("CLAUDE_TASK_CARD.md")),
         "attempt": sorted(root.rglob("*.attempt-classification.json")),
+        "audit": sorted(root.rglob("*.advisor-continuation-audit.json")),
+        "health": sorted(root.rglob("*.interaction-health.json")),
     }
 
 
@@ -681,6 +683,138 @@ def latest_default_path(repo_root: Path) -> Path:
     if loops:
         return loops[-1]
     return worktrees
+
+
+def parse_continuation_audits(paths: list[Path]) -> dict:
+    """Parse advisor-continuation-audit.json files for continuation metrics."""
+    audits = []
+    for path in paths:
+        try:
+            value = json.loads(read_text(path))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and value.get("schema_version") == 1:
+            audits.append(value)
+    requested = len(audits)
+    accepted = sum(1 for a in audits if a.get("accepted") is True)
+    succeeded = sum(1 for a in audits if a.get("succeeded") is True)
+    same_worktree_success = sum(
+        1 for a in audits
+        if a.get("same_worktree") is True and a.get("succeeded") is True
+    )
+    full_redispatch_avoided = sum(
+        1 for a in audits if a.get("full_redispatch_avoided") is True
+    )
+    reexploration_yes = sum(
+        1 for a in audits if a.get("reexploration_suspected") == "yes"
+    )
+    reexploration_no = sum(
+        1 for a in audits if a.get("reexploration_suspected") == "no"
+    )
+    reexploration_unknown = sum(
+        1 for a in audits if a.get("reexploration_suspected") == "unknown"
+    )
+    # Collect unique reason codes
+    reason_codes = []
+    seen_reasons: set[str] = set()
+    for a in audits:
+        reason = a.get("reexploration_reason")
+        if reason and reason not in seen_reasons:
+            seen_reasons.add(reason)
+            reason_codes.append(reason)
+    # Estimated tokens/time avoided — only from explicit numeric evidence
+    tokens_avoided_values = [
+        a.get("estimated_tokens_avoided")
+        for a in audits
+        if isinstance(a.get("estimated_tokens_avoided"), (int, float))
+        and not isinstance(a.get("estimated_tokens_avoided"), bool)
+    ]
+    time_avoided_values = [
+        a.get("estimated_time_avoided")
+        for a in audits
+        if isinstance(a.get("estimated_time_avoided"), (int, float))
+        and not isinstance(a.get("estimated_time_avoided"), bool)
+    ]
+    tokens_avoided_total = sum(tokens_avoided_values) if tokens_avoided_values else None
+    time_avoided_total = sum(time_avoided_values) if time_avoided_values else None
+    # Per-audit numeric fields for aggregate reporting
+    wt_change_values = [
+        a["first_worktree_change_seconds"] for a in audits
+        if isinstance(a.get("first_worktree_change_seconds"), (int, float))
+        and not isinstance(a.get("first_worktree_change_seconds"), bool)
+    ]
+    model_turn_values = [
+        a["model_turn_count"] for a in audits
+        if isinstance(a.get("model_turn_count"), (int, float))
+        and not isinstance(a.get("model_turn_count"), bool)
+    ]
+    return {
+        "continuation_requested": requested,
+        "continuation_accepted": accepted,
+        "continuation_succeeded": succeeded,
+        "same_worktree_success": same_worktree_success,
+        "full_redispatch_avoided": full_redispatch_avoided,
+        "estimated_tokens_avoided": tokens_avoided_total,
+        "estimated_time_avoided": time_avoided_total,
+        "reexploration_yes": reexploration_yes,
+        "reexploration_no": reexploration_no,
+        "reexploration_unknown": reexploration_unknown,
+        "reexploration_reason_codes": reason_codes,
+        "first_worktree_change_values": wt_change_values,
+        "model_turn_count_values": model_turn_values,
+    }
+
+
+def parse_diagnostic_probes(paths: list[Path]) -> dict:
+    """Parse interaction-health.json files for diagnostic call metrics.
+
+    Each file may contain an ``interaction_probes`` list where each probe
+    has ``route``, ``success``, ``elapsed`` and optional ``tokens_in``,
+    ``tokens_out``, ``cost_usd``, ``model``.
+    """
+    all_probes: list[dict] = []
+    for path in paths:
+        try:
+            value = json.loads(read_text(path))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(value, dict):
+            probes = value.get("interaction_probes", [])
+            if isinstance(probes, list):
+                all_probes.extend(probe for probe in probes if isinstance(probe, dict))
+    call_count = len(all_probes)
+    success_count = sum(1 for p in all_probes if p.get("success") is True)
+    tokens_in_values = [
+        p["tokens_in"] for p in all_probes
+        if isinstance(p.get("tokens_in"), (int, float))
+        and not isinstance(p.get("tokens_in"), bool)
+    ]
+    tokens_out_values = [
+        p["tokens_out"] for p in all_probes
+        if isinstance(p.get("tokens_out"), (int, float))
+        and not isinstance(p.get("tokens_out"), bool)
+    ]
+    cost_values = [
+        p["cost_usd"] for p in all_probes
+        if isinstance(p.get("cost_usd"), (int, float))
+        and not isinstance(p.get("cost_usd"), bool)
+    ]
+    tokens_in_total = sum(tokens_in_values) if tokens_in_values else None
+    tokens_out_total = sum(tokens_out_values) if tokens_out_values else None
+    cost_total = round(sum(cost_values), 6) if cost_values else None
+    unavailable_usage = sum(
+        1 for p in all_probes
+        if (not isinstance(p.get("tokens_in"), (int, float)) or isinstance(p.get("tokens_in"), bool))
+        and (not isinstance(p.get("tokens_out"), (int, float)) or isinstance(p.get("tokens_out"), bool))
+    )
+    return {
+        "diagnostic_call_count": call_count,
+        "diagnostic_success_count": success_count,
+        "diagnostic_input_tokens": tokens_in_total,
+        "diagnostic_output_tokens": tokens_out_total,
+        "diagnostic_cost_usd": cost_total,
+        "diagnostic_unavailable_usage": unavailable_usage,
+    }
 
 
 def summarize(path: Path) -> dict:
@@ -740,6 +874,8 @@ def summarize(path: Path) -> dict:
         artifacts["spark_report"],
     )
     claude_attempts = summarize_attempts(artifacts["attempt"])
+    continuation_audit = parse_continuation_audits(artifacts["audit"])
+    diagnostic_probes = parse_diagnostic_probes(artifacts["health"])
 
     return {
         "run_path": str(path),
@@ -780,6 +916,8 @@ def summarize(path: Path) -> dict:
         "checker_results": checker_results,
         "final_validation_state": final_validation_state,
         "final_validation_reason": final_validation_reason,
+        "advisor_continuation": continuation_audit,
+        "diagnostic_probes": diagnostic_probes,
     }
 
 
@@ -940,6 +1078,42 @@ def render_markdown(summary: dict) -> str:
     lines.append(f"| checker_validation_state | {summary['checker_validation_state']} |")
     lines.append(f"| final_validation_state | {summary['final_validation_state']} |")
     lines.append(f"| final_validation_reason | {summary['final_validation_reason']} |")
+
+    # Advisor Continuation Metrics
+    cont = summary.get("advisor_continuation", {})
+    lines.extend(["", "## Advisor Continuation", "", "| Field | Value |", "|-------|-------|"])
+    for key in [
+        "continuation_requested",
+        "continuation_accepted",
+        "continuation_succeeded",
+        "same_worktree_success",
+        "full_redispatch_avoided",
+        "estimated_tokens_avoided",
+        "estimated_time_avoided",
+        "reexploration_yes",
+        "reexploration_no",
+        "reexploration_unknown",
+    ]:
+        lines.append(f"| {key} | {format_value(cont.get(key))} |")
+    reason_codes = cont.get("reexploration_reason_codes", [])
+    lines.append(f"| reexploration_reason_codes | {', '.join(reason_codes) if reason_codes else 'none'} |")
+    wt_changes = cont.get("first_worktree_change_values", [])
+    lines.append(f"| first_worktree_change_values | {', '.join(str(v) for v in wt_changes) if wt_changes else 'none'} |")
+    model_turns = cont.get("model_turn_count_values", [])
+    lines.append(f"| model_turn_count_values | {', '.join(str(v) for v in model_turns) if model_turns else 'none'} |")
+
+    # Diagnostic Probe Metrics
+    diag = summary.get("diagnostic_probes", {})
+    lines.extend(["", "## Diagnostic Probes", "", "| Field | Value |", "|-------|-------|"])
+    for key in [
+        "diagnostic_call_count",
+        "diagnostic_success_count",
+        "diagnostic_input_tokens",
+        "diagnostic_output_tokens",
+        "diagnostic_cost_usd",
+        "diagnostic_unavailable_usage",
+    ]:
+        lines.append(f"| {key} | {format_value(diag.get(key))} |")
 
     lines.extend(["", "## Stability Findings", ""])
     if summary["stability"]["findings"]:

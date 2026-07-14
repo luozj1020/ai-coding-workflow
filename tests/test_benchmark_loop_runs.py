@@ -335,5 +335,36 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertIn("Spark Calls", md)
 
 
+    def test_carries_explicit_continuation_savings_and_unavailable_diagnostics(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            run = root / "loop-metrics"
+            dispatch = run / "dispatch-1"
+            dispatch.mkdir(parents=True)
+            (run / "review-1.txt").write_text("Decision: ACCEPT\n", encoding="utf-8")
+            (dispatch / "x.advisor-continuation-audit.json").write_text(json.dumps({
+                "schema_version": 1, "accepted": True, "succeeded": True,
+                "same_worktree": True, "full_redispatch_avoided": True,
+                "reexploration_suspected": "no",
+                "estimated_tokens_avoided": 40, "estimated_time_avoided": 6,
+            }), encoding="utf-8")
+            (dispatch / "x.interaction-health.json").write_text(json.dumps({
+                "interaction_probes": [{"success": False, "usage_extracted": False}]
+            }), encoding="utf-8")
+
+            report = module.benchmark([run], root)
+            item = report["runs"][0]
+            self.assertEqual(item["estimated_tokens_avoided"], 40)
+            self.assertEqual(item["estimated_time_avoided"], 6)
+            self.assertEqual(item["diagnostic_unavailable_usage"], 1)
+            self.assertEqual(report["estimated_tokens_avoided_total"], 40)
+            self.assertEqual(report["estimated_time_avoided_total"], 6)
+            self.assertIsNone(report["diagnostic_input_tokens_total"])
+            markdown = module.render_markdown(report)
+            self.assertIn("| Estimated tokens avoided | 40 |", markdown)
+            self.assertIn("| Diagnostic unavailable usage | 1 |", markdown)
+
+
 if __name__ == "__main__":
     unittest.main()

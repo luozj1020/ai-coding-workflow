@@ -102,13 +102,15 @@ The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VE
 | **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
 | **Claude provider check** | Show the effective CC Switch endpoint/model without secrets | `python scripts/claude-healthcheck.py` |
 | **Claude endpoint probe** | Advisory network evidence; transient failure does not block dispatch | `python scripts/claude-healthcheck.py --probe` |
-| **Claude interaction probe** | Send fixed `你好` in the dispatch network context; restricted-sandbox failure is inconclusive and user-terminal success wins | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 40` |
+| **Claude interaction probe** | Send fixed `你好` in the dispatch network context; restricted-sandbox failure is inconclusive and user-terminal success wins | `python scripts/claude-healthcheck.py --interaction-route auto --timeout 60` |
 | **Advisor continuation packet** | Continue useful on-plan work after one semantic blocker answer | `python scripts/aiwf.py advisor-continuation --help` |
 | **Cross-sandbox process check** | Treat invisible dispatch PIDs as unknown, never as permission to launch a duplicate Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Classify Claude round** | Decide whether a failure counts toward takeover | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **Validate Claude context** | Check execution-only packet density | `python scripts/validate-claude-context.py task.md --require-complete` |
 | **Preview integrated run** | Inspect every phase without model calls | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 | **Execute integrated run** | Run the reviewed plan | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute` |
+
+Advisor calls require a non-empty request/evidence binding and an explicit one-call cap. The Broker enforces the same `request_id` cap across roles and records interrupts as cancelled. Fixed Claude probes are `diagnostic_call` entries that never consume Builder, takeover, or success budgets. Same-worktree continuation audits feed summary/benchmark metrics without inventing token or time savings.
 
 These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create or refresh the target repository's `ai/` directory. Already bootstrapped projects keep local copies of `ai/dispatch-to-claude.sh`, `ai/task-card-template.md`, and other workflow files. Use `update_skill.py --bootstrap-current` or `install_workflow.py . --update-workflow-files` to refresh those local copies after updating the Skill.
 
@@ -528,7 +530,7 @@ Phase ownership is explicit:
 | Checker/Test | Validation task dispatch and evidence review | Assigned tests, assigned validation, failure evidence |
 | Final Review | Accept / revise / split / reject; human merge stays separate | N/A unless re-dispatched |
 
-Small low-risk edits can use a Codex-only fast path instead of dispatching Claude. Use it only when the change is local, expected to touch no more than two small files, needs no broad context, has no public API/data/security/migration/permission/concurrency/cross-module contract risk, and has narrow validation or an explicit validation-skip reason. Record why Claude was not dispatched, files touched, validation evidence, and the condition that would have escalated to Claude. If scope expands or uncertainty appears, stop and return to task-card + Claude dispatch.
+Small local edits can use a Codex-only fast path instead of dispatching Claude when calibrated size, file count, context sufficiency, solution clarity, confidence, and delegation economics favor it. Risk flags normally increase review, validation, isolation, or approval rigor rather than choosing ownership. They must never push work from Codex to Claude; an explicit risk-based owner override may bias only toward Codex. Record why Claude was not dispatched, files touched, validation evidence, and the material scope/solution/context expansion that would trigger a fresh route decision.
 
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 
@@ -576,7 +578,7 @@ If your Codex quota separates `gpt-5.3-codex-spark` from stronger models, leave 
 
 - `auto`: stage routing / bundle selection. It resolves to an applicable stage bundle: ordinary pre-Builder use resolves to `preflight-bundle`, diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility.
 - `task-size-classifier`: classify tiny/small/medium/large/unknown and recommend `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`. Includes execution-cost fields when available.
-- `execution-cost-estimator`: read-only mode that predicts diff range/files and relative direct/delegated work units for a task. Work units are relative estimates, not token-accounting measurements. The estimator returns machine-readable fields: `predicted_diff_lines_low`, `predicted_diff_lines_high`, `predicted_files`, `context_scope`, `validation_complexity`, `delegation_overhead`, `estimated_direct_work_units`, `estimated_delegated_work_units`, `delegation_to_direct_ratio`, `economic_recommendation`, `safety_eligible`, `recommended_owner`, `confidence`, `risk_flags`, `reason`, and `stop_condition`. Codex fast path is allowed only when the economic recommendation favors it AND the deterministic safety gate passes: <=2 files, local context, low/none validation, high confidence, no risk flags, and upper diff within the configured threshold. The threshold is controlled by `--fast-path-max-diff-lines N` or `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 100, valid 1..200). This is a pre-dispatch fast-path decision, not a post-Claude takeover; it never automatically edits source. The estimator is also included in `preflight-bundle` and `task-size-classifier` output.
+- `execution-cost-estimator`: read-only mode that predicts diff range/files and relative direct/delegated work units. Run it before every task-card authoring event, including `--routing-event revision`, `narrow`, `retry`, and `next-phase`; an earlier estimate does not authorize a later card. The helper calibrates Spark's raw upper line estimate by 1.5× normally and 2.0× for tests/fixtures, shell/process orchestration, and cross-platform work. Owner routing uses calibrated size/files, context sufficiency, solution clarity, confidence, and delegation overhead. Risk flags and validation complexity normally affect review/validation/isolation rigor only—not Codex-versus-Claude ownership. Risk must never push a task from Codex to Claude; an explicit human/policy risk override may bias high-risk work only toward Codex. Actual edits may exceed the estimate while scope, solution, and context remain stable.
 
 Run early routing before writing a full task card:
 
@@ -584,10 +586,11 @@ Run early routing before writing a full task card:
 bash ai/run-codex-spark.sh \
   --brief "Goal: fix one parser branch. Evidence: likely one file. Risks: none known. Validation: one focused test." \
   --mode execution-cost-estimator \
+  --routing-event initial \
   --result-mode direct
 ```
 
-`--brief-file PATH` and `--stdin-brief` are also supported. Brief input is limited to early read-only routing modes. If Spark recommends Codex fast path and the deterministic safety gate passes, Codex edits directly without generating a full task card. Otherwise Codex uses the estimate to author the smaller, execution-specific task card sent downstream.
+`--brief-file PATH` and `--stdin-brief` are also supported. Brief input is limited to early read-only routing modes. Repeat this route step before every revised, narrowed, retried, re-dispatched, split-child, or next-phase card with the matching `--routing-event`. If Spark recommends Codex fast path and the deterministic owner gate passes, Codex edits directly without generating a full task card. Otherwise Codex uses the estimate to author the smaller, execution-specific task card sent downstream.
 - `review-only`: quick read-only critique of the task card or likely direction.
 - `task-card-audit`: check missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
 - `plan-splitter`: propose smaller Builder/Checker task cards or independent parallelizable slices.
@@ -606,7 +609,7 @@ bash ai/run-codex-spark.sh \
 - `postflight-bundle`: read-only stage bundle for diff/report/evidence use.
 - `revision-drafter`: read-only mode for drafting revision instructions.
 - `lesson-extractor`: read-only mode for extracting lessons from completed work.
-- `execution-cost-estimator`: read-only mode that predicts diff range/files and relative direct/delegated work units. Work units are relative estimates, not token-accounting measurements. Included in `preflight-bundle` and `task-size-classifier` output. Codex fast path is allowed only when the economic recommendation favors it AND the deterministic safety gate passes. Threshold: `--fast-path-max-diff-lines N` / `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 100, valid 1..200). Pre-dispatch decision only; never automatically edits source.
+- `execution-cost-estimator`: read-only mode that predicts diff range/files and relative direct/delegated work units. Work units are relative estimates, not token-accounting measurements. Included in `preflight-bundle` and `task-size-classifier` output. Before every task-card authoring event, run a fresh estimate and identify the event with `--routing-event`. The helper uses the calibrated upper bound (1.5x normally, 2.0x for orchestration/test/cross-platform work) for the deterministic owner gate. Risk normally affects downstream rigor rather than Codex-versus-Claude ownership; it must never push work from Codex to Claude, and any explicit risk-based owner override is Codex-only. Threshold: `--fast-path-max-diff-lines N` / `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 100, valid 1..200). Pre-dispatch decision only; never automatically edits source.
 
 Bundle output uses seven compressed headings: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
 
@@ -618,7 +621,7 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 
 When using explicit `task-size-classifier` mode or conservative auto routing (balanced/aggressive ordinary preflight is `preflight-bundle`), the helper runs Codex from the Spark artifact directory with `workspace-write` sandbox. This gives local helper initialization a writable working directory without granting write access to the source repository, and the mode contract still forbids source edits.
 
-The `execution-cost-estimator` mode and its inclusion in `preflight-bundle`/`task-size-classifier` support a `--fast-path-max-diff-lines N` flag (also `CODEX_FAST_PATH_MAX_DIFF_LINES`) to configure the upper diff-line threshold for Codex fast-path eligibility. Default is 100, valid range is 1..200. When the predicted upper diff bound exceeds this threshold, the safety gate rejects Codex fast path regardless of the economic recommendation.
+The `execution-cost-estimator` mode and its inclusion in `preflight-bundle`/`task-size-classifier` support a `--fast-path-max-diff-lines N` flag (also `CODEX_FAST_PATH_MAX_DIFF_LINES`) to configure the calibrated upper diff-line threshold for Codex fast-path eligibility. Default is 100, valid range is 1..200. The helper multiplies Spark's raw upper estimate by 1.5 or 2.0 before comparing it with this threshold. When that calibrated upper bound exceeds the threshold, the owner gate rejects Codex fast path regardless of the economic recommendation. Exceeding the estimate during an otherwise stable edit is not itself a stop condition.
 
 Run an evidence check:
 

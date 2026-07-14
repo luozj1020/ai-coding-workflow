@@ -136,6 +136,9 @@ def _run_model_call_broker(
     plan_path: Optional[Path] = None,
     run_id: Optional[str] = None,
     reservation_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    call_cap: Optional[int] = None,
+    call_type: Optional[str] = None,
 ) -> int:
     """Run the model-call-broker with the given arguments. Returns exit code."""
     cmd = [
@@ -155,6 +158,12 @@ def _run_model_call_broker(
         cmd += ["--run-id", run_id]
     if reservation_id:
         cmd += ["--reservation-id", reservation_id]
+    if request_id:
+        cmd += ["--request-id", request_id]
+    if call_cap is not None:
+        cmd += ["--call-cap", str(call_cap)]
+    if call_type:
+        cmd += ["--call-type", call_type]
 
     model_cmd = _build_model_command(role)
     if not model_cmd:
@@ -191,9 +200,35 @@ def main(argv: Optional[list[str]] = None) -> int:
     task_id = args.task_id or packet["task_id"]
     request_id = packet.get("request_id", "")
     evidence_hash = packet.get("evidence_hash", "")
+    packet_call_cap = packet.get("call_cap")
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Validate packet bindings before any model call.
+    # request_id and evidence_hash must be non-empty strings.
+    if not isinstance(request_id, str) or not request_id.strip():
+        _write_json(output_dir / "advisor-call-result.json", {
+            "ok": False,
+            "reason": "invalid-packet: request_id must be a non-empty string",
+            "task_id": task_id,
+        })
+        return 2
+    if not isinstance(evidence_hash, str) or not evidence_hash.strip():
+        _write_json(output_dir / "advisor-call-result.json", {
+            "ok": False,
+            "reason": "invalid-packet: evidence_hash must be a non-empty string",
+            "task_id": task_id,
+        })
+        return 2
+    # call_cap must be integer exactly 1 (boolean is invalid).
+    if isinstance(packet_call_cap, bool) or not isinstance(packet_call_cap, int) or packet_call_cap != 1:
+        _write_json(output_dir / "advisor-call-result.json", {
+            "ok": False,
+            "reason": f"invalid-packet: call_cap must be integer 1, got {type(packet_call_cap).__name__}={packet_call_cap!r}",
+            "task_id": task_id,
+        })
+        return 2
 
     # Validate prompt exists and is non-empty
     if not args.prompt.is_file() or args.prompt.stat().st_size == 0:
@@ -350,6 +385,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         plan_path=args.plan,
         run_id=run_id,
         reservation_id=reservation_id,
+        request_id=request_id,
+        call_cap=packet_call_cap,
+        call_type="advisor_call",
     )
 
     # Clean up transient CODEX_HOME (retain broker/result diagnostics)

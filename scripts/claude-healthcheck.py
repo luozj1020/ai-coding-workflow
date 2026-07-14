@@ -83,16 +83,58 @@ def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]
     started = time.monotonic()
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt],
+            ["claude", "-p", prompt, "--output-format", "json"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, env=env,
         )
         elapsed = round(time.monotonic() - started, 3)
-        return {"route": route, "success": result.returncode == 0 and bool(result.stdout.strip()),
-                "exit_code": result.returncode, "elapsed_seconds": elapsed, "timed_out": False}
+        success = result.returncode == 0 and bool(result.stdout.strip())
+        probe: Dict[str, Any] = {
+            "route": route, "success": success,
+            "exit_code": result.returncode, "elapsed_seconds": elapsed, "timed_out": False,
+        }
+        # Extract usage/cost from JSON output when available.
+        # A non-empty legacy response may still establish interaction with
+        # usage explicitly unavailable.
+        if success and result.stdout.strip():
+            try:
+                data = json.loads(result.stdout)
+                usage = data.get("usage", {})
+                model_usage = data.get("modelUsage", {})
+                cost = data.get("total_cost_usd")
+                model = data.get("model")
+                duration_ms = data.get("duration_ms")
+                if usage:
+                    tokens_in = usage.get("input_tokens")
+                    tokens_out = usage.get("output_tokens")
+                    if tokens_in is not None:
+                        probe["tokens_in"] = tokens_in
+                    if tokens_out is not None:
+                        probe["tokens_out"] = tokens_out
+                if model_usage:
+                    probe["model_usage"] = model_usage
+                if cost is not None:
+                    probe["cost_usd"] = cost
+                else:
+                    probe["cost_usd"] = "unavailable"
+                if model is not None:
+                    probe["model"] = model
+                if duration_ms is not None:
+                    probe["duration_ms"] = duration_ms
+                probe["usage_extracted"] = bool(usage or model_usage or cost is not None)
+            except (json.JSONDecodeError, TypeError, KeyError):
+                # Non-JSON or malformed output: interaction established
+                # but usage explicitly unavailable.
+                probe["usage_extracted"] = False
+                probe["cost_usd"] = "unavailable"
+        else:
+            probe["usage_extracted"] = False
+            probe["cost_usd"] = "unavailable"
+        return probe
     except subprocess.TimeoutExpired:
         return {"route": route, "success": False, "exit_code": None,
-                "elapsed_seconds": round(time.monotonic() - started, 3), "timed_out": True}
+                "elapsed_seconds": round(time.monotonic() - started, 3), "timed_out": True,
+                "usage_extracted": False, "cost_usd": "unavailable"}
 
 
 def restricted_network_environment() -> bool:
@@ -113,7 +155,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Fail when the optional endpoint probe fails; default is advisory.",
     )
-    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--interaction-route", choices=["auto", "inherit", "direct", "compare"],
                         help="Run a real minimal interaction; auto tries the alternate only after failure.")

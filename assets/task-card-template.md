@@ -216,7 +216,7 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 
 <!-- This gate records a routing decision that should normally be made from a short Spark task brief BEFORE this full task card is authored. If Codex fast path is selected, record the decision in final evidence instead of completing the remaining delegation-only card. -->
 
-<!-- Fill before dispatch. If every row supports direct Codex editing, Codex may skip Claude dispatch for this task and perform the bounded edit directly. If the edit grows beyond this gate, stop and return to task-card + Claude dispatch. -->
+<!-- Fill before dispatch. If every owner-routing row supports direct Codex editing, Codex may skip Claude dispatch for this task and perform the bounded edit directly. Risk rows set downstream rigor, not ownership. If scope, solution, or required context materially expands, stop and route again before authoring a delegation card. -->
 
 | Field | Value |
 |-------|-------|
@@ -224,30 +224,33 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 | Expected files touched | <=2 / >2 |
 | Files small and targeted? | yes/no |
 | Change type | docs/comment/test assertion/log text/mechanical helper fix/other |
-| Public API, data model, security, migration, permission, concurrency impact? | no / yes + explain |
+| Public API, data model, security, migration, permission, concurrency impact? | no / yes + explain downstream rigor |
 | Broad repository context needed? | no / yes |
-| Cross-module contract risk? | no / yes |
-| Test design or complex validation needed? | no / yes |
+| Cross-module contract risk? | no / yes + explain downstream rigor |
+| Test design or complex validation needed? | no / yes + explain downstream rigor |
 | Direct Codex edit allowed? | yes/no |
 | Reason for skipping Claude dispatch | |
 | Narrow validation or reason skipped | |
-| Escalate to Claude if | files >2 / scope expands / uncertainty appears / validation needs Checker/Test |
+| Route again if | files >2 / scope or solution expands / required context becomes non-local / confidence drops |
 
 Fast path rules:
-- Use only for small, local, low-risk edits where Claude dispatch overhead would cost more than the change.
-- Do not use for public API, data shape, security, migration, permission, concurrency, broad refactor, or cross-module contract changes.
-- Spark is optional on obvious fast path edits. When task size is unclear, prefer Spark `task-size-classifier` before spending stronger Codex/Claude context.
+- Use for small, local, sufficiently clear edits where Claude dispatch overhead would cost more than the change.
+- Risk does not choose Codex versus Claude. Public API, data shape, security, migration, permission, concurrency, and cross-module flags increase review, validation, isolation, or approval rigor.
+- Run Spark from the short brief before authoring any full task card. A deterministic Express/tiny skip may avoid both Spark and the delegation card when its skip reason is recorded.
 - Record the reason Claude was not dispatched and preserve narrow validation evidence or an explicit validation-skip reason.
 
 ## Execution Cost / Fast Path Gate
 
-<!-- Fill before dispatch when Spark `execution-cost-estimator` or `task-size-classifier` is used. This gate captures the machine-readable cost estimate and the deterministic safety gate result. The Codex fast path is allowed only when the economic recommendation favors it AND the safety gate passes. -->
+<!-- Fill before dispatch when Spark `execution-cost-estimator`, `task-size-classifier`, or `preflight-bundle` is used. This gate captures the machine-readable cost estimate and deterministic owner result. The Codex fast path is allowed only when the economic recommendation favors it AND the deterministic owner gate passes. -->
 
 | Field | Value |
 |-------|-------|
 | Predicted diff lines (low) | <!-- integer --> |
 | Predicted diff lines (high) | <!-- integer --> |
 | Predicted files | <!-- integer or unknown --> |
+| Routing event | initial / revision / narrow / retry / next-phase |
+| Estimate calibration multiplier | 1.5 default / 2.0 orchestration-test-cross-platform |
+| Calibrated predicted diff high | <!-- ceil(raw high × multiplier) --> |
 | Estimated direct work units | <!-- positive integer; relative, not token accounting --> |
 | Estimated delegated work units | <!-- positive integer; relative, not token accounting --> |
 | Delegation-to-direct ratio | <!-- decimal --> |
@@ -256,7 +259,7 @@ Fast path rules:
 | Delegation overhead | low / medium / high |
 | Economic recommendation | codex-fast-path / claude-builder |
 | Safety eligible | yes / no |
-| Safety reasons | <!-- e.g., <=2 files, local context, low validation, high confidence, no risk flags, upper diff within threshold --> |
+| Owner routing reasons | <!-- calibrated size/files, context, solution clarity, confidence, delegation overhead --> |
 | Risk flags | none / comma-separated flags |
 | Spark confidence | high / medium / low |
 | Final owner decision | codex-fast-path / claude-builder / spec-first / human-clarification |
@@ -266,9 +269,13 @@ Fast path rules:
 
 Execution cost rules:
 - This is a pre-dispatch fast-path decision, not a post-Claude takeover.
-- Codex fast path is allowed only when the economic recommendation favors it AND the deterministic safety gate passes: <=2 files, local context, low/none validation, high confidence, no risk flags, upper diff within threshold.
+- Run a fresh Spark estimate before every initial/revision/narrow/retry/next-phase task card. Do not reuse an earlier card's owner decision.
+- Risk flags and validation complexity set review/validation/isolation rigor; they do not choose the implementation owner.
+- Risk must never push a task from Codex to Claude. If an explicit human/policy risk override is applied, it may bias high-risk work only toward Codex and must be recorded separately from the economic recommendation.
+- Calibrate Spark's upper line estimate by 1.5 normally and 2.0 for tests/fixtures, shell/process orchestration, or cross-platform work.
+- Actual edits may exceed the estimate while scope, solution, and context remain stable; re-route only on material expansion.
 - Work units are relative estimates, not claimed token-accounting measurements.
-- If economic recommendation is Codex but safety eligibility is no, final owner is Claude/spec/human, never Codex fast path.
+- The deterministic owner decision may override a risk-based model owner recommendation; risk remains visible for downstream rigor.
 - Spark recommendation is advisory; Codex reviews and makes the final owner decision.
 - Configure the fast-path threshold with `--fast-path-max-diff-lines N` or `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 100, valid 1..200).
 
@@ -356,7 +363,9 @@ Loop type guide:
 | Advisor timing | after orientation / before first write / before final report / when stuck / reconcile conflict |
 | Read-only orientation required before advisor? | yes/no |
 | Required before state-changing edit? | yes/no |
+| Advisor request ID | <!-- stable non-empty idempotency key --> |
 | Max advisor calls for this task | |
+| Effective advisor call cap | 1 |
 | Advisor output budget | words/tokens cap, if any |
 | Advisor result visibility | plaintext / redacted / unavailable / not applicable |
 | Reconcile conflicts with local evidence? | yes/no |
@@ -374,6 +383,7 @@ Advisor timing rules:
 - If local evidence conflicts with advisor guidance, record the conflict and reconcile before changing direction.
 - If the advisor result is redacted or unavailable to Codex, report the advice category, whether it was followed, and any stop reason/truncation signal.
 - In-place continuation is fail-closed and limited to one advisor answer per phase. Zero progress, transport, approval, direction deviation, repeat use, unsafe evidence, or unresolved scope expansion must stop instead of generating a continuation card.
+- The advisor packet must bind a non-empty request/evidence pair and declare a call cap of exactly one; the Broker enforces that request ID across roles.
 
 ## Codex Spark Gate
 
@@ -431,7 +441,7 @@ Spark rules:
 - For non-Express work, pre-task-card Spark routing is the default. Skip only with a stable reason code and preserve that reason in execution evidence.
 - `aiwf efficient prepare` is model-free but emits the invoke/skip decision. `aiwf dispatch-efficient --execute` runs a planned non-Express `preflight-bundle` before Claude, persists minimal evidence plus `spark-dispatch.json`, and continues if Spark auto-disables or fails. Preview invokes no model.
 - Use `postflight-bundle` to compress non-empty diff/report evidence before semantic Codex review unless deterministic evidence already closes the milestone.
-- When `Spark purpose` is `auto`, use stage routing / bundle selection; prefer an explicit `Spark purpose` when Codex already knows the needed support role. Use `auto` only for low-risk helper routing when task size or artifact type is uncertain.
+- When `Spark purpose` is `auto`, use stage routing / bundle selection; prefer an explicit `Spark purpose` when Codex already knows the needed support role. Use `auto` for ordinary helper routing when task size or artifact type is uncertain.
 - `--mode auto` resolves to an applicable stage bundle: ordinary pre-Builder use resolves to `preflight-bundle`, diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility.
 - Budget mode (`AI_SPARK_BUDGET_MODE` / `--budget-mode`): `balanced` is the default, `aggressive` enables additional revision drafting on failure, and `conservative` uses legacy single-role routing.
 - Recommend at most three short Spark helper invocations per task: a preflight call, an optional targeted or failure role call, and a postflight call. This is a workflow recommendation, not cross-process daemon or state enforcement.

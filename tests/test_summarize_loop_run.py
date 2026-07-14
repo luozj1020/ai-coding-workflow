@@ -278,7 +278,6 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["artifacts"]["events"], 1)
             self.assertEqual(summary["artifacts"]["task_card"], 1)
             self.assertEqual(summary["artifacts"]["spark_report"], 0)
-
             markdown = module.render_markdown(summary)
             self.assertIn("## Speed", markdown)
             self.assertIn("| claude_execution_seconds | 3 |", markdown)
@@ -290,6 +289,44 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertIn("| acceptance_satisfied_by_spark | no |", markdown)
             self.assertIn("## Claude Evidence Classification", markdown)
             self.assertIn("| evidence_state | valid report without diff |", markdown)
+
+    def test_continuation_and_diagnostic_metrics_use_only_explicit_numbers(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            audit = root / "run.advisor-continuation-audit.json"
+            audit.write_text(json.dumps({
+                "schema_version": 1, "accepted": True, "succeeded": True,
+                "same_worktree": True, "full_redispatch_avoided": True,
+                "reexploration_suspected": "no",
+                "reexploration_reason": "early_change_scope_passed",
+                "estimated_tokens_avoided": 25, "estimated_time_avoided": 4.5,
+                "first_worktree_change_seconds": 30, "model_turn_count": 2,
+            }), encoding="utf-8")
+            bool_audit = root / "bool.advisor-continuation-audit.json"
+            bool_audit.write_text(json.dumps({
+                "schema_version": 1, "estimated_tokens_avoided": True,
+                "estimated_time_avoided": False,
+                "first_worktree_change_seconds": True,
+                "model_turn_count": False, "reexploration_suspected": "unknown",
+            }), encoding="utf-8")
+            health = root / "run.interaction-health.json"
+            health.write_text(json.dumps({"interaction_probes": [
+                {"success": True, "tokens_in": 10, "tokens_out": 3, "cost_usd": 0.2},
+                {"success": False, "tokens_in": True, "tokens_out": False},
+                "malformed",
+            ]}), encoding="utf-8")
+
+            continuation = module.parse_continuation_audits([audit, bool_audit])
+            diagnostic = module.parse_diagnostic_probes([health])
+            self.assertEqual(continuation["estimated_tokens_avoided"], 25)
+            self.assertEqual(continuation["estimated_time_avoided"], 4.5)
+            self.assertEqual(continuation["first_worktree_change_values"], [30])
+            self.assertEqual(continuation["model_turn_count_values"], [2])
+            self.assertEqual(diagnostic["diagnostic_call_count"], 2)
+            self.assertEqual(diagnostic["diagnostic_input_tokens"], 10)
+            self.assertEqual(diagnostic["diagnostic_output_tokens"], 3)
+            self.assertEqual(diagnostic["diagnostic_unavailable_usage"], 1)
 
     def test_classifies_accepted_diff_without_valid_report(self):
         module = load_module()
