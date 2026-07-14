@@ -732,14 +732,19 @@ print_snapshot() {
         action="$(recommended_action "$running" "$elapsed" "$quiet" "$result_bytes" "$status_bytes" "$claude_progress_bytes" "$worktree_changes" "$evidence")"
     fi
     if monitor_suspect_snapshot "$running" "$elapsed" "$quiet" "$worktree_changes" "$action"; then
-        monitor_suspect_count=$((monitor_suspect_count + 1))
+        if [ "$monitor_suspect_count" -lt "$ESCALATION_CONFIRMATIONS" ]; then
+            monitor_suspect_count=$((monitor_suspect_count + 1))
+        fi
     else
         monitor_suspect_count=0
     fi
     monitor="$(monitor_plan "$running" "$elapsed" "$quiet" "$worktree_changes" "$action" "$monitor_suspect_count")"
     level="$(monitor_level "$running" "$elapsed" "$quiet" "$worktree_changes" "$monitor_suspect_count")"
 
-    digest="${running}|${overall_running}|${elapsed}|${quiet}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${reason}|${action}|${monitor}|${level}|${monitor_suspect_count}|${dispatcher_running}|${claude_running}|${checker_running}"
+    # Deliberately exclude elapsed/quiet seconds and their prose reason from the
+    # event identity. Ordinary heartbeats must not wake an observing controller;
+    # artifact, evidence, action/level, role, or terminal-state changes still do.
+    digest="${running}|${overall_running}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${action}|${monitor}|${level}|${monitor_suspect_count}|${dispatcher_running}|${claude_running}|${checker_running}"
     if [ "$digest" != "$last_digest" ]; then
         if [ "$running" = "yes" ]; then
             if [ "$checker_running" = "running" ]; then
@@ -797,13 +802,6 @@ print_snapshot() {
             echo ""
         fi
         last_digest="$digest"
-    else
-        # Unchanged terminal state: still emit a machine snapshot line
-        if [ "$PLAIN" -eq 1 ]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" quiet_seconds=${quiet} suspect_count=${monitor_suspect_count} running=${running} overall_running=${overall_running} dispatcher=${dispatcher_running} claude=${claude_running} checker=${checker_running} elapsed_seconds=${elapsed}"
-        else
-            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" quiet_seconds=%s suspect_count=%s running=%s overall_running=%s dispatcher=%s claude=%s checker=%s elapsed_seconds=%s\n' "$level" "$action" "$evidence" "$quiet" "$monitor_suspect_count" "$running" "$overall_running" "$dispatcher_running" "$claude_running" "$checker_running" "$elapsed"
-        fi
     fi
 
     show_details=0

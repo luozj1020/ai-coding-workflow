@@ -987,6 +987,48 @@ class InstallWorkflowTests(unittest.TestCase):
                           "dispatcher=", "claude=", "checker="):
                 self.assertIn(field, line, f"Missing {field} in watch machine line")
 
+    def test_watch_suppresses_unchanged_heartbeat_snapshots(self):
+        """A live but unchanged dispatch emits its initial snapshot once; elapsed
+        and quiet-second heartbeats must not continuously wake observers."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-000000"
+            worktrees = self._setup_worktree(repo, task_id)
+            bash_exe = load_module()._find_bash()
+            sleeper = subprocess.Popen(
+                [bash_exe, "-c", "echo $$; exec sleep 60"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8",
+            )
+            watcher = None
+            try:
+                live_pid = sleeper.stdout.readline().strip()
+                (worktrees / f"{task_id}.dispatcher.pid").write_text(live_pid, encoding="utf-8")
+                (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
+                (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
+                watcher = subprocess.Popen(
+                    [bash_exe, str(repo / "ai" / "watch-claude.sh"),
+                     task_id, "--plain", "--interval", "1"],
+                    cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                try:
+                    stdout, _ = watcher.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    watcher.terminate()
+                    stdout, _ = watcher.communicate(timeout=10)
+            finally:
+                if watcher is not None and watcher.poll() is None:
+                    watcher.kill()
+                    watcher.wait(timeout=10)
+                sleeper.terminate()
+                sleeper.wait(timeout=10)
+
+            snapshots = [line for line in stdout.splitlines() if " state=" in line]
+            self.assertEqual(snapshots, [snapshots[0]] if snapshots else [], stdout)
+            self.assertEqual(len(snapshots), 1, stdout)
+
     def test_watch_machine_line_overall_running_includes_dispatcher(self):
         """Watch machine line overall_running=yes when only dispatcher is alive."""
         with tempfile.TemporaryDirectory() as tmp:
