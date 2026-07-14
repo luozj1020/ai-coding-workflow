@@ -69,6 +69,7 @@ CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-
 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-300}"
 CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-300}"
 CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS="${CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS:-60}"
+CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS="${CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS:-120}"
 if [ "$CLAUDE_CODE_PROXY_MODE" != "direct" ] && [ "$CLAUDE_CODE_PROXY_MODE" != "inherit" ]; then
     echo "Error: CLAUDE_CODE_PROXY_MODE must be 'direct' or 'inherit'." >&2
     exit 1
@@ -1388,6 +1389,7 @@ fi
     echo "- First-progress action: ${CLAUDE_CODE_FIRST_PROGRESS_ACTION}"
     echo "- Progress extension seconds: ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s"
     echo "- Growing progress extension seconds: ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}s"
+    echo "- Recent activity window seconds: ${CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS}s"
     echo "- API probe mode: ${CLAUDE_CODE_API_PROBE_MODE}"
     echo "- Probe environment: ${CLAUDE_CODE_PROBE_ENVIRONMENT}"
     echo ""
@@ -1445,6 +1447,7 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "base_timeout_seconds": %s,\n' "$CLAUDE_CODE_TIMEOUT_SECONDS"
     printf '  "progress_extension_seconds": %s,\n' "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
     printf '  "growing_progress_extension_seconds": %s,\n' "$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS"
+    printf '  "recent_activity_window_seconds": %s,\n' "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS"
     printf '  "probe_mode": "%s",\n' "$CLAUDE_CODE_API_PROBE_MODE"
     printf '  "probe_environment": "%s",\n' "$CLAUDE_CODE_PROBE_ENVIRONMENT"
     printf '  "first_progress_action": "%s"\n' "$CLAUDE_CODE_FIRST_PROGRESS_ACTION"
@@ -1935,6 +1938,12 @@ esac
 case "$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS" in
     ''|*[!0-9]*)
         echo "Error: CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS must be a non-negative integer." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS" in
+    ''|*[!0-9]*)
+        echo "Error: CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS must be a non-negative integer." >&2
         exit 1
         ;;
 esac
@@ -2825,52 +2834,65 @@ while claude_is_running; do
     fi
 
     if [ "$CLAUDE_CODE_TIMEOUT_SECONDS" -gt 0 ] && [ "$ELAPSED" -ge "$CLAUDE_CODE_TIMEOUT_SECONDS" ]; then
-        if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 0 ] && \
-           [ "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS" -gt 0 ] && \
-           [ "$FIRST_PROGRESS_DETECTED" -eq 1 ]; then
-            # A substantive diff/report/progress/blocker was observed during
-            # the base window.  Snapshot the deadline state and extend once;
-            # subsequent growth is measured from this snapshot.  Comparing
-            # the deadline state with itself would always reject extension.
-            TIMEOUT_EXTENSION_ACTIVE=1
-            TIMEOUT_EXTENSION_STARTED_EPOCH="$NOW_EPOCH"
-            TIMEOUT_EXTENSION_DEADLINE=$((NOW_EPOCH + CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS))
-            TIMEOUT_EXTENSION_REASON="active_progress_at_base_deadline"
-            EXTENSION_START_WORKTREE_DIGEST="$LAST_WORKTREE_DIGEST"
-            EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
-            EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
-            progress_log "Timeout extension started: base_timeout=${CLAUDE_CODE_TIMEOUT_SECONDS}s, extension=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s, deadline_epoch=${TIMEOUT_EXTENSION_DEADLINE}, reason=${TIMEOUT_EXTENSION_REASON}"
-        elif [ "$SECOND_EXTENSION_ACTIVE" -eq 1 ] && [ "$NOW_EPOCH" -ge "$SECOND_EXTENSION_DEADLINE" ]; then
-            # Second extension deadline reached — always stop.  No rolling extensions.
+        # --- Second extension deadline check (mutually exclusive: checked first) ---
+        # Once active, only this branch handles the second extension.  No rolling reset.
+        if [ "$SECOND_EXTENSION_ACTIVE" -eq 1 ] && [ "$NOW_EPOCH" -ge "$SECOND_EXTENSION_DEADLINE" ]; then
             CLAUDE_TIMED_OUT=1
             stop_claude "runtime timeout (second extension expired)" "$ELAPSED"
             break
-        elif [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 1 ] && [ "$NOW_EPOCH" -ge "$TIMEOUT_EXTENSION_DEADLINE" ]; then
-            # First extension deadline reached.  Stop only if no useful progress since extension start.
-            if ! progress_is_growing "$EXTENSION_START_WORKTREE_DIGEST" "$EXTENSION_START_REPORT_BYTES" "$EXTENSION_START_PROGRESS_BYTES"; then
-                CLAUDE_TIMED_OUT=1
-                stop_claude "runtime timeout (extension expired, no progress)" "$ELAPSED"
-                break
+        fi
+        # --- First extension deadline check ---
+        # When the first extension deadline is reached, either grant exactly one
+        # second extension (if progress is still growing) or terminate.
+        if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 1 ] && [ "$NOW_EPOCH" -ge "$TIMEOUT_EXTENSION_DEADLINE" ]; then
+            # Guard: skip if second extension is already active (deadline already set).
+            if [ "$SECOND_EXTENSION_ACTIVE" -eq 0 ]; then
+                if ! progress_is_growing "$EXTENSION_START_WORKTREE_DIGEST" "$EXTENSION_START_REPORT_BYTES" "$EXTENSION_START_PROGRESS_BYTES"; then
+                    CLAUDE_TIMED_OUT=1
+                    stop_claude "runtime timeout (extension expired, no progress)" "$ELAPSED"
+                    break
+                fi
+                if [ "$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS" -gt 0 ]; then
+                    SECOND_EXTENSION_ACTIVE=1
+                    SECOND_EXTENSION_STARTED_EPOCH="$NOW_EPOCH"
+                    SECOND_EXTENSION_DEADLINE=$((NOW_EPOCH + CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS))
+                    SECOND_EXTENSION_REASON="growth_at_first_extension_deadline"
+                    SECOND_EXTENSION_START_WORKTREE_DIGEST="$CURRENT_WORKTREE_DIGEST"
+                    SECOND_EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
+                    SECOND_EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
+                    progress_log "Second extension started: seconds=${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}, deadline_epoch=${SECOND_EXTENSION_DEADLINE}, reason=${SECOND_EXTENSION_REASON}"
+                else
+                    CLAUDE_TIMED_OUT=1
+                    stop_claude "runtime timeout (extension expired, progress was growing, second extension disabled)" "$ELAPSED"
+                    break
+                fi
             fi
-            # Progress is still growing at first extension deadline — grant one more
-            # bounded wait round instead of terminating.
-            if [ "$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS" -gt 0 ]; then
-                SECOND_EXTENSION_ACTIVE=1
-                SECOND_EXTENSION_STARTED_EPOCH="$NOW_EPOCH"
-                SECOND_EXTENSION_DEADLINE=$((NOW_EPOCH + CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS))
-                SECOND_EXTENSION_REASON="growth_at_first_extension_deadline"
-                SECOND_EXTENSION_START_WORKTREE_DIGEST="$CURRENT_WORKTREE_DIGEST"
-                SECOND_EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
-                SECOND_EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
-                progress_log "Second extension started: seconds=${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}, deadline_epoch=${SECOND_EXTENSION_DEADLINE}, reason=${SECOND_EXTENSION_REASON}"
+        fi
+        # --- Base timeout: start first extension if recent growth, else terminate ---
+        # Fires only once (TIMEOUT_EXTENSION_ACTIVE guard).  Requires activity
+        # within a bounded recent window so stale historical progress does not
+        # qualify for an extension.
+        if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 0 ] && \
+           [ "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS" -gt 0 ]; then
+            _RECENT_ACTIVITY_SECONDS=$((NOW_EPOCH - LAST_ACTIVITY_EPOCH))
+            if [ "$_RECENT_ACTIVITY_SECONDS" -le "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS" ] && \
+               [ "$FIRST_PROGRESS_DETECTED" -eq 1 ]; then
+                TIMEOUT_EXTENSION_ACTIVE=1
+                TIMEOUT_EXTENSION_STARTED_EPOCH="$NOW_EPOCH"
+                TIMEOUT_EXTENSION_DEADLINE=$((NOW_EPOCH + CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS))
+                TIMEOUT_EXTENSION_REASON="recent_growth_at_base_deadline"
+                EXTENSION_START_WORKTREE_DIGEST="$LAST_WORKTREE_DIGEST"
+                EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
+                EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
+                progress_log "Timeout extension started: base_timeout=${CLAUDE_CODE_TIMEOUT_SECONDS}s, extension=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s, deadline_epoch=${TIMEOUT_EXTENSION_DEADLINE}, reason=${TIMEOUT_EXTENSION_REASON}, recent_activity_seconds=${_RECENT_ACTIVITY_SECONDS}"
             else
-                # Second extension disabled — stop as before.
                 CLAUDE_TIMED_OUT=1
-                stop_claude "runtime timeout (extension expired, progress was growing, second extension disabled)" "$ELAPSED"
+                TIMEOUT_EXTENSION_REASON="stale_progress_at_base_deadline"
+                stop_claude "runtime timeout (stale progress: last activity ${_RECENT_ACTIVITY_SECONDS}s ago)" "$ELAPSED"
                 break
             fi
         elif [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 0 ]; then
-            # No extension configured or no progress — hard timeout.
+            # Extension feature disabled or no extension seconds configured.
             CLAUDE_TIMED_OUT=1
             stop_claude "runtime timeout" "$ELAPSED"
             break
@@ -2963,6 +2985,9 @@ elif [ "$CLAUDE_TIMED_OUT" -eq 1 ]; then
             echo "[dispatch] Extension start progress bytes: ${EXTENSION_START_PROGRESS_BYTES}"
         else
             echo "[dispatch] Progress extension used: no"
+            if [ -n "${TIMEOUT_EXTENSION_REASON:-}" ]; then
+                echo "[dispatch] Base timeout reason: ${TIMEOUT_EXTENSION_REASON}"
+            fi
         fi
         if [ "$SECOND_EXTENSION_ACTIVE" -eq 1 ]; then
             echo "[dispatch] Second extension used: yes"
@@ -3037,6 +3062,7 @@ PYEOF
             "${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}" "${_OBSERVATION_PROBE_RAN:-0}" \
             "${SECOND_EXTENSION_ACTIVE:-0}" "${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-0}" \
             "${SECOND_EXTENSION_REASON:-}" \
+            "${CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS:-120}" \
             <<'PYEOF'
 import json
 import sys
@@ -3068,7 +3094,8 @@ from pathlib import Path
     second_extension_active,
     second_extension_seconds,
     second_extension_reason,
-) = sys.argv[1:26]
+    recent_activity_window,
+) = sys.argv[1:27]
 
 payload = {
     "type": "claude_dispatch_fallback",
@@ -3089,6 +3116,8 @@ payload = {
     "timeout_extension_used": extension_active == "1",
     "timeout_extension_seconds": int(extension_seconds) if extension_active == "1" else 0,
     "timeout_extension_reason": extension_reason if extension_active == "1" else None,
+    "base_timeout_reason": extension_reason or None,
+    "recent_activity_window_seconds": int(recent_activity_window),
     "second_extension_used": second_extension_active == "1",
     "second_extension_seconds": int(second_extension_seconds) if second_extension_active == "1" else 0,
     "second_extension_reason": second_extension_reason if second_extension_active == "1" else None,
@@ -3124,6 +3153,8 @@ PYEOF
             _ext_reason=""
             if [ "${TIMEOUT_EXTENSION_ACTIVE:-0}" -eq 1 ]; then _ext_reason="${TIMEOUT_EXTENSION_REASON:-}"; fi
             echo "  \"timeout_extension_reason\": \"${_ext_reason}\","
+            echo "  \"base_timeout_reason\": \"${TIMEOUT_EXTENSION_REASON:-none}\","
+            echo "  \"recent_activity_window_seconds\": ${CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS:-120},"
             echo "  \"second_extension_used\": $([ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo true || echo false),"
             echo "  \"second_extension_seconds\": $([ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo "${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-0}" || echo 0),"
             _2nd_ext_reason=""
@@ -3917,6 +3948,8 @@ else
         if [ "${TIMEOUT_EXTENSION_ACTIVE:-0}" -eq 1 ]; then
             echo "- Extension seconds: ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-0}"
             echo "- Extension reason: ${TIMEOUT_EXTENSION_REASON:-}"
+        elif [ -n "${TIMEOUT_EXTENSION_REASON:-}" ]; then
+            echo "- Base timeout reason: ${TIMEOUT_EXTENSION_REASON}"
         fi
         echo "- Second extension used: $([ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo yes || echo no)"
         if [ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ]; then
