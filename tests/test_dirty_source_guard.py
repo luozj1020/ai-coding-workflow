@@ -103,12 +103,23 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         with open(fake, "w", encoding="utf-8", newline="\n") as f:
             f.write(
                 "#!/usr/bin/env bash\n"
+                "if [[ \"$*\" == *\"--help\"* ]]; then\n"
+                "  echo 'Usage: claude [options]'\n"
+                "  if [ -n \"${FAKE_CLAUDE_HELP_TOOLS_FLAG:-}\" ]; then\n"
+                "    echo '  --tools          Specify allowed tools'\n"
+                "  fi\n"
+                "  if [ -n \"${FAKE_CLAUDE_HELP_ALLOWED_FLAG:-}\" ]; then\n"
+                "    echo \"  ${FAKE_CLAUDE_HELP_ALLOWED_FLAG}   Specify allowed tool patterns\"\n"
+                "  fi\n"
+                "  exit 0\n"
+                "fi\n"
                 "if [[ \"$*\" == *\"你好\"* ]]; then\n"
                 "  if [ \"${FAKE_CLAUDE_HEALTHCHECK_FAIL:-0}\" = 1 ]; then exit 42; fi\n"
                 "  printf '你好！\\n'\n"
                 "  exit 0\n"
                 "fi\n"
                 "if [ -n \"${FAKE_CLAUDE_INVOCATION_LOG:-}\" ]; then printf 'invoke\\n' >> \"${FAKE_CLAUDE_INVOCATION_LOG}\"; fi\n"
+                "if [ -n \"${FAKE_CLAUDE_ARGV_LOG:-}\" ]; then printf '%s\\n' \"$*\" >> \"${FAKE_CLAUDE_ARGV_LOG}\"; fi\n"
                 "if [ -n \"${FAKE_CLAUDE_PROMPT_CAPTURE:-}\" ]; then\n"
                 "  cat > \"${FAKE_CLAUDE_PROMPT_CAPTURE}\"\n"
                 "else\n"
@@ -1603,6 +1614,497 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Advisor direction: unknown", status)
         self.assertIn("Advisor blocker kind: none", status)
         self.assertIn("Advisor used: false", status)
+
+    # --- Tool profile and validation allowlist tests ---
+
+    def _write_checker_card_with_validation(self, fences=None, mode="checker-test"):
+        """Write a checker task card with configurable validation fence blocks.
+
+        fences: list of (info_string, body) tuples for fenced code blocks.
+        """
+        if fences is None:
+            fences = [("validation", "true\n")]
+
+        fence_blocks = ""
+        for info, body in fences:
+            fence_blocks += f"```{info}\n{body}```\n\n"
+
+        task = self.repo / "task-cards" / "CHECKER_TP.md"
+        task.parent.mkdir(exist_ok=True)
+        task.write_text(
+            "# Checker Tool Profile Test\n\n"
+            "## Task Mode\n\n"
+            "| Field | Value |\n|---|---|\n| Mode | {} |\n\n"
+            "## Validation Contract\n\n"
+            "| Check | Value |\n|---|---|\n| Local validation allowed? | yes |\n\n"
+            "{}".format(mode, fence_blocks),
+            encoding="utf-8",
+        )
+        return task
+
+    def _write_builder_task_card_with_claude_context(self):
+        """Write a builder task card with execution-only eligible gates."""
+        task = self.repo / "task-cards" / "BUILDER_TP.md"
+        task.parent.mkdir(exist_ok=True)
+        task.write_text(
+            "# Builder Tool Profile Test\n\n"
+            "## Task Mode\n\n"
+            "| Field | Value |\n|---|---|\n| Mode | builder |\n\n"
+            "## Claude Context Packet\n\n"
+            "| Field | Value |\n|---|---|\n"
+            "| Target files | README.md |\n"
+            "| Execution-only eligible? | yes |\n"
+            "| Context is sufficient for execution? | yes |\n\n"
+            "## Handoff Contract\n\nEdit README.\n\n"
+            "## Acceptance Criteria\n\n- README changed\n\n"
+            "## Validation Contract\n\n"
+            "```validation\ntrue\n```\n\n"
+            "## Required Report\n\nReport files changed.\n",
+            encoding="utf-8",
+        )
+        return task
+
+    def test_invalid_tool_profile_fails_before_dispatch(self):
+        """Invalid CLAUDE_CODE_TOOL_PROFILE exits before dispatch."""
+        self._write_task_card()
+        result = self._dispatch(
+            "task-cards/PROJ.md",
+            {"CLAUDE_CODE_TOOL_PROFILE": "nonexistent"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CLAUDE_CODE_TOOL_PROFILE must be", result.stderr)
+        worktrees = self.repo / ".worktrees"
+        artifacts = sorted(p.name for p in worktrees.glob("claude-*")) if worktrees.exists() else []
+        self.assertEqual([], artifacts)
+
+    def test_invalid_validation_allowlist_fails_before_dispatch(self):
+        """Invalid CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST exits before dispatch."""
+        self._write_task_card()
+        result = self._dispatch(
+            "task-cards/PROJ.md",
+            {"CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST": "invalid"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST must be", result.stderr)
+        worktrees = self.repo / ".worktrees"
+        artifacts = sorted(p.name for p in worktrees.glob("claude-*")) if worktrees.exists() else []
+        self.assertEqual([], artifacts)
+
+    def test_auto_execution_only_builder_resolves_minimal_builder(self):
+        """Auto tool profile with execution-only Builder resolves minimal-builder."""
+        task = self._write_builder_task_card_with_claude_context()
+        self._run(["git", "add", "task-cards/BUILDER_TP.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add auto builder tp task"], cwd=self.repo)
+        result = self._dispatch(
+            "task-cards/BUILDER_TP.md",
+            {"CLAUDE_CODE_TOOL_PROFILE": "auto"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Tool Profile:    minimal-builder", result.stdout)
+
+    def test_standard_builder_resolves_locator_builder(self):
+        """Auto tool profile with standard Builder resolves locator-builder."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"CLAUDE_CODE_TOOL_PROFILE": "auto", "CLAUDE_CODE_BUILDER_MODE": "standard"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Tool Profile:    locator-builder", result.stdout)
+
+    def test_checker_test_resolves_checker(self):
+        """Auto tool profile with checker-test resolves checker."""
+        self._write_low_risk_checker_card()
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {"CLAUDE_CODE_TOOL_PROFILE": "auto"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Tool Profile:    checker", result.stdout)
+
+    def test_explicit_default_passes_no_tools_flags(self):
+        """Explicit default profile passes no --tools or --allowedTools."""
+        self._write_task_card()
+        argv_log = self.case_root / "argv-default.log"
+        result = self._dispatch(
+            "task-cards/PROJ.md",
+            {
+                "CLAUDE_CODE_TOOL_PROFILE": "default",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Tool Profile:    default", result.stdout)
+        # Verify no --tools or --allowedTools in claude argv
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertNotIn("--tools", argv_content)
+            self.assertNotIn("--allowedTools", argv_content)
+
+    def test_old_cli_neither_flag_degrades_to_legacy(self):
+        """Old CLI advertising neither --tools nor --allowedTools degrades to legacy."""
+        self._write_low_risk_checker_card()
+        argv_log = self.case_root / "argv-old-cli.log"
+        # FAKE_CLAUDE_HELP_TOOLS_FLAG and FAKE_CLAUDE_HELP_ALLOWED_FLAG unset
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("tool_profile_supported=no", result.stdout)
+        # Verify no --tools or --allowedTools in claude argv
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertNotIn("--tools", argv_content)
+            self.assertNotIn("--allowedTools", argv_content)
+
+    def test_partial_cli_only_tools_degrades_to_legacy(self):
+        """CLI advertising only --tools but not --allowedTools degrades to legacy."""
+        self._write_low_risk_checker_card()
+        argv_log = self.case_root / "argv-partial-cli.log"
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                # No FAKE_CLAUDE_HELP_ALLOWED_FLAG
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("tool_profile_supported=no", result.stdout)
+        # Verify no --tools or --allowedTools in claude argv
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertNotIn("--tools", argv_content)
+            self.assertNotIn("--allowedTools", argv_content)
+
+    def test_full_cli_advertising_both_flags_enables_profile(self):
+        """CLI advertising both --tools and --allowedTools enables tool profile."""
+        self._write_low_risk_checker_card()
+        argv_log = self.case_root / "argv-full-cli.log"
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("tool_profile_supported=yes", result.stdout)
+        self.assertIn("Tool Profile:    checker", result.stdout)
+        # Verify --tools appears in claude argv
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertIn("--tools", argv_content)
+            self.assertIn("--allowedTools", argv_content)
+
+    def test_full_cli_advertising_allowed_tools_hyphen_enables_profile(self):
+        """CLI advertising --tools and --allowed-tools (hyphenated) enables profile."""
+        self._write_low_risk_checker_card()
+        argv_log = self.case_root / "argv-hyphen-cli.log"
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowed-tools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("tool_profile_supported=yes", result.stdout)
+
+    def test_direct_and_broker_paths_receive_same_profile_flags(self):
+        """Direct/bypass and broker paths receive the same profile flags."""
+        self._write_low_risk_checker_card()
+        direct_argv_log = self.case_root / "argv-direct.log"
+        broker_argv_log = self.case_root / "argv-broker.log"
+        base_env = {
+            "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+            "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+        }
+        # Direct/bypass path
+        result_direct = self._dispatch(
+            "task-cards/CHECKER.md",
+            {**base_env, "AI_CODING_WORKFLOW_BYPASS_BROKER": "1",
+             "FAKE_CLAUDE_ARGV_LOG": str(direct_argv_log)},
+        )
+        self.assertEqual(result_direct.returncode, 0, result_direct.stderr + result_direct.stdout)
+        # Broker path (default when model-call-broker.py exists)
+        # Re-dispatch a fresh checker card
+        self._write_low_risk_checker_card()
+        result_broker = self._dispatch(
+            "task-cards/CHECKER.md",
+            {**base_env, "FAKE_CLAUDE_ARGV_LOG": str(broker_argv_log),
+             "CLAUDE_CODE_REUSE_WORKTREE_RESET": "1"},
+        )
+        self.assertEqual(result_broker.returncode, 0, result_broker.stderr + result_broker.stdout)
+        # Compare profile flags in both argv logs
+        if direct_argv_log.exists() and broker_argv_log.exists():
+            direct_argv = direct_argv_log.read_text(encoding="utf-8")
+            broker_argv = broker_argv_log.read_text(encoding="utf-8")
+            self.assertIn("--tools", direct_argv)
+            self.assertIn("--tools", broker_argv)
+            self.assertIn("--allowedTools", direct_argv)
+            self.assertIn("--allowedTools", broker_argv)
+
+    def test_checker_accepts_exact_commands_from_validation_fence(self):
+        """Checker accepts simple exact commands from validation fences."""
+        self._write_checker_card_with_validation([
+            ("validation", "python -m pytest -q\ngit diff --check\n"),
+        ])
+        argv_log = self.case_root / "argv-checker-validation.log"
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_accepted=2", result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertIn("Bash(python -m pytest -q)", argv_content)
+            self.assertIn("Bash(git diff --check)", argv_content)
+
+    def test_checker_accepts_commands_from_check_fence(self):
+        """Checker accepts commands from fences with 'check' in info string."""
+        self._write_checker_card_with_validation([
+            ("bash check", "bash -n scripts/dispatch-to-claude.sh\n"),
+        ])
+        argv_log = self.case_root / "argv-check-fence.log"
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_accepted=1", result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertIn("Bash(bash -n scripts/dispatch-to-claude.sh)", argv_content)
+
+    def test_comments_and_blank_lines_ignored_in_validation(self):
+        """Comments and blank lines in validation fences are ignored."""
+        self._write_checker_card_with_validation([
+            ("validation",
+             "# This is a comment\n"
+             "\n"
+             "   \n"
+             "python -m pytest -q\n"
+             "# Another comment\n"
+             "true\n"),
+        ])
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_accepted=2", result.stdout)
+
+    def test_unsafe_operators_rejected_in_validation(self):
+        """Shell operators ;, &&, ||, pipe, backticks, redirection are rejected."""
+        unsafe_commands = [
+            "echo hello; rm -rf /",
+            "true && false",
+            "false || true",
+            "cat file | grep pattern",
+            "echo `whoami`",
+            "echo hello > /tmp/out",
+            "echo hello < /tmp/in",
+        ]
+        fence_body = "\n".join(unsafe_commands) + "\ntrue\n"
+        self._write_checker_card_with_validation([("validation", fence_body)])
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        # Only "true" should be accepted
+        self.assertIn("allowlist_accepted=1", result.stdout)
+        self.assertIn("allowlist_unsafe=7", result.stdout)
+
+    def test_oversized_commands_rejected_in_validation(self):
+        """Commands over 500 characters are rejected and counted."""
+        long_cmd = "echo " + "x" * 500  # 505 chars total
+        self._write_checker_card_with_validation([
+            ("validation", long_cmd + "\ntrue\n"),
+        ])
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_accepted=1", result.stdout)
+        self.assertIn("allowlist_oversized=1", result.stdout)
+
+    def test_accepted_commands_beyond_12_overflow(self):
+        """More than 12 accepted commands count as overflow."""
+        cmds = "\n".join(f"cmd_{i}" for i in range(15)) + "\n"
+        self._write_checker_card_with_validation([("validation", cmds)])
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_accepted=12", result.stdout)
+        self.assertIn("allowlist_overflow=3", result.stdout)
+
+    def test_logs_contain_only_aggregate_counts_not_command_bodies(self):
+        """Progress logs contain aggregate counts, never rejected command bodies."""
+        self._write_checker_card_with_validation([
+            ("validation",
+             "echo secret_password_12345\n"
+             "echo hello; rm -rf /\n"
+             "true\n"),
+        ])
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        # Aggregate counts should appear
+        self.assertIn("allowlist_accepted=2", progress)
+        self.assertIn("allowlist_unsafe=1", progress)
+        # Rejected command bodies should NOT appear in progress
+        self.assertNotIn("secret_password_12345", progress)
+        self.assertNotIn("rm -rf", progress)
+
+    def test_no_wildcard_bash_or_permission_bypass_in_argv(self):
+        """No wildcard Bash(*) or permission bypass flags appear in constructed argv."""
+        self._write_checker_card_with_validation([
+            ("validation", "true\n"),
+        ])
+        argv_log = self.case_root / "argv-no-wildcard.log"
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertNotIn("Bash(*)", argv_content)
+            self.assertNotIn("--dangerously-skip-permissions", argv_content)
+            # Should have specific Bash(true) not wildcard
+            self.assertIn("Bash(true)", argv_content)
+
+    def test_default_profile_preserves_legacy_invocation(self):
+        """Default/unsupported profile preserves legacy invocation with no profile flags."""
+        self._write_task_card()
+        argv_log = self.case_root / "argv-legacy.log"
+        result = self._dispatch(
+            "task-cards/PROJ.md",
+            {
+                "CLAUDE_CODE_TOOL_PROFILE": "default",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Tool Profile:    default", result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            # Default profile should not add --tools or --allowedTools
+            self.assertNotIn("--tools", argv_content)
+            self.assertNotIn("--allowedTools", argv_content)
+
+    def test_unsupported_cli_preserves_legacy_invocation(self):
+        """Unsupported CLI (missing flags) preserves legacy invocation."""
+        self._write_low_risk_checker_card()
+        argv_log = self.case_root / "argv-unsupported.log"
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+                # No FAKE_CLAUDE_HELP_TOOLS_FLAG or FAKE_CLAUDE_HELP_ALLOWED_FLAG
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("tool_profile_supported=no", result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertNotIn("--tools", argv_content)
+            self.assertNotIn("--allowedTools", argv_content)
+
+    def test_checker_validation_mixed_fence_info_strings(self):
+        """Both 'validation' and 'check' info strings are recognized."""
+        self._write_checker_card_with_validation([
+            ("validation", "python -m pytest -q\n"),
+            ("bash check", "bash -n scripts/dispatch-to-claude.sh\n"),
+        ])
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_accepted=2", result.stdout)
+
+    def test_validation_allowlist_disabled_passes_no_bash_allowed(self):
+        """With allowlist disabled, no Bash() entries appear in allowedTools."""
+        self._write_checker_card_with_validation([
+            ("validation", "true\n"),
+        ])
+        argv_log = self.case_root / "argv-allowlist-disabled.log"
+        result = self._dispatch(
+            "task-cards/CHECKER_TP.md",
+            {
+                "CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST": "0",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_enabled=no", result.stdout)
+        if argv_log.exists():
+            argv_content = argv_log.read_text(encoding="utf-8")
+            self.assertNotIn("Bash(", argv_content)
+
+    def test_empty_arrays_work_under_strict_mode(self):
+        """Empty tool profile arrays work correctly under set -u."""
+        self._write_task_card()
+        # Default profile with supported CLI → arrays stay empty
+        result = self._dispatch(
+            "task-cards/PROJ.md",
+            {
+                "CLAUDE_CODE_TOOL_PROFILE": "default",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Dispatch Complete", result.stdout)
 
 
 if __name__ == "__main__":

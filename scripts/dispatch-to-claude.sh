@@ -333,9 +333,13 @@ fi
 
 # --- Tool profile CLI flag support detection ---
 # Detect --tools / --allowedTools support once per dispatch.
+# CLI support requires BOTH --tools AND either --allowedTools or --allowed-tools.
 # If unsupported, degrade to legacy/default tools and record unsupported-cli.
 _TOOL_PROFILE_SUPPORTED=0
-if claude --help 2>&1 | grep -q -- '--tools'; then
+_CLAUDE_HELP_OUTPUT="$(claude --help 2>&1 || true)"
+if printf '%s\n' "$_CLAUDE_HELP_OUTPUT" | grep -q -- '--tools' && \
+   { printf '%s\n' "$_CLAUDE_HELP_OUTPUT" | grep -q -- '--allowedTools' || \
+     printf '%s\n' "$_CLAUDE_HELP_OUTPUT" | grep -q -- '--allowed-tools'; }; then
     _TOOL_PROFILE_SUPPORTED=1
 fi
 
@@ -2364,13 +2368,14 @@ run_claude() {
     # Tool profile arrays (_CLAUDE_TOOLS_ARGS, _CLAUDE_ALLOWED_ARGS) are
     # constructed before this function is called and applied identically
     # in direct/inherit and broker/bypass branches.
-    local claude_base_args=(
-        -p
-        --permission-mode acceptEdits
-        --output-format json
-        "${_CLAUDE_TOOLS_ARGS[@]}"
-        "${_CLAUDE_ALLOWED_ARGS[@]}"
-    )
+    # Length check avoids empty-array expansion error under set -u.
+    local claude_base_args=(-p --permission-mode acceptEdits --output-format json)
+    if [ ${#_CLAUDE_TOOLS_ARGS[@]} -gt 0 ]; then
+        claude_base_args+=("${_CLAUDE_TOOLS_ARGS[@]}")
+    fi
+    if [ ${#_CLAUDE_ALLOWED_ARGS[@]} -gt 0 ]; then
+        claude_base_args+=("${_CLAUDE_ALLOWED_ARGS[@]}")
+    fi
 
     if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ] || [ ! -f "${SCRIPT_DIR}/model-call-broker.py" ]; then
         # Internal bypass for tests/bootstrap to avoid broker recursion.  The
@@ -2480,12 +2485,17 @@ if [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && [ "$CLAUDE_CODE_TOOL_PROFILE" != "def
     esac
 
     # Checker profile: extract validation commands from task card.
+    # Reports bounded aggregate skip evidence without command bodies or secrets.
     _TOOL_PROFILE_ALLOWLIST_COUNT=0
+    _TOOL_PROFILE_ALLOWLIST_UNSAFE=0
+    _TOOL_PROFILE_ALLOWLIST_OVERSIZED=0
+    _TOOL_PROFILE_ALLOWLIST_OVERFLOW=0
     if [ "$CLAUDE_CODE_TOOL_PROFILE" = "checker" ] && [ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" = "1" ]; then
         _TASK_CARD_FILE="${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
         if [ -f "$_TASK_CARD_FILE" ] && [ -n "$PYTHON_CMD" ]; then
-            _VALIDATION_CMDS="$("$PYTHON_CMD" - "$_TASK_CARD_FILE" <<'PYEOF' 2>/dev/null || echo ""
-import re, sys
+            _VALIDATION_SUMMARY_FILE="$(mktemp 2>/dev/null || echo "")"
+            _VALIDATION_CMDS="$("$PYTHON_CMD" - "$_TASK_CARD_FILE" "$_VALIDATION_SUMMARY_FILE" <<'PYEOF' 2>/dev/null || echo ""
+import json, re, sys
 
 MAX_COMMANDS = 12
 MAX_CMD_LEN = 500
@@ -2493,11 +2503,15 @@ MAX_CMD_LEN = 500
 UNSAFE_RE = re.compile(r'[;&|`><\x00-\x08\x0e-\x1f]')
 
 text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+summary_path = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
 
 # Find fenced blocks whose info string contains "validation" or "check"
 blocks = re.finditer(r'```[^\n]*(?:validation|check)[^\n]*\n(.*?)```', text, re.I | re.S)
 
 commands = []
+unsafe_count = 0
+oversized_count = 0
+overflow_count = 0
 for block in blocks:
     for line in block.group(1).splitlines():
         line = line.strip()
@@ -2506,20 +2520,46 @@ for block in blocks:
             continue
         # Reject unsafe commands
         if UNSAFE_RE.search(line):
+            unsafe_count += 1
             continue
         # Bound by length
         if len(line) > MAX_CMD_LEN:
+            oversized_count += 1
+            continue
+        if len(commands) >= MAX_COMMANDS:
+            overflow_count += 1
             continue
         commands.append(line)
-        if len(commands) >= MAX_COMMANDS:
-            break
-    if len(commands) >= MAX_COMMANDS:
-        break
 
 for cmd in commands:
     print(cmd)
+
+# Write aggregate summary (no command bodies or secrets)
+if summary_path:
+    try:
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                "accepted": len(commands),
+                "unsafe": unsafe_count,
+                "oversized": oversized_count,
+                "overflow": overflow_count,
+            }, f)
+    except OSError:
+        pass
 PYEOF
 )"
+
+            if [ -n "$_VALIDATION_SUMMARY_FILE" ] && [ -f "$_VALIDATION_SUMMARY_FILE" ]; then
+                _VALIDATION_SUMMARY="$(cat "$_VALIDATION_SUMMARY_FILE" 2>/dev/null || echo "")"
+                rm -f "$_VALIDATION_SUMMARY_FILE"
+                if [ -n "$_VALIDATION_SUMMARY" ] && [ -n "$PYTHON_CMD" ]; then
+                    _TOOL_PROFILE_ALLOWLIST_UNSAFE="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('unsafe',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
+                    _TOOL_PROFILE_ALLOWLIST_OVERSIZED="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('oversized',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
+                    _TOOL_PROFILE_ALLOWLIST_OVERFLOW="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('overflow',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
+                fi
+            else
+                rm -f "$_VALIDATION_SUMMARY_FILE" 2>/dev/null || true
+            fi
 
             if [ -n "$_VALIDATION_CMDS" ]; then
                 while IFS= read -r _vcmd; do
@@ -2536,7 +2576,7 @@ PYEOF
     fi
 fi
 
-progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_count=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no)"
+progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no)"
 
 set +e
 run_claude &
