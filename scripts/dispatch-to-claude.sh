@@ -67,6 +67,7 @@ CLAUDE_CODE_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-600}"
 CLAUDE_CODE_HEARTBEAT_SECONDS="${CLAUDE_CODE_HEARTBEAT_SECONDS:-30}"
 CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-300}"
+CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-300}"
 CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS="${CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS:-60}"
 if [ "$CLAUDE_CODE_PROXY_MODE" != "direct" ] && [ "$CLAUDE_CODE_PROXY_MODE" != "inherit" ]; then
     echo "Error: CLAUDE_CODE_PROXY_MODE must be 'direct' or 'inherit'." >&2
@@ -1386,6 +1387,7 @@ fi
     echo "- First-progress timeout: ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s (source: ${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default})"
     echo "- First-progress action: ${CLAUDE_CODE_FIRST_PROGRESS_ACTION}"
     echo "- Progress extension seconds: ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s"
+    echo "- Growing progress extension seconds: ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}s"
     echo "- API probe mode: ${CLAUDE_CODE_API_PROBE_MODE}"
     echo "- Probe environment: ${CLAUDE_CODE_PROBE_ENVIRONMENT}"
     echo ""
@@ -1442,6 +1444,7 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "first_progress_timeout_source": "%s",\n' "${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default}"
     printf '  "base_timeout_seconds": %s,\n' "$CLAUDE_CODE_TIMEOUT_SECONDS"
     printf '  "progress_extension_seconds": %s,\n' "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
+    printf '  "growing_progress_extension_seconds": %s,\n' "$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS"
     printf '  "probe_mode": "%s",\n' "$CLAUDE_CODE_API_PROBE_MODE"
     printf '  "probe_environment": "%s",\n' "$CLAUDE_CODE_PROBE_ENVIRONMENT"
     printf '  "first_progress_action": "%s"\n' "$CLAUDE_CODE_FIRST_PROGRESS_ACTION"
@@ -1881,6 +1884,7 @@ CLAUDE_CODE_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-600}"
 CLAUDE_CODE_HEARTBEAT_SECONDS="${CLAUDE_CODE_HEARTBEAT_SECONDS:-30}"
 CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-300}"
+CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-300}"
 
 PYTHON_CMD=""
 if command -v python3 &>/dev/null; then
@@ -1925,6 +1929,12 @@ fi
 case "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS" in
     ''|*[!0-9]*)
         echo "Error: CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS must be a non-negative integer." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS" in
+    ''|*[!0-9]*)
+        echo "Error: CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS must be a non-negative integer." >&2
         exit 1
         ;;
 esac
@@ -2493,7 +2503,7 @@ cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
 write_network_header
-progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, timeout_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, growing_progress_extension_seconds=${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
 
 # --- Tool profile argument construction ---
 # Build arrays for --tools and --allowedTools based on resolved profile.
@@ -2679,6 +2689,16 @@ TIMEOUT_EXTENSION_REASON=""
 EXTENSION_START_WORKTREE_DIGEST=""
 EXTENSION_START_REPORT_BYTES=0
 EXTENSION_START_PROGRESS_BYTES=0
+# --- Second active-progress extension tracking ---
+# When the first extension deadline fires and progress is still growing,
+# grant exactly one more bounded wait round.  Never repeated.
+SECOND_EXTENSION_ACTIVE=0
+SECOND_EXTENSION_STARTED_EPOCH=0
+SECOND_EXTENSION_DEADLINE=0
+SECOND_EXTENSION_REASON=""
+SECOND_EXTENSION_START_WORKTREE_DIGEST=""
+SECOND_EXTENSION_START_REPORT_BYTES=0
+SECOND_EXTENSION_START_PROGRESS_BYTES=0
 while claude_is_running; do
     sleep "$CLAUDE_CODE_HEARTBEAT_SECONDS"
     NOW_EPOCH="$(date +%s)"
@@ -2820,19 +2840,35 @@ while claude_is_running; do
             EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
             EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
             progress_log "Timeout extension started: base_timeout=${CLAUDE_CODE_TIMEOUT_SECONDS}s, extension=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s, deadline_epoch=${TIMEOUT_EXTENSION_DEADLINE}, reason=${TIMEOUT_EXTENSION_REASON}"
+        elif [ "$SECOND_EXTENSION_ACTIVE" -eq 1 ] && [ "$NOW_EPOCH" -ge "$SECOND_EXTENSION_DEADLINE" ]; then
+            # Second extension deadline reached — always stop.  No rolling extensions.
+            CLAUDE_TIMED_OUT=1
+            stop_claude "runtime timeout (second extension expired)" "$ELAPSED"
+            break
         elif [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 1 ] && [ "$NOW_EPOCH" -ge "$TIMEOUT_EXTENSION_DEADLINE" ]; then
-            # Extension deadline reached.  Stop only if no useful progress since extension start.
+            # First extension deadline reached.  Stop only if no useful progress since extension start.
             if ! progress_is_growing "$EXTENSION_START_WORKTREE_DIGEST" "$EXTENSION_START_REPORT_BYTES" "$EXTENSION_START_PROGRESS_BYTES"; then
                 CLAUDE_TIMED_OUT=1
                 stop_claude "runtime timeout (extension expired, no progress)" "$ELAPSED"
                 break
             fi
-            # Progress is still growing at extension deadline — give one bounded grace window
-            # of one heartbeat to finalize, then stop deterministically.
-            progress_log "Extension deadline reached but progress still growing; finalizing after grace"
-            CLAUDE_TIMED_OUT=1
-            stop_claude "runtime timeout (extension expired, progress was growing)" "$ELAPSED"
-            break
+            # Progress is still growing at first extension deadline — grant one more
+            # bounded wait round instead of terminating.
+            if [ "$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS" -gt 0 ]; then
+                SECOND_EXTENSION_ACTIVE=1
+                SECOND_EXTENSION_STARTED_EPOCH="$NOW_EPOCH"
+                SECOND_EXTENSION_DEADLINE=$((NOW_EPOCH + CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS))
+                SECOND_EXTENSION_REASON="growth_at_first_extension_deadline"
+                SECOND_EXTENSION_START_WORKTREE_DIGEST="$CURRENT_WORKTREE_DIGEST"
+                SECOND_EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
+                SECOND_EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
+                progress_log "Second extension started: seconds=${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}, deadline_epoch=${SECOND_EXTENSION_DEADLINE}, reason=${SECOND_EXTENSION_REASON}"
+            else
+                # Second extension disabled — stop as before.
+                CLAUDE_TIMED_OUT=1
+                stop_claude "runtime timeout (extension expired, progress was growing, second extension disabled)" "$ELAPSED"
+                break
+            fi
         elif [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 0 ]; then
             # No extension configured or no progress — hard timeout.
             CLAUDE_TIMED_OUT=1
@@ -2928,10 +2964,21 @@ elif [ "$CLAUDE_TIMED_OUT" -eq 1 ]; then
         else
             echo "[dispatch] Progress extension used: no"
         fi
-        echo "[dispatch] Final deadline seconds: $(( TIMEOUT_EXTENSION_ACTIVE == 1 ? CLAUDE_CODE_TIMEOUT_SECONDS + CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS : CLAUDE_CODE_TIMEOUT_SECONDS ))"
+        if [ "$SECOND_EXTENSION_ACTIVE" -eq 1 ]; then
+            echo "[dispatch] Second extension used: yes"
+            echo "[dispatch] Second extension seconds: ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}"
+            echo "[dispatch] Second extension reason: ${SECOND_EXTENSION_REASON}"
+            echo "[dispatch] Second extension deadline epoch: ${SECOND_EXTENSION_DEADLINE}"
+            echo "[dispatch] Second extension start worktree digest: ${SECOND_EXTENSION_START_WORKTREE_DIGEST}"
+            echo "[dispatch] Second extension start report bytes: ${SECOND_EXTENSION_START_REPORT_BYTES}"
+            echo "[dispatch] Second extension start progress bytes: ${SECOND_EXTENSION_START_PROGRESS_BYTES}"
+        else
+            echo "[dispatch] Second extension used: no"
+        fi
+        echo "[dispatch] Final deadline seconds: $(( TIMEOUT_EXTENSION_ACTIVE == 1 ? CLAUDE_CODE_TIMEOUT_SECONDS + CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS + (SECOND_EXTENSION_ACTIVE == 1 ? CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS : 0) : CLAUDE_CODE_TIMEOUT_SECONDS ))"
         echo "[dispatch] Progress log: ${PROGRESS_FILE}"
     } >> "$STATUS_FILE"
-    progress_log "Claude finished by timeout: elapsed_seconds=${ELAPSED}, wait_status=${CLAUDE_STATUS}, extension_active=${TIMEOUT_EXTENSION_ACTIVE}, extension_reason=${TIMEOUT_EXTENSION_REASON:-none}"
+    progress_log "Claude finished by timeout: elapsed_seconds=${ELAPSED}, wait_status=${CLAUDE_STATUS}, extension_active=${TIMEOUT_EXTENSION_ACTIVE}, extension_reason=${TIMEOUT_EXTENSION_REASON:-none}, second_extension_active=${SECOND_EXTENSION_ACTIVE}, second_extension_reason=${SECOND_EXTENSION_REASON:-none}"
     echo "Warning: claude timed out after ${ELAPSED}s. Check $STATUS_FILE and $PROGRESS_FILE" >&2
 elif [ "$CLAUDE_STATUS" -ne 0 ]; then
     progress_log "Claude exited non-zero: status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
@@ -2988,6 +3035,8 @@ PYEOF
             "${TIMEOUT_EXTENSION_REASON:-}" \
             "${CLAUDE_CODE_API_PROBE_MODE:-always}" "${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}" \
             "${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}" "${_OBSERVATION_PROBE_RAN:-0}" \
+            "${SECOND_EXTENSION_ACTIVE:-0}" "${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-0}" \
+            "${SECOND_EXTENSION_REASON:-}" \
             <<'PYEOF'
 import json
 import sys
@@ -3016,7 +3065,10 @@ from pathlib import Path
     probe_environment,
     first_progress_action,
     observation_probe_ran,
-) = sys.argv[1:23]
+    second_extension_active,
+    second_extension_seconds,
+    second_extension_reason,
+) = sys.argv[1:26]
 
 payload = {
     "type": "claude_dispatch_fallback",
@@ -3037,6 +3089,9 @@ payload = {
     "timeout_extension_used": extension_active == "1",
     "timeout_extension_seconds": int(extension_seconds) if extension_active == "1" else 0,
     "timeout_extension_reason": extension_reason if extension_active == "1" else None,
+    "second_extension_used": second_extension_active == "1",
+    "second_extension_seconds": int(second_extension_seconds) if second_extension_active == "1" else 0,
+    "second_extension_reason": second_extension_reason if second_extension_active == "1" else None,
     "elapsed_seconds": int(elapsed),
     "raw_result_file": raw_result_file,
     "status_file": status_file,
@@ -3069,6 +3124,11 @@ PYEOF
             _ext_reason=""
             if [ "${TIMEOUT_EXTENSION_ACTIVE:-0}" -eq 1 ]; then _ext_reason="${TIMEOUT_EXTENSION_REASON:-}"; fi
             echo "  \"timeout_extension_reason\": \"${_ext_reason}\","
+            echo "  \"second_extension_used\": $([ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo true || echo false),"
+            echo "  \"second_extension_seconds\": $([ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo "${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-0}" || echo 0),"
+            _2nd_ext_reason=""
+            if [ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ]; then _2nd_ext_reason="${SECOND_EXTENSION_REASON:-}"; fi
+            echo "  \"second_extension_reason\": \"${_2nd_ext_reason}\","
             echo "  \"elapsed_seconds\": ${ELAPSED},"
             echo '  "message": "Claude exited without valid JSON result output; dispatcher generated this fallback result."'
             echo "}"
@@ -3858,6 +3918,11 @@ else
             echo "- Extension seconds: ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-0}"
             echo "- Extension reason: ${TIMEOUT_EXTENSION_REASON:-}"
         fi
+        echo "- Second extension used: $([ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo yes || echo no)"
+        if [ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ]; then
+            echo "- Second extension seconds: ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-0}"
+            echo "- Second extension reason: ${SECOND_EXTENSION_REASON:-}"
+        fi
         echo "- No-output timed out: $([ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] && echo yes || echo no)"
         echo "- First-progress timed out: $([ "${CLAUDE_FIRST_PROGRESS_TIMED_OUT:-0}" -eq 1 ] && echo yes || echo no)"
         echo "- First-progress signal: ${FIRST_PROGRESS_SIGNAL:-none}"
@@ -3923,6 +3988,7 @@ echo "Builder Mode:    $CLAUDE_CODE_BUILDER_MODE"
 echo "Tool Profile:    $CLAUDE_CODE_TOOL_PROFILE (${_TOOL_PROFILE_DERIVATION})"
 echo "First Progress:  ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s timeout"
 echo "Progress Ext:    ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s"
+echo "Growth Ext:      ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}s"
 echo "Dispatch Outcome:${DISPATCH_OUTCOME}"
 echo "Task Card Full:  ${WORKTREE_DIR}/TASK_CARD_FULL.md"
 echo "Claude Task:     ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"

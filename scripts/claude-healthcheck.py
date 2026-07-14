@@ -83,7 +83,7 @@ def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]
     started = time.monotonic()
     try:
         result = subprocess.run(
-            ["claude", "-p", prompt, "--output-format", "json"],
+            ["claude", "-p", prompt, "--bare", "--no-session-persistence", "--output-format", "json"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, env=env,
         )
