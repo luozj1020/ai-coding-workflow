@@ -240,7 +240,11 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 | Field | Value |
 |-------|-------|
 | Fast path candidate? | yes/no |
-| Expected files touched | <=2 / >2 |
+| Repository scale detected / routing scale | small/medium/large/giant / small/medium/large/giant |
+| Tracked / source files | integer / integer |
+| Historical worktree setup cost | unknown/low/medium/high + median seconds/sample count |
+| Task role | core-semantic / auxiliary / mixed / unknown |
+| Expected files touched | compare with selected scale gate |
 | Files small and targeted? | yes/no |
 | Change type | docs/comment/test assertion/log text/mechanical helper fix/other |
 | Public API, data model, security, migration, permission, concurrency impact? | no / yes + explain downstream rigor |
@@ -250,10 +254,17 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 | Direct Codex edit allowed? | yes/no |
 | Reason for skipping Claude dispatch | |
 | Narrow validation or reason skipped | |
-| Route again if | files >2 / scope or solution expands / required context becomes non-local / confidence drops |
+| Context reacquisition cost | none / low / medium / high |
+| Codex semantic rereview if delegated | none / sampled / full |
+| Solution clarity / semantic concentration | high/medium/low / high/medium/low |
+| Fast-path class | ordinary / concentrated-context-reuse / none |
+| Route again if | files exceed selected gate / scope or solution expands / required context becomes broad / confidence drops |
 
 Fast path rules:
-- Use for small, local, sufficiently clear edits where Claude dispatch overhead would cost more than the change.
+- Repository-scale gates: small ordinary 100 calibrated lines/2 files and no concentrated expansion; medium ordinary 100/2 and concentrated 250/3; large ordinary 150/3 and concentrated 500/5; giant ordinary 200/3 and concentrated 500/5.
+- Historical median worktree setup >=120 seconds promotes the routing profile one level while preserving the detected scale as evidence.
+- Concentrated context reuse applies only to `core-semantic` work and still requires local/bounded context, high solution clarity and semantic concentration, high Claude context reacquisition, full Codex semantic rereview, and delegated work >=1.5x direct work.
+- In large/giant repositories, `auxiliary` tests/checker work, mechanical batches, long validation/log/evidence work, and independent support units above one file/50 calibrated lines prefer Claude.
 - Risk does not choose Codex versus Claude. Public API, data shape, security, migration, permission, concurrency, and cross-module flags increase review, validation, isolation, or approval rigor.
 - Run Spark from the short brief before authoring any full task card. A deterministic Express/tiny skip may avoid both Spark and the delegation card when its skip reason is recorded.
 - Record the reason Claude was not dispatched and preserve narrow validation evidence or an explicit validation-skip reason.
@@ -267,6 +278,9 @@ Fast path rules:
 | Predicted diff lines (low) | <!-- integer --> |
 | Predicted diff lines (high) | <!-- integer --> |
 | Predicted files | <!-- integer or unknown --> |
+| Repository scale detected / routing scale | <!-- small/medium/large/giant --> |
+| Historical worktree setup cost | <!-- unknown/low/medium/high + median seconds/sample count --> |
+| Task role | core-semantic / auxiliary / mixed / unknown |
 | Routing event | initial / revision / narrow / retry / next-phase |
 | Estimate calibration multiplier | 1.5 default / 2.0 orchestration-test-cross-platform |
 | Calibrated predicted diff high | <!-- ceil(raw high × multiplier) --> |
@@ -283,7 +297,7 @@ Fast path rules:
 | Spark confidence | high / medium / low |
 | Final owner decision | codex-fast-path / claude-builder / spec-first / human-clarification |
 | Final owner rationale | <!-- why Codex or Claude was chosen --> |
-| Fast-path max diff lines | <!-- configured threshold, default 100 --> |
+| Ordinary / concentrated gate | <!-- auto-selected line/file limits or explicit override --> |
 | Escalation condition | <!-- when to abandon fast path and dispatch Claude --> |
 
 Execution cost rules:
@@ -296,7 +310,7 @@ Execution cost rules:
 - Work units are relative estimates, not claimed token-accounting measurements.
 - The deterministic owner decision may override a risk-based model owner recommendation; risk remains visible for downstream rigor.
 - Spark recommendation is advisory; Codex reviews and makes the final owner decision.
-- Configure the fast-path threshold with `--fast-path-max-diff-lines N` or `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 100, valid 1..200).
+- Auto-select gates with `repository-scale.py`; override scale with `--repository-scale` or line ceilings with `--fast-path-max-diff-lines` and `--concentrated-fast-path-max-diff-lines` only when policy requires it.
 
 ## Task Card Views
 

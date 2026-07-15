@@ -35,6 +35,8 @@ python scripts/aiwf.py efficient review --plan .ai-workflow/runs/T-1/execution-p
 
 ## What it does
 
+The installed skill uses progressive disclosure: its small `SKILL.md` contains only the core loop and non-negotiable rules, while setup, Spark, Claude runtime, worktree/parallel, and task-card details live in first-level `references/` files loaded only for matching operations. A size-budget test prevents the default skill context from silently growing beyond 18 KB.
+
 ai-coding-workflow bootstraps repositories with:
 - `AGENTS.md` - shared rules for all agents
 - `CLAUDE.md` - Claude Code execution rules
@@ -533,7 +535,16 @@ Phase ownership is explicit:
 | Checker/Test | Validation task dispatch and evidence review | Assigned tests, assigned validation, failure evidence |
 | Final Review | Accept / revise / split / reject; human merge stays separate | N/A unless re-dispatched |
 
-Small local edits can use a Codex-only fast path instead of dispatching Claude when calibrated size, file count, context sufficiency, solution clarity, confidence, and delegation economics favor it. Risk flags normally increase review, validation, isolation, or approval rigor rather than choosing ownership. They must never push work from Codex to Claude; an explicit risk-based owner override may bias only toward Codex. Record why Claude was not dispatched, files touched, validation evidence, and the material scope/solution/context expansion that would trigger a fresh route decision.
+Owner routing is repository-scale aware. The deterministic helper counts tracked/source files and can promote the routing profile by one level when preserved dispatcher history shows median worktree setup at least 120 seconds:
+
+| Routing scale | Ordinary Codex gate | Concentrated core-semantic gate | Default bias beyond the gate |
+|---|---:|---:|---|
+| Small | 100 calibrated lines / 2 files | disabled (same as ordinary) | Claude Builder |
+| Medium | 100 / 2 | 250 / 3 | Claude Builder |
+| Large | 150 / 3 | 500 / 5 | Codex for concentrated core semantics; Claude for auxiliary work |
+| Giant | 200 / 3 | 500 / 5 | Codex for concentrated core semantics; Claude for auxiliary work |
+
+`task_role` separates `core-semantic` work from `auxiliary` work. In large/giant repositories, tests and checker work, mechanical batches, long validation or log processing, evidence collection, and independent support units prefer Claude once they exceed a tiny one-file/50-line edit. This keeps Claude useful without paying for it to relearn and imperfectly reproduce a detailed Codex semantic plan. The concentrated gate remains strict: local/bounded context, high solution clarity and semantic concentration, high Claude context-reacquisition cost, mandatory full Codex rereview, and delegated work at least 1.5x direct work. Risk changes review rigor, not ownership direction; an explicit risk override may bias only toward Codex.
 
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 
@@ -614,7 +625,7 @@ When the parent Codex environment exports `CODEX_SANDBOX_NETWORK_DISABLED=1`, th
 - `postflight-bundle`: read-only stage bundle for diff/report/evidence use.
 - `revision-drafter`: read-only mode for drafting revision instructions.
 - `lesson-extractor`: read-only mode for extracting lessons from completed work.
-- `execution-cost-estimator`: read-only mode that predicts diff range/files and relative direct/delegated work units. Work units are relative estimates, not token-accounting measurements. Included in `preflight-bundle` and `task-size-classifier` output. Before every task-card authoring event, run a fresh estimate and identify the event with `--routing-event`. The helper uses the calibrated upper bound (1.5x normally, 2.0x for orchestration/test/cross-platform work) for the deterministic owner gate. Risk normally affects downstream rigor rather than Codex-versus-Claude ownership; it must never push work from Codex to Claude, and any explicit risk-based owner override is Codex-only. Threshold: `--fast-path-max-diff-lines N` / `CODEX_FAST_PATH_MAX_DIFF_LINES` (default 100, valid 1..200). Pre-dispatch decision only; never automatically edits source.
+- `execution-cost-estimator`: read-only mode that predicts diff range/files, `task_role=core-semantic|auxiliary|mixed|unknown`, and relative direct/delegated work units. Work units are relative estimates, not token-accounting measurements. Included in `preflight-bundle` and `task-size-classifier` output. Before every task-card authoring event, run a fresh estimate and identify the event with `--routing-event`. The helper uses repository-scale gates plus the calibrated upper bound (1.5x normally, 2.0x for orchestration/test/cross-platform work). Risk normally affects downstream rigor rather than Codex-versus-Claude ownership; it must never push work from Codex to Claude, and any explicit risk-based owner override is Codex-only. Override auto scale with `--repository-scale small|medium|large|giant`; explicit line thresholds remain available for policy tuning. Pre-dispatch decision only; never automatically edits source.
 
 Bundle output uses seven compressed headings: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
 
@@ -626,7 +637,11 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 
 When using explicit `task-size-classifier` mode or conservative auto routing (balanced/aggressive ordinary preflight is `preflight-bundle`), the helper runs Codex from the Spark artifact directory with `workspace-write` sandbox. This gives local helper initialization a writable working directory without granting write access to the source repository, and the mode contract still forbids source edits.
 
-The `execution-cost-estimator` mode and its inclusion in `preflight-bundle`/`task-size-classifier` support a `--fast-path-max-diff-lines N` flag (also `CODEX_FAST_PATH_MAX_DIFF_LINES`) to configure the calibrated upper diff-line threshold for Codex fast-path eligibility. Default is 100, valid range is 1..200. The helper multiplies Spark's raw upper estimate by 1.5 or 2.0 before comparing it with this threshold. When that calibrated upper bound exceeds the threshold, the owner gate rejects Codex fast path regardless of the economic recommendation. Exceeding the estimate during an otherwise stable edit is not itself a stop condition.
+The estimator now records repository scale, historical worktree cost, `task_role`, `context_reacquisition_cost`, `codex_semantic_rereview`, `solution_clarity`, and `semantic_concentration`. `python ai/repository-scale.py --format json` exposes the deterministic facts without a model call. `--fast-path-max-diff-lines` / `CODEX_FAST_PATH_MAX_DIFF_LINES` and `--concentrated-fast-path-max-diff-lines` / `CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES` explicitly override the auto-selected line ceilings. The 1.5x/2.0 calibration still applies. Actual edits may exceed the estimate while scope, solution, and context stay stable.
+
+After Claude exits with a valid report, the dispatcher runs a deterministic report/diff consistency check and writes `<task-id>.report-consistency.json`. Reports should end with one `claimed_file=<path>` per implementation file, `claimed_changed_file_count=<n>`, optional `claimed_symbol=<name>`, and `claimed_no_unexpected_files=yes|no`. This catches mismatched file/symbol claims before semantic review; it never proves acceptance.
+
+When a Claude diff is useful but incomplete, preserve the dirty isolated worktree. If Codex accepts its direction and there is one bounded semantic blocker, use `aiwf advisor-continuation` and continue in the same worktree with state-hash, allowlist, forbidden-path, and once-only guards. Do not pay for a fresh checkout and full reimplementation merely to recover prose evidence.
 
 Run an evidence check:
 

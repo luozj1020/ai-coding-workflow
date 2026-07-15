@@ -1221,6 +1221,7 @@ WORKTREE_STATUS_FILE="${WORKTREE_ROOT}/${TASK_ID}.worktree-status.txt"
 UNTRACKED_FILE="${WORKTREE_ROOT}/${TASK_ID}.untracked.txt"
 USAGE_FILE="${WORKTREE_ROOT}/${TASK_ID}.usage.txt"
 REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
+REPORT_CONSISTENCY_FILE="${WORKTREE_ROOT}/${TASK_ID}.report-consistency.json"
 CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
 PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
 DISPATCHER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.pid"
@@ -1560,6 +1561,7 @@ validate_external_integration_paths() {
 
 # Skip worktree creation when retry/advisor continuation already supplied a
 # validated worktree with preserved implementation progress.
+_WORKTREE_SETUP_DURATION=""
 if [ -z "${_RETRY_WORKTREE_DIR:-}" ] && [ -z "${_ADVISOR_CONTINUE_WORKTREE_DIR:-}" ]; then
     if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then
         BRANCH_NAME="claude-managed-reuse"
@@ -1674,6 +1676,11 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "branch": "%s",\n' "$BRANCH_NAME"
     printf '  "base_commit": "%s",\n' "$BASE_COMMIT"
     printf '  "source_repository": "%s",\n' "$REPO_ROOT"
+    if [ -n "${_WORKTREE_SETUP_DURATION:-}" ]; then
+        printf '  "worktree_setup_seconds": %s,\n' "$_WORKTREE_SETUP_DURATION"
+    else
+        echo '  "worktree_setup_seconds": null,'
+    fi
     if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
         printf '  "retry_of": "%s",\n' "$CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID"
     fi
@@ -2129,6 +2136,12 @@ Checker expectations:
 - Checks run and exact outcomes.
 - Known risks, assumptions, and open questions.
 - Human review checklist.
+
+End the report with machine-readable mechanical claims (these do not replace
+semantic review): one `claimed_file=<repo-relative-path>` line per implementation
+file, `claimed_changed_file_count=<integer>`, optional
+`claimed_symbol=<important-added-or-wired-symbol>` lines, and
+`claimed_no_unexpected_files=yes|no`.
 - Notes that help Codex compare the implementation against the original task.
 
 Context Packet:
@@ -3790,6 +3803,32 @@ IMPLEMENTATION_CHANGES="$(worktree_change_count)"
 VALID_CLAUDE_REPORT=0
 if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
     VALID_CLAUDE_REPORT=1
+fi
+
+# Verify cheap mechanical report claims before semantic Codex review.  This is
+# advisory evidence: conflicts never become acceptance and never rewrite the
+# implementation.  Older reports without machine-readable claims remain usable
+# but are marked insufficient-claims.
+REPORT_CONSISTENCY_STATUS="not-run"
+_REPORT_VERIFIER="${SCRIPT_DIR}/verify-claude-report.py"
+if [ "$VALID_CLAUDE_REPORT" -eq 1 ] && [ -n "$PYTHON_CMD" ] && [ -f "$_REPORT_VERIFIER" ]; then
+    if "$PYTHON_CMD" "$_REPORT_VERIFIER" \
+        --report "${WORKTREE_DIR}/CLAUDE_REPORT.md" \
+        --worktree "$WORKTREE_DIR" \
+        --base "$BASE_COMMIT" \
+        --output "$REPORT_CONSISTENCY_FILE"; then
+        REPORT_CONSISTENCY_STATUS="$($PYTHON_CMD - "$REPORT_CONSISTENCY_FILE" <<'PYEOF' 2>/dev/null || echo error
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("status", "error"))
+PYEOF
+)"
+        progress_log "Claude report/diff consistency: status=${REPORT_CONSISTENCY_STATUS}, artifact=${REPORT_CONSISTENCY_FILE}"
+    else
+        REPORT_CONSISTENCY_STATUS="error"
+        progress_log "Claude report/diff consistency helper failed; semantic review remains required"
+    fi
+else
+    progress_log "Claude report/diff consistency skipped: valid_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), helper_available=$([ -f "$_REPORT_VERIFIER" ] && echo yes || echo no)"
 fi
 
 # --- Post-execution scope enforcement for advisor continuation ---

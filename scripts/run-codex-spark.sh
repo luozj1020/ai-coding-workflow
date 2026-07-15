@@ -35,8 +35,13 @@ Options:
                     acceptance-matrix, postflight-bundle, revision-drafter,
                     or lesson-extractor
   --fast-path-max-diff-lines N
-                    Upper diff threshold for codex-fast-path safety (1-200,
-                    default 100)
+                    Explicit ordinary diff threshold override (1-200; default
+                    is selected from repository scale)
+  --concentrated-fast-path-max-diff-lines N
+                    Explicit concentrated context-reuse threshold override
+                    (100-500; default is selected from repository scale)
+  --repository-scale SCALE
+                    auto, small, medium, large, or giant (default auto)
   --routing-event EVENT
                     Pre-card event: initial, revision, narrow, retry, or next-phase
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
@@ -80,6 +85,8 @@ Environment:
   CODEX_SPARK_REQUIRED=1
   AI_SPARK_BUDGET_MODE=aggressive|balanced|conservative
   CODEX_FAST_PATH_MAX_DIFF_LINES=100
+  CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES=500
+  CODEX_REPOSITORY_SCALE=auto
   CODEX_SPARK_ROUTING_EVENT=initial|revision|narrow|retry|next-phase
   CODEX_SPARK_EXECUTION_ENV=auto|host|sandbox
 EOF
@@ -118,6 +125,10 @@ DIAGNOSTICS_MODE="${CODEX_SPARK_DIAGNOSTICS:-failure}"
 ALLOWED_WRITES=()
 MAX_DIFF_LINES=""
 FAST_PATH_MAX_DIFF_LINES="${CODEX_FAST_PATH_MAX_DIFF_LINES:-100}"
+CONCENTRATED_FAST_PATH_MAX_DIFF_LINES="${CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES:-500}"
+FAST_PATH_THRESHOLD_EXPLICIT="$([ -n "${CODEX_FAST_PATH_MAX_DIFF_LINES+x}" ] && echo yes || echo no)"
+CONCENTRATED_THRESHOLD_EXPLICIT="$([ -n "${CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES+x}" ] && echo yes || echo no)"
+REPOSITORY_SCALE_REQUESTED="${CODEX_REPOSITORY_SCALE:-auto}"
 ROUTING_EVENT="${CODEX_SPARK_ROUTING_EVENT:-initial}"
 EXPLICIT_OUTPUT="no"
 EXECUTION_ENV="${CODEX_SPARK_EXECUTION_ENV:-auto}"
@@ -184,6 +195,18 @@ while [ $# -gt 0 ]; do
         --fast-path-max-diff-lines)
             [ $# -ge 2 ] || { echo "Error: --fast-path-max-diff-lines requires a value." >&2; exit 1; }
             FAST_PATH_MAX_DIFF_LINES="$2"
+            FAST_PATH_THRESHOLD_EXPLICIT="yes"
+            shift 2
+            ;;
+        --concentrated-fast-path-max-diff-lines)
+            [ $# -ge 2 ] || { echo "Error: --concentrated-fast-path-max-diff-lines requires a value." >&2; exit 1; }
+            CONCENTRATED_FAST_PATH_MAX_DIFF_LINES="$2"
+            CONCENTRATED_THRESHOLD_EXPLICIT="yes"
+            shift 2
+            ;;
+        --repository-scale)
+            [ $# -ge 2 ] || { echo "Error: --repository-scale requires a value." >&2; exit 1; }
+            REPOSITORY_SCALE_REQUESTED="$2"
             shift 2
             ;;
         --routing-event)
@@ -331,6 +354,20 @@ if [ "$FAST_PATH_MAX_DIFF_LINES" -gt 200 ]; then
     echo "Error: --fast-path-max-diff-lines must be at most 200." >&2
     exit 1
 fi
+case "$CONCENTRATED_FAST_PATH_MAX_DIFF_LINES" in
+    ''|*[!0-9]*)
+        echo "Error: --concentrated-fast-path-max-diff-lines must be an integer." >&2
+        exit 1
+        ;;
+esac
+if [ "$CONCENTRATED_FAST_PATH_MAX_DIFF_LINES" -lt 100 ] || [ "$CONCENTRATED_FAST_PATH_MAX_DIFF_LINES" -gt 500 ]; then
+    echo "Error: --concentrated-fast-path-max-diff-lines must be between 100 and 500." >&2
+    exit 1
+fi
+if [ "$CONCENTRATED_FAST_PATH_MAX_DIFF_LINES" -lt "$FAST_PATH_MAX_DIFF_LINES" ]; then
+    echo "Error: concentrated fast-path threshold cannot be lower than the ordinary fast-path threshold." >&2
+    exit 1
+fi
 case "$ROUTING_EVENT" in
     initial|revision|narrow|retry|next-phase) ;;
     *) echo "Error: --routing-event must be initial, revision, narrow, retry, or next-phase." >&2; exit 1 ;;
@@ -339,6 +376,10 @@ esac
 case "$EXECUTION_ENV" in
     auto|host|sandbox) ;;
     *) echo "Error: invalid --execution-env: $EXECUTION_ENV (expected auto, host, or sandbox)" >&2; exit 1 ;;
+esac
+case "$REPOSITORY_SCALE_REQUESTED" in
+    auto|small|medium|large|giant) ;;
+    *) echo "Error: --repository-scale must be auto, small, medium, large, or giant." >&2; exit 1 ;;
 esac
 
 # Resolve execution environment after CLI parsing.
@@ -393,6 +434,58 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 INITIAL_SOURCE_STATUS=""
+
+# Deterministic repository-scale profile.  Failure is conservative: keep the
+# ordinary 100/2 gate and disable the concentrated expansion at the same cap.
+REPOSITORY_SCALE_DETECTED="unknown"
+REPOSITORY_ROUTING_SCALE="small"
+REPOSITORY_TRACKED_FILES="unknown"
+REPOSITORY_SOURCE_FILES="unknown"
+REPOSITORY_GIT_SIZE_KIB="unknown"
+REPOSITORY_WORKTREE_SAMPLES="0"
+REPOSITORY_WORKTREE_MEDIAN_SECONDS="unknown"
+REPOSITORY_WORKTREE_COST="unknown"
+REPOSITORY_IO_PROMOTED="no"
+ORDINARY_FAST_PATH_MAX_FILES=2
+CONCENTRATED_FAST_PATH_MAX_FILES=2
+_SCALE_ORDINARY_LINES=100
+_SCALE_CONCENTRATED_LINES=100
+_SCALE_HELPER="${SCRIPT_DIR}/repository-scale.py"
+_SCALE_PYTHON=""
+if command -v python3 >/dev/null 2>&1; then
+    _SCALE_PYTHON="python3"
+elif command -v python >/dev/null 2>&1; then
+    _SCALE_PYTHON="python"
+fi
+if [ -n "$_SCALE_PYTHON" ] && [ -f "$_SCALE_HELPER" ]; then
+    _SCALE_OUTPUT="$($_SCALE_PYTHON "$_SCALE_HELPER" --repo "$REPO_ROOT" --scale "$REPOSITORY_SCALE_REQUESTED" --format shell 2>/dev/null || true)"
+    while IFS='=' read -r _scale_key _scale_value; do
+        case "$_scale_key" in
+            repository_scale_detected) REPOSITORY_SCALE_DETECTED="$_scale_value" ;;
+            routing_scale) REPOSITORY_ROUTING_SCALE="$_scale_value" ;;
+            tracked_files) REPOSITORY_TRACKED_FILES="$_scale_value" ;;
+            source_files) REPOSITORY_SOURCE_FILES="$_scale_value" ;;
+            git_size_kib) REPOSITORY_GIT_SIZE_KIB="$_scale_value" ;;
+            worktree_history_samples) REPOSITORY_WORKTREE_SAMPLES="$_scale_value" ;;
+            worktree_setup_median_seconds) REPOSITORY_WORKTREE_MEDIAN_SECONDS="$_scale_value" ;;
+            worktree_cost) REPOSITORY_WORKTREE_COST="$_scale_value" ;;
+            io_promoted) REPOSITORY_IO_PROMOTED="$_scale_value" ;;
+            ordinary_lines) _SCALE_ORDINARY_LINES="$_scale_value" ;;
+            ordinary_files) ORDINARY_FAST_PATH_MAX_FILES="$_scale_value" ;;
+            concentrated_lines) _SCALE_CONCENTRATED_LINES="$_scale_value" ;;
+            concentrated_files) CONCENTRATED_FAST_PATH_MAX_FILES="$_scale_value" ;;
+        esac
+    done <<< "$_SCALE_OUTPUT"
+fi
+if [ "$FAST_PATH_THRESHOLD_EXPLICIT" != "yes" ]; then
+    FAST_PATH_MAX_DIFF_LINES="$_SCALE_ORDINARY_LINES"
+fi
+if [ "$CONCENTRATED_THRESHOLD_EXPLICIT" != "yes" ]; then
+    CONCENTRATED_FAST_PATH_MAX_DIFF_LINES="$_SCALE_CONCENTRATED_LINES"
+fi
+if [ "$CONCENTRATED_FAST_PATH_MAX_DIFF_LINES" -lt "$FAST_PATH_MAX_DIFF_LINES" ]; then
+    CONCENTRATED_FAST_PATH_MAX_DIFF_LINES="$FAST_PATH_MAX_DIFF_LINES"
+fi
 
 # ---------------------------------------------------------------------------
 # Helper functions that read $TASK_CARD (not $TASK_CARD_COPY) so they can be
@@ -1086,6 +1179,8 @@ _estimator_schema_valid() {
     # Check all required cost fields that the script already parses
     for _field in predicted_diff_lines_low predicted_diff_lines_high predicted_files \
                   context_scope validation_complexity delegation_overhead \
+                  context_reacquisition_cost codex_semantic_rereview \
+                  solution_clarity semantic_concentration task_role \
                   estimated_direct_work_units estimated_delegated_work_units \
                   delegation_to_direct_ratio economic_recommendation \
                   safety_eligible recommended_owner; do
@@ -1102,6 +1197,14 @@ _estimator_schema_valid() {
                 case "$_val" in none|low|medium|high|unknown) ;; *) return 1 ;; esac ;;
             delegation_overhead)
                 case "$_val" in low|medium|high) ;; *) return 1 ;; esac ;;
+            context_reacquisition_cost)
+                case "$_val" in none|low|medium|high) ;; *) return 1 ;; esac ;;
+            codex_semantic_rereview)
+                case "$_val" in none|sampled|full) ;; *) return 1 ;; esac ;;
+            solution_clarity|semantic_concentration)
+                case "$_val" in high|medium|low) ;; *) return 1 ;; esac ;;
+            task_role)
+                case "$_val" in core-semantic|auxiliary|mixed|unknown) ;; *) return 1 ;; esac ;;
             estimated_direct_work_units|estimated_delegated_work_units)
                 case "$_val" in ''|*[!0-9]*|0) return 1 ;; esac ;;
             delegation_to_direct_ratio)
@@ -1508,6 +1611,12 @@ Budget mode requested: ${REQUESTED_BUDGET_MODE}
 Budget mode effective: ${BUDGET_MODE}
 Pipeline stage: ${SPARK_PIPELINE_STAGE}
 Roles executed: ${SPARK_ROLES_EXECUTED}
+Repository scale detected: ${REPOSITORY_SCALE_DETECTED}
+Repository routing scale: ${REPOSITORY_ROUTING_SCALE}
+Repository tracked/source files: ${REPOSITORY_TRACKED_FILES}/${REPOSITORY_SOURCE_FILES}
+Historical worktree cost: ${REPOSITORY_WORKTREE_COST} (median ${REPOSITORY_WORKTREE_MEDIAN_SECONDS}s, samples ${REPOSITORY_WORKTREE_SAMPLES}, io_promoted ${REPOSITORY_IO_PROMOTED})
+Dynamic ordinary gate: ${FAST_PATH_MAX_DIFF_LINES} calibrated lines / ${ORDINARY_FAST_PATH_MAX_FILES} files
+Dynamic concentrated gate: ${CONCENTRATED_FAST_PATH_MAX_DIFF_LINES} calibrated lines / ${CONCENTRATED_FAST_PATH_MAX_FILES} files
 
 Operating rules:
 - Use the requested Spark model only. Do not silently fall back to a stronger model.
@@ -1519,8 +1628,8 @@ Operating rules:
 - End your output with these fields exactly: accepted_suggestions=<none or comma-separated>; ignored_suggestions=<none or comma-separated>; conflicts_with_claude=<none or short note>; conflicts_with_local_evidence=<none or short note>; acceptance_satisfied_by_spark=no.
 
 Mode contract:
-- task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output exactly these fields: size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown; risk_flags=none or comma-separated public-api,data-model,security,migration,permission,concurrency,cross-module,broad-context,validation-complexity; reason=one short paragraph; stop_condition=one sentence; predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification. Work units are relative estimates, not actual/billable token measurements. Choose owner from edit size/files, context sufficiency, solution clarity, confidence, and delegation overhead only. Risk flags and validation complexity affect downstream rigor and MUST NOT push ownership from Codex to Claude. If an explicit human/policy risk override is later applied, it may bias high-risk work only toward Codex. The helper calibrates Spark's raw upper estimate after output (1.5x normally, 2.0x for tests/fixtures, shell/process orchestration, or cross-platform work) before applying the configured ${FAST_PATH_MAX_DIFF_LINES}-line threshold. Actual edits may exceed the estimate while scope, solution, and context remain stable.
-- execution-cost-estimator: read-only mode for routing event ${ROUTING_EVENT}. Estimate direct Codex editing cost versus Claude delegation overhead. Do not edit files. Output exactly these machine-readable fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short paragraph>; stop_condition=<one sentence>. Work units are relative estimates, not actual/billable token measurements. Choose economic_recommendation from edit size/files, context sufficiency, solution clarity, and delegation overhead only. Risk flags and validation complexity MUST NOT push ownership from Codex to Claude; they raise review, validation, isolation, or approval strictness. If an explicit human/policy risk override is later applied, it may bias high-risk work only toward Codex. Spark line estimates are calibrated deterministically by the helper after output (default 1.5x, 2.0x for tests/fixtures, shell/process orchestration, or cross-platform work). Actual edits may exceed the calibrated estimate when scope, solution, and context remain stable; re-route only for material scope, architecture, or unknown expansion.
+- task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output the standard estimator fields listed by execution-cost-estimator plus size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown. Choose owner from edit size/files, context sufficiency, solution clarity, confidence, context reacquisition, mandatory Codex rereview, and delegation overhead. Risk flags and validation complexity affect downstream rigor and MUST NOT push ownership from Codex to Claude.
+- execution-cost-estimator: read-only mode for routing event ${ROUTING_EVENT}. Estimate direct Codex editing cost versus Claude delegation overhead. Do not edit files. Output exactly these machine-readable fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; context_reacquisition_cost=none|low|medium|high; codex_semantic_rereview=none|sampled|full; solution_clarity=high|medium|low; semantic_concentration=high|medium|low; task_role=core-semantic|auxiliary|mixed|unknown; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short paragraph>; stop_condition=<one sentence>. Classify tests/checker work, mechanical batches, long validation/log processing, evidence collection, and independent support units as auxiliary. Classify tightly coupled behavior/architecture implementation as core-semantic; mixed work should be split when practical. Work units are relative estimates, not actual/billable token measurements. Count Claude context reacquisition/handoff and mandatory Codex rereview. Use the dynamic gates printed above. Concentrated routing is for core-semantic work only. In large/giant repositories, auxiliary work above a tiny one-file/50-line edit prefers Claude, even though Codex owns the core semantic implementation. Risk flags and validation complexity MUST NOT push ownership from Codex to Claude. If a risk override is later applied, it may bias high-risk work only toward Codex. Risk changes rigor, not owner direction.
 - review-only: inspect the task card and available repository context, do not edit files.
 - task-card-audit: inspect the task card for missing gates, mixed responsibilities, unclear acceptance criteria, unsafe scope, and likely Claude stall risks; do not edit files.
 - plan-splitter: propose smaller Builder/Checker task cards or independent parallelizable slices; do not edit files.
@@ -1533,7 +1642,7 @@ Mode contract:
 - observe-synthesizer: read-only synthesis of provided artifacts. Compress observations into structured findings. Do not edit files. Output structured observations with evidence citations.
 - task-card-drafter: draft a task card from the provided context and artifacts. Do not edit files. Output a structured task card proposal.
 - context-packet-builder: build a Context Packet draft from the task card and any provided artifacts. Do not edit files. Output a structured Context Packet with bounded excerpts.
-- preflight-bundle: combined preflight analysis in one invocation for routing event ${ROUTING_EVENT}. Perform risk classification, bounded evidence synthesis, task-card drafting, Context Packet drafting, unknown/risk extraction, split/parallel recommendation, and execution cost estimation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action. Under Decision Summary, put each execution-cost field on its own unprefixed key=value line so the helper can parse it: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags. Work units are relative estimates, not actual/billable token measurements. Choose owner from edit size/files, context sufficiency, solution clarity, confidence, and delegation overhead only. Risk flags and validation complexity affect downstream rigor and MUST NOT push ownership from Codex to Claude. If an explicit human/policy risk override is later applied, it may bias high-risk work only toward Codex. The helper calibrates Spark's raw upper estimate after output (1.5x normally, 2.0x for tests/fixtures, shell/process orchestration, or cross-platform work) before applying the configured ${FAST_PATH_MAX_DIFF_LINES}-line threshold. Actual edits may exceed the estimate while scope, solution, and context remain stable.
+- preflight-bundle: combined preflight analysis in one invocation for routing event ${ROUTING_EVENT}. Perform risk classification, bounded evidence synthesis, task-card drafting, Context Packet drafting, unknown/risk extraction, split/parallel recommendation, and execution cost estimation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action. Under Decision Summary, include every execution-cost-estimator key=value field, including context_reacquisition_cost, codex_semantic_rereview, solution_clarity, and semantic_concentration. Use the same ordinary and concentrated deterministic owner gates; risk changes rigor, not owner direction.
 - direction-precheck: check direction and boundary against the task card and provided artifacts. Do not edit files. Output direction/boundary assessment with specific risks.
 - acceptance-matrix: produce an acceptance criteria matrix from the task card. Do not edit files. Map each acceptance criterion to verification method, evidence source, and pass/fail status.
 - postflight-bundle: combined postflight analysis in one invocation. Perform direction/boundary/omission checks, acceptance mapping, evidence conflict detection, validation recommendations, and provisional accept/revise/split/escalate recommendation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
@@ -1832,6 +1941,11 @@ COST_PREDICTED_FILES="not recorded"
 COST_CONTEXT_SCOPE="not recorded"
 COST_VALIDATION_COMPLEXITY="not recorded"
 COST_DELEGATION_OVERHEAD="not recorded"
+COST_CONTEXT_REACQUISITION="not recorded"
+COST_CODEX_REREVIEW="not recorded"
+COST_SOLUTION_CLARITY="not recorded"
+COST_SEMANTIC_CONCENTRATION="not recorded"
+COST_TASK_ROLE="not recorded"
 COST_DIRECT_WORK_UNITS="not recorded"
 COST_DELEGATED_WORK_UNITS="not recorded"
 COST_RATIO="not recorded"
@@ -1843,6 +1957,7 @@ COST_RISK_FLAGS="not recorded"
 COST_SAFETY_REASONS="not evaluated"
 COST_CALIBRATION_MULTIPLIER="1.5"
 COST_CALIBRATED_DIFF_HIGH="not recorded"
+COST_FAST_PATH_CLASS="none"
 
 if [ -s "$RESULT_FILE" ]; then
     # Helper: extract the value from a key=value line, exactly one match.
@@ -1888,6 +2003,26 @@ if [ -s "$RESULT_FILE" ]; then
         low|medium|high) COST_DELEGATION_OVERHEAD="$_cost_val" ;;
         *) COST_DELEGATION_OVERHEAD="not recorded" ;;
     esac
+
+    _cost_val="$(grep -m1 '^context_reacquisition_cost=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#context_reacquisition_cost=}"
+    case "$_cost_val" in none|low|medium|high) COST_CONTEXT_REACQUISITION="$_cost_val" ;; esac
+
+    _cost_val="$(grep -m1 '^codex_semantic_rereview=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#codex_semantic_rereview=}"
+    case "$_cost_val" in none|sampled|full) COST_CODEX_REREVIEW="$_cost_val" ;; esac
+
+    _cost_val="$(grep -m1 '^solution_clarity=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#solution_clarity=}"
+    case "$_cost_val" in high|medium|low) COST_SOLUTION_CLARITY="$_cost_val" ;; esac
+
+    _cost_val="$(grep -m1 '^semantic_concentration=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#semantic_concentration=}"
+    case "$_cost_val" in high|medium|low) COST_SEMANTIC_CONCENTRATION="$_cost_val" ;; esac
+
+    _cost_val="$(grep -m1 '^task_role=' "$RESULT_FILE" 2>/dev/null || true)"
+    _cost_val="${_cost_val#task_role=}"
+    case "$_cost_val" in core-semantic|auxiliary|mixed|unknown) COST_TASK_ROLE="$_cost_val" ;; esac
 
     _cost_val="$(grep -m1 '^estimated_direct_work_units=' "$RESULT_FILE" 2>/dev/null || true)"
     _cost_val="${_cost_val#estimated_direct_work_units=}"
@@ -1974,25 +2109,70 @@ if [ "$COST_PREDICTED_DIFF_HIGH" != "not recorded" ]; then
 fi
 
 # Compute owner eligibility deterministically; never trust the model's claim.
-# Risk and validation complexity affect downstream rigor, not implementation owner.
+# The ordinary gate stays deliberately narrow.  A separate concentrated gate
+# permits larger edits only when delegation would duplicate already-acquired
+# context and Codex must perform a full semantic rereview anyway.
 _safety_failures=()
 if [ "$COST_PREDICTED_DIFF_LOW" = "not recorded" ] || [ "$COST_PREDICTED_DIFF_HIGH" = "not recorded" ]; then
     _safety_failures+=("missing-or-invalid-diff-estimate")
 elif [ "$COST_PREDICTED_DIFF_LOW" -gt "$COST_PREDICTED_DIFF_HIGH" ]; then
     _safety_failures+=("diff-range-reversed")
-elif [ "$COST_CALIBRATED_DIFF_HIGH" -gt "$FAST_PATH_MAX_DIFF_LINES" ]; then
-    _safety_failures+=("calibrated-diff-high-exceeds-${FAST_PATH_MAX_DIFF_LINES}")
 fi
 if [ "$COST_PREDICTED_FILES" = "not recorded" ] || [ "$COST_PREDICTED_FILES" = "unknown" ]; then
     _safety_failures+=("missing-or-unknown-file-count")
-elif [ "$COST_PREDICTED_FILES" -gt 2 ]; then
-    _safety_failures+=("predicted-files-exceed-2")
 fi
-[ "$COST_CONTEXT_SCOPE" = "local" ] || _safety_failures+=("context-not-local")
 [ "$COST_CONFIDENCE" = "high" ] || _safety_failures+=("confidence-not-high")
-for _required_cost_field in "$COST_DELEGATION_OVERHEAD" "$COST_DIRECT_WORK_UNITS" "$COST_DELEGATED_WORK_UNITS" "$COST_RATIO" "$COST_ECONOMIC_RECOMMENDATION"; do
+for _required_cost_field in "$COST_DELEGATION_OVERHEAD" "$COST_CONTEXT_REACQUISITION" "$COST_CODEX_REREVIEW" "$COST_SOLUTION_CLARITY" "$COST_SEMANTIC_CONCENTRATION" "$COST_TASK_ROLE" "$COST_DIRECT_WORK_UNITS" "$COST_DELEGATED_WORK_UNITS" "$COST_RATIO" "$COST_ECONOMIC_RECOMMENDATION"; do
     [ "$_required_cost_field" != "not recorded" ] || _safety_failures+=("missing-required-cost-field")
 done
+
+_ordinary_gate="no"
+if [ "$COST_CALIBRATED_DIFF_HIGH" != "not recorded" ] && \
+   [ "$COST_CALIBRATED_DIFF_HIGH" -le "$FAST_PATH_MAX_DIFF_LINES" ] && \
+   [ "$COST_PREDICTED_FILES" != "not recorded" ] && [ "$COST_PREDICTED_FILES" != "unknown" ] && \
+   [ "$COST_PREDICTED_FILES" -le "$ORDINARY_FAST_PATH_MAX_FILES" ] && [ "$COST_CONTEXT_SCOPE" = "local" ]; then
+    _ordinary_gate="yes"
+    COST_FAST_PATH_CLASS="ordinary"
+fi
+
+_concentrated_gate="no"
+if [ "$COST_CALIBRATED_DIFF_HIGH" != "not recorded" ] && \
+   [ "$COST_CALIBRATED_DIFF_HIGH" -le "$CONCENTRATED_FAST_PATH_MAX_DIFF_LINES" ] && \
+   [ "$COST_PREDICTED_FILES" != "not recorded" ] && [ "$COST_PREDICTED_FILES" != "unknown" ] && \
+   [ "$COST_PREDICTED_FILES" -le "$CONCENTRATED_FAST_PATH_MAX_FILES" ] && \
+   { [ "$COST_CONTEXT_SCOPE" = "local" ] || [ "$COST_CONTEXT_SCOPE" = "bounded" ]; } && \
+   [ "$COST_CONTEXT_REACQUISITION" = "high" ] && \
+   [ "$COST_CODEX_REREVIEW" = "full" ] && \
+   [ "$COST_SOLUTION_CLARITY" = "high" ] && \
+   [ "$COST_SEMANTIC_CONCENTRATION" = "high" ] && \
+   [ "$COST_TASK_ROLE" = "core-semantic" ] && \
+   [ "$COST_DELEGATED_WORK_UNITS" != "not recorded" ] && [ "$COST_DIRECT_WORK_UNITS" != "not recorded" ] && \
+   [ $((COST_DELEGATED_WORK_UNITS * 2)) -ge $((COST_DIRECT_WORK_UNITS * 3)) ]; then
+    _concentrated_gate="yes"
+    COST_FAST_PATH_CLASS="concentrated-context-reuse"
+fi
+
+_large_auxiliary_bias="no"
+if { [ "$REPOSITORY_ROUTING_SCALE" = "large" ] || [ "$REPOSITORY_ROUTING_SCALE" = "giant" ]; } && \
+   [ "$COST_TASK_ROLE" = "auxiliary" ] && \
+   { [ "$COST_CALIBRATED_DIFF_HIGH" = "not recorded" ] || [ "$COST_CALIBRATED_DIFF_HIGH" -gt 50 ] || [ "$COST_PREDICTED_FILES" = "unknown" ] || [ "$COST_PREDICTED_FILES" = "not recorded" ] || [ "$COST_PREDICTED_FILES" -gt 1 ]; }; then
+    _ordinary_gate="no"
+    _concentrated_gate="no"
+    COST_FAST_PATH_CLASS="none"
+    _large_auxiliary_bias="yes"
+fi
+
+if [ "$_ordinary_gate" != "yes" ] && [ "$_concentrated_gate" != "yes" ]; then
+    if [ "$COST_CALIBRATED_DIFF_HIGH" != "not recorded" ] && [ "$COST_CALIBRATED_DIFF_HIGH" -gt "$FAST_PATH_MAX_DIFF_LINES" ]; then
+        _safety_failures+=("calibrated-diff-high-exceeds-${FAST_PATH_MAX_DIFF_LINES}")
+    fi
+    if [ "$COST_PREDICTED_FILES" != "not recorded" ] && [ "$COST_PREDICTED_FILES" != "unknown" ] && [ "$COST_PREDICTED_FILES" -gt "$ORDINARY_FAST_PATH_MAX_FILES" ]; then
+        _safety_failures+=("predicted-files-exceed-${ORDINARY_FAST_PATH_MAX_FILES}")
+    fi
+    [ "$_large_auxiliary_bias" = "yes" ] && _safety_failures+=("large-repo-auxiliary-prefers-claude")
+    [ "$COST_CONTEXT_SCOPE" = "local" ] || _safety_failures+=("context-not-local")
+    _safety_failures+=("neither-ordinary-nor-concentrated-fast-path-gate-passed")
+fi
 
 if [ "${#_safety_failures[@]}" -eq 0 ]; then
     COST_SAFETY_ELIGIBLE="yes"
@@ -2035,6 +2215,11 @@ case "$RESULT_MODE" in
                 echo "estimate_calibration_multiplier=${COST_CALIBRATION_MULTIPLIER}"
                 echo "calibrated_diff_lines_high=${COST_CALIBRATED_DIFF_HIGH}"
                 echo "deterministic_owner=${COST_RECOMMENDED_OWNER}"
+                echo "fast_path_class=${COST_FAST_PATH_CLASS}"
+                echo "repository_scale_detected=${REPOSITORY_SCALE_DETECTED}"
+                echo "repository_routing_scale=${REPOSITORY_ROUTING_SCALE}"
+                echo "dynamic_ordinary_gate=${FAST_PATH_MAX_DIFF_LINES}/${ORDINARY_FAST_PATH_MAX_FILES}"
+                echo "dynamic_concentrated_gate=${CONCENTRATED_FAST_PATH_MAX_DIFF_LINES}/${CONCENTRATED_FAST_PATH_MAX_FILES}"
                 echo "owner_ignores_risk_flags=yes"
                 echo "risk_owner_override_direction=codex-only"
             fi
@@ -2124,6 +2309,17 @@ case "$RESULT_MODE" in
             echo "| Context scope | ${COST_CONTEXT_SCOPE} |"
             echo "| Validation complexity | ${COST_VALIDATION_COMPLEXITY} |"
             echo "| Delegation overhead | ${COST_DELEGATION_OVERHEAD} |"
+            echo "| Context reacquisition cost | ${COST_CONTEXT_REACQUISITION} |"
+            echo "| Codex semantic rereview | ${COST_CODEX_REREVIEW} |"
+            echo "| Solution clarity | ${COST_SOLUTION_CLARITY} |"
+            echo "| Semantic concentration | ${COST_SEMANTIC_CONCENTRATION} |"
+            echo "| Task role | ${COST_TASK_ROLE} |"
+            echo "| Repository scale detected | ${REPOSITORY_SCALE_DETECTED} |"
+            echo "| Repository routing scale | ${REPOSITORY_ROUTING_SCALE} |"
+            echo "| Repository tracked/source files | ${REPOSITORY_TRACKED_FILES}/${REPOSITORY_SOURCE_FILES} |"
+            echo "| Historical worktree cost | ${REPOSITORY_WORKTREE_COST}; median=${REPOSITORY_WORKTREE_MEDIAN_SECONDS}s; samples=${REPOSITORY_WORKTREE_SAMPLES}; promoted=${REPOSITORY_IO_PROMOTED} |"
+            echo "| Dynamic ordinary gate | ${FAST_PATH_MAX_DIFF_LINES} lines / ${ORDINARY_FAST_PATH_MAX_FILES} files |"
+            echo "| Dynamic concentrated gate | ${CONCENTRATED_FAST_PATH_MAX_DIFF_LINES} lines / ${CONCENTRATED_FAST_PATH_MAX_FILES} files |"
             echo "| Direct work units | ${COST_DIRECT_WORK_UNITS} |"
             echo "| Delegated work units | ${COST_DELEGATED_WORK_UNITS} |"
             echo "| Delegation-to-direct ratio | ${COST_RATIO} |"
@@ -2131,6 +2327,7 @@ case "$RESULT_MODE" in
             echo "| Safety eligible | ${COST_SAFETY_ELIGIBLE} |"
             echo "| Safety gate reasons | ${COST_SAFETY_REASONS} |"
             echo "| Recommended owner | ${COST_RECOMMENDED_OWNER} |"
+            echo "| Fast-path class | ${COST_FAST_PATH_CLASS} |"
             echo "| Cost confidence | ${COST_CONFIDENCE} |"
             echo "| Risk flags | ${COST_RISK_FLAGS} |"
             echo "| Risk affects owner | no; review/validation rigor only |"
@@ -2188,6 +2385,17 @@ case "$RESULT_MODE" in
             echo "| Context scope | ${COST_CONTEXT_SCOPE} |"
             echo "| Validation complexity | ${COST_VALIDATION_COMPLEXITY} |"
             echo "| Delegation overhead | ${COST_DELEGATION_OVERHEAD} |"
+            echo "| Context reacquisition cost | ${COST_CONTEXT_REACQUISITION} |"
+            echo "| Codex semantic rereview | ${COST_CODEX_REREVIEW} |"
+            echo "| Solution clarity | ${COST_SOLUTION_CLARITY} |"
+            echo "| Semantic concentration | ${COST_SEMANTIC_CONCENTRATION} |"
+            echo "| Task role | ${COST_TASK_ROLE} |"
+            echo "| Repository scale detected | ${REPOSITORY_SCALE_DETECTED} |"
+            echo "| Repository routing scale | ${REPOSITORY_ROUTING_SCALE} |"
+            echo "| Repository tracked/source files | ${REPOSITORY_TRACKED_FILES}/${REPOSITORY_SOURCE_FILES} |"
+            echo "| Historical worktree cost | ${REPOSITORY_WORKTREE_COST}; median=${REPOSITORY_WORKTREE_MEDIAN_SECONDS}s; samples=${REPOSITORY_WORKTREE_SAMPLES}; promoted=${REPOSITORY_IO_PROMOTED} |"
+            echo "| Dynamic ordinary gate | ${FAST_PATH_MAX_DIFF_LINES} lines / ${ORDINARY_FAST_PATH_MAX_FILES} files |"
+            echo "| Dynamic concentrated gate | ${CONCENTRATED_FAST_PATH_MAX_DIFF_LINES} lines / ${CONCENTRATED_FAST_PATH_MAX_FILES} files |"
             echo "| Direct work units | ${COST_DIRECT_WORK_UNITS} |"
             echo "| Delegated work units | ${COST_DELEGATED_WORK_UNITS} |"
             echo "| Delegation-to-direct ratio | ${COST_RATIO} |"
@@ -2195,6 +2403,7 @@ case "$RESULT_MODE" in
             echo "| Safety eligible | ${COST_SAFETY_ELIGIBLE} |"
             echo "| Safety gate reasons | ${COST_SAFETY_REASONS} |"
             echo "| Recommended owner | ${COST_RECOMMENDED_OWNER} |"
+            echo "| Fast-path class | ${COST_FAST_PATH_CLASS} |"
             echo "| Cost confidence | ${COST_CONFIDENCE} |"
             echo "| Risk flags | ${COST_RISK_FLAGS} |"
             echo "| Risk affects owner | no; review/validation rigor only |"

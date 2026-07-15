@@ -1,3 +1,4 @@
 interface:
-  display_name: AI Coding Workflow
-  short_description: Install and use a local multi-agent coding workflow for Codex, Claude Code, MiMo, and DeepSeek.
+  display_name: "AI Coding Workflow"
+  short_description: "Install and run Codex, Claude, and Spark coding workflows."
+  default_prompt: "Use $ai-coding-workflow to route, dispatch, verify, and review this repository task."

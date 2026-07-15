@@ -75,6 +75,8 @@ PYTHON_SCRIPTS = [
     ("claude-healthcheck.py", "ai/claude-healthcheck.py"),
     ("claude-process-state.py", "ai/claude-process-state.py"),
     ("classify-claude-attempt.py", "ai/classify-claude-attempt.py"),
+    ("verify-claude-report.py", "ai/verify-claude-report.py"),
+    ("repository-scale.py", "ai/repository-scale.py"),
     ("prepare-advisor-continuation.py", "ai/prepare-advisor-continuation.py"),
     ("validate-claude-context.py", "ai/validate-claude-context.py"),
     ("code-search-service.py", "ai/code-search-service.py"),

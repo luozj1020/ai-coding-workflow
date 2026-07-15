@@ -1808,6 +1808,11 @@ predicted_files=1
 context_scope=local
 validation_complexity=low
 delegation_overhead=high
+context_reacquisition_cost=low
+codex_semantic_rereview=sampled
+solution_clarity=high
+semantic_concentration=high
+task_role=core-semantic
 estimated_direct_work_units=30
 estimated_delegated_work_units=80
 delegation_to_direct_ratio=2.67
@@ -1875,6 +1880,53 @@ stop_condition=scope expands"""
         self.assertIn("| Cost confidence | high |", report)
         self.assertIn("| Estimate calibration multiplier | 1.5 |", report)
         self.assertIn("| Calibrated diff lines (high) | 36 |", report)
+        self.assertIn("| Fast-path class | ordinary |", report)
+
+    def test_concentrated_context_reuse_allows_larger_semantic_edit(self):
+        output = self.SAFE_OUTPUT.replace(
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=220"
+        ).replace("predicted_files=1", "predicted_files=5").replace(
+            "context_scope=local", "context_scope=bounded"
+        ).replace("context_reacquisition_cost=low", "context_reacquisition_cost=high").replace(
+            "codex_semantic_rereview=sampled", "codex_semantic_rereview=full"
+        )
+        result, output_dir, _ = self._run(output, "--repository-scale", "large")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Calibrated diff lines (high) | 330 |", report)
+        self.assertIn("| Fast-path class | concentrated-context-reuse |", report)
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
+        self.assertIn("| Repository routing scale | large |", report)
+        self.assertIn("| Dynamic ordinary gate | 150 lines / 3 files |", report)
+
+    def test_concentrated_context_reuse_fails_without_full_rereview(self):
+        output = self.SAFE_OUTPUT.replace(
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=120"
+        ).replace("predicted_files=1", "predicted_files=3").replace(
+            "context_reacquisition_cost=low", "context_reacquisition_cost=high"
+        )
+        result, output_dir, _ = self._run(output)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("neither-ordinary-nor-concentrated-fast-path-gate-passed", report)
+        self.assertIn("| Recommended owner | claude-builder |", report)
+
+    def test_large_repo_auxiliary_work_prefers_claude(self):
+        output = self.SAFE_OUTPUT.replace(
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=60"
+        ).replace("task_role=core-semantic", "task_role=auxiliary")
+        result, output_dir, _ = self._run(output, "--repository-scale", "large")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("large-repo-auxiliary-prefers-claude", report)
+        self.assertIn("| Recommended owner | claude-builder |", report)
+
+    def test_large_repo_tiny_auxiliary_can_still_use_codex(self):
+        output = self.SAFE_OUTPUT.replace("task_role=core-semantic", "task_role=auxiliary")
+        result, output_dir, _ = self._run(output, "--repository-scale", "large")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
 
     def test_revision_event_and_orchestration_use_two_x_calibration(self):
         result, output_dir, prompt_path = self._run(
@@ -2536,6 +2588,11 @@ class SparkSchemaInvalidTests(unittest.TestCase):
         "context_scope=local\n"
         "validation_complexity=low\n"
         "delegation_overhead=high\n"
+        "context_reacquisition_cost=low\n"
+        "codex_semantic_rereview=sampled\n"
+        "solution_clarity=high\n"
+        "semantic_concentration=high\n"
+        "task_role=core-semantic\n"
         "estimated_direct_work_units=30\n"
         "estimated_delegated_work_units=80\n"
         "delegation_to_direct_ratio=2.67\n"

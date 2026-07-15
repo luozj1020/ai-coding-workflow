@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import fnmatch
 import subprocess
@@ -59,6 +60,17 @@ def _escalate_risk(current: str, hint_value: str) -> str:
 
 # Canonical JSON and hashing delegated to shared evidence_hash module.
 _facts_hash = _evidence_hash
+
+
+def _repository_scale_facts(repo: Path) -> Dict[str, Any]:
+    """Load the canonical hyphenated scale helper without duplicating thresholds."""
+    helper = Path(__file__).resolve().with_name("repository-scale.py")
+    spec = importlib.util.spec_from_file_location("aiwf_repository_scale", helper)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load repository scale helper: {helper}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.collect(repo)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -161,8 +173,9 @@ def collect_facts(
     marker_names = ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel", "BUILD", "BUILD.bazel"]
     markers = [name for name in marker_names if (repo_root / name).exists()]
     has_cpp = any(Path(path).suffix.lower() in {".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"} for path in tracked_files)
-    file_count = len(tracked_files)
-    scale = "small" if file_count < 300 else "medium" if file_count < 3000 else "large" if file_count < 20000 else "monorepo"
+    scale_facts = _repository_scale_facts(repo_root)
+    file_count = int(scale_facts["tracked_files"])
+    scale = str(scale_facts["repository_scale_detected"])
     cache_dir = repo_root / ".ai-workflow" / "cache" / "context"
     cache_entries = len(list(cache_dir.glob("*.json"))) if cache_dir.is_dir() else 0
 
@@ -179,7 +192,17 @@ def collect_facts(
         "exact_validation": exact_validation,
         "profiles": composed.get("profiles", []),
         "commit": _git(repo_root, "rev-parse", "HEAD"),
-        "repository": {"root": str(repo_root), "tracked_files": file_count, "scale": scale, "bazel": bool(markers), "cpp": has_cpp},
+        "repository": {
+            "root": str(repo_root),
+            "tracked_files": file_count,
+            "source_files": scale_facts["source_files"],
+            "scale": scale,
+            "routing_scale": scale_facts["routing_scale"],
+            "worktree_cost": scale_facts["worktree_cost"],
+            "worktree_setup_median_seconds": scale_facts["worktree_setup_median_seconds"],
+            "bazel": bool(markers),
+            "cpp": has_cpp,
+        },
         "repository_size": scale,
         "repository_markers": markers,
         "remote_validation_required": remote_required,

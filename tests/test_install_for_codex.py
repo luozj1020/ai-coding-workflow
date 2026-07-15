@@ -3,6 +3,7 @@ import importlib.util
 import io
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,29 @@ class InstallForCodexTests(unittest.TestCase):
         self.assertIn("mixed-exception", content)
         self.assertIn("permission/tool approval blocker", content)
         self.assertIn("Dirty source or stale HEAD is a delegation blocker", content)
+
+    def test_skill_entrypoint_stays_within_default_context_budget(self):
+        content = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(content.encode("utf-8")), 18_000)
+        self.assertLessEqual(len(content.split()), 2_500)
+
+    def test_skill_entrypoint_references_exist_and_are_first_level(self):
+        content = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        references = set(re.findall(r"`(references/[^`]+\.md)`", content))
+        self.assertGreaterEqual(len(references), 5)
+        for relative in references:
+            self.assertEqual(pathlib.PurePosixPath(relative).parent.as_posix(), "references")
+            self.assertTrue((ROOT / relative).is_file(), relative)
+
+    def test_installed_skill_keeps_progressive_disclosure_references(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = pathlib.Path(tmp) / "skill"
+            self.module.copy_skill(str(ROOT), str(destination))
+
+            installed_entrypoint = destination / "SKILL.md"
+            self.assertLessEqual(installed_entrypoint.stat().st_size, 18_000)
+            self.assertTrue((destination / "references" / "routing-and-spark.md").is_file())
+            self.assertTrue((destination / "references" / "claude-runtime.md").is_file())
 
     def test_main_prints_bootstrap_next_steps(self):
         with tempfile.TemporaryDirectory() as tmp:

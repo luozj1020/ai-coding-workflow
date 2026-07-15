@@ -170,7 +170,13 @@
 | Fast path used? | yes/no |
 | Claude dispatch skipped? | yes/no |
 | Routing event | initial / revision / narrow / retry / next-phase |
+| Repository scale detected / routing scale | small/medium/large/giant / small/medium/large/giant |
+| Tracked/source files and worktree cost | counts / unknown-low-medium-high + median/sample count |
+| Task role | core-semantic / auxiliary / mixed / unknown |
 | Spark raw / calibrated upper estimate | raw / calibrated + 1.5 or 2.0 multiplier |
+| Context reacquisition / Codex rereview | none/low/medium/high / none/sampled/full |
+| Solution clarity / semantic concentration | high/medium/low / high/medium/low |
+| Fast-path class | ordinary / concentrated-context-reuse / none |
 | Files touched | |
 | Why direct ownership was economical | |
 | Risk-driven review/validation rigor | |
@@ -179,6 +185,7 @@
 | Spark used? | no / yes + artifact |
 | Validation run | command / skipped + reason |
 | Fresh route needed after edit? | no / yes + material expansion reason |
+| Claude report/diff consistency artifact | path / not applicable |
 
 ## Codex Spark Follow-up
 

@@ -1517,6 +1517,31 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn(".retry-lock-", dispatch)
             self.assertIn("reservation already exists", dispatch)
 
+    def test_installs_report_diff_consistency_helper_and_dispatch_hook(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            helper = repo / "ai" / "verify-claude-report.py"
+            dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+            aiwf = (repo / "ai" / "aiwf.py").read_text(encoding="utf-8")
+
+            self.assertTrue(helper.is_file())
+            self.assertIn("REPORT_CONSISTENCY_FILE", dispatch)
+            self.assertIn("verify-claude-report.py", dispatch)
+            self.assertIn('"verify-claude-report":"verify-claude-report.py"', aiwf)
+
+    def test_installs_repository_scale_helper_and_worktree_timing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            helper = repo / "ai" / "repository-scale.py"
+            dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+            aiwf = (repo / "ai" / "aiwf.py").read_text(encoding="utf-8")
+
+            self.assertTrue(helper.is_file())
+            self.assertIn('"repository-scale":"repository-scale.py"', aiwf)
+            self.assertIn('"worktree_setup_seconds"', dispatch)
+
     def test_installed_status_has_runtime_resolution(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
