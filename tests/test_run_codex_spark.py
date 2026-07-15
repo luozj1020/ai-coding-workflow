@@ -68,8 +68,8 @@ class RunCodexSparkTests(unittest.TestCase):
         self.assertIn("--brief-file", result.stderr)
         self.assertIn("--stdin-brief", result.stderr)
 
-    def test_help_mentions_default_100_for_fast_path(self):
-        """Help output and environment docs show default 100 for fast-path threshold."""
+    def test_help_documents_repository_scaled_fast_path_defaults(self):
+        """Help distinguishes auto scale defaults from explicit env overrides."""
         result = subprocess.run(
             [bash_exe(), bash_path(SCRIPT), "--help"],
             cwd=str(ROOT),
@@ -80,9 +80,11 @@ class RunCodexSparkTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("default 100", result.stderr)
+        self.assertIn("selected from repository scale", result.stderr)
         self.assertIn("--fast-path-max-diff-lines", result.stderr)
-        self.assertIn("CODEX_FAST_PATH_MAX_DIFF_LINES", result.stderr)
+        self.assertIn("--repository-scale", result.stderr)
+        self.assertIn("CODEX_FAST_PATH_MAX_DIFF_LINES=100", result.stderr)
+        self.assertIn("CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES=500", result.stderr)
 
     def test_help_mentions_controlled_builder_and_flags(self):
         """Required test 1: help output includes controlled-builder, --result-mode,
