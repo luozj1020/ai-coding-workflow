@@ -40,6 +40,7 @@ from task_schema import (
     validate_task,
     write_output,
 )
+import workflow_economics
 
 # All risk categories from the schema
 ALL_RISK_CATEGORIES = [
@@ -208,9 +209,21 @@ def collect_facts(
         "remote_validation_required": remote_required,
         "context_cache_state": {"available": cache_entries > 0, "entries": cache_entries},
         "predicted_diff_lines": hints.get("predicted_diff_lines", hints.get("diff_lines", 999)),
+        "execution_owner": hints.get("execution_owner", hints.get("recommended_owner")),
+        "delegation_value": hints.get("delegation_value"),
+        "checker_model_required": hints.get("checker_model_required", False) is True,
+        "test_writing_required": hints.get("test_writing_required", False) is True,
+        "long_validation_required": hints.get("long_validation_required", False) is True,
+        "evidence_processing_required": hints.get("evidence_processing_required", False) is True,
+        "task_type": str(hints.get("task_type") or composed.get("mode") or "unknown"),
         "quota_mode": hints.get("quota_mode", "normal"),
         "latency_mode": hints.get("latency_mode", "interactive"),
     }
+
+    history_path = repo_root / ".ai-workflow" / "economics-history.jsonl"
+    facts["historical_calibration"] = workflow_economics.calibrate(
+        workflow_economics.load_history(history_path, facts["task_type"])
+    )
 
     # Step 11: Compute hash (over everything except the hash field itself)
     facts["routing_facts_hash"] = _facts_hash(facts)

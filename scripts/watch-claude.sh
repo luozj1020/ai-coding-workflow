@@ -16,6 +16,7 @@ TAIL_LINES=24
 ONCE=0
 DETAILS=0
 PLAIN=0
+MACHINE=0
 STALE_AFTER=120
 STALE_AFTER_EXPLICIT=0
 WAIT_PROFILE="${CLAUDE_CODE_WAIT_PROFILE:-medium}"
@@ -43,6 +44,9 @@ while [ $# -gt 0 ]; do
         --plain)
             PLAIN=1
             ;;
+        --machine)
+            MACHINE=1
+            ;;
         --stale-after)
             shift
             STALE_AFTER="${1:-}"
@@ -65,7 +69,7 @@ while [ $# -gt 0 ]; do
             ESCALATION_CONFIRMATIONS="${1:-}"
             ;;
         -h|--help)
-            echo "Usage: $0 [claude-<timestamp>] [--interval seconds] [--lines count] [--once] [--details] [--plain] [--stale-after seconds] [--wait-profile small|medium|large] [--startup-grace seconds] [--interrupt-after seconds] [--escalation-confirmations count]"
+            echo "Usage: $0 [claude-<timestamp>] [--interval seconds] [--lines count] [--once] [--details|--plain|--machine] [--stale-after seconds] [--wait-profile small|medium|large] [--startup-grace seconds] [--interrupt-after seconds] [--escalation-confirmations count]"
             exit 0
             ;;
         *)
@@ -78,6 +82,11 @@ while [ $# -gt 0 ]; do
     esac
     shift || true
 done
+
+if [ "$MACHINE" -eq 1 ] && { [ "$DETAILS" -eq 1 ] || [ "$PLAIN" -eq 1 ]; }; then
+    echo "Error: --machine is mutually exclusive with --details and --plain." >&2
+    exit 1
+fi
 
 case "$WAIT_PROFILE" in
     small)
@@ -318,6 +327,8 @@ LIVE_CLAUDE_PROGRESS_FILE="${WORKTREE_DIR}/CLAUDE_PROGRESS.md"
 LIVE_REPORT_FILE="${WORKTREE_DIR}/CLAUDE_REPORT.md"
 
 last_digest=""
+last_artifact_bytes=0
+artifact_baseline_set=0
 printed_header=0
 monitor_suspect_count=0
 LAST_OVERALL_RUNNING="no"
@@ -608,6 +619,10 @@ monitor_level() {
 
 print_header() {
     if [ "$printed_header" -eq 0 ]; then
+        if [ "$MACHINE" -eq 1 ]; then
+            printed_header=1
+            return
+        fi
         if [ "$PLAIN" -eq 1 ]; then
             echo "# Claude Watch"
             echo "Task ID: $TASK_ID"
@@ -675,7 +690,7 @@ print_details_if_needed() {
 print_snapshot() {
     print_header
 
-    local claude_progress_source report_source running overall_running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor level digest show_details dispatcher_running claude_running checker_running
+    local claude_progress_source report_source running overall_running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor level digest show_details dispatcher_running claude_running checker_running artifact_bytes artifact_growth machine_milestone
     claude_progress_source="$(select_claude_progress_file)"
     report_source="$(select_report_file)"
 
@@ -740,6 +755,14 @@ print_snapshot() {
     fi
     monitor="$(monitor_plan "$running" "$elapsed" "$quiet" "$worktree_changes" "$action" "$monitor_suspect_count")"
     level="$(monitor_level "$running" "$elapsed" "$quiet" "$worktree_changes" "$monitor_suspect_count")"
+    artifact_bytes=$((result_bytes + status_bytes + network_bytes + report_bytes + claude_progress_bytes + diff_bytes))
+    artifact_growth="unknown"
+    if [ "$artifact_baseline_set" -eq 1 ]; then
+        artifact_growth="no"
+        if [ "$artifact_bytes" -gt "$last_artifact_bytes" ]; then
+            artifact_growth="yes"
+        fi
+    fi
 
     # Deliberately exclude elapsed/quiet seconds and their prose reason from the
     # event identity. Ordinary heartbeats must not wake an observing controller;
@@ -764,7 +787,11 @@ print_snapshot() {
             state="STOPPED"
         fi
 
-        if [ "$PLAIN" -eq 1 ]; then
+        if [ "$MACHINE" -eq 1 ]; then
+            machine_milestone="$(printf '%s' "$milestone" | tr '\r\n\t' '   ' | tr -cd '[:print:]' | cut -c1-120)"
+            printf 'monitor_event task_id=%q state=%q monitor_level=%q action=%q evidence_state=%q quiet_seconds=%q suspect_count=%q running=%q overall_running=%q dispatcher=%q claude=%q checker=%q elapsed_seconds=%q worktree_changes=%q artifact_growth=%q milestone=%q\n' \
+                "$TASK_ID" "$state" "$level" "$action" "$evidence" "$quiet" "$monitor_suspect_count" "$running" "$overall_running" "$dispatcher_running" "$claude_running" "$checker_running" "$elapsed" "$worktree_changes" "$artifact_growth" "$machine_milestone"
+        elif [ "$PLAIN" -eq 1 ]; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] state=${state} elapsed=${elapsed}s quiet=${quiet}s ${bar}"
             echo "current: ${milestone}"
             echo "evidence: ${evidence}"
@@ -802,12 +829,12 @@ print_snapshot() {
             echo ""
         fi
         last_digest="$digest"
+        last_artifact_bytes="$artifact_bytes"
+        artifact_baseline_set=1
     fi
 
     show_details=0
     if [ "$DETAILS" -eq 1 ]; then
-        show_details=1
-    elif [ "$running" = "yes" ] && [ "$monitor_suspect_count" -ge "$ESCALATION_CONFIRMATIONS" ]; then
         show_details=1
     fi
     print_details_if_needed "$show_details" "$claude_progress_source"

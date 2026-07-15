@@ -1,4 +1,8 @@
-# Task Card
+# Legacy Full Task Card (Compatibility Only)
+
+> Default authoring path: Codex reads `ai/task-card-components/catalog.md`,
+> selects a preset and material gates, then runs `python ai/compose_task_card.py`.
+> Do not load or fill this monolithic template for ordinary tasks.
 
 ## ID
 
@@ -75,6 +79,8 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 | Worktree progress mode | `CLAUDE_CODE_WORKTREE_PROGRESS=quiet` (default, compact timing/path) / `verbose` |
 | Large-repo shortcut eligibility | low risk + exact targets + serial dispatch + reduced evidence explicitly accepted / no, keep fresh + full evidence |
 | Same-task no-diff retry | no / `CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID=<prior-task-id>` after recorded identity, clean state, unchanged HEAD, and no live role PID are proven |
+| Reviewed dirty continuation | no / approval artifact path; Codex accepted exact existing diff; Builder→Builder or Builder→Checker only |
+| Continuation path split | accepted-existing paths: ...; allow-new-write paths: ... |
 | Target-only hash diagnostics | none / `python ai/doctor_workflow.py . --hash-path <repo-relative-file>` (repeatable, max 20; does not prove global cleanliness) |
 | Renormalization policy | never automatic; human judgment required |
 
@@ -139,6 +145,23 @@ Serial low-risk `checker-test` tasks default to `reuse-managed` only when every 
 | Interrupt and narrow task? | yes/no + reason |
 | Dispatch Checker/Test task next? | yes/no + task-card path |
 | Codex takeover threshold reached? | yes/no + cited artifacts |
+
+## Reviewer-Owned Bounded Correction Gate
+
+<!-- Complete after direction review and before writing any revision card. This is an economic ownership re-route, not a Claude failure count. -->
+
+| Check | Value |
+|-------|-------|
+| Main implementation direction accepted? | yes/no |
+| Fresh Spark revision route artifact | path / unavailable reason |
+| Codex already holds exact affected context? | yes/no |
+| Correction deterministic and precisely bounded? | yes/no + files/symbols |
+| New architecture/product/API/data decision required? | no/yes |
+| Calibrated correction size/files | lines / files |
+| Repository-scale direct gate satisfied? | yes/no + gate |
+| Owner decision | reviewer-owned bounded correction / Claude revision / split / reject |
+| If Claude-owned, reviewed same-worktree continuation used? | yes/no + approval path/reason |
+| Narrow correction validation | command/evidence |
 
 ## Approval-Blocked Early Convergence
 

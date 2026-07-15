@@ -110,15 +110,41 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     budgets = BUDGETS.get(qm, BUDGETS["normal"])
     c, cl, s = budgets.get(lane, budgets["standard"])
 
-    # Single-pass decision: only the Router calculates this
+    # Execution ownership is economic, not risk-derived.  Callers may provide a
+    # reviewed pre-card decision; absent that signal, preserve Claude Builder as
+    # the compatibility default.
+    owner_hint = data.get("execution_owner", data.get("recommended_owner"))
+    delegation_value = data.get("delegation_value")
+    calibration = data.get("historical_calibration", {})
+    historical_bias = calibration.get("owner_bias", "none") if isinstance(calibration, dict) else "none"
+    owner_source = "explicit" if owner_hint else "compatibility-default"
+    if not owner_hint and historical_bias in ("codex-fast-path", "claude-builder"):
+        owner_hint = historical_bias
+        owner_source = "accepted-history"
+    if delegation_value is False or owner_hint in ("codex", "codex-fast-path"):
+        execution_owner = "codex-fast-path"
+    else:
+        execution_owner = "claude-builder"
+
+    # Single-pass decision: only the Router calculates this.
     single_pass_allowed = lane == "express" and not risks and bool(data.get("exact_validation"))
-    builder_checker_split = not single_pass_allowed
+    checker_value_reasons = []
+    for field, reason_code in (
+        ("checker_model_required", "explicit-checker-model"),
+        ("test_writing_required", "assigned-test-writing"),
+        ("long_validation_required", "long-validation"),
+        ("evidence_processing_required", "large-evidence-processing"),
+    ):
+        if data.get(field) is True:
+            checker_value_reasons.append(reason_code)
+    checker_model_dispatch = bool(checker_value_reasons) and not single_pass_allowed
+    builder_checker_split = checker_model_dispatch
     if single_pass_allowed:
         single_pass_reason = "express-lane-exact-validation"
-    elif risks:
-        single_pass_reason = "risk-not-exactly-no"
+    elif checker_model_dispatch:
+        single_pass_reason = "checker-model-has-explicit-delegation-value"
     else:
-        single_pass_reason = f"{lane}-lane-requires-separated-validation"
+        single_pass_reason = "deterministic-validation-without-checker-model"
 
     # Build reason list
     reason = sorted(risks) if risks else (
@@ -141,7 +167,16 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
             ),
         },
         "execution": {
+            "owner": execution_owner,
+            "owner_source": owner_source,
+            "historical_calibration": calibration if isinstance(calibration, dict) else {},
             "builder_checker_split": builder_checker_split,
+            "checker_model_dispatch": checker_model_dispatch,
+            "checker_value_reasons": checker_value_reasons,
+            "checker_skip_reason": (
+                None if checker_model_dispatch
+                else "checker skipped: deterministic evidence sufficient"
+            ),
             "single_pass_allowed": single_pass_allowed,
             "single_pass_reason": single_pass_reason,
             "remote_rounds": 1,

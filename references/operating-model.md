@@ -88,7 +88,7 @@ Fields:
 - **Evidence**  -  LSP/locator/CodeGraph/MCP data gathered before implementation
 - **Loop context**  -  parent task ID, iteration, prior decision, revision instructions, budget/stop conditions, required evidence
 
-Template: `ai/task-card-template.md`
+Default authoring: Codex reads `ai/task-card-components/catalog.md`, chooses a preset and material gates, then runs `python ai/compose_task_card.py`. The monolithic `ai/task-card-template.md` is compatibility-only.
 
 ### Evidence Packet
 

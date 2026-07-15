@@ -35,6 +35,33 @@ Signals:
 - Claude token/cost usage summaries.
 - Codex token/cost usage summaries.
 - Number of turns when available.
+- Task-card and review-packet bytes.
+- Control-plane seconds before implementation.
+- Model calls by role and whether Checker was actually dispatched.
+- Approximate Claude diff reuse: normalized Claude-added lines retained in the
+  final accepted diff. This is a routing signal, not semantic correctness proof.
+
+Record accepted task economics with:
+
+```bash
+python ai/aiwf.py economics record \
+  --metrics RUN/run-metrics.json \
+  --claude-diff RUN/claude.diff --final-diff RUN/final.diff \
+  --task-type core-semantic --repository-scale large \
+  --owner claude-builder --accepted yes \
+  --append-history .ai-workflow/economics-history.jsonl
+```
+
+`collect-task-facts.py` reads accepted same-task-type history. Three or more
+reuse samples below 30% bias ownership toward Codex; at least 70% median reuse
+and 70% first-pass success bias toward Claude. History never satisfies review
+or acceptance by itself.
+
+Primary `aiwf run`, efficient `final-candidate` review, and accepted legacy
+loops write `workflow-economics.json` automatically. Accepted history is
+idempotent by run/task identity. Diff reuse remains unavailable unless both the
+Claude diff and the final accepted diff are explicitly bound; the workflow
+records that evidence gap rather than inventing a percentage.
 
 ### Stability
 

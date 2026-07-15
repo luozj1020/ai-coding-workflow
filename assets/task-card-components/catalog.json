@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "base": ["core"],
+  "presets": {
+    "builder": ["builder"],
+    "checker": ["checker"],
+    "revision": ["revision"],
+    "control-plane": ["control-plane"]
+  },
+  "gates": {
+    "advisor": "Use only for a bounded strategic advisor call.",
+    "large-repo": "Use when worktree or repository I/O needs an explicit strategy.",
+    "parallel": "Use only after independent write scopes are proven.",
+    "root-cause": "Use for bug fixes, regressions, or repeated failed fixes.",
+    "spec": "Use for ambiguous product, API, UX, or data-model direction.",
+    "spark": "Use when persistent Spark routing evidence is required in the card.",
+    "tdd": "Use when red/green evidence is acceptance-critical."
+  },
+  "order": [
+    "core",
+    "builder",
+    "checker",
+    "revision",
+    "control-plane",
+    "spec",
+    "root-cause",
+    "tdd",
+    "large-repo",
+    "parallel",
+    "advisor",
+    "spark"
+  ]
+}

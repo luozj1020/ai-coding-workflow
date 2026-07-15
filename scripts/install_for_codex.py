@@ -379,7 +379,12 @@ def run_auto_setup(repo_path, skill_root, apply=False):
 
     ctx_module = _load_context_tools(skill_root)
 
-    workflow_files = ["AGENTS.md", "ai/task-card-template.md", "ai/dispatch-to-claude.sh"]
+    workflow_files = [
+        "AGENTS.md",
+        "ai/task-card-components/catalog.md",
+        "ai/compose_task_card.py",
+        "ai/dispatch-to-claude.sh",
+    ]
     workflow_ready = all(os.path.isfile(os.path.join(repo_abs, path)) for path in workflow_files)
     workflow_result = None
     if apply and not workflow_ready:

@@ -9,7 +9,8 @@ to fix any of the issues listed; those are deferred to later milestones.
 
 | Artifact | Location | Purpose |
 |----------|----------|---------|
-| Task Card Template | `assets/task-card-template.md` | Canonical Markdown template for task cards |
+| Task Card Components | `assets/task-card-components/` | Current compact catalog and composable task-card bodies |
+| Legacy Task Card Template | `assets/task-card-template.md` | Compatibility-only monolithic template |
 | Evidence Packet Template | `assets/evidence-packet-template.md` | Template for review evidence |
 | Task Card (per-run) | `TASK_CARD.md` / `TASK_CARD_FULL.md` | Instance of a task card for a specific run |
 | Claude Execution Card | `CLAUDE_TASK_CARD.md` | Filtered view of task card for Claude execution |
@@ -173,9 +174,12 @@ Usage Summary, Report, Claude Progress, Claude PID, Progress Log.
 | `CLAUDE_CODE_VERBOSE` | 0 | Verbose output |
 | `CLAUDE_CODE_EXECUTION_PROFILE` | balanced | safe/balanced/fast-large-repo |
 
-## 5. Template Sections in Task Card Template
+## 5. Legacy Template Sections
 
-The full template (`assets/task-card-template.md`) contains these sections:
+This frozen inventory originally treated `assets/task-card-template.md` as the
+default. Current authoring selects components from the compact catalog and uses
+the deterministic composer; the following list documents the retained legacy
+template:
 
 1. ID
 2. Task Type

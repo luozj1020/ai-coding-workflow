@@ -33,13 +33,6 @@ for tool in git codex; do
     fi
 done
 
-if ! command -v claude &>/dev/null; then
-    echo "Error: claude CLI is not installed or not in PATH." >&2
-    echo "Dispatch execution requires Claude Code. Planning, task-card generation, doctor checks, and Codex review remain usable." >&2
-    echo "Install Claude Code or run the non-dispatch workflow pieces manually; use doctor_workflow.py to verify readiness." >&2
-    exit 1
-fi
-
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 TASK_ID="loop-${TIMESTAMP}"
@@ -56,6 +49,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DISPATCH_SCRIPT="${SCRIPT_DIR}/dispatch-to-claude.sh"
 REVIEW_SCRIPT="${SCRIPT_DIR}/review-with-codex.sh"
 SUMMARY_SCRIPT="${SCRIPT_DIR}/summarize-loop-run.py"
+ECONOMICS_SCRIPT="${SCRIPT_DIR}/workflow_economics.py"
 
 PYTHON_CMD=""
 if command -v python3 &>/dev/null; then
@@ -123,6 +117,27 @@ write_quality_summary() {
     fi
 }
 
+write_economics_summary() {
+    local accepted="${1:-false}"
+    local first_pass="false"
+    [ "${ITERATION:-2}" -eq 1 ] && first_pass="true"
+    [ -f "$ECONOMICS_SCRIPT" ] || return 0
+    "$PYTHON_CMD" "$ECONOMICS_SCRIPT" record \
+        --metrics "$QUALITY_JSON" \
+        --task-card "$TASK_CARD" \
+        --task-id "$TASK_ID" \
+        --task-type legacy-loop \
+        --repository-scale unknown \
+        --owner claude-builder \
+        --accepted "$accepted" \
+        --first-pass "$first_pass" \
+        --codex-takeover false \
+        --checker-model-dispatched false \
+        --output "${RUN_DIR}/workflow-economics.json" \
+        --append-history "${REPO_ROOT}/.ai-workflow/economics-history.jsonl" \
+        >/dev/null 2>&1 || true
+}
+
 write_loop_event() {
     local event="$1"
     local iteration="${2:-}"
@@ -187,6 +202,58 @@ PYEOF
 
 CURRENT_TASK="${RUN_DIR}/task-card-001.md"
 cp "$TASK_CARD" "$CURRENT_TASK"
+
+# Legacy cards already exist, so this cannot recover pre-card authoring cost;
+# it still consumes the same owner router and must not start Claude when the
+# reviewed card records a Codex fast-path owner.
+LEGACY_ROUTING_FACTS="${RUN_DIR}/legacy-routing-facts.json"
+LEGACY_ROUTING_DECISION="${RUN_DIR}/routing.json"
+"$PYTHON_CMD" - "$CURRENT_TASK" "$LEGACY_ROUTING_FACTS" <<'PYEOF'
+import json, re, sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+rows = {}
+for line in text.splitlines():
+    match = re.match(r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$", line)
+    if match:
+        rows[match.group(1).strip().lower()] = match.group(2).strip().lower()
+owner = rows.get("final owner decision", "")
+if owner not in {"codex-fast-path", "claude-builder"}:
+    owner = "codex-fast-path" if rows.get("direct codex edit allowed?") == "yes" else ""
+facts = {
+    "task_id": Path(sys.argv[1]).stem,
+    "execution_owner": owner or None,
+    "delegation_value": False if owner == "codex-fast-path" else None,
+    "risks": [],
+    "exact_validation": False,
+    "predicted_diff_lines": 999,
+    "task_type": "legacy-loop",
+}
+Path(sys.argv[2]).write_text(json.dumps(facts, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+PYEOF
+"$PYTHON_CMD" "${SCRIPT_DIR}/route-task.py" "$LEGACY_ROUTING_FACTS" > "$LEGACY_ROUTING_DECISION"
+LEGACY_EXECUTION_OWNER="$("$PYTHON_CMD" - "$LEGACY_ROUTING_DECISION" <<'PYEOF'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("execution", {}).get("owner", "claude-builder"))
+PYEOF
+)"
+if [ "$LEGACY_EXECUTION_OWNER" = "codex-fast-path" ]; then
+    cat > "${RUN_DIR}/dispatch-decision.json" <<EOF
+{"schema_version":1,"task_id":"${TASK_ID}","action":"codex-fast-path","claude_dispatched":false,"reason":"shared owner router consumed the reviewed legacy task-card decision"}
+EOF
+    write_loop_event "stop" "" "CODEX_FAST_PATH" "claude_dispatched=false;routing=${LEGACY_ROUTING_DECISION}" "decision" "run-loop"
+    echo "Codex fast path selected; Claude was not dispatched."
+    echo "Routing decision: $LEGACY_ROUTING_DECISION"
+    exit 0
+fi
+
+if ! command -v claude &>/dev/null; then
+    echo "Error: claude CLI is not installed or not in PATH." >&2
+    echo "Dispatch execution requires Claude Code. Planning, task-card generation, doctor checks, and Codex review remain usable." >&2
+    echo "Install Claude Code or run the non-dispatch workflow pieces manually; use doctor_workflow.py to verify readiness." >&2
+    exit 1
+fi
 
 cat > "$USAGE_SUMMARY" <<EOF
 # Loop Usage Summary
@@ -503,6 +570,7 @@ EOF
             if [ "$DECISION_SCOPE" = "whole-task" ]; then
                 write_loop_event "stop" "$ITERATION" "ACCEPT" "whole-task_accepted" "finalization" "run-loop"
                 write_quality_summary
+                write_economics_summary true
                 echo ""
                 echo "=== Loop Complete: ACCEPTED (whole-task) ==="
                 echo "The change is ready for human review and merge."
@@ -520,6 +588,7 @@ EOF
                 fi
                 write_loop_event "stop" "$ITERATION" "ACCEPT" "phase_accepted;has_next_task=${HAS_NEXT_TASK}" "finalization" "run-loop"
                 write_quality_summary
+                write_economics_summary false
                 echo ""
                 echo "=== Loop Stopped: Phase ACCEPTED ==="
                 echo "Phase accepted but whole-task is not complete."
@@ -535,6 +604,7 @@ EOF
             else
                 write_loop_event "stop" "$ITERATION" "ACCEPT" "accepted;scope=${DECISION_SCOPE:-unknown}" "finalization" "run-loop"
                 write_quality_summary
+                write_economics_summary true
                 echo ""
                 echo "=== Loop Complete: ACCEPTED ==="
                 echo "The change is ready for human review and merge."

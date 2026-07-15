@@ -1063,15 +1063,17 @@ class TestModuleAPI(unittest.TestCase):
             self.assertFalse(broker_mod.budget_consuming({"state": state}))
 
     def test_windows_shell_script_uses_bash_without_shell_true(self):
-        completed = subprocess.CompletedProcess([], 0)
+        process = mock.Mock()
+        process.communicate.return_value = (None, None)
+        process.returncode = 0
         with mock.patch.object(broker_mod.os, "name", "nt"), \
              mock.patch.object(broker_mod.shutil, "which", return_value=r"C:\Git\bin\bash.exe"), \
-             mock.patch.object(broker_mod.subprocess, "run", return_value=completed) as run:
+             mock.patch.object(broker_mod.subprocess, "Popen", return_value=process) as popen:
             self.assertEqual(
                 broker_mod.run_command(["/c/tmp/fake.sh", "arg"], None, None, None),
                 0,
             )
-        args, kwargs = run.call_args
+        args, kwargs = popen.call_args
         self.assertEqual(
             args[0], [r"C:\Git\bin\bash.exe", "/c/tmp/fake.sh", "arg"]
         )

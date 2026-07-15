@@ -65,6 +65,7 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         root_cause_followup = summary.get("root_cause_followup", {})
         tdd_followup = summary.get("tdd_followup", {})
         claude_attempts = summary.get("claude_attempts", {})
+        economics = summary.get("economics", {})
         runs.append(
             {
                 "run_path": summary["run_path"],
@@ -149,6 +150,12 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "diagnostic_output_tokens": summary.get("diagnostic_probes", {}).get("diagnostic_output_tokens"),
                 "diagnostic_cost_usd": summary.get("diagnostic_probes", {}).get("diagnostic_cost_usd"),
                 "diagnostic_unavailable_usage": summary.get("diagnostic_probes", {}).get("diagnostic_unavailable_usage", 0),
+                "execution_owner": economics.get("execution_owner"),
+                "task_card_bytes": economics.get("task_card_bytes"),
+                "review_packet_bytes": economics.get("review_packet_bytes"),
+                "control_plane_seconds": economics.get("control_plane_seconds"),
+                "checker_model_dispatched": economics.get("checker_model_dispatched"),
+                "claude_reuse_ratio": economics.get("claude_reuse_ratio"),
             }
         )
 
@@ -177,6 +184,16 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
             run["spark_helper_invocations"] for run in runs
         ),
         "spark_calls_total": sum(run["spark_total_calls"] for run in runs),
+        "codex_direct_owner_count": sum(1 for run in runs if run["execution_owner"] == "codex-fast-path"),
+        "claude_owner_count": sum(1 for run in runs if run["execution_owner"] == "claude-builder"),
+        "task_card_bytes_total": sum(run["task_card_bytes"] or 0 for run in runs),
+        "review_packet_bytes_total": sum(run["review_packet_bytes"] or 0 for run in runs),
+        "control_plane_seconds_total": sum(run["control_plane_seconds"] or 0 for run in runs),
+        "checker_model_dispatch_count": sum(1 for run in runs if run["checker_model_dispatched"] is True),
+        "claude_reuse_ratio_average": round(
+            sum(run["claude_reuse_ratio"] for run in runs if isinstance(run["claude_reuse_ratio"], (int, float))) /
+            sum(1 for run in runs if isinstance(run["claude_reuse_ratio"], (int, float))), 4
+        ) if any(isinstance(run["claude_reuse_ratio"], (int, float)) for run in runs) else None,
         "parallel_allowed_count": sum(1 for run in runs if str(run["parallel_allowed"]).startswith("yes")),
         "parallel_invoked_count": sum(1 for run in runs if str(run["parallel_helper_invoked"]).startswith("yes")),
         "spec_required_count": sum(1 for run in runs if str(run["spec_required"]).startswith("yes")),

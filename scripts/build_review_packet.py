@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -211,6 +212,51 @@ def parse_diff_hunks(diff_text: str, max_hunks: int) -> List[Dict[str, str]]:
     return hunks[:max_hunks]
 
 
+def build_diff_focus(diff_text: str, hunks: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Build a compact semantic index before exposing bounded raw hunks."""
+    per_file: Dict[str, Dict[str, int]] = {}
+    symbols: List[str] = []
+    current = "unknown"
+    risk_patterns = {
+        "public-contract": re.compile(r"\b(public|export|api|schema|migration)\b", re.I),
+        "concurrency": re.compile(r"\b(thread|lock|mutex|atomic|async|concurr)\w*\b", re.I),
+        "security-permission": re.compile(r"\b(auth|permission|credential|secret|security)\w*\b", re.I),
+        "process-shell": re.compile(r"\b(subprocess|process|shell|timeout|signal|pid)\b", re.I),
+    }
+    risk_hits: Dict[str, List[str]] = defaultdict(list)
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split(" b/", 1)
+            current = parts[1] if len(parts) == 2 else "unknown"
+            per_file.setdefault(current, {"added": 0, "deleted": 0})
+        elif line.startswith("@@"):
+            tail = line.rsplit("@@", 1)[-1].strip()
+            if tail and tail not in symbols and len(symbols) < 50:
+                symbols.append(tail[:160])
+        elif line.startswith("+") and not line.startswith("+++"):
+            per_file.setdefault(current, {"added": 0, "deleted": 0})["added"] += 1
+            for label, pattern in risk_patterns.items():
+                if pattern.search(line) and current not in risk_hits[label]:
+                    risk_hits[label].append(current)
+        elif line.startswith("-") and not line.startswith("---"):
+            per_file.setdefault(current, {"added": 0, "deleted": 0})["deleted"] += 1
+
+    ranked = []
+    for index, hunk in enumerate(hunks):
+        text = hunk.get("hunk", "")
+        score = sum(3 for pattern in risk_patterns.values() if pattern.search(text))
+        score += min(5, text.count("+") + text.count("-"))
+        ranked.append((score, index, hunk))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    hunks[:] = [item[2] for item in ranked]
+    return {
+        "files": per_file,
+        "symbols": symbols,
+        "risk_hits": dict(sorted(risk_hits.items())),
+        "review_order": "risk-and-change-density",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Manifest building
 # ---------------------------------------------------------------------------
@@ -337,6 +383,9 @@ def build_review_packet(
     if diff_files:
         diff_text = read_text(diff_files[-1])
         diff_hunks = parse_diff_hunks(diff_text, max_diff_hunks)
+        diff_focus = build_diff_focus(diff_text, diff_hunks)
+    else:
+        diff_focus = {"files": {}, "symbols": [], "risk_hits": {}, "review_order": "none"}
 
     # Checker summary
     checker_summary = ""
@@ -374,6 +423,7 @@ def build_review_packet(
         "acceptance_matrix": parse_acceptance_matrix(task_cards[-1]) if task_cards else [],
         "changed_files": changed_files,
         "diff_hunks": diff_hunks,
+        "diff_focus": diff_focus,
         "checker_summary": checker_summary[:max_artifact_summary_bytes],
         "failures": failures[:50],  # Cap failures
         "artifact_manifest": manifest_entries[:200],  # Cap entries
@@ -436,6 +486,19 @@ def render_review_prompt(packet: Dict[str, Any], max_bytes: int = DEFAULT_MAX_PR
         lines.append("")
 
     # Diff hunks
+    focus = packet.get("diff_focus", {})
+    if focus.get("files"):
+        lines.append("## Diff Focus")
+        lines.append("")
+        lines.append("Review order: " + str(focus.get("review_order", "unknown")))
+        for path, counts in focus.get("files", {}).items():
+            lines.append(f"- {path}: +{counts.get('added', 0)} / -{counts.get('deleted', 0)}")
+        if focus.get("symbols"):
+            lines.append("Symbols/hunk contexts: " + "; ".join(focus["symbols"][:20]))
+        for label, paths in focus.get("risk_hits", {}).items():
+            lines.append(f"Risk signal {label}: {', '.join(paths)}")
+        lines.append("")
+
     hunks = packet.get("diff_hunks", [])
     if hunks:
         lines.append("## Diff Hunks (bounded)")

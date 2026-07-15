@@ -26,6 +26,12 @@ Responsibilities:
 
 Checker/Test Claude owns mechanical validation evidence. It does not make architectural judgments and should not perform broad implementation rewrites.
 
+Checker dispatch is conditional. Use local deterministic validation without a
+model when it closes acceptance and no test changes are required. Dispatch
+Checker/Test Claude only for assigned test writing, long-running validation,
+large failure/log evidence, or an independent validation responsibility that
+materially reduces Codex work. Record the skip reason when no Checker is used.
+
 ### MiMo / DeepSeek  -  Exhaustive Scan
 
 Responsibilities:
@@ -57,18 +63,20 @@ Responsibilities:
   - Did the loop stop when failures repeated, regressed, or stopped improving?
 - Return a structured decision (see below)
 
-**Codex/GPT does NOT write code during ordinary review.** It evaluates and decides. Implementation is delegated to Claude Code until an intervention threshold is reached.
+Codex may edit directly when the pre-card economy route selects Codex, or after a
+valid reviewer-owned bounded correction/takeover decision. During a live Claude
+round it remains reviewer-only and must not race the Builder.
 
 ## Phase Responsibility Matrix
 
 | Phase | Codex responsibilities | Claude responsibilities | Claude must not | Codex must not |
 |-------|------------------------|-------------------------|-----------------|----------------|
 | OBSERVE | Gather low-token evidence with LSP/CodeGraph/MCP and identify unknowns | N/A unless dispatched for exploration | Edit files without a task card | Perform broad reads when lower-token evidence is enough |
-| PLAN | Write the full task card, set Task Mode, Testing Responsibility, Direction/Boundary gates, Stall/Ambiguity Triage, and validation owner | N/A | Decide task boundaries before dispatch | Leave testing responsibility implicit |
+| PLAN | Select task-card components, fill the composed short card, and assign validation ownership | N/A | Decide task boundaries before dispatch | Leave testing responsibility implicit |
 | DISPATCH | Render the Claude execution card and preserve the full planning card | Read `CLAUDE_TASK_CARD.md` as the contract | Depend on Codex-only planning sections | Hand-write a second divergent Claude card |
 | BUILDER EXECUTE | Observe progress and partial diff direction only | Implement scoped changes, update progress, report direction | Write acceptance tests or run broad suites unless `mixed-exception` or narrow sanity checks are explicit | Patch implementation because the Builder is merely quiet |
-| DIRECTION REVIEW | Decide wait, proceed to Checker/Test, revise, split, reject, or threshold-based takeover | Provide progress/report evidence and stop on blockers | Repeatedly ask for the same approval after proceed | Send off-plan work to validation |
-| CHECKER/TEST | Dispatch validation task and review evidence quality | Write/update assigned tests, run assigned commands, report failures with exit codes and key output | Perform broad implementation rewrites | Treat missing unassigned tests as Claude failure |
+| DIRECTION REVIEW | Decide wait, local deterministic verification, optional Checker/Test, revise, split, reject, or takeover | Provide progress/report evidence and stop on blockers | Repeatedly ask for the same approval after proceed | Send off-plan work to validation |
+| CHECKER/TEST | Dispatch only when the Checker value gate passes; review evidence quality | Write/update assigned tests, run assigned commands, report bounded failures | Perform broad implementation rewrites | Use a model when local evidence already closes acceptance |
 | FINAL REVIEW | Accept/revise/split/reject and optionally run second verification | N/A unless re-dispatched | N/A | Merge automatically or edit directly without threshold |
 | TAKEOVER | Edit only after explicit human request or current-task threshold, record scope and validation | N/A | N/A | Use prior-session failures alone as takeover permission |
 
@@ -109,6 +117,18 @@ Codex may directly edit implementation files only when at least one condition is
 Before editing, Codex must state the failed attempts, why another Claude revision is unlikely to help, the files/modules it will touch, and the validation it will run. The edit should be narrow and should not bypass safety approvals.
 
 No-progress evidence, an early Claude exit, invalid result JSON, missing report, or a single failed implementation does not by itself satisfy the threshold. In those cases Codex should produce a smaller revision task with clearer acceptance criteria, stronger stop conditions, and required evidence for Claude.
+
+### Reviewer-Owned Bounded Correction
+
+This is an ownership re-route, not failure-based takeover. After Codex accepts the main implementation direction, it may directly apply a deterministic correction without waiting for two Claude failures only when all of the following hold:
+
+- a fresh `revision` ROUTE runs before any new task card and selects the repository-scale Codex direct gate;
+- Codex has already read the exact affected diff/context during direction review;
+- the correction is precise, local, and introduces no new architecture, product, API, or data-model decision;
+- affected files and symbols are known and the calibrated correction fits the ordinary direct gate, or a tightly concentrated gate with unchanged scope and high confidence;
+- the intervention is recorded as `reviewer-owned bounded correction`, with changed paths and narrow validation evidence.
+
+A first architectural, broad semantic, or poorly understood direction deviation is not eligible and does not automatically authorize takeover. Revise, split, or reject instead. If routing still selects Claude, prefer reviewed same-worktree continuation so Claude does not reacquire accepted large-repository context.
 
 Failure counts are scoped to the current task/loop. Prior-session Claude failures may justify a sharper task card, narrower scope, or stronger stop gates, but they do not by themselves authorize Codex to skip Claude in a new session. To count prior failures toward takeover, Codex must cite matching task IDs and artifact paths showing the same failure pattern.
 
@@ -184,14 +204,14 @@ Record any knowledge gained during review that could inform future planning:
 
 ## Review Workflow
 
-1. Builder Claude produces implementation evidence after executing a builder task card.
+1. Codex direct work proceeds directly to deterministic verification; delegated work starts with Builder implementation evidence.
 2. Codex/GPT reviews direction: plan match, scope, risks, deviations, and progress evidence.
-3. If direction is acceptable and Builder is complete, Codex dispatches Checker/Test Claude when tests or validation are required.
-4. Checker/Test Claude writes/runs assigned tests and produces validation evidence.
+3. If direction is acceptable, run deterministic local checks first. Dispatch Checker/Test Claude only when test writing, long validation, or evidence processing passes the value gate; otherwise record the skip reason.
+4. When dispatched, Checker/Test Claude writes/runs assigned tests and produces validation evidence.
 5. Codex/GPT reviews validation evidence and returns a structured decision.
 6. If **accept** and no phases remain: the change is ready for human merge.
 7. If **accept** but unfinished phases remain: Codex plans the next phase and dispatches Claude again. A high-priority subset being accepted is not permission for Codex to implement lower-priority remaining work.
-8. If **revise**: a new task card is created with revision instructions (incrementing the loop iteration), and Claude Code re-executes unless an intervention threshold has been reached. If Claude made no useful progress, the next task should be narrower, more diagnostic, and evidence-focused rather than replaced by Codex edits.
+8. If **revise**: run a fresh revision ROUTE before authoring another task card. Use reviewer-owned bounded correction only when its gate passes; otherwise create the revision card and prefer reviewed same-worktree continuation when safe. If Claude made no useful progress, the next task should be narrower, more diagnostic, and evidence-focused rather than replaced by Codex edits.
 9. If **split**: the original task card is decomposed into smaller child cards, each entering its own loop.
 10. If **reject**: the task returns to OBSERVE with the rejection reasoning as new context.
 11. If an intervention threshold is reached, Codex may perform a scoped direct fix and must produce validation evidence.

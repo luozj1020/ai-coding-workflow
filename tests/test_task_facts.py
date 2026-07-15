@@ -21,6 +21,11 @@ class TaskFactsTests(unittest.TestCase):
  def test_router_is_only_single_pass_gate(self):
   no={k:'no' for k in RISK_KEYS};express={'effective_risks':no,'target_files_count':2,'predicted_diff_lines':100,'exact_validation':True};decision=router.route(express);self.assertEqual(decision['lane'],'express');self.assertTrue(decision['execution']['single_pass_allowed']);self.assertEqual(decision['execution']['single_pass_reason'],'express-lane-exact-validation')
   for changed in ({**express,'target_files_count':3},{**express,'predicted_diff_lines':101},{**express,'exact_validation':False},{**express,'effective_risks':{**no,'security':'unknown'}},{**express,'failure_type':'compile'}):self.assertFalse(router.route(changed)['execution']['single_pass_allowed'])
+ def test_owner_and_checker_dispatch_are_value_gated(self):
+  no={k:'no' for k in RISK_KEYS};base={'effective_risks':no,'target_files_count':4,'predicted_diff_lines':200,'exact_validation':True}
+  local=router.route(base);self.assertEqual(local['execution']['owner'],'claude-builder');self.assertFalse(local['execution']['builder_checker_split']);self.assertEqual(local['execution']['checker_skip_reason'],'checker skipped: deterministic evidence sufficient')
+  checker=router.route({**base,'test_writing_required':True});self.assertTrue(checker['execution']['checker_model_dispatch']);self.assertEqual(checker['execution']['checker_value_reasons'],['assigned-test-writing'])
+  direct=router.route({**base,'delegation_value':False,'effective_risks':{**no,'security':'yes'}});self.assertEqual(direct['execution']['owner'],'codex-fast-path')
  def test_registration_and_downstream_field(self):
   installer=(SCRIPTS/'install_workflow.py').read_text();self.assertIn('collect-task-facts.py',installer);self.assertIn('routing-facts-v1.schema.json',installer);self.assertEqual(json.loads((ROOT/'schemas/routing-facts-v1.schema.json').read_text())['properties']['schema_version']['const'],1);self.assertIn('"facts":"collect-task-facts.py"',(SCRIPTS/'aiwf.py').read_text());self.assertNotIn('single_pass_builder_checker',(SCRIPTS/'efficiency-control.py').read_text());self.assertNotIn('single_pass_builder_checker',(SCRIPTS/'dispatch-efficient.py').read_text())
 if __name__=='__main__':unittest.main()

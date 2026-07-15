@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import os
 import pathlib
+import stat
 import subprocess
 import sys
 import tempfile
@@ -43,6 +45,9 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "AGENTS.md").exists())
             self.assertTrue((repo / "CLAUDE.md").exists())
             self.assertTrue((repo / "ai" / "task-card-template.md").exists())
+            self.assertTrue((repo / "ai" / "task-card-components" / "catalog.md").exists())
+            self.assertTrue((repo / "ai" / "task-card-components" / "core.md").exists())
+            self.assertTrue((repo / "ai" / "compose_task_card.py").exists())
             self.assertTrue((repo / "ai" / "spec-template.md").exists())
             self.assertTrue((repo / "ai" / "plan-task-template.md").exists())
             self.assertTrue((repo / "ai" / "plan-findings-template.md").exists())
@@ -186,7 +191,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.run_installer(repo)
 
             content = (repo / "AGENTS.md").read_text(encoding="utf-8")
-            self.assertIn("## Core Principle", content)
+            self.assertIn("## AI Coding Workflow Core", content)
             self.assertIn("Keep this repository rule.", content)
             self.assertNotIn("old managed content", content)
 
@@ -225,42 +230,17 @@ class InstallWorkflowTests(unittest.TestCase):
 
             agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
             claude = (repo / "CLAUDE.md").read_text(encoding="utf-8")
-            self.assertIn("Token Budget and Delegation Contract", agents)
-            self.assertIn("test-execution responsibility", agents)
-            self.assertIn("Claude may write tests", agents)
-            self.assertIn("renders a smaller Claude execution card", agents)
-            self.assertIn("Codex-only planning fields", agents)
+            self.assertLess(len(agents.encode("utf-8")), 12_000)
+            self.assertIn("## Economy-First Ownership", agents)
+            self.assertIn("least expensive path", agents)
+            self.assertIn("task-card-components/catalog.md", agents)
             self.assertIn("Builder Claude", agents)
             self.assertIn("Checker/Test Claude", agents)
-            self.assertIn("Builder tasks do not write acceptance tests", agents)
-            self.assertIn("permission/tool approval risk", agents)
-            self.assertIn("misdiagnosed as Claude execution failure", agents)
-            self.assertIn("Dirty source or stale HEAD is a delegation blocker", agents)
-            self.assertIn("restore a reliable Claude base", agents)
-            self.assertIn("partial diff matches the plan", agents)
-            self.assertIn("Avoid acknowledgement loops", agents)
-            self.assertIn("acknowledgement only", agents)
-            self.assertIn("Seeded and fallback reports are not valid", agents)
-            self.assertIn("AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT", agents)
-            self.assertIn("previous untracked task cards are delegation blockers", agents)
-            self.assertIn("CLAUDE_CODE_NETWORK_MONITOR=1", agents)
-            self.assertIn("network/proxy/auth", agents)
-            self.assertIn("monitoring escalation ladder", agents)
-            self.assertIn("L4 kill only after multiple evidence sources agree", agents)
-            self.assertIn("Spec Gate", agents)
-            self.assertIn("Codex Spark Gate", agents)
-            self.assertIn("Worktree / Large Repo Strategy Gate", agents)
-            self.assertIn("Parallel Execution Gate", agents)
-            self.assertIn("gpt-5.3-codex-spark", agents)
-            self.assertIn("parallel-planner", agents)
-            self.assertIn("read-only advisory", agents)
-            self.assertIn("strict schema-v1 JSON proposal only", agents)
-            self.assertIn("never executes or dispatches", agents)
-            self.assertIn("Root Cause Gate", agents)
-            self.assertIn("Test-First / TDD Contract", agents)
-            self.assertIn("Finish Branch Gate", agents)
-            self.assertIn("one blocking acknowledgement per task or phase", agents)
-            self.assertIn("Phase Responsibility Matrix", agents)
+            self.assertIn("conditional, not automatic", agents)
+            self.assertIn("checker skipped: deterministic evidence sufficient", agents)
+            self.assertIn("two current-task rounds", agents)
+            self.assertIn("Seeded/fallback reports never count", agents)
+            self.assertIn("On-Demand References", agents)
             self.assertIn("Evidence compression", claude)
             self.assertIn("CLAUDE_TASK_CARD.md", claude)
             self.assertIn("Builder tasks", claude)
@@ -405,7 +385,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn('git worktree add -b "$branch_name" "$WORKTREE_DIR" "$BASE_COMMIT" ||', dispatch)
             self.assertIn("CLAUDE_CODE_REUSE_WORKTREE_RESET=1", dispatch)
             self.assertIn("CLAUDE_CODE_LARGE_REPO_MODE=1 avoids expensive untracked-file scans", dispatch)
-            self.assertIn("compact_skip_section", dispatch)
+            self.assertIn("compact_keep_section", dispatch)
             self.assertIn("Full patch generation was skipped to reduce large-repository I/O and review-token cost.", dispatch)
             self.assertIn("Execution Profile:", dispatch)
             self.assertIn("Prompt Profile:", dispatch)
@@ -455,6 +435,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Review-to-Next-Task Contract", review)
             self.assertIn("direct-intervention threshold", review)
             self.assertIn("NOT enough for Codex takeover", review)
+            self.assertIn("reviewer-owned bounded correction", review)
+            self.assertIn("fresh Spark revision ROUTE", review)
             self.assertIn("Prior-session Claude failures are context only", review)
             self.assertIn("Missing result/report/acceptance prose is an evidence gap", review)
             self.assertIn("tests/evidence only", review)
@@ -470,7 +452,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("JSON decision is authoritative", review)
             self.assertIn("structured decision required", review.lower())
             self.assertIn("Respect Task Mode", review)
-            self.assertIn("dispatch a checker-test Claude task", review)
+            self.assertIn("checker skipped: deterministic evidence sufficient", review)
+            self.assertIn("materially reduces Codex work", review)
             self.assertIn("Task Mode / Direction Review", review)
             self.assertIn("Phase Responsibility", review)
             self.assertIn("Stall / Ambiguity Triage", review)
@@ -655,31 +638,12 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Reviewer Should Check", evidence_template)
             self.assertIn("Deviations From Plan", evidence_template)
             self.assertIn("Locator used?", evidence_template)
-            self.assertIn("Loop Engineering Validation Contract", agents)
-            self.assertIn("do not use web search", agents)
-            self.assertIn("local helper initialization", agents)
-            self.assertIn("default `--mode auto` is for ordinary stage routing", agents)
-            self.assertIn("task-size-classifier", agents)
-            self.assertIn("Claude Context Packet", agents)
-            self.assertIn("locate-code.py", agents)
-            self.assertIn("cannot replace Claude Builder ownership", agents)
-            self.assertIn("exact task-card validation commands", agents)
-            self.assertIn("Local validation allowed?", agents)
-            self.assertIn("Codex Intervention Policy", agents)
-            self.assertIn("not permission for Codex to patch", agents)
-            self.assertIn("Prior-session Claude failures are carry-forward context", agents)
-            self.assertIn("Missing Claude `result.json`, `CLAUDE_REPORT.md`, or acceptance evidence is an evidence gap", agents)
-            self.assertIn("current-task repeated failure", agents)
-            self.assertIn("salvage any reviewer-accepted first-round direction", agents)
-            self.assertIn("Small Change Fast Path Gate", agents)
-            self.assertIn("Small local edits may stay Codex-owned", agents)
-            self.assertIn("Risk normally changes downstream rigor, not implementation ownership", agents)
-            self.assertIn("risk-based owner override may bias only toward Codex", agents)
-            self.assertIn("accepting one Claude round closes only that phase", agents)
-            self.assertIn("remaining implementation/test-writing phases stay Claude-owned", agents)
-            self.assertIn("Context Lifecycle", agents)
-            self.assertIn("decision gates", agents)
-            self.assertIn("Handoff Contract", agents)
+            self.assertLess(len(agents.encode("utf-8")), 12_000)
+            self.assertIn("Do not browse the web", agents)
+            self.assertIn("ai/locate-code.py", agents)
+            self.assertIn("task-card-components/catalog.md", agents)
+            self.assertIn("reviewer-owned bounded correction", agents)
+            self.assertIn("references/review-policy.md", agents)
             self.assertIn("Loop stop rules", claude)
             self.assertIn("Progress memory", claude)
             self.assertIn("Current Phase", claude)
@@ -850,7 +814,7 @@ class InstallWorkflowTests(unittest.TestCase):
 
             bash_exe = load_module()._find_bash()
             result = subprocess.run(
-                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id, "--details"],
                 cwd=str(repo),
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True, check=True,
@@ -888,7 +852,7 @@ class InstallWorkflowTests(unittest.TestCase):
 
             try:
                 result = subprocess.run(
-                    [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                    [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id, "--details"],
                     cwd=str(repo), text=True, encoding="utf-8", errors="replace",
                     capture_output=True, check=True,
                 )
@@ -919,7 +883,7 @@ class InstallWorkflowTests(unittest.TestCase):
 
             bash_exe = load_module()._find_bash()
             result = subprocess.run(
-                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id, "--details"],
                 cwd=str(repo),
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True, check=True,
@@ -945,7 +909,7 @@ class InstallWorkflowTests(unittest.TestCase):
 
             bash_exe = load_module()._find_bash()
             result = subprocess.run(
-                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id, "--details"],
                 cwd=str(repo),
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True, check=True,
@@ -1035,10 +999,66 @@ class InstallWorkflowTests(unittest.TestCase):
             self.run_installer(repo)
             monitor = repo / "ai" / "monitor-claude.sh"
             self.assertTrue(monitor.exists())
+            self.assertTrue((repo / "ai" / "claude-monitor-decision.py").exists())
             text = monitor.read_text(encoding="utf-8")
-            for action in ("start)", "status)", "tail)", "stop)"):
+            for action in ("start)", "status)", "tail)", "decision)", "stop)"):
                 self.assertIn(action, text)
             self.assertIn("monitor-events.log", text)
+            self.assertIn("--mode monitor-triage", text)
+
+    def test_status_defaults_to_bounded_local_decision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-compact"
+            worktrees = self._setup_worktree(repo, task_id)
+            for suffix in ("pid", "dispatcher.pid", "claude.pid", "checker.pid"):
+                (worktrees / f"{task_id}.{suffix}").write_text("999999", encoding="utf-8")
+            result = subprocess.run(
+                [load_module()._find_bash(), str(repo / "ai" / "status-claude.sh"), task_id],
+                cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True,
+            )
+            self.assertIn("decision=", result.stdout)
+            self.assertIn("interrupt_authorized=no", result.stdout)
+            self.assertNotIn("Process roles", result.stdout)
+            self.assertLess(len(result.stdout), 2048)
+
+    def test_monitor_decision_sends_only_compact_packet_to_spark(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-spark-triage"
+            worktrees = self._setup_worktree(repo, task_id)
+            for suffix in ("pid", "dispatcher.pid", "claude.pid", "checker.pid"):
+                (worktrees / f"{task_id}.{suffix}").write_text("999999", encoding="utf-8")
+            capture = repo / "compact-input.json"
+            fake = repo / "ai" / "run-codex-spark.sh"
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "while [ $# -gt 0 ]; do\n"
+                "  if [ \"$1\" = --brief-file ]; then cp \"$2\" \"$FAKE_CAPTURE\"; shift 2; else shift; fi\n"
+                "done\n"
+                "printf '%s\\n' 'decision=inspect' 'confidence=medium' "
+                "'reason_code=bounded-review' 'codex_review_required=yes' 'interrupt_authorized=no'\n",
+                encoding="utf-8",
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+            env = os.environ.copy()
+            env["FAKE_CAPTURE"] = str(capture)
+            result = subprocess.run(
+                [load_module()._find_bash(), str(repo / "ai" / "monitor-claude.sh"),
+                 "decision", task_id, "--spark", "on"],
+                cwd=str(repo), env=env, text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True,
+            )
+            packet = json.loads(capture.read_text(encoding="utf-8"))
+            self.assertEqual(packet["interrupt_authorized"], "no")
+            self.assertNotIn("process_listing", packet)
+            self.assertEqual(result.stdout.count("\n"), 6)
+            self.assertIn("triage_source=spark", result.stdout)
+            self.assertIn("codex_review_required=yes", result.stdout)
+            self.assertIn("interrupt_authorized=no", result.stdout)
 
     def test_watch_machine_line_overall_running_includes_dispatcher(self):
         """Watch machine line overall_running=yes when only dispatcher is alive."""
@@ -1115,7 +1135,7 @@ class InstallWorkflowTests(unittest.TestCase):
 
             bash_exe = load_module()._find_bash()
             result = subprocess.run(
-                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id],
+                [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id, "--details"],
                 cwd=str(repo),
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True, check=True,
@@ -1231,10 +1251,10 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("## High-Token Work Delegated", evidence)
             self.assertIn("## Compressed Evidence Summary", evidence)
 
-            # AGENTS.md managed section must describe the delegation contract
-            self.assertIn("## Token Budget and Delegation Contract", agents)
-            self.assertIn("low-token evidence", agents)
-            self.assertIn("compressed evidence", agents)
+            # AGENTS.md keeps only the economy contract; details are on-demand.
+            self.assertIn("## Economy-First Ownership", agents)
+            self.assertIn("semantic rereview", agents)
+            self.assertIn("compact summaries and paths", agents)
 
             # CLAUDE.md managed section must describe evidence compression
             self.assertIn("Evidence compression", claude)
@@ -1249,29 +1269,30 @@ class InstallWorkflowTests(unittest.TestCase):
 
             agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
             task_template = (repo / "ai" / "task-card-template.md").read_text(encoding="utf-8")
+            routing = (ROOT / "references" / "routing-and-spark.md").read_text(encoding="utf-8")
 
             # Check 1: preflight-bundle and postflight-bundle present
             self.assertIn("preflight-bundle", agents)
-            self.assertIn("postflight-bundle", agents)
+            self.assertIn("postflight-bundle", routing)
             self.assertIn("preflight-bundle", task_template)
             self.assertIn("postflight-bundle", task_template)
 
             # Check 1: AI_SPARK_BUDGET_MODE present
-            self.assertIn("AI_SPARK_BUDGET_MODE", agents)
+            self.assertIn("Spark Roles", routing)
             self.assertIn("AI_SPARK_BUDGET_MODE", task_template)
 
             # Check 1: balanced, aggressive, conservative present
-            self.assertIn("balanced", agents)
-            self.assertIn("aggressive", agents)
-            self.assertIn("conservative", agents)
+            self.assertIn("direct", routing)
+            self.assertIn("minimal", routing)
+            self.assertIn("full", routing)
 
             # Check 1: at-most-three invocation recommendation
-            self.assertIn("at most three", agents)
+            self.assertIn("at most three", routing)
             self.assertIn("at most three", task_template)
 
             # Check 1: merge guardrails
-            self.assertIn("never authorizes merge", agents)
-            self.assertIn("strong Codex review remains required", agents)
+            self.assertIn("cannot satisfy acceptance", agents)
+            self.assertIn("authorize merge", agents)
 
             # Check 2: task-card template exposes budget mode, pipeline stage,
             # roles, call recommendation, and all nine new explicit modes
@@ -1288,13 +1309,13 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Call cap recommendation", task_template)
 
             # Check 4: parallel-planner and micro-builder documentation preserved
-            self.assertIn("parallel-planner", agents)
-            self.assertIn("micro-builder", agents)
+            self.assertIn("parallel-planner", routing)
+            self.assertIn("micro-builder", routing)
             self.assertIn("parallel-planner", task_template)
             self.assertIn("micro-builder", task_template)
 
             # Check 5: no stale classifier wording - auto resolves to stage bundle
-            self.assertIn("resolves to an applicable stage bundle", agents)
+            self.assertIn("auto", routing)
             self.assertIn("resolves to an applicable stage bundle", task_template)
 
             # Check 6: prefer "stage routing" over "default role selection"
@@ -1302,7 +1323,9 @@ class InstallWorkflowTests(unittest.TestCase):
 
             # Check 7: no Sol/Terra/Luna model-tier routing
             self.assertNotIn("model-tier routing in this change", "")  # sanity
-            self.assertIn("no model-tier routing in this change", agents)
+            self.assertNotIn("Sol", routing)
+            self.assertNotIn("Terra", routing)
+            self.assertNotIn("Luna", routing)
 
     def test_readme_stage_routing_terminology(self):
         """Check 3+6: READMEs explain stage routing and use correct terminology."""
@@ -1406,27 +1429,19 @@ class InstallWorkflowTests(unittest.TestCase):
             repo = pathlib.Path(tmp) / "repo"
             self.run_installer(repo)
             agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
+            routing = (ROOT / "references" / "routing-and-spark.md").read_text(encoding="utf-8")
 
-            # Direct observability tradeoff
-            self.assertIn("direct", agents)
-            self.assertIn("no file-backed metrics", agents)
-
-            # Minimal/full audit choice
-            self.assertIn("minimal", agents)
-            self.assertIn("full", agents)
-            self.assertIn("audit", agents.lower())
-
-            # Controlled-builder isolation
-            self.assertIn("controlled-builder", agents)
-            self.assertIn("isolated", agents.lower())
-
-            # Exact path and cap
-            self.assertIn("--allow-write", agents)
-            self.assertIn("--max-diff-lines", agents)
+            # Detailed Spark delivery/write modes are loaded on demand.
+            self.assertIn("direct", routing)
+            self.assertIn("minimal", routing)
+            self.assertIn("full", routing)
+            self.assertIn("controlled-builder", routing)
+            self.assertIn("--allow-write", routing)
+            self.assertIn("--max-diff-lines", routing)
 
             # No merge/acceptance
-            self.assertIn("never", agents.lower())
-            self.assertIn("merge", agents.lower())
+            self.assertIn("cannot satisfy acceptance", agents)
+            self.assertIn("authorize merge", agents)
 
     def test_readme_docs_controlled_builder_and_no_model_tier_routing(self):
         """Required test 5: source English and Chinese READMEs document the same
@@ -1464,24 +1479,25 @@ class InstallWorkflowTests(unittest.TestCase):
 
             agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
             template = (repo / "ai" / "task-card-template.md").read_text(encoding="utf-8")
+            routing = (ROOT / "references" / "routing-and-spark.md").read_text(encoding="utf-8")
 
             # Micro-builder preserved
-            self.assertIn("micro-builder", agents)
+            self.assertIn("micro-builder", routing)
             self.assertIn("micro-builder", template)
 
             # Parallel-planner preserved
-            self.assertIn("parallel-planner", agents)
+            self.assertIn("parallel-planner", routing)
             self.assertIn("parallel-planner", template)
 
             # Stage bundles preserved
             self.assertIn("preflight-bundle", agents)
-            self.assertIn("postflight-bundle", agents)
+            self.assertIn("postflight-bundle", routing)
             self.assertIn("preflight-bundle", template)
             self.assertIn("postflight-bundle", template)
 
             # Key prior content preserved
-            self.assertIn("gpt-5.3-codex-spark", agents)
-            self.assertIn("task-size-classifier", agents)
+            self.assertIn("execution-cost-estimator", agents)
+            self.assertIn("Spark Roles", routing)
             self.assertIn("advisory", agents.lower())
 
     def test_installed_dispatch_has_runtime_identity_support(self):
@@ -1640,13 +1656,9 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("repository-relative", template)
             self.assertIn("does not widen built-in Bash/Edit permissions", template)
 
-            # AGENTS.md managed section must document default-off external integrations
-            self.assertIn("External MCP servers and plugins are default-off", agents)
-            self.assertIn("--bare", agents)
-            self.assertIn("repository-relative", agents)
-            self.assertIn("External integrations do not widen built-in Bash/Edit", agents)
-            self.assertIn("persistent dispatch or user-terminal environment", agents)
-            self.assertIn("visibility/environment evidence", agents)
+            # AGENTS keeps the invariant compact; detailed syntax stays in task/dispatcher.
+            self.assertIn("External MCP/plugins are default-off", agents)
+            self.assertIn("do not widen Bash/Edit authority", agents)
 
             # Dispatcher must have the external integration gate variables and validation
             self.assertIn("_EXTERNAL_INTEGRATIONS_ALLOWED", dispatch)

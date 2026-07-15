@@ -64,7 +64,7 @@ This repository has been set up with a multi-agent AI coding workflow. The workf
 For non-trivial changes, split Claude work into two roles:
 
 - **Builder Claude** implements the scoped change and reports the implementation direction. It does not write acceptance tests or run broad suites unless the task card explicitly allows a narrow sanity check.
-- **Checker/Test Claude** runs after Codex accepts the builder direction. It writes or updates assigned tests, runs validation commands, and reports evidence without broad implementation rewrites.
+- **Checker/Test Claude** is conditional after Codex accepts the Builder direction. Use it for assigned tests, long validation, or large evidence processing; use local deterministic checks when they close acceptance.
 
 Task cards can require **Direction / Boundary Acknowledgement** before editing. Claude restates the goal, scope, out-of-scope boundaries, likely files, acceptance criteria, testing responsibility, confusions, and risks. This is a gate, not a discussion loop: at most one blocking acknowledgement is allowed per task or phase unless Codex materially changes the goal, scope, boundaries, or risk. Codex answers with exactly one decision: proceed, narrow-once/re-dispatch, split, or stop.
 
@@ -82,7 +82,9 @@ Phase ownership is explicit:
 | Checker/Test | Validation task dispatch and evidence review | Assigned tests, assigned validation, failure evidence |
 | Final Review | Accept / revise / split / reject; human merge stays separate | N/A unless re-dispatched |
 
-Small local edits can use a Codex-only fast path instead of dispatching Claude when repository scale, calibrated size, file count, context sufficiency, solution clarity, confidence, and delegation economics favor it. Auto gates are small 100 lines/2 files with no concentrated expansion; medium 100/2 ordinary and 250/3 concentrated; large 150/3 and 500/5; giant 200/3 and 500/5. In large/giant repositories, concentrated core-semantic changes favor Codex, while tests/checker work, mechanical batches, long validation/log/evidence work, and independent support units above one file/50 calibrated lines favor Claude. Risk flags normally increase rigor rather than choosing ownership. They must never push work from Codex to Claude; an explicit risk-based owner override may bias only toward Codex. Record why Claude was or was not dispatched, files touched, validation evidence, and the material scope/solution/context expansion that would trigger a fresh route decision.
+Codex direct work is preferred whenever delegation would not reduce context acquisition, semantic rereview, or total control-plane work—even above an ordinary small-change line gate when scope and solution stay bounded. Claude is preferred for mechanical batches, tests, long validation/evidence processing, independent units, or changes that permit sampled Codex review. Risk raises rigor and may bias only toward Codex.
+
+After Codex accepts a Builder's main direction, run a fresh Spark `revision` route before writing another card. A deterministic correction may use `reviewer-owned bounded correction` when Codex already holds the exact reviewed context, no new design decision is needed, and the calibrated correction fits the repository-scale direct gate. This is economic re-routing, not repeated-failure takeover. Architectural/broad deviation is not eligible; if Claude remains owner, prefer reviewed same-worktree continuation.
 
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 
@@ -94,7 +96,11 @@ Dirty source or stale HEAD is handled the same way: it blocks reliable delegatio
 
 ```
 ai/
-  task-card-template.md      # Template for planning work items
+  task-card-components/     # Small catalog plus composable card bodies
+  compose_task_card.py      # Zero-model task-card selector/composer
+  workflow_economics.py     # Delegation-overhead and route calibration
+  parse-spark-output.py     # Stable Spark stdout envelope parser
+  task-card-template.md     # Legacy monolithic compatibility template
   evidence-packet-template.md # Template for documenting execution results
   spec-template.md           # Template for lightweight specs
   plan-task-template.md       # Persistent task plan template
@@ -166,14 +172,20 @@ Key behaviors:
 - **Conflict hard-fail.** Profile composition raises on conflicting scalars; use `lint-task-card.py` to catch before dispatch.
 - Schemas live at `ai/schemas/`, profiles at `ai/profiles/`, examples at `ai/examples/`.
 
-### 1. Create a Task Card
+### 1. Select Components and Create a Short Task Card
 
-Copy the template and fill it in:
+Codex reads the compact catalog, selects a preset and only material gates, then
+uses the deterministic composer:
 
 ```bash
-cp ai/task-card-template.md ai/task-cards/PROJ-123.md
-# Edit ai/task-cards/PROJ-123.md
+python ai/compose_task_card.py --select-from ai/plans/PROJ-123/task-facts.json \
+  --output ai/task-cards/PROJ-123.md
+# Codex fast-path facts return skip_card=true and create no delegation card.
+python ai/compose_task_card.py --preset builder --output ai/task-cards/PROJ-123.md
+# Add --gate root-cause, for example, only when applicable.
 ```
+
+Fill the generated card. The legacy full template remains compatibility-only.
 
 For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Leave `Codex Spark Gate` at `auto` when Spark should perform low-cost task-size classification, task-card audit, plan splitting, validation planning, failure triage, or review/evidence checking, with auto-disable on Spark unavailability. Use micro-builder only after explicit tiny-scope authorization. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 
@@ -195,7 +207,7 @@ python ai/session-catchup.py --plan PROJ-123
 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
-For implementation work, set the task card mode to `builder`. Builder Claude owns the scoped edit and progress reporting. If testing is required, state that Builder Claude should stop after implementation evidence and that Codex will dispatch a separate `checker-test` task.
+For delegated implementation, use `builder`. State whether deterministic local checks are sufficient or the conditional Checker value gate requires a separate `checker-test` task.
 
 This creates an isolated worktree under `.worktrees/`, runs Claude Code, and saves these artifacts:
 
@@ -301,7 +313,7 @@ Spark output is advisory. Record `accepted_suggestions`, `ignored_suggestions`, 
 
 **Spark result delivery modes** control how results are returned and persisted via `--result-mode`:
 
-- **`direct`** (default for advisory/read-only runs): sends raw result on stdout, uses a cleaned temporary workspace, creates no permanent Spark directory. No `codex-spark.report.md` or other files are written. Choose `direct` when only the inline result matters and file-backed metrics are not needed.
+- **`direct`** (default for advisory/read-only runs): sends bounded result data on stdout and creates no permanent directory on success. `CODEX_SPARK_STDOUT_MAX_BYTES` defaults to 32768; oversized estimator output is reduced to recognized machine fields. Optional failures emit `spark_status=unavailable` fields instead of returning silent stdout.
 - **`minimal`**: sends raw result on stdout and persists only a compact `codex-spark.report.md`. Use when persistent metrics or benchmark aggregation is required but full evidence is unnecessary.
 - **`full`**: preserves prompt, result, stderr, status, diff, task-card, and manifest evidence. Use when complete audit trails are required.
 
@@ -309,7 +321,9 @@ When `--output` is passed without an explicit `--result-mode`, the helper select
 
 **Observability tradeoff:** `direct` mode intentionally has no file-backed metrics — no `codex-spark.report.md`, no artifact directory, no manifest. This is by design for lightweight advisory calls. When benchmark aggregation, quality tracking, or audit evidence is needed across multiple Spark invocations, choose `minimal` or `full` so `ai/benchmark-loop-runs.py` and `ai/summarize-loop-run.py` can aggregate results.
 
-**Spark diagnostics (`--diagnostics`):** when a direct-mode call produces an unusable result (empty response, availability/execution failure, or schema-invalid estimator output), `--diagnostics failure` (default) writes a compact redacted record under `.worktrees/spark-diagnostic-<timestamp>/`. Secrets are stripped from stderr excerpts. `--diagnostics off` disables all persistence. `--diagnostics full` copies all evidence (prompt, result, stderr, status metadata) into the permanent directory for reproduction. Successful calls remain zero-persistence. Estimator output classified as `schema-invalid` auto-disables Spark (exits 0) unless `--require-spark` is set.
+**Spark diagnostics (`--diagnostics`):** when a direct-mode call produces an unusable result, `--diagnostics failure` (default) writes a compact redacted record under a unique `.worktrees/spark-diagnostic-<timestamp>-<suffix>/` directory. `--diagnostics off` disables persistence and `full` preserves reproduction evidence. Successful calls remain zero-persistence.
+
+Direct stdout uses the `aiwf-spark-stdout-v1` envelope. It emits a started state before the model call and a terminal state afterward; parse it with `python ai/parse-spark-output.py FILE --require-terminal`. The broker owns the default 75-second Spark process-group timeout.
 
 **Controlled-builder permission mode** provides narrow, auditable source-write permission for Spark:
 
@@ -467,7 +481,7 @@ bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
 
 Codex reviews the work and returns a structured decision: accept, revise, split, or reject, with explicit next-loop instructions.
 
-If the Builder result matches the plan and validation is needed, dispatch a second task card in `checker-test` mode. Checker/Test Claude writes or updates assigned tests, runs the specified commands, and reports the result. Codex then performs the final review and may run a second verification pass when risk warrants it.
+If the Builder result matches the plan, run exact deterministic checks first. Dispatch `checker-test` only for assigned test writing, long validation, or evidence processing that materially reduces Codex work; otherwise record the deterministic-evidence skip reason.
 
 Dispatch defaults to the `balanced` execution profile: compact Claude task card, brief prompt, fresh worktree, and full diff evidence. This reduces prompt/task-card tokens while preserving review evidence. The full planning card remains available as `TASK_CARD_FULL.md`.
 
@@ -585,7 +599,7 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
 
 The benchmark aggregates advisor usage, diagnostic probe usage/cost, same-worktree continuation success, avoided full redispatches, conservative re-exploration evidence, Spark invocation/auto-disable/fallback status, parallel-dispatch usage, spec adherence, root-cause evidence, and TDD fields. Estimated token/time savings remain unavailable unless an audit contains explicit numeric evidence.
 
-The benchmark aggregates decision, quality score, elapsed time, dispatch stage timings, token/cost totals, stability findings, loop type, benchmark tags, advisor usage, Spark task-size classification/routing/confidence, and other workflow metadata parsed from task cards and reports. Stage timings include Claude startup, Claude execution, checker time, and artifact finalization when dispatch progress logs contain those events.
+The benchmark also aggregates execution owner, task-card/review-packet bytes, control-plane time, Checker model dispatches, and approximate Claude-diff reuse. Primary runs, efficient final-candidate reviews, and accepted legacy loops write records automatically. History append is idempotent; reuse remains unavailable until Claude and final diffs are both bound.
 
 **Efficiency evidence enforcement:** `python scripts/compare-efficiency.py BASELINE CANDIDATE --enforce` evaluates real aggregate evidence (codex call reduction, latency, first-pass rate, quality gates, continuation success, redispatch avoidance, and re-exploration metrics). With `--enforce`, it returns non-zero for failed or insufficient Advisor efficiency evidence; it must not fabricate Token/time savings.
 
@@ -702,7 +716,10 @@ While Claude Code is running, `dispatch-to-claude.sh` now writes a PID artifact 
 - `.worktrees/claude-<id>.progress.log` records start, heartbeat, timeout, and completion events.
 - Machine-readable status fields after finalization: `overall_running=yes`, `running=no`, `claude=not-running`. Only the dispatcher sets these fields; Claude does not finalize its own status.
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` controls heartbeat frequency; default is `30`.
-- `CLAUDE_CODE_TIMEOUT_SECONDS` controls the maximum Claude runtime; default is `600` seconds. Set it to `0` to disable timeout.
+- `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` bounds orientation before execution evidence; it defaults to the active window, or `420` seconds for `fast-large-repo`.
+- `CLAUDE_CODE_TIMEOUT_SECONDS` is the active execution window, default `600` seconds; the first role-specific substantive signal refreshes it exactly once.
+- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` permits one later growth extension, default `300` seconds.
+- `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` is the absolute cap, default `1500` seconds.
 - `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` optionally stops Claude when result/status/report/progress artifacts do not change. Default is `0` disabled; set a positive value only when you want fast-fail behavior.
 - `CLAUDE_CODE_WORKTREE_PROGRESS` controls worktree progress verbosity. Default `quiet` shows compact timing and path; `verbose` shows detailed worktree state.
 - `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE` enables conservative approval-blocked early convergence. Default `1` (enabled); set to `0` to disable. When enabled, if a valid complete report exists, changes are test-only scoped, an exact validation approval blocker is present, and two stable heartbeats have been observed, the dispatcher triggers the checker helper. This is not validation success or acceptance — it is an early evidence-gathering path.
@@ -711,11 +728,11 @@ Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones.
 
 `dispatch-to-claude.sh` prints copy-paste `Watch Progress` and `Watch Details` commands immediately after it starts Claude and again in the completion summary, so users can check progress directly from Codex CLI without opening docs or artifact files.
 
-`watch-claude.sh` defaults to a low-cost status panel: running state, elapsed/quiet seconds, a checklist-derived progress bar, the latest milestone, artifact sizes, and a short stuck-run analysis. It does not print full progress/status/network tails unless `--details` is provided or the run has produced repeated suspect snapshots. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
+`watch-claude.sh` defaults to a low-cost status panel and prints full progress/status/network tails only when `--details` is explicit. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, prefer `monitor-claude.sh start <task-id>`. It runs the layered watcher as a local background process and persists only material transitions to `.worktrees/<task-id>.monitor-events.log`; read `monitor-claude.sh tail <task-id>` once at a review/terminal boundary instead of spending Codex turns on heartbeat polling. Spark may summarize the compact event log when useful, but local monitoring itself invokes no model.
+For agent-driven runs, use `monitor-claude.sh start <task-id>` and then `monitor-claude.sh decision <task-id>` at a review boundary. Deterministic local reduction runs first; only ambiguous or candidate-interrupt compact JSON may go to Spark `monitor-triage`. Neither helper authorizes interruption.
 
 Monitoring priority is intentionally conservative to avoid false kills:
 
@@ -732,7 +749,9 @@ For complex or repeatedly revised work, add an `## Execution Phases` table to th
 Dirty-source guard: dispatch blocks when the source worktree has tracked changes, staged changes, or unrelated untracked files because Claude would run from stale `HEAD`. The current task card may be untracked. Use `CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1` only for intentional advanced dispatch.
 
 ```bash
-CLAUDE_CODE_TIMEOUT_SECONDS=600 CLAUDE_CODE_HEARTBEAT_SECONDS=15 \
+CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=420 \
+CLAUDE_CODE_TIMEOUT_SECONDS=600 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS=300 \
+CLAUDE_CODE_HARD_TIMEOUT_SECONDS=1500 CLAUDE_CODE_HEARTBEAT_SECONDS=15 \
   bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 

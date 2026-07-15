@@ -4,7 +4,23 @@ Load this reference when authoring task cards/specs, choosing gates, building Co
 
 ## Planning Gates
 
-Write the full task card only after pre-card routing selects delegation/spec-first. Use `ai/task-card-template.md`. Fill only gates relevant to the task, but never omit a material stop condition:
+Write a task card only after pre-card routing selects delegation/spec-first. Codex reads the small `ai/task-card-components/catalog.md`, selects one preset and only material gates, then lets the local zero-model composer read and join their bodies:
+
+```bash
+python ai/compose_task_card.py --preset builder --gate root-cause --output ai/task-cards/TASK.md
+```
+
+When routing facts already exist, let the deterministic selector choose the
+minimal preset and gates:
+
+```bash
+python ai/compose_task_card.py --select-from routing-facts.json --output ai/task-cards/TASK.md
+```
+
+If those facts select `codex-fast-path`, the command returns `skip_card=true`
+and writes no delegation card.
+
+Codex fills the resulting short card. It does not read `ai/task-card-template.md` by default; that monolithic template remains compatibility-only. Component selection is a Codex planning decision, not a Spark or composer decision. Never omit a material stop condition:
 
 - Spec Gate for ambiguous product, UX, API, or data-model direction.
 - Root Cause Gate for bugs, regressions, or repeated failed fixes.
@@ -13,6 +29,13 @@ Write the full task card only after pre-card routing selects delegation/spec-fir
 - Advisor Gate for one-call strategic advice.
 - Worktree/Large Repo and Parallel gates when those execution paths apply.
 - Finish Branch Gate before claiming readiness for human merge.
+
+Use the `revision` preset for narrowed retries and reviewer-requested corrections. Bind the accepted baseline and describe only the delta; do not copy the original task card. The dispatcher preserves the composed card as the full audit artifact and derives Claude's current-phase view with an execution-section allowlist.
+
+Testing responsibility must state whether Checker model dispatch is required.
+Default to local deterministic validation. Select Checker only for assigned test
+writing, long validation/log processing, or an independent evidence responsibility
+that reduces Codex work; otherwise record `checker skipped: deterministic evidence sufficient`.
 
 Task cards must assign implementation, test writing, validation, direction review, and final review separately. Record known unknowns, assumed knowns, architecture-changing questions, reference examples, forbidden paths, and where deviations must be reported.
 

@@ -674,7 +674,33 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
         "attempt": sorted(root.rglob("*.attempt-classification.json")),
         "audit": sorted(root.rglob("*.advisor-continuation-audit.json")),
         "health": sorted(root.rglob("*.interaction-health.json")),
+        "economics": sorted(root.rglob("workflow-economics.json")) + sorted(root.rglob("run-metrics.json")),
     }
+
+
+def parse_economics(paths: list[Path]) -> dict:
+    for path in reversed(paths):
+        try:
+            value = json.loads(read_text(path))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        reuse = value.get("diff_reuse", {}) if isinstance(value.get("diff_reuse"), dict) else {}
+        return {
+            "execution_owner": value.get("execution_owner", value.get("owner")),
+            "execution_owner_source": value.get("execution_owner_source"),
+            "model_calls_by_role": value.get("model_calls_by_role", value.get("model_calls", {})),
+            "task_card_bytes": value.get("task_card_bytes"),
+            "review_packet_bytes": value.get("review_packet_bytes"),
+            "control_plane_seconds": value.get("control_plane_seconds"),
+            "checker_model_dispatched": value.get("checker_model_dispatched"),
+            "checker_skip_reason": value.get("checker_skip_reason"),
+            "claude_reuse_ratio": value.get("claude_reuse_ratio", reuse.get("reuse_ratio")),
+            "claude_added_lines": reuse.get("claude_added_lines"),
+            "retained_added_lines": reuse.get("retained_added_lines"),
+        }
+    return {}
 
 
 def latest_default_path(repo_root: Path) -> Path:
@@ -876,6 +902,7 @@ def summarize(path: Path) -> dict:
     claude_attempts = summarize_attempts(artifacts["attempt"])
     continuation_audit = parse_continuation_audits(artifacts["audit"])
     diagnostic_probes = parse_diagnostic_probes(artifacts["health"])
+    economics = parse_economics(artifacts["economics"])
 
     return {
         "run_path": str(path),
@@ -918,6 +945,7 @@ def summarize(path: Path) -> dict:
         "final_validation_reason": final_validation_reason,
         "advisor_continuation": continuation_audit,
         "diagnostic_probes": diagnostic_probes,
+        "economics": economics,
     }
 
 
@@ -965,6 +993,13 @@ def render_markdown(summary: dict) -> str:
         "progress_logs",
     ]:
         lines.append(f"| {key} | {format_value(summary['speed'].get(key))} |")
+
+    lines.extend(["", "## Workflow Economics", "", "| Field | Value |", "|-------|-------|"])
+    if summary.get("economics"):
+        for key, value in sorted(summary["economics"].items()):
+            lines.append(f"| {key} | {format_value(value)} |")
+    else:
+        lines.append("| economics | unavailable |")
 
     lines.extend(["", "## Claude Evidence Classification", "", "| Field | Value |", "|-------|-------|"])
     for key in [

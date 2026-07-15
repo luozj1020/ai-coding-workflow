@@ -63,6 +63,7 @@ def _load_module(name: str, filename: str):
 
 task_schema = _load_module("task_schema", "task_schema.py")
 route_task = _load_module("route_task", "route-task.py")
+workflow_economics = _load_module("workflow_economics", "workflow_economics.py")
 
 # ---------------------------------------------------------------------------
 # Phase definitions
@@ -188,6 +189,7 @@ class RunContext:
         self.phase_timings: Dict[str, float] = {}
         self.model_calls: List[Dict[str, Any]] = []
         self.phase_order: List[str] = []
+        self.stop_after_dispatch = False
 
     def emit_event(self, event_name: str, phase: str, detail: Optional[Dict[str, Any]] = None) -> None:
         """Emit a phase event to the append-only event log."""
@@ -258,6 +260,8 @@ class RunContext:
                     return "accept"
                 return "human-review"
             return "escalate"
+        if status == "routed":
+            return "codex-fast-path"
         return "failed"
 
 
@@ -469,7 +473,12 @@ def phase_plan(ctx: RunContext) -> None:
             "milestones": [],
         },
         "execution": {
-            "builder_checker_split": execution.get("builder_checker_split", True),
+            "owner": execution.get("owner", "claude-builder"),
+            "owner_source": execution.get("owner_source", "compatibility-default"),
+            "builder_checker_split": execution.get("builder_checker_split", False),
+            "checker_model_dispatch": execution.get("checker_model_dispatch", False),
+            "checker_value_reasons": execution.get("checker_value_reasons", []),
+            "checker_skip_reason": execution.get("checker_skip_reason"),
             "single_pass_allowed": execution.get("single_pass_allowed", False),
             "single_pass_reason": execution.get("single_pass_reason", ""),
             "remote_rounds": execution.get("remote_rounds", 1),
@@ -491,6 +500,24 @@ def phase_plan(ctx: RunContext) -> None:
 def phase_dispatch(ctx: RunContext) -> None:
     """Phase 8: Dispatch to Claude (--execute only)."""
     ctx.phase_order.append("dispatch")
+
+    execution = ctx.execution_plan.get("execution", {})
+    if execution.get("owner") == "codex-fast-path":
+        decision = {
+            "schema_version": 1,
+            "task_id": ctx.facts.get("task_id", ""),
+            "action": "codex-fast-path",
+            "claude_dispatched": False,
+            "reason": "shared economic router selected Codex before Claude start",
+            "owner_source": execution.get("owner_source"),
+        }
+        out = ctx.run_dir / "dispatch-decision.json"
+        write_artifact(out, decision)
+        ctx.record_artifact(out)
+        ctx.phase_timings["dispatch"] = 0.0
+        ctx.stop_after_dispatch = True
+        ctx.emit_event("dispatch_routed_to_codex", "dispatch", decision)
+        return
 
     if not ctx.execute:
         # Preview mode: write dispatch preview, skip execution
@@ -716,6 +743,19 @@ def phase_ledger(ctx: RunContext) -> None:
         "phase_timings": {k: round(v, 3) for k, v in ctx.phase_timings.items()},
         "model_calls_count": len(ctx.model_calls),
         "model_calls": ctx.model_calls,
+        "model_calls_by_role": {
+            role: sum(1 for call in ctx.model_calls if call.get("role") == role)
+            for role in ("codex", "claude", "spark")
+        },
+        "execution_owner": ctx.routing.get("execution", {}).get("owner") if ctx.routing else None,
+        "execution_owner_source": ctx.routing.get("execution", {}).get("owner_source") if ctx.routing else None,
+        "checker_model_dispatched": ctx.routing.get("execution", {}).get("checker_model_dispatch", False) if ctx.routing else False,
+        "checker_skip_reason": ctx.routing.get("execution", {}).get("checker_skip_reason") if ctx.routing else None,
+        "task_card_bytes": ctx.task_path.stat().st_size if ctx.task_path.is_file() else None,
+        "control_plane_seconds": round(sum(
+            ctx.phase_timings.get(name, 0.0)
+            for name in ("lint", "compose", "validate", "facts", "route", "context", "plan")
+        ), 3),
         "acceptance_status": ctx.acceptance.get("status") if ctx.acceptance else None,
         "review_tier": ctx.ladder.get("tier") if ctx.ladder else None,
         "remote_required": ctx.handoff.get("remote_required") if ctx.handoff else False,
@@ -729,6 +769,47 @@ def phase_ledger(ctx: RunContext) -> None:
     out = ctx.run_dir / "run-metrics.json"
     write_artifact(out, metrics)
     ctx.record_artifact(out)
+
+    accepted = bool(
+        ctx.execute
+        and ctx.acceptance
+        and ctx.acceptance.get("status") == "passed"
+        and ctx._final_decision("completed") == "accept"
+    )
+    repository = ctx.facts.get("repository", {}) if ctx.facts else {}
+    calls_by_role = metrics["model_calls_by_role"]
+    economics = {
+        "schema_version": 1,
+        "run_id": ctx.run_id,
+        "task_id": metrics["task_id"],
+        "task_type": ctx.facts.get("task_type", "unknown") if ctx.facts else "unknown",
+        "repository_scale": (
+            repository.get("routing_scale", "unknown")
+            if isinstance(repository, dict) else "unknown"
+        ),
+        "owner": metrics["execution_owner"],
+        "accepted": accepted,
+        "first_pass": accepted and calls_by_role.get("claude", 0) <= 1,
+        "codex_takeover": False,
+        "claude_reuse_ratio": None,
+        "diff_reuse": {},
+        "reuse_evidence_available": False,
+        "reuse_unavailable_reason": "claude-and-final-diff-not-both-bound",
+        "model_calls": calls_by_role,
+        "task_card_bytes": metrics["task_card_bytes"],
+        "review_packet_bytes": None,
+        "worktree_setup_seconds": metrics["phase_timings"].get("dispatch"),
+        "total_elapsed_seconds": metrics["total_elapsed_seconds"],
+        "control_plane_seconds": metrics["control_plane_seconds"],
+        "checker_model_dispatched": metrics["checker_model_dispatched"],
+    }
+    economics_path = ctx.run_dir / "workflow-economics.json"
+    history_path = ctx.repo / ".ai-workflow" / "economics-history.jsonl"
+    economics["history_appended"] = workflow_economics.append_history_once(
+        history_path, economics
+    )
+    write_artifact(economics_path, economics)
+    ctx.record_artifact(economics_path)
     ctx.phase_timings["ledger"] = time.monotonic() - start
     ctx.emit_event("run_complete", "finalization", {
         "total_elapsed_seconds": round(total_time, 3),
@@ -836,6 +917,10 @@ def run_lifecycle(
             ctx.emit_event(f"{failed_phase}_error", "setup", {
                 "error": error_msg,
             })
+            break
+        if ctx.stop_after_dispatch:
+            phase_ledger(ctx)
+            status = "routed"
             break
 
     # Always write result and final manifest, even on failure

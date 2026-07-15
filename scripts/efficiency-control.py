@@ -17,6 +17,7 @@ def load_module(name, filename):
 router = load_module("aiwf_route", "route-task.py")
 evaluator = load_module("aiwf_accept", "evaluate-acceptance.py")
 tiers = load_module("aiwf_tier", "select-review-tier.py")
+economics = load_module("aiwf_economics", "workflow_economics.py")
 
 digest = _evidence_hash
 
@@ -122,7 +123,9 @@ def prepare(args):
     }
     cache_identity = {"commit": hints.get("commit"), "files": hints.get("target_files", []), "symbols": hints.get("symbols", []), "profile": hints.get("profile"), "targets": hints.get("build_targets", [])}
     plan = {"schema_version": 1, "generated_at": int(time.time()), "task_id": task_id, "lane": route["lane"], "budget": route["budget"],
-            "execution": {"builder_checker_split": route["execution"]["builder_checker_split"], "single_pass_allowed": single, "single_pass_reason": route["execution"]["single_pass_reason"], "max_iterations": 2 if hints.get("latency_mode", "interactive") == "interactive" else 3, "require_new_evidence_for_retry": True},
+            "task_card": str(Path(args.task_card).resolve()), "task_type": hints.get("task_type", "unknown"),
+            "repository_scale": hints.get("repository_size", hints.get("repository_scale", "unknown")),
+            "execution": {"owner": route["execution"]["owner"], "builder_checker_split": route["execution"]["builder_checker_split"], "checker_model_dispatch": route["execution"]["checker_model_dispatch"], "checker_value_reasons": route["execution"]["checker_value_reasons"], "checker_skip_reason": route["execution"]["checker_skip_reason"], "single_pass_allowed": single, "single_pass_reason": route["execution"]["single_pass_reason"], "max_iterations": 2 if hints.get("latency_mode", "interactive") == "interactive" else 3, "require_new_evidence_for_retry": True},
             "review": {"reserved_for": route["budget"].get("codex_reserved_for", []), "milestones": ["implementation-complete", "validation-complete", "final-candidate"], "incremental": True},
             "spark": {"invoke": bool(spark_use), "stage": "preflight", "mode": "preflight-bundle", "reason": spark_reason, "skip_reason": spark_skip_reason, "trigger_codes": spark_trigger_codes, "max_calls": 1},
             "context": {"cache_key": digest(cache_identity), "levels": levels, "default_level": "L1", "allow_l2_on_gap": True},
@@ -212,6 +215,35 @@ def review(args):
         output["recovery"] = ladder_result.get("recovery")
 
     write_json(args.output, output); print(json.dumps(output, sort_keys=True, indent=2))
+    if args.milestone == "final-candidate":
+        owner = plan.get("execution", {}).get("owner", "claude-builder")
+        record = {
+            "schema_version": 1,
+            "run_id": Path(args.output).resolve().parent.name,
+            "task_id": plan["task_id"],
+            "task_type": plan.get("task_type", "unknown"),
+            "repository_scale": plan.get("repository_scale", "unknown"),
+            "owner": owner,
+            "accepted": result.get("status") == "passed",
+            "first_pass": (
+                evidence.get("attempt_index") == 1
+                if isinstance(evidence.get("attempt_index"), int) else None
+            ),
+            "codex_takeover": evidence.get("codex_takeover"),
+            "claude_reuse_ratio": None,
+            "diff_reuse": {},
+            "reuse_evidence_available": False,
+            "reuse_unavailable_reason": "claude-and-final-diff-not-both-bound",
+            "model_calls": {},
+            "task_card_bytes": Path(plan["task_card"]).stat().st_size if Path(plan["task_card"]).is_file() else None,
+            "review_packet_bytes": Path(args.evidence).stat().st_size,
+            "worktree_setup_seconds": None,
+            "total_elapsed_seconds": None,
+            "checker_model_dispatched": plan.get("execution", {}).get("checker_model_dispatch", False),
+        }
+        history = Path(".ai-workflow/economics-history.jsonl")
+        record["history_appended"] = economics.append_history_once(history, record)
+        write_json(Path(args.output).resolve().parent / "workflow-economics.json", record)
     return 0 if result["status"] == "passed" else 2
 
 def main():

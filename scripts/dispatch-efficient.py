@@ -11,6 +11,7 @@ import argparse, hashlib, json, os, re, subprocess, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+SPARK_HELPER = HERE / "run-codex-spark.sh"
 sys.path.insert(0, str(HERE))
 from evidence_hash import content_hash as _content_hash, evidence_hash as _evidence_hash
 
@@ -243,6 +244,97 @@ def _spark_auto_disabled(report_path: Path) -> bool:
     return "| spark auto-disabled? | yes |" in text
 
 
+def _spark_recommended_owner(report_path: Path):
+    """Read the deterministic owner from a compact Spark report."""
+    if not report_path.exists():
+        return None
+    text = report_path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"^\| Recommended owner \| ([^|]+) \|$", text, re.MULTILINE)
+    return match.group(1).strip() if match else None
+
+
+def _needs_host_execution(spark_out_dir: Path, spark_stderr_path: Path) -> bool:
+    report_path = spark_out_dir / "codex-spark.report.md"
+    if report_path.exists():
+        text = report_path.read_text(encoding="utf-8", errors="replace").lower()
+        if "| host handoff required? | yes |" in text:
+            return True
+    if spark_stderr_path.exists():
+        text = spark_stderr_path.read_text(encoding="utf-8", errors="replace").lower()
+        return "host_handoff_required=true" in text or "needs_host_execution=true" in text
+    return False
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
+def _terminate_process_tree(proc: subprocess.Popen, grace_seconds: float = 5.0) -> None:
+    """Terminate and reap the isolated retry process tree."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=grace_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            if proc.poll() is None:
+                proc.kill()
+    else:
+        import signal
+
+        try:
+            process_group = os.getpgid(proc.pid)
+        except OSError:
+            process_group = None
+        if process_group is not None:
+            try:
+                os.killpg(process_group, signal.SIGTERM)
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=grace_seconds)
+            return
+        except subprocess.TimeoutExpired:
+            if process_group is not None:
+                try:
+                    os.killpg(process_group, signal.SIGKILL)
+                except OSError:
+                    pass
+            elif proc.poll() is None:
+                proc.kill()
+    try:
+        proc.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+
+
+def _run_host_retry_with_timeout(cmd, timeout, stdout_path: Path, stderr_path: Path):
+    """Run one host-authorized retry and return ``(exit_code, timed_out)``."""
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
+        kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": stdout_file,
+            "stderr": stderr_file,
+        }
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        proc = subprocess.Popen(cmd, **kwargs)
+        try:
+            return proc.wait(timeout=timeout), False
+        except subprocess.TimeoutExpired:
+            _terminate_process_tree(proc)
+            return -1, True
+
+
 def _run_spark_preflight(plan: dict, card: Path, out: Path) -> dict:
     policy = plan.get("spark", {})
     record = {
@@ -259,9 +351,8 @@ def _run_spark_preflight(plan: dict, card: Path, out: Path) -> dict:
     if not policy.get("invoke", False):
         return record
 
-    helper = HERE / "run-codex-spark.sh"
     record["attempted"] = True
-    if not helper.exists():
+    if not SPARK_HELPER.exists():
         record["exit_code"] = 127
         record["auto_disabled"] = True
         record["skip_reason"] = "skip.helper_missing"
@@ -269,7 +360,7 @@ def _run_spark_preflight(plan: dict, card: Path, out: Path) -> dict:
 
     spark_out = out / "spark-preflight"
     cmd = [
-        "bash", str(helper), str(card),
+        "bash", str(SPARK_HELPER), str(card),
         "--mode", record["mode"],
         "--result-mode", "minimal",
         "--output", str(spark_out),
@@ -280,10 +371,12 @@ def _run_spark_preflight(plan: dict, card: Path, out: Path) -> dict:
         stderr_path=str(out / "spark-preflight.stderr"),
     )
     record["exit_code"] = exit_code
-    record["invoked"] = exit_code == 0
-    record["auto_disabled"] = exit_code != 0 or _spark_auto_disabled(
+    report_auto_disabled = _spark_auto_disabled(spark_out / "codex-spark.report.md")
+    record["recommended_owner"] = _spark_recommended_owner(
         spark_out / "codex-spark.report.md"
     )
+    record["auto_disabled"] = exit_code != 0 or report_auto_disabled
+    record["invoked"] = exit_code == 0 and not report_auto_disabled
     if exit_code != 0:
         record["skip_reason"] = "skip.spark_failed"
     return record
@@ -299,7 +392,22 @@ def main(argv=None):
     p.add_argument("--current-context")
     p.add_argument("--failure-log")
     p.add_argument("--execute", action="store_true")
+    p.add_argument(
+        "--host-authority",
+        action="store_true",
+        default=_truthy(os.environ.get("CODEX_SPARK_HOST_AUTHORITY", "")),
+        help="Assert that this dispatcher already runs with host network authority.",
+    )
+    p.add_argument(
+        "--host-retry-timeout",
+        type=int,
+        default=os.environ.get("CODEX_SPARK_HOST_RETRY_TIMEOUT", "120"),
+        help="Positive timeout in seconds for the single host-authorized Spark retry.",
+    )
     a = p.parse_args(argv)
+
+    if a.host_retry_timeout < 1:
+        p.error("--host-retry-timeout must be a positive integer")
 
     plan = json.loads(Path(a.plan).read_text())
     card = Path(a.task_card)
@@ -347,6 +455,10 @@ def main(argv=None):
         "single_pass": plan["execution"].get("single_pass_allowed", False),
         "call_index": len(calls) + 1,
         "execute": a.execute,
+        "owner": plan.get("execution", {}).get("owner", "claude-builder"),
+        "checker_model_dispatch": plan.get("execution", {}).get(
+            "checker_model_dispatch", False
+        ),
         "spark": plan.get("spark", {}),
     }
     (out / "dispatch-preview.json").write_text(json.dumps(preview, sort_keys=True, indent=2) + "\n")
@@ -355,11 +467,137 @@ def main(argv=None):
     if not a.execute:
         return 0
 
+    if preview["owner"] == "codex-fast-path":
+        decision = {
+            "schema_version": 1,
+            "task_id": plan["task_id"],
+            "action": "codex-fast-path",
+            "claude_dispatched": False,
+            "reason": "pre-card economy route selected Codex; no Claude call made",
+        }
+        (out / "dispatch-decision.json").write_text(
+            json.dumps(decision, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+        )
+        print(json.dumps(decision, sort_keys=True))
+        return 0
+
     spark_record = _run_spark_preflight(plan, dispatch_card, out)
+    initial_exit_code = spark_record.get("exit_code")
+    initial_invoked = bool(spark_record.get("invoked"))
+    initial_auto_disabled = bool(spark_record.get("auto_disabled"))
+    handoff_needed = _needs_host_execution(
+        out / "spark-preflight", out / "spark-preflight.stderr"
+    )
+    spark_record.update(
+        {
+            "initial_exit_code": initial_exit_code,
+            "initial_invoked": initial_invoked,
+            "initial_auto_disabled": initial_auto_disabled,
+            "needs_host_execution": handoff_needed,
+            "host_authority_present": bool(a.host_authority),
+            "host_retry_attempted": False,
+            "host_retry_exit_code": None,
+            "host_retry_timed_out": False,
+            "host_retry_auto_disabled": None,
+            "host_handoff_action": (
+                "rerun-current-dispatch-from-authorized-host-with---host-authority"
+                if handoff_needed and not a.host_authority
+                else None
+            ),
+        }
+    )
+
+    if handoff_needed:
+        spark_record["invoked"] = False
+        spark_record["auto_disabled"] = True
+        spark_record["skip_reason"] = "skip.needs_host_execution"
+        spark_record["final_state"] = "needs_host_execution"
+    elif spark_record["invoked"]:
+        spark_record["final_state"] = "invoked"
+    else:
+        spark_record["final_state"] = "auto_disabled"
+
+    if handoff_needed and a.host_authority:
+        host_output = out / "spark-preflight-host"
+        host_command = [
+            "bash",
+            str(SPARK_HELPER),
+            str(dispatch_card),
+            "--mode",
+            spark_record["mode"],
+            "--result-mode",
+            "minimal",
+            "--output",
+            str(host_output),
+            "--execution-env",
+            "host",
+        ]
+        spark_record["host_retry_attempted"] = True
+        host_exit_code, host_timed_out = _run_host_retry_with_timeout(
+            host_command,
+            a.host_retry_timeout,
+            out / "spark-preflight-host.stdout",
+            out / "spark-preflight-host.stderr",
+        )
+        host_auto_disabled = (
+            not host_timed_out
+            and _spark_auto_disabled(host_output / "codex-spark.report.md")
+        )
+        host_invoked = host_exit_code == 0 and not host_timed_out and not host_auto_disabled
+        host_recommended_owner = _spark_recommended_owner(
+            host_output / "codex-spark.report.md"
+        )
+        spark_record.update(
+            {
+                "host_retry_exit_code": host_exit_code,
+                "host_retry_timed_out": host_timed_out,
+                "host_retry_auto_disabled": host_auto_disabled,
+                "recommended_owner": host_recommended_owner,
+                "invoked": host_invoked,
+                "auto_disabled": not host_invoked,
+                "host_handoff_action": None,
+            }
+        )
+        if host_timed_out:
+            spark_record["skip_reason"] = "skip.spark_host_retry_timeout"
+            spark_record["final_state"] = "host_retry_timeout"
+        elif host_exit_code != 0:
+            spark_record["skip_reason"] = "skip.spark_host_retry_failed"
+            spark_record["final_state"] = "host_retry_failed"
+        elif host_auto_disabled:
+            spark_record["skip_reason"] = "skip.spark_host_retry_auto_disabled"
+            spark_record["final_state"] = "host_retry_auto_disabled"
+        else:
+            spark_record["skip_reason"] = None
+            spark_record["final_state"] = "invoked"
+
     (out / "spark-dispatch.json").write_text(
         json.dumps(spark_record, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+
+    if (
+        spark_record.get("invoked")
+        and not spark_record.get("auto_disabled")
+        and spark_record.get("recommended_owner") == "codex-fast-path"
+    ):
+        spark_record["continued_to_claude"] = False
+        (out / "spark-dispatch.json").write_text(
+            json.dumps(spark_record, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        decision = {
+            "schema_version": 1,
+            "task_id": plan["task_id"],
+            "action": "codex-fast-path",
+            "claude_dispatched": False,
+            "reason": "Spark economy route selected Codex before Claude start",
+        }
+        (out / "dispatch-decision.json").write_text(
+            json.dumps(decision, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+        )
+        print(json.dumps(decision, sort_keys=True))
+        return 0
 
     # --- Execute: real-time tee ---
     start = time.time()

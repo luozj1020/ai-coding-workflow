@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -163,6 +164,12 @@ class PlanError(BrokerError):
     but the CLI maps it to exit code 3 (error) rather than exit code 2
     (denied).
     """
+    pass
+
+
+class CommandTimeout(BrokerError):
+    """Raised after the broker terminates an over-time model process group."""
+
     pass
 
 
@@ -651,8 +658,9 @@ def run_command(
     input_data: Optional[bytes],
     output_path: Optional[Path],
     stderr_path: Optional[Path],
+    timeout_seconds: Optional[float] = None,
 ) -> int:
-    """Execute the model command directly, without a command shell."""
+    """Execute the model command directly and bound its whole process group."""
     out_fh = open(output_path, "wb") if output_path else None
     err_fh = open(stderr_path, "wb") if stderr_path else None
 
@@ -673,14 +681,40 @@ def run_command(
             effective_command.insert(0, sys.executable)
 
     try:
-        result = subprocess.run(
+        popen_kwargs: Dict[str, Any] = {}
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
+            )
+        else:
+            popen_kwargs["start_new_session"] = True
+        process = subprocess.Popen(
             effective_command,
-            input=input_data,
+            stdin=subprocess.PIPE if input_data is not None else None,
             stdout=out_fh,
             stderr=err_fh,
             shell=False,
+            **popen_kwargs,
         )
-        return result.returncode
+        try:
+            process.communicate(input=input_data, timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            if os.name == "nt":
+                process.kill()
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=3)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            process.wait()
+            raise CommandTimeout(
+                f"model command timed out after {timeout_seconds:g}s"
+            ) from exc
+        return process.returncode
     finally:
         if output_path and out_fh is not None:
             out_fh.close()
@@ -712,6 +746,7 @@ def execute(
     request_id: Optional[str] = None,
     call_cap: Optional[int] = None,
     call_type: str = "execution_call",
+    timeout_seconds: Optional[float] = None,
 ) -> int:
     """Full broker lifecycle. Returns child exit code."""
     if call_cap is not None:
@@ -787,7 +822,9 @@ def execute(
     start = time.monotonic()
 
     try:
-        exit_code = run_command(command, input_data, output_path, stderr_path)
+        exit_code = run_command(
+            command, input_data, output_path, stderr_path, timeout_seconds
+        )
     except BaseException as exc:
         # Record failures and operator interrupts so reservations never remain
         # indefinitely in the running state.
@@ -870,6 +907,10 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Validate and inspect without executing")
     parser.add_argument("--retry-failed", action="store_true",
                         help="Allow retry of failed reservation with same evidence (fail-closed by default)")
+    parser.add_argument(
+        "--timeout-seconds", type=float, default=None,
+        help="Bound the model command and its process group; timeout is recorded as a failed terminal transition",
+    )
 
     # Legacy compatibility
     parser.add_argument("--max-calls", type=int, help="Budget override for compatibility mode (no --plan)")
@@ -905,6 +946,9 @@ def main() -> int:
                         help="Command to execute (after -- separator)")
 
     args = parser.parse_args()
+
+    if args.timeout_seconds is not None and args.timeout_seconds <= 0:
+        parser.error("--timeout-seconds must be positive")
 
     # Validate --max-calls requires no --plan
     if args.max_calls is not None and args.plan is not None:
@@ -971,7 +1015,11 @@ def main() -> int:
             request_id=args.request_id,
             call_cap=args.call_cap,
             call_type=args.call_type,
+            timeout_seconds=args.timeout_seconds,
         )
+    except CommandTimeout as exc:
+        print(f"broker: timeout: {exc}", file=sys.stderr)
+        return 124
     except PlanError as exc:
         print(f"broker: error: {exc}", file=sys.stderr)
         return 3

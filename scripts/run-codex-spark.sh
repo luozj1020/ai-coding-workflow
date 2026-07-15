@@ -33,7 +33,7 @@ Options:
                     observe-synthesizer, task-card-drafter,
                     context-packet-builder, preflight-bundle, direction-precheck,
                     acceptance-matrix, postflight-bundle, revision-drafter,
-                    or lesson-extractor
+                    lesson-extractor, or monitor-triage
   --fast-path-max-diff-lines N
                     Explicit ordinary diff threshold override (1-200; default
                     is selected from repository scale)
@@ -81,11 +81,15 @@ Environment:
   CODEX_SPARK_RESULT_MODE=direct|minimal|full
   CODEX_SPARK_DIAGNOSTICS=off|failure|full
   CODEX_SPARK_ARTIFACT_LINES=160
+  CODEX_SPARK_STDOUT_MAX_BYTES=32768
+  CODEX_SPARK_CALL_TIMEOUT_SECONDS=75
   CODEX_SPARK_ALLOW_DIRTY_SOURCE=1
   CODEX_SPARK_REQUIRED=1
   AI_SPARK_BUDGET_MODE=aggressive|balanced|conservative
   CODEX_FAST_PATH_MAX_DIFF_LINES=100
   CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES=500
+  CODEX_FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES=800
+  CODEX_FULL_REREVIEW_FAST_PATH_MAX_FILES=8
   CODEX_REPOSITORY_SCALE=auto
   CODEX_SPARK_ROUTING_EVENT=initial|revision|narrow|retry|next-phase
   CODEX_SPARK_EXECUTION_ENV=auto|host|sandbox
@@ -104,6 +108,8 @@ MODEL="${CODEX_SPARK_MODEL:-gpt-5.3-codex-spark}"
 SANDBOX="${CODEX_SPARK_SANDBOX:-read-only}"
 OUTPUT_DIR="${CODEX_SPARK_OUTPUT_DIR:-}"
 ARTIFACT_LINES="${CODEX_SPARK_ARTIFACT_LINES:-160}"
+STDOUT_MAX_BYTES="${CODEX_SPARK_STDOUT_MAX_BYTES:-32768}"
+CALL_TIMEOUT_SECONDS="${CODEX_SPARK_CALL_TIMEOUT_SECONDS:-75}"
 ALLOW_DIRTY_SOURCE="${CODEX_SPARK_ALLOW_DIRTY_SOURCE:-0}"
 REQUIRE_SPARK="${CODEX_SPARK_REQUIRED:-0}"
 BUDGET_MODE="${AI_SPARK_BUDGET_MODE:-balanced}"
@@ -112,11 +118,13 @@ SPARK_INVOKED="yes"
 SPARK_MODEL_RESPONSE_RECEIVED="no"
 SPARK_AUTO_DISABLED="no"
 SPARK_DISABLE_REASON="not applicable"
+SPARK_HOST_HANDOFF_REQUIRED="no"
 SPARK_CHECKS_RUN="codex exec"
 HELPER_EXIT_STATUS=0
 SPARK_PIPELINE_STAGE=""
 SPARK_ROLES_EXECUTED=""
 SPARK_CALLS_USED=0
+DIRECT_ENVELOPE_STARTED="no"
 SPARK_PROVISIONAL_ACCEPTANCE="not applicable"
 ARTIFACTS=()
 RESULT_MODE="${CODEX_SPARK_RESULT_MODE:-}"
@@ -126,6 +134,8 @@ ALLOWED_WRITES=()
 MAX_DIFF_LINES=""
 FAST_PATH_MAX_DIFF_LINES="${CODEX_FAST_PATH_MAX_DIFF_LINES:-100}"
 CONCENTRATED_FAST_PATH_MAX_DIFF_LINES="${CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES:-500}"
+FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES="${CODEX_FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES:-800}"
+FULL_REREVIEW_FAST_PATH_MAX_FILES="${CODEX_FULL_REREVIEW_FAST_PATH_MAX_FILES:-8}"
 FAST_PATH_THRESHOLD_EXPLICIT="$([ -n "${CODEX_FAST_PATH_MAX_DIFF_LINES+x}" ] && echo yes || echo no)"
 CONCENTRATED_THRESHOLD_EXPLICIT="$([ -n "${CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES+x}" ] && echo yes || echo no)"
 REPOSITORY_SCALE_REQUESTED="${CODEX_REPOSITORY_SCALE:-auto}"
@@ -274,7 +284,7 @@ if [ -n "$BRIEF_TEXT" ] || [ -n "$BRIEF_FILE" ] || [ "$STDIN_BRIEF" = "yes" ]; t
 fi
 
 case "$MODE" in
-    auto|task-size-classifier|execution-cost-estimator|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|controlled-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor) ;;
+    auto|task-size-classifier|execution-cost-estimator|review-only|task-card-audit|plan-splitter|validation-planner|failure-triage|evidence-checker|micro-builder|controlled-builder|parallel-planner|observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor|monitor-triage) ;;
     *)
         echo "Error: invalid --mode: $MODE" >&2
         exit 1
@@ -368,6 +378,26 @@ if [ "$CONCENTRATED_FAST_PATH_MAX_DIFF_LINES" -lt "$FAST_PATH_MAX_DIFF_LINES" ];
     echo "Error: concentrated fast-path threshold cannot be lower than the ordinary fast-path threshold." >&2
     exit 1
 fi
+case "$FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES" in
+    ''|*[!0-9]*)
+        echo "Error: CODEX_FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES must be an integer." >&2
+        exit 1
+        ;;
+esac
+if [ "$FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES" -lt 100 ] || [ "$FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES" -gt 2000 ]; then
+    echo "Error: CODEX_FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES must be between 100 and 2000." >&2
+    exit 1
+fi
+case "$FULL_REREVIEW_FAST_PATH_MAX_FILES" in
+    ''|*[!0-9]*|0)
+        echo "Error: CODEX_FULL_REREVIEW_FAST_PATH_MAX_FILES must be between 1 and 10." >&2
+        exit 1
+        ;;
+esac
+if [ "$FULL_REREVIEW_FAST_PATH_MAX_FILES" -gt 10 ]; then
+    echo "Error: CODEX_FULL_REREVIEW_FAST_PATH_MAX_FILES must be between 1 and 10." >&2
+    exit 1
+fi
 case "$ROUTING_EVENT" in
     initial|revision|narrow|retry|next-phase) ;;
     *) echo "Error: --routing-event must be initial, revision, narrow, retry, or next-phase." >&2; exit 1 ;;
@@ -376,6 +406,20 @@ esac
 case "$EXECUTION_ENV" in
     auto|host|sandbox) ;;
     *) echo "Error: invalid --execution-env: $EXECUTION_ENV (expected auto, host, or sandbox)" >&2; exit 1 ;;
+esac
+case "$STDOUT_MAX_BYTES" in
+    ''|*[!0-9]*)
+        echo "Error: CODEX_SPARK_STDOUT_MAX_BYTES must be an integer." >&2
+        exit 1
+        ;;
+esac
+if [ "$STDOUT_MAX_BYTES" -lt 4096 ] || [ "$STDOUT_MAX_BYTES" -gt 131072 ]; then
+    echo "Error: CODEX_SPARK_STDOUT_MAX_BYTES must be between 4096 and 131072." >&2
+    exit 1
+fi
+case "$CALL_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*) echo "Error: CODEX_SPARK_CALL_TIMEOUT_SECONDS must be a positive integer." >&2; exit 1 ;;
+    0) echo "Error: CODEX_SPARK_CALL_TIMEOUT_SECONDS must be a positive integer." >&2; exit 1 ;;
 esac
 case "$REPOSITORY_SCALE_REQUESTED" in
     auto|small|medium|large|giant) ;;
@@ -406,9 +450,9 @@ fi
 
 if [ "$INPUT_KIND" = "brief" ]; then
     case "$MODE" in
-        auto|task-size-classifier|execution-cost-estimator|preflight-bundle|observe-synthesizer|task-card-drafter) ;;
+        auto|task-size-classifier|execution-cost-estimator|preflight-bundle|observe-synthesizer|task-card-drafter|monitor-triage) ;;
         *)
-            echo "Error: pre-task-card brief input is only supported by auto, task-size-classifier, execution-cost-estimator, preflight-bundle, observe-synthesizer, or task-card-drafter." >&2
+            echo "Error: pre-task-card brief input is only supported by auto, task-size-classifier, execution-cost-estimator, preflight-bundle, observe-synthesizer, task-card-drafter, or monitor-triage." >&2
             exit 1
             ;;
     esac
@@ -512,7 +556,7 @@ artifact_name_matches() {
 
 is_read_only_synthesis_mode() {
     case "$MODE" in
-        observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor|execution-cost-estimator)
+        observe-synthesizer|task-card-drafter|context-packet-builder|preflight-bundle|direction-precheck|acceptance-matrix|postflight-bundle|revision-drafter|lesson-extractor|execution-cost-estimator|monitor-triage)
             return 0 ;;
         *)
             return 1 ;;
@@ -598,6 +642,8 @@ resolve_pipeline_stage() {
             SPARK_PIPELINE_STAGE="builder" ;;
         lesson-extractor)
             SPARK_PIPELINE_STAGE="learning" ;;
+        monitor-triage)
+            SPARK_PIPELINE_STAGE="monitoring" ;;
         review-only|task-card-audit|evidence-checker|parallel-planner)
             SPARK_PIPELINE_STAGE="standalone" ;;
     esac
@@ -615,7 +661,7 @@ resolve_roles_executed() {
             else
                 SPARK_ROLES_EXECUTED="$MODE"
             fi ;;
-        observe-synthesizer|task-card-drafter|context-packet-builder|direction-precheck|acceptance-matrix|revision-drafter|lesson-extractor)
+        observe-synthesizer|task-card-drafter|context-packet-builder|direction-precheck|acceptance-matrix|revision-drafter|lesson-extractor|monitor-triage)
             SPARK_ROLES_EXECUTED="$MODE" ;;
         *)
             SPARK_ROLES_EXECUTED="$MODE" ;;
@@ -1058,6 +1104,7 @@ write_report_header() {
         echo "| Spark exit code | ${exit_value} |"
         echo "| Spark auto-disabled? | ${SPARK_AUTO_DISABLED} |"
         echo "| Auto-disable reason | ${SPARK_DISABLE_REASON} |"
+        echo "| Host handoff required? | ${SPARK_HOST_HANDOFF_REQUIRED} |"
         echo "| Helper exit behavior | $([ "$REQUIRE_SPARK" = "1" ] && echo require-spark || echo optional-spark) |"
         echo "| Strong-model fallback used | no |"
         echo "| Spark output can satisfy acceptance? | no, advisory only unless Codex separately verifies and records acceptance |"
@@ -1109,6 +1156,18 @@ auto_disable_spark() {
     SPARK_CHECKS_RUN="not run"
     HELPER_EXIT_STATUS=0
     if [ "$RESULT_MODE" = "direct" ]; then
+        emit_direct_envelope_start
+        echo "spark_status=unavailable"
+        echo "spark_auto_disabled=yes"
+        echo "spark_disable_reason=${reason}"
+        echo "spark_model_response_received=${SPARK_MODEL_RESPONSE_RECEIVED}"
+        echo "spark_protocol_end=aiwf-spark-stdout-v1"
+        if [ "$SPARK_HOST_HANDOFF_REQUIRED" = "yes" ]; then
+            echo "needs_host_execution=true" >&2
+            echo "host_handoff_required=true" >&2
+            echo "execution_env_requested=${EXECUTION_ENV}" >&2
+            echo "execution_env_resolved=${RESOLVED_EXECUTION_ENV}" >&2
+        fi
         echo "Codex Spark auto-disabled: ${reason}" >&2
         exit "$HELPER_EXIT_STATUS"
     fi
@@ -1158,6 +1217,45 @@ spark_failure_auto_disable_reason() {
 
 DIAGNOSTIC_DIR=""
 DIAGNOSTIC_FAILURE_CLASS="none"
+
+emit_direct_envelope_start() {
+    [ "$RESULT_MODE" = "direct" ] || return 0
+    [ "$DIRECT_ENVELOPE_STARTED" = "no" ] || return 0
+    echo "spark_protocol=aiwf-spark-stdout-v1"
+    echo "spark_status=started"
+    echo "spark_mode=${MODE}"
+    echo "spark_routing_event=${ROUTING_EVENT}"
+    DIRECT_ENVELOPE_STARTED="yes"
+}
+
+emit_bounded_direct_result() {
+    local result_bytes
+    local head_bytes
+    local tail_bytes
+    result_bytes="$(wc -c < "$RESULT_FILE")"
+    if [ "$result_bytes" -le "$STDOUT_MAX_BYTES" ]; then
+        cat "$RESULT_FILE"
+        echo "spark_output_truncated=no"
+        echo "spark_output_bytes=${result_bytes}"
+        return
+    fi
+
+    # Estimator-family consumers need the schema fields, not tens of thousands
+    # of advisory prose tokens. Preserve every recognized machine line.
+    if [ "$MODE" = "execution-cost-estimator" ] || [ "$MODE" = "task-size-classifier" ] || [ "$MODE" = "preflight-bundle" ]; then
+        grep -E '^(predicted_diff_lines_low|predicted_diff_lines_high|predicted_files|context_scope|validation_complexity|delegation_overhead|context_reacquisition_cost|codex_semantic_rereview|solution_clarity|semantic_concentration|task_role|estimated_direct_work_units|estimated_delegated_work_units|delegation_to_direct_ratio|economic_recommendation|safety_eligible|recommended_owner|cost_confidence|confidence|risk_flags|reason|stop_condition|size|recommended_route|expected_files|estimator_normalizations|accepted_suggestions|ignored_suggestions|conflicts_with_claude|conflicts_with_local_evidence|acceptance_satisfied_by_spark)=' "$RESULT_FILE" 2>/dev/null || true
+    else
+        head_bytes=$((STDOUT_MAX_BYTES * 3 / 4))
+        tail_bytes=$((STDOUT_MAX_BYTES - head_bytes))
+        head -c "$head_bytes" "$RESULT_FILE"
+        printf '\n... [Spark direct output deterministically truncated] ...\n'
+        tail -c "$tail_bytes" "$RESULT_FILE"
+        printf '\n'
+    fi
+    echo "spark_output_truncated=yes"
+    echo "spark_output_bytes=${result_bytes}"
+    echo "spark_output_max_bytes=${STDOUT_MAX_BYTES}"
+}
 
 # Conservative secret redaction for stderr excerpts.
 # Replaces lines containing common credential/token patterns with a marker.
@@ -1221,6 +1319,33 @@ _estimator_schema_valid() {
     return 0
 }
 
+normalize_estimator_output() {
+    local normalized_file
+    local line
+    local changed="no"
+    [ -s "$RESULT_FILE" ] || return 0
+    case "$MODE" in
+        execution-cost-estimator|task-size-classifier|preflight-bundle) ;;
+        *) return 0 ;;
+    esac
+    normalized_file="${RESULT_FILE}.normalized"
+    : > "$normalized_file"
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^predicted_files=([0-9]+)[[:space:]]*-[[:space:]]*([0-9]+)$ ]]; then
+            echo "predicted_files=${BASH_REMATCH[2]}" >> "$normalized_file"
+            changed="predicted_files-range-to-upper-bound"
+        else
+            echo "$line" >> "$normalized_file"
+        fi
+    done < "$RESULT_FILE"
+    if [ "$changed" != "no" ]; then
+        echo "estimator_normalizations=${changed}" >> "$normalized_file"
+        mv "$normalized_file" "$RESULT_FILE"
+    else
+        rm -f "$normalized_file"
+    fi
+}
+
 classify_failure() {
     local codex_exit="$1"
     local result_empty="$2"
@@ -1258,8 +1383,7 @@ write_compact_diagnostic() {
         fi
     fi
 
-    DIAGNOSTIC_DIR="${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}"
-    mkdir -p "$DIAGNOSTIC_DIR"
+    DIAGNOSTIC_DIR="$(mktemp -d "${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}-XXXXXX")"
 
     {
         echo "# Codex Spark Compact Diagnostic"
@@ -1304,8 +1428,7 @@ write_compact_diagnostic() {
 write_full_diagnostic() {
     local codex_exit="$1"
     # Create a permanent diagnostic directory for full mode
-    DIAGNOSTIC_DIR="${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}"
-    mkdir -p "$DIAGNOSTIC_DIR"
+    DIAGNOSTIC_DIR="$(mktemp -d "${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}-XXXXXX")"
 
     # Copy all evidence files from the (possibly transient) temp dir into
     # the permanent diagnostic directory so all report paths are real.
@@ -1428,6 +1551,7 @@ if [ "$EXECUTION_ENV" = "auto" ] && [ "$_NETWORK_RESTRICTED" = "yes" ]; then
         exit 1
     fi
     SPARK_INVOKED="no"
+    SPARK_HOST_HANDOFF_REQUIRED="yes"
     auto_disable_spark "auto-detected restricted sandbox (CODEX_SANDBOX_NETWORK_DISABLED is set); re-run with --execution-env host from an authorized terminal or unset the marker" "not-run"
 fi
 
@@ -1617,19 +1741,21 @@ Repository tracked/source files: ${REPOSITORY_TRACKED_FILES}/${REPOSITORY_SOURCE
 Historical worktree cost: ${REPOSITORY_WORKTREE_COST} (median ${REPOSITORY_WORKTREE_MEDIAN_SECONDS}s, samples ${REPOSITORY_WORKTREE_SAMPLES}, io_promoted ${REPOSITORY_IO_PROMOTED})
 Dynamic ordinary gate: ${FAST_PATH_MAX_DIFF_LINES} calibrated lines / ${ORDINARY_FAST_PATH_MAX_FILES} files
 Dynamic concentrated gate: ${CONCENTRATED_FAST_PATH_MAX_DIFF_LINES} calibrated lines / ${CONCENTRATED_FAST_PATH_MAX_FILES} files
+Large-repository full-rereview economy gate: ${FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES} calibrated lines / ${FULL_REREVIEW_FAST_PATH_MAX_FILES} files
 
 Operating rules:
 - Use the requested Spark model only. Do not silently fall back to a stronger model.
 - Keep output compressed: decisions, evidence, changed files if any, checks run, and risks.
+- Keep the response below 12,000 bytes. For estimator-family modes, emit machine-readable fields first and omit repository narration.
 - Treat Claude-owned implementation as Claude-owned unless this task card explicitly authorizes Spark micro-builder work.
 - Do not claim completion from prose alone. Cite artifacts, commands, or diffs.
 - If blocked by missing context, permissions, model access, network, or auth, report the blocker instead of guessing.
 - Spark output is advisory input to Codex review. It cannot replace Claude Builder ownership, cannot approve final review, and cannot by itself satisfy acceptance criteria.
-- End your output with these fields exactly: accepted_suggestions=<none or comma-separated>; ignored_suggestions=<none or comma-separated>; conflicts_with_claude=<none or short note>; conflicts_with_local_evidence=<none or short note>; acceptance_satisfied_by_spark=no.
+- Except in monitor-triage, end your output with these fields exactly: accepted_suggestions=<none or comma-separated>; ignored_suggestions=<none or comma-separated>; conflicts_with_claude=<none or short note>; conflicts_with_local_evidence=<none or short note>; acceptance_satisfied_by_spark=no.
 
 Mode contract:
 - task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output the standard estimator fields listed by execution-cost-estimator plus size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown. Choose owner from edit size/files, context sufficiency, solution clarity, confidence, context reacquisition, mandatory Codex rereview, and delegation overhead. Risk flags and validation complexity affect downstream rigor and MUST NOT push ownership from Codex to Claude.
-- execution-cost-estimator: read-only mode for routing event ${ROUTING_EVENT}. Estimate direct Codex editing cost versus Claude delegation overhead. Do not edit files. Output exactly these machine-readable fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; context_reacquisition_cost=none|low|medium|high; codex_semantic_rereview=none|sampled|full; solution_clarity=high|medium|low; semantic_concentration=high|medium|low; task_role=core-semantic|auxiliary|mixed|unknown; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short paragraph>; stop_condition=<one sentence>. Classify tests/checker work, mechanical batches, long validation/log processing, evidence collection, and independent support units as auxiliary. Classify tightly coupled behavior/architecture implementation as core-semantic; mixed work should be split when practical. Work units are relative estimates, not actual/billable token measurements. Count Claude context reacquisition/handoff and mandatory Codex rereview. Use the dynamic gates printed above. Concentrated routing is for core-semantic work only. In large/giant repositories, auxiliary work above a tiny one-file/50-line edit prefers Claude, even though Codex owns the core semantic implementation. Risk flags and validation complexity MUST NOT push ownership from Codex to Claude. If a risk override is later applied, it may bias high-risk work only toward Codex. Risk changes rigor, not owner direction.
+- execution-cost-estimator: read-only mode for routing event ${ROUTING_EVENT}. Estimate direct Codex editing cost versus Claude delegation overhead. Do not edit files. Output exactly these machine-readable fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; context_reacquisition_cost=none|low|medium|high; codex_semantic_rereview=none|sampled|full; solution_clarity=high|medium|low; semantic_concentration=high|medium|low; task_role=core-semantic|auxiliary|mixed|unknown; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short paragraph>; stop_condition=<one sentence>. predicted_files MUST be one integer or unknown, never a range. Classify tests/checker work, mechanical batches, long validation/log processing, evidence collection, and independent support units as auxiliary. Classify tightly coupled behavior/architecture implementation as core-semantic; mixed work should be split when practical. Work units are relative estimates, not actual/billable token measurements. Count Claude context reacquisition/handoff and mandatory Codex rereview in delegated work units, so an economic_recommendation=codex-fast-path must not claim lower delegated total work than direct work. Use the dynamic gates printed above. Concentrated routing is for core-semantic work only. In large/giant repositories, bounded core-semantic work that still requires full Codex rereview may use the full-rereview economy gate; auxiliary work above a tiny one-file/50-line edit prefers Claude. Risk flags and validation complexity MUST NOT push ownership from Codex to Claude. If a risk override is later applied, it may bias high-risk work only toward Codex. Risk changes rigor, not owner direction.
 - review-only: inspect the task card and available repository context, do not edit files.
 - task-card-audit: inspect the task card for missing gates, mixed responsibilities, unclear acceptance criteria, unsafe scope, and likely Claude stall risks; do not edit files.
 - plan-splitter: propose smaller Builder/Checker task cards or independent parallelizable slices; do not edit files.
@@ -1648,6 +1774,7 @@ Mode contract:
 - postflight-bundle: combined postflight analysis in one invocation. Perform direction/boundary/omission checks, acceptance mapping, evidence conflict detection, validation recommendations, and provisional accept/revise/split/escalate recommendation. Do not edit files. Output MUST contain exactly these headings in this order: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
 - revision-drafter: draft a bounded revision task card from failure triage results or postflight findings. Do not edit source files. Output a structured revision task card proposal.
 - lesson-extractor: extract reusable lessons from provided artifacts. Do not edit files. Output structured lessons with evidence citations.
+- monitor-triage: read only the supplied compact local monitor JSON. Never request or inspect raw process listings, full progress logs, full status output, network tails, or source diffs. Return exactly these fields, one per line: decision=continue|inspect|interrupt-candidate|uncertain; confidence=high|medium|low; reason_code=<one-kebab-case-code>; codex_review_required=yes|no; interrupt_authorized=no. Prefer continue when useful artifact/progress growth exists and no explicit deviation is present. Time, PID state, or changed-file count alone never proves direction deviation. Use interrupt-candidate only for an explicit local direction-deviation signal or corroborated repeated L3 stale evidence with no growth. Use uncertain for missing or conflicting evidence. This mode is advisory and never kills a process or authorizes interruption.
 EOF
 
 # In aggressive budget mode, failure-triage additionally asks for a bounded revision task draft.
@@ -1694,6 +1821,10 @@ fi
 
 append_artifact_excerpts
 
+# Direct callers receive a protocol header before the potentially blocking
+# model call. Even an external caller timeout therefore has a usable state.
+emit_direct_envelope_start
+
 set +e
 (
     cd "$RUN_DIR"
@@ -1706,6 +1837,7 @@ set +e
     broker_args=(
         --role spark --stage builder
         --task-id "spark-$(basename "$RUN_DIR")"
+        --timeout-seconds "$CALL_TIMEOUT_SECONDS"
         --ledger "${REPO_ROOT}/.ai-workflow/model-calls.jsonl"
         --input "$PROMPT_FILE" --output "$RESULT_FILE" --stderr "$STDERR_FILE"
     )
@@ -1735,6 +1867,9 @@ CODEX_STATUS=$?
 set -e
 HELPER_EXIT_STATUS="$CODEX_STATUS"
 SPARK_CALLS_USED=1
+if [ "$CODEX_STATUS" -eq 0 ]; then
+    normalize_estimator_output
+fi
 if [ "$CODEX_STATUS" -eq 0 ] && [ -s "$RESULT_FILE" ]; then
     SPARK_MODEL_RESPONSE_RECEIVED="yes"
 fi
@@ -2121,7 +2256,6 @@ fi
 if [ "$COST_PREDICTED_FILES" = "not recorded" ] || [ "$COST_PREDICTED_FILES" = "unknown" ]; then
     _safety_failures+=("missing-or-unknown-file-count")
 fi
-[ "$COST_CONFIDENCE" = "high" ] || _safety_failures+=("confidence-not-high")
 for _required_cost_field in "$COST_DELEGATION_OVERHEAD" "$COST_CONTEXT_REACQUISITION" "$COST_CODEX_REREVIEW" "$COST_SOLUTION_CLARITY" "$COST_SEMANTIC_CONCENTRATION" "$COST_TASK_ROLE" "$COST_DIRECT_WORK_UNITS" "$COST_DELEGATED_WORK_UNITS" "$COST_RATIO" "$COST_ECONOMIC_RECOMMENDATION"; do
     [ "$_required_cost_field" != "not recorded" ] || _safety_failures+=("missing-required-cost-field")
 done
@@ -2152,17 +2286,51 @@ if [ "$COST_CALIBRATED_DIFF_HIGH" != "not recorded" ] && \
     COST_FAST_PATH_CLASS="concentrated-context-reuse"
 fi
 
+# Large repositories make delegation expensive when Codex already owns a
+# precise semantic plan and must reread the entire implementation afterward.
+# This gate is intentionally unavailable to auxiliary/mixed work and still
+# requires a bounded calibrated estimate, explicit economic recommendation,
+# and internally consistent total-work estimates. Medium confidence is
+# accepted only here because all semantic work remains Codex-owned.
+_full_rereview_economy_gate="no"
+if [ "$_ordinary_gate" != "yes" ] && [ "$_concentrated_gate" != "yes" ] && \
+   { [ "$REPOSITORY_ROUTING_SCALE" = "large" ] || [ "$REPOSITORY_ROUTING_SCALE" = "giant" ]; } && \
+   [ "$COST_CALIBRATED_DIFF_HIGH" != "not recorded" ] && \
+   [ "$COST_CALIBRATED_DIFF_HIGH" -le "$FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES" ] && \
+   [ "$COST_PREDICTED_FILES" != "not recorded" ] && [ "$COST_PREDICTED_FILES" != "unknown" ] && \
+   [ "$COST_PREDICTED_FILES" -le "$FULL_REREVIEW_FAST_PATH_MAX_FILES" ] && \
+   { [ "$COST_CONTEXT_SCOPE" = "local" ] || [ "$COST_CONTEXT_SCOPE" = "bounded" ]; } && \
+   { [ "$COST_CONTEXT_REACQUISITION" = "medium" ] || [ "$COST_CONTEXT_REACQUISITION" = "high" ]; } && \
+   [ "$COST_CODEX_REREVIEW" = "full" ] && \
+   [ "$COST_SOLUTION_CLARITY" = "high" ] && \
+   [ "$COST_SEMANTIC_CONCENTRATION" = "high" ] && \
+   [ "$COST_TASK_ROLE" = "core-semantic" ] && \
+   { [ "$COST_CONFIDENCE" = "high" ] || [ "$COST_CONFIDENCE" = "medium" ]; } && \
+   [ "$COST_ECONOMIC_RECOMMENDATION" = "codex-fast-path" ] && \
+   [ "$COST_DELEGATED_WORK_UNITS" != "not recorded" ] && [ "$COST_DIRECT_WORK_UNITS" != "not recorded" ] && \
+   [ "$COST_DELEGATED_WORK_UNITS" -ge "$COST_DIRECT_WORK_UNITS" ]; then
+    _full_rereview_economy_gate="yes"
+    COST_FAST_PATH_CLASS="large-full-rereview-economy"
+fi
+
+if [ "$COST_CONFIDENCE" = "low" ] || [ "$COST_CONFIDENCE" = "not recorded" ]; then
+    _safety_failures+=("confidence-low-or-missing")
+elif [ "$COST_CONFIDENCE" != "high" ] && [ "$_full_rereview_economy_gate" != "yes" ]; then
+    _safety_failures+=("confidence-not-high")
+fi
+
 _large_auxiliary_bias="no"
 if { [ "$REPOSITORY_ROUTING_SCALE" = "large" ] || [ "$REPOSITORY_ROUTING_SCALE" = "giant" ]; } && \
    [ "$COST_TASK_ROLE" = "auxiliary" ] && \
    { [ "$COST_CALIBRATED_DIFF_HIGH" = "not recorded" ] || [ "$COST_CALIBRATED_DIFF_HIGH" -gt 50 ] || [ "$COST_PREDICTED_FILES" = "unknown" ] || [ "$COST_PREDICTED_FILES" = "not recorded" ] || [ "$COST_PREDICTED_FILES" -gt 1 ]; }; then
     _ordinary_gate="no"
     _concentrated_gate="no"
+    _full_rereview_economy_gate="no"
     COST_FAST_PATH_CLASS="none"
     _large_auxiliary_bias="yes"
 fi
 
-if [ "$_ordinary_gate" != "yes" ] && [ "$_concentrated_gate" != "yes" ]; then
+if [ "$_ordinary_gate" != "yes" ] && [ "$_concentrated_gate" != "yes" ] && [ "$_full_rereview_economy_gate" != "yes" ]; then
     if [ "$COST_CALIBRATED_DIFF_HIGH" != "not recorded" ] && [ "$COST_CALIBRATED_DIFF_HIGH" -gt "$FAST_PATH_MAX_DIFF_LINES" ]; then
         _safety_failures+=("calibrated-diff-high-exceeds-${FAST_PATH_MAX_DIFF_LINES}")
     fi
@@ -2171,7 +2339,7 @@ if [ "$_ordinary_gate" != "yes" ] && [ "$_concentrated_gate" != "yes" ]; then
     fi
     [ "$_large_auxiliary_bias" = "yes" ] && _safety_failures+=("large-repo-auxiliary-prefers-claude")
     [ "$COST_CONTEXT_SCOPE" = "local" ] || _safety_failures+=("context-not-local")
-    _safety_failures+=("neither-ordinary-nor-concentrated-fast-path-gate-passed")
+    _safety_failures+=("no-fast-path-value-gate-passed")
 fi
 
 if [ "${#_safety_failures[@]}" -eq 0 ]; then
@@ -2209,7 +2377,7 @@ case "$RESULT_MODE" in
     direct)
         # Direct mode: emit raw result to stdout, diagnostics to stderr
         if [ -s "$RESULT_FILE" ]; then
-            cat "$RESULT_FILE"
+            emit_bounded_direct_result
             if { [ "$MODE" = "execution-cost-estimator" ] || [ "$MODE" = "task-size-classifier" ] || [ "$MODE" = "preflight-bundle" ]; } && _estimator_schema_valid; then
                 echo "routing_event=${ROUTING_EVENT}"
                 echo "estimate_calibration_multiplier=${COST_CALIBRATION_MULTIPLIER}"
@@ -2220,6 +2388,7 @@ case "$RESULT_MODE" in
                 echo "repository_routing_scale=${REPOSITORY_ROUTING_SCALE}"
                 echo "dynamic_ordinary_gate=${FAST_PATH_MAX_DIFF_LINES}/${ORDINARY_FAST_PATH_MAX_FILES}"
                 echo "dynamic_concentrated_gate=${CONCENTRATED_FAST_PATH_MAX_DIFF_LINES}/${CONCENTRATED_FAST_PATH_MAX_FILES}"
+                echo "dynamic_full_rereview_economy_gate=${FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES}/${FULL_REREVIEW_FAST_PATH_MAX_FILES}"
                 echo "owner_ignores_risk_flags=yes"
                 echo "risk_owner_override_direction=codex-only"
             fi
@@ -2271,7 +2440,17 @@ case "$RESULT_MODE" in
                     # Strict zero-persistence
                     ;;
             esac
-        fi
+            if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
+                echo "spark_status=unavailable"
+            else
+                echo "spark_status=failed"
+            fi
+            echo "spark_auto_disabled=${SPARK_AUTO_DISABLED}"
+            echo "spark_disable_reason=${SPARK_DISABLE_REASON}"
+            echo "spark_failure_class=${DIAGNOSTIC_FAILURE_CLASS}"
+                echo "spark_model_response_received=${SPARK_MODEL_RESPONSE_RECEIVED}"
+                echo "spark_protocol_end=aiwf-spark-stdout-v1"
+            fi
         # Auto-disable reporting goes to stderr for direct mode
         if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
             if [ "$CODEX_STATUS" -eq 0 ]; then
@@ -2283,6 +2462,13 @@ case "$RESULT_MODE" in
                 echo "Codex stderr excerpt (transient):" >&2
                 tail -n 12 "$STDERR_FILE" >&2
             fi
+        fi
+        if [ "$DIAGNOSTIC_FAILURE_CLASS" = "none" ]; then
+            echo "spark_status=success"
+            echo "spark_auto_disabled=no"
+            echo "spark_failure_class=none"
+            echo "spark_model_response_received=${SPARK_MODEL_RESPONSE_RECEIVED}"
+            echo "spark_protocol_end=aiwf-spark-stdout-v1"
         fi
         exit "$HELPER_EXIT_STATUS"
         ;;
@@ -2320,6 +2506,7 @@ case "$RESULT_MODE" in
             echo "| Historical worktree cost | ${REPOSITORY_WORKTREE_COST}; median=${REPOSITORY_WORKTREE_MEDIAN_SECONDS}s; samples=${REPOSITORY_WORKTREE_SAMPLES}; promoted=${REPOSITORY_IO_PROMOTED} |"
             echo "| Dynamic ordinary gate | ${FAST_PATH_MAX_DIFF_LINES} lines / ${ORDINARY_FAST_PATH_MAX_FILES} files |"
             echo "| Dynamic concentrated gate | ${CONCENTRATED_FAST_PATH_MAX_DIFF_LINES} lines / ${CONCENTRATED_FAST_PATH_MAX_FILES} files |"
+            echo "| Dynamic full-rereview economy gate | ${FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES} lines / ${FULL_REREVIEW_FAST_PATH_MAX_FILES} files |"
             echo "| Direct work units | ${COST_DIRECT_WORK_UNITS} |"
             echo "| Delegated work units | ${COST_DELEGATED_WORK_UNITS} |"
             echo "| Delegation-to-direct ratio | ${COST_RATIO} |"
@@ -2396,6 +2583,7 @@ case "$RESULT_MODE" in
             echo "| Historical worktree cost | ${REPOSITORY_WORKTREE_COST}; median=${REPOSITORY_WORKTREE_MEDIAN_SECONDS}s; samples=${REPOSITORY_WORKTREE_SAMPLES}; promoted=${REPOSITORY_IO_PROMOTED} |"
             echo "| Dynamic ordinary gate | ${FAST_PATH_MAX_DIFF_LINES} lines / ${ORDINARY_FAST_PATH_MAX_FILES} files |"
             echo "| Dynamic concentrated gate | ${CONCENTRATED_FAST_PATH_MAX_DIFF_LINES} lines / ${CONCENTRATED_FAST_PATH_MAX_FILES} files |"
+            echo "| Dynamic full-rereview economy gate | ${FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES} lines / ${FULL_REREVIEW_FAST_PATH_MAX_FILES} files |"
             echo "| Direct work units | ${COST_DIRECT_WORK_UNITS} |"
             echo "| Delegated work units | ${COST_DELEGATED_WORK_UNITS} |"
             echo "| Delegation-to-direct ratio | ${COST_RATIO} |"

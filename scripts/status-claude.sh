@@ -18,8 +18,40 @@ resolve_repo() {
 
 REPO_ROOT="$(resolve_repo)"
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
-TASK_REF="${1:-}"
+TASK_REF=""
+DETAILS=0
+JSON_OUTPUT=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --details) DETAILS=1 ;;
+        --json) JSON_OUTPUT=1 ;;
+        -h|--help)
+            echo "Usage: $0 [claude-task-id|worktree] [--json|--details]"
+            exit 0 ;;
+        *)
+            if [ -n "$TASK_REF" ]; then echo "Error: unexpected argument: $1" >&2; exit 1; fi
+            TASK_REF="$1" ;;
+    esac
+    shift
+done
 WAIT_PROFILE="${CLAUDE_CODE_WAIT_PROFILE:-medium}"
+
+if [ "$DETAILS" -eq 0 ]; then
+    DECISION_HELPER="${SCRIPT_DIR}/claude-monitor-decision.py"
+    if [ ! -f "$DECISION_HELPER" ]; then
+        echo "Error: compact status helper is unavailable: $DECISION_HELPER" >&2
+        exit 1
+    fi
+    _compact_args=(snapshot --repo-root "$REPO_ROOT")
+    if [ -n "$TASK_REF" ]; then _compact_args+=(--task-id "$TASK_REF"); fi
+    if [ "$JSON_OUTPUT" -eq 1 ]; then _compact_args+=(--format json); else _compact_args+=(--format text); fi
+    if command -v python3 >/dev/null 2>&1; then PYTHON_CMD=python3; else PYTHON_CMD=python; fi
+    exec "$PYTHON_CMD" "$DECISION_HELPER" "${_compact_args[@]}"
+fi
+if [ "$JSON_OUTPUT" -eq 1 ]; then
+    echo "Error: --json is available only for compact status; omit --details." >&2
+    exit 1
+fi
 
 case "$WAIT_PROFILE" in
     small)

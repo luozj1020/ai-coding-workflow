@@ -9,7 +9,7 @@ PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
 export PATH
 
 usage() {
-    echo "Usage: $0 start|status|tail|stop <claude-task-id> [--interval seconds] [--lines count]" >&2
+    echo "Usage: $0 start|status|tail|decision|stop <claude-task-id> [--interval seconds] [--lines count] [--json] [--spark auto|on|off]" >&2
 }
 
 if [ $# -lt 2 ]; then
@@ -21,7 +21,9 @@ ACTION="$1"
 TASK_ID="$(basename "$2")"
 TASK_ID="${TASK_ID%.pid}"
 INTERVAL=5
-LINES=20
+LINES=3
+JSON_OUTPUT=0
+SPARK_MODE="auto"
 shift 2
 
 while [ $# -gt 0 ]; do
@@ -34,6 +36,13 @@ while [ $# -gt 0 ]; do
             shift
             LINES="${1:-}"
             ;;
+        --json)
+            JSON_OUTPUT=1
+            ;;
+        --spark)
+            shift
+            SPARK_MODE="${1:-}"
+            ;;
         *)
             echo "Error: unknown argument: $1" >&2
             usage
@@ -42,6 +51,12 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+case "$SPARK_MODE" in auto|on|off) ;; *) echo "Error: --spark must be auto, on, or off." >&2; exit 1 ;; esac
+if [ "$LINES" -gt 10 ]; then
+    echo "Error: --lines is capped at 10 to keep monitor output bounded." >&2
+    exit 1
+fi
 
 for value_name in INTERVAL LINES; do
     value="${!value_name}"
@@ -62,6 +77,7 @@ case "$TASK_ID" in
 esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if command -v python3 >/dev/null 2>&1; then PYTHON_CMD=python3; else PYTHON_CMD=python; fi
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"
 EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.monitor-events.log"
@@ -92,7 +108,7 @@ case "$ACTION" in
             exit 0
         fi
         : > "$EVENT_LOG"
-        nohup bash "$WATCH_SCRIPT" "$TASK_ID" --plain --interval "$INTERVAL" \
+        nohup bash "$WATCH_SCRIPT" "$TASK_ID" --machine --interval "$INTERVAL" \
             > "$EVENT_LOG" 2>&1 < /dev/null &
         pid=$!
         echo "$pid" > "$MONITOR_PID_FILE"
@@ -116,6 +132,63 @@ case "$ACTION" in
             exit 1
         fi
         ;;
+    decision)
+        DECISION_HELPER="${SCRIPT_DIR}/claude-monitor-decision.py"
+        SPARK_HELPER="${SCRIPT_DIR}/run-codex-spark.sh"
+        if [ ! -f "$DECISION_HELPER" ]; then
+            echo "Error: monitor decision helper is unavailable: $DECISION_HELPER" >&2
+            exit 1
+        fi
+        _tmp_dir="$(mktemp -d)"
+        trap 'rm -rf "$_tmp_dir"' EXIT
+        _local_json="${_tmp_dir}/local.json"
+        "$PYTHON_CMD" "$DECISION_HELPER" snapshot --task-id "$TASK_ID" --format json > "$_local_json"
+        _local_decision="$("$PYTHON_CMD" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("decision","inspect"))' "$_local_json")"
+        _use_spark=0
+        if [ "$SPARK_MODE" = "on" ]; then
+            _use_spark=1
+        elif [ "$SPARK_MODE" = "auto" ]; then
+            case "$_local_decision" in inspect|interrupt-candidate) _use_spark=1 ;; esac
+        fi
+        if [ "$JSON_OUTPUT" -eq 1 ]; then
+            _use_spark=0
+        fi
+        if [ "$_use_spark" -eq 1 ] && [ -x "$SPARK_HELPER" ]; then
+            _spark_output="${_tmp_dir}/spark.txt"
+            if timeout "${CLAUDE_MONITOR_SPARK_TIMEOUT_SECONDS:-90}s" bash "$SPARK_HELPER" \
+                --brief-file "$_local_json" --mode monitor-triage --result-mode direct \
+                --diagnostics failure > "$_spark_output" 2>/dev/null; then
+                _spark_decision="$(sed -n 's/^decision=//p' "$_spark_output" | tail -1)"
+                _spark_confidence="$(sed -n 's/^confidence=//p' "$_spark_output" | tail -1)"
+                _spark_reason="$(sed -n 's/^reason_code=//p' "$_spark_output" | tail -1 | cut -c1-160)"
+                case "$_spark_confidence" in high|medium|low) ;; *) _spark_confidence=low ;; esac
+                case "$_spark_reason" in ''|*[!a-z0-9-]*) _spark_reason=spark-monitor-triage ;; esac
+                case "$_spark_decision" in continue|inspect|interrupt-candidate|uncertain)
+                    echo "decision=${_spark_decision}"
+                    echo "confidence=${_spark_confidence:-low}"
+                    echo "reason_code=${_spark_reason:-spark-monitor-triage}"
+                    echo "triage_source=spark"
+                    if [ "$_spark_decision" = "continue" ]; then
+                        echo "codex_review_required=no"
+                    else
+                        echo "codex_review_required=yes"
+                    fi
+                    echo "interrupt_authorized=no"
+                    exit 0
+                    ;;
+                esac
+            fi
+        fi
+        if [ "$JSON_OUTPUT" -eq 1 ]; then
+            cat "$_local_json"
+        else
+            "$PYTHON_CMD" "$DECISION_HELPER" snapshot --task-id "$TASK_ID" --format text
+            echo "triage_source=local"
+            if [ "$_use_spark" -eq 1 ]; then
+                echo "spark_status=unavailable-or-invalid"
+            fi
+        fi
+        ;;
     stop)
         if monitor_running; then
             pid="$(monitor_pid)"
@@ -126,7 +199,7 @@ case "$ACTION" in
         fi
         ;;
     *)
-        echo "Error: action must be start, status, tail, or stop." >&2
+        echo "Error: action must be start, status, tail, decision, or stop." >&2
         usage
         exit 1
         ;;

@@ -87,8 +87,8 @@ Each handoff should be directly checkable:
 
 **Actions:**
 
-- Create a first-iteration task card from `ai/task-card-template.md`.
-- For a revision, create a child task card or update loop context with prior review feedback.
+- Read `ai/task-card-components/catalog.md`, select a preset plus material gates, and compose the first-iteration short card locally.
+- For a revision, use the `revision` preset and record only the delta against accepted evidence.
 - For a split, decompose into smaller task cards.
 - For a reject, replan from updated evidence instead of patching blindly.
 

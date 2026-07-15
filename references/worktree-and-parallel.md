@@ -10,6 +10,8 @@ Default to complete evidence. For large repositories, explicitly select `fast-la
 
 After interruption, use `python ai/clean_runtime.py --task-id ...` to preview or remove only that run's stopped artifacts. Preserve useful dirty isolated worktrees for same-worktree continuation or review. Ensure `.worktrees/*` is ignored while `.worktrees/.gitkeep` remains trackable; local-only installs may use `.git/info/exclude`.
 
+When the dirty diff is useful and Codex has reviewed and accepted its direction, prefer an explicit reviewed continuation over another fresh checkout. Run `aiwf reviewed-continuation prepare` with the prior task id, exact accepted-existing paths, next-role card, and allow-new-write paths; then dispatch with `CLAUDE_CODE_REVIEWED_CONTINUATION=<approval.json>`. The approval binds source/base/worktree HEAD, full worktree state, path content/mode, and next-card hash. The dispatcher consumes it once, reuses the exact worktree without reset/clean/checkout, archives prior control files, and enforces new-write boundaries after execution. Builder→Builder and Builder→Checker are supported; Checker→Builder, managed/advisor/retry/parallel origins, state drift, live prior PIDs, and replay fail closed. This is an explicit Codex review path, never an automatic dirty-worktree reuse policy.
+
 Checker worktree reuse requires every Checker Reuse Risk Gate row to be explicit `no`. Missing/unknown/high risk, DAG, parallel, or shared-contract work stays fresh. Environment overrides remain explicit.
 
 ## Parallel Dispatch

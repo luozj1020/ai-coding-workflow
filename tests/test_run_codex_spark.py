@@ -62,6 +62,7 @@ class RunCodexSparkTests(unittest.TestCase):
         self.assertIn("plan-splitter", result.stderr)
         self.assertIn("validation-planner", result.stderr)
         self.assertIn("failure-triage", result.stderr)
+        self.assertIn("monitor-triage", result.stderr)
         self.assertIn("micro-builder", result.stderr)
         self.assertIn("--artifact", result.stderr)
         self.assertIn("--brief", result.stderr)
@@ -1257,8 +1258,8 @@ class RunCodexSparkTests(unittest.TestCase):
 
     # --- Direct result mode tests ---
 
-    def test_direct_advisory_stdout_is_exactly_fake_result(self):
-        """Direct mode: stdout is exactly the fake result with no extra output."""
+    def test_direct_advisory_stdout_has_complete_envelope_and_result(self):
+        """Direct mode emits an immediate header, bounded result, and terminal status."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\nSmall task.\n")
@@ -1280,8 +1281,12 @@ class RunCodexSparkTests(unittest.TestCase):
                 text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-            # stdout should be exactly the fake result, no report path or extra lines
-            self.assertEqual(result.stdout.strip(), "direct result line")
+            # stdout keeps the fake result inside the stable v1 envelope.
+            self.assertIn("spark_protocol=aiwf-spark-stdout-v1", result.stdout)
+            self.assertIn("spark_status=started", result.stdout)
+            self.assertIn("direct result line", result.stdout)
+            self.assertIn("spark_status=success", result.stdout)
+            self.assertIn("spark_protocol_end=aiwf-spark-stdout-v1", result.stdout)
 
     def test_direct_no_permanent_spark_directory(self):
         """Direct mode: no permanent codex-spark directory is created."""
@@ -1392,6 +1397,40 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             self.assertIn("# Draft task card", result.stdout)
             self.assertIn("Input type: pre-task-card brief", prompt.read_text(encoding="utf-8"))
+
+    def test_monitor_triage_accepts_compact_json_brief(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            brief = tmp_path / "monitor.json"
+            brief.write_text('{"decision":"inspect","artifact_growth":"no"}\n', encoding="utf-8")
+            fake_codex = tmp_path / "codex.sh"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "cat > \"$CODEX_FAKE_STDIN\"\n"
+                "printf '%s\\n' 'decision=inspect' 'confidence=medium' "
+                "'reason_code=bounded-review' 'codex_review_required=yes' "
+                "'interrupt_authorized=no'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+            prompt = tmp_path / "prompt.md"
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_FAKE_STDIN"] = bash_path(prompt)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), "--brief-file", bash_path(brief),
+                 "--mode", "monitor-triage", "--result-mode", "direct"],
+                cwd=str(repo), env=env, text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("decision=inspect", result.stdout)
+            prompt_text = prompt.read_text(encoding="utf-8")
+            self.assertIn("Never request or inspect raw process listings", prompt_text)
+            self.assertIn("interrupt_authorized=no", prompt_text)
 
     def test_direct_temp_cwd_is_writable_and_removed_after_exit(self):
         """Direct mode: temp cwd is outside source, writable, and removed after exit."""
@@ -1871,6 +1910,8 @@ stop_condition=scope expands"""
         self.assertIn("cost_confidence=high|medium|low", prompt)
         self.assertIn("Risk flags and validation complexity MUST NOT push ownership from Codex to Claude", prompt)
         self.assertIn("risk override is later applied, it may bias high-risk work only toward Codex", prompt)
+        self.assertIn("predicted_files MUST be one integer or unknown, never a range", prompt)
+        self.assertIn("full-rereview economy gate", prompt)
 
     def test_estimator_computes_safe_codex_fast_path(self):
         result, output_dir, _ = self._run(self.SAFE_OUTPUT)
@@ -1910,8 +1951,53 @@ stop_condition=scope expands"""
         result, output_dir, _ = self._run(output)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
-        self.assertIn("neither-ordinary-nor-concentrated-fast-path-gate-passed", report)
+        self.assertIn("no-fast-path-value-gate-passed", report)
         self.assertIn("| Recommended owner | claude-builder |", report)
+
+    def test_large_repo_full_rereview_economy_gate_avoids_duplicate_review(self):
+        output = self.SAFE_OUTPUT.replace(
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=400"
+        ).replace("predicted_files=1", "predicted_files=6").replace(
+            "context_scope=local", "context_scope=bounded"
+        ).replace("context_reacquisition_cost=low", "context_reacquisition_cost=medium").replace(
+            "codex_semantic_rereview=sampled", "codex_semantic_rereview=full"
+        ).replace("estimated_direct_work_units=30", "estimated_direct_work_units=80").replace(
+            "estimated_delegated_work_units=80", "estimated_delegated_work_units=90"
+        ).replace("delegation_to_direct_ratio=2.67", "delegation_to_direct_ratio=1.13").replace(
+            "cost_confidence=high", "cost_confidence=medium"
+        )
+        result, output_dir, _ = self._run(output, "--repository-scale", "large")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+        self.assertIn("| Calibrated diff lines (high) | 600 |", report)
+        self.assertIn("| Fast-path class | large-full-rereview-economy |", report)
+        self.assertIn("| Safety eligible | yes |", report)
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
+        self.assertIn("| Dynamic full-rereview economy gate | 800 lines / 8 files |", report)
+
+    def test_full_rereview_economy_gate_requires_actual_duplicate_codex_work(self):
+        base = self.SAFE_OUTPUT.replace(
+            "predicted_diff_lines_high=24", "predicted_diff_lines_high=400"
+        ).replace("predicted_files=1", "predicted_files=6").replace(
+            "context_scope=local", "context_scope=bounded"
+        ).replace("context_reacquisition_cost=low", "context_reacquisition_cost=medium").replace(
+            "estimated_direct_work_units=30", "estimated_direct_work_units=80"
+        ).replace("delegation_to_direct_ratio=2.67", "delegation_to_direct_ratio=1.00")
+        for name, output in {
+            "sampled-rereview": base,
+            "lower-delegated-work": base.replace(
+                "codex_semantic_rereview=sampled", "codex_semantic_rereview=full"
+            ).replace("estimated_delegated_work_units=80", "estimated_delegated_work_units=60"),
+            "low-confidence": base.replace(
+                "codex_semantic_rereview=sampled", "codex_semantic_rereview=full"
+            ).replace("cost_confidence=high", "cost_confidence=low"),
+        }.items():
+            with self.subTest(name=name):
+                result, output_dir, _ = self._run(output, "--repository-scale", "large")
+                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+                report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+                self.assertIn("| Safety eligible | no |", report)
+                self.assertIn("| Recommended owner | claude-builder |", report)
 
     def test_large_repo_auxiliary_work_prefers_claude(self):
         output = self.SAFE_OUTPUT.replace(
@@ -2027,7 +2113,8 @@ stop_condition=scope expands"""
     def test_direct_estimator_returns_only_model_result_and_no_artifacts(self):
         result, output_dir, _ = self._run(self.SAFE_OUTPUT, result_mode="direct")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertTrue(result.stdout.startswith(self.SAFE_OUTPUT))
+        self.assertIn(self.SAFE_OUTPUT, result.stdout)
+        self.assertIn("spark_status=success", result.stdout)
         self.assertIn("estimate_calibration_multiplier=1.5", result.stdout)
         self.assertIn("calibrated_diff_lines_high=36", result.stdout)
         self.assertIn("owner_ignores_risk_flags=yes", result.stdout)
@@ -2187,7 +2274,9 @@ class SparkDiagnosticsTests(unittest.TestCase):
                 capture_output=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-            self.assertEqual(result.stdout.strip(), "ok result")
+            self.assertIn("ok result", result.stdout)
+            self.assertIn("spark_status=success", result.stdout)
+            self.assertIn("spark_protocol_end=aiwf-spark-stdout-v1", result.stdout)
             # No codex-spark-diagnostic directory should exist
             worktrees_dir = repo / ".worktrees"
             if worktrees_dir.exists():
@@ -2896,6 +2985,69 @@ class SparkExecutionEnvTests(unittest.TestCase):
             self.assertIn("[REDACTED]", diag_text)
             # Stderr excerpt should be present (head+tail)
             self.assertIn("Stderr Excerpt", diag_text)
+
+    def test_restricted_auto_direct_emits_host_handoff_markers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path)
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_SANDBOX_NETWORK_DISABLED"] = "1"
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--execution-env",
+                    "auto",
+                    "--result-mode",
+                    "direct",
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("needs_host_execution=true", result.stderr)
+            self.assertIn("host_handoff_required=true", result.stderr)
+            self.assertIn("execution_env_requested=auto", result.stderr)
+            self.assertIn("execution_env_resolved=sandbox-restricted", result.stderr)
+
+    def test_restricted_auto_report_marks_host_handoff_without_invocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path)
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_SANDBOX_NETWORK_DISABLED"] = "1"
+            output_dir = repo / ".worktrees" / "spark-test"
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--result-mode",
+                    "full",
+                    "--output",
+                    bash_path(output_dir),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
+            self.assertIn("| Host handoff required? | yes |", report)
+            self.assertIn("| Spark invoked? | no |", report)
+            self.assertIn("| Spark calls used | 0 |", report)
 
 
 if __name__ == "__main__":

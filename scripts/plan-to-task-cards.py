@@ -6,6 +6,8 @@ import os
 import re
 import sys
 
+from compose_task_card import component_root, compose, load_catalog
+
 
 TASK_RE = re.compile(r"^###\s+Task\s+(\d+)\s*:\s*(.+?)\s*$")
 
@@ -20,7 +22,15 @@ def read_text(path):
         return fh.read()
 
 
-def load_template(repo_root):
+def load_template(repo_root, preset="builder", gates=None):
+    """Load a concise component-composed card, with legacy fallback."""
+    try:
+        root = component_root()
+        catalog = load_catalog(root)
+        content, _ = compose(root, catalog, preset, gates or [])
+        return content
+    except (OSError, ValueError):
+        pass
     candidates = [
         os.path.join(repo_root, "ai", "task-card-template.md"),
         os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "task-card-template.md"),
@@ -46,7 +56,7 @@ def extract_tasks(plan_text):
     return tasks
 
 
-def write_task_cards(repo_root, plan_path, out_dir=None, overwrite=False):
+def write_task_cards(repo_root, plan_path, out_dir=None, overwrite=False, preset="builder", gates=None):
     plan_abs = os.path.abspath(plan_path)
     plan_text = read_text(plan_abs)
     tasks = extract_tasks(plan_text)
@@ -55,7 +65,7 @@ def write_task_cards(repo_root, plan_path, out_dir=None, overwrite=False):
 
     destination = out_dir or os.path.join(repo_root, "ai", "task-cards")
     os.makedirs(destination, exist_ok=True)
-    template = load_template(repo_root).rstrip()
+    template = load_template(repo_root, preset, gates).rstrip()
     plan_label = os.path.relpath(plan_abs, repo_root)
     plan_stem = slugify(os.path.splitext(os.path.basename(plan_abs))[0])
     written = []
@@ -89,11 +99,13 @@ def main(argv=None):
     parser.add_argument("--repo", default=".", help="Repository root (default: current directory)")
     parser.add_argument("--out-dir", default=None, help="Task-card output directory")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing task cards")
+    parser.add_argument("--preset", choices=("builder", "checker", "revision", "control-plane"), default="builder")
+    parser.add_argument("--gate", action="append", default=[], help="Optional task-card gate component")
     args = parser.parse_args(argv)
 
     repo_root = os.path.abspath(args.repo)
     try:
-        written = write_task_cards(repo_root, args.plan, args.out_dir, args.overwrite)
+        written = write_task_cards(repo_root, args.plan, args.out_dir, args.overwrite, args.preset, args.gate)
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
