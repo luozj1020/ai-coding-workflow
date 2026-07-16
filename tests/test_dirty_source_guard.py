@@ -2507,13 +2507,13 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
     # --- Dirty-source guard: dispatcher-owned file exemption tests ---
 
     def test_dirty_source_guard_ignores_dispatcher_owned_files(self):
-        """The dirty-source guard allows exactly three dispatcher-owned .ai-workflow
-        files: model-calls.jsonl, model-calls.lock, and run-ledger.lock."""
+        """The dirty-source guard allows the exact dispatcher-owned runtime files."""
         self._write_task_card()
         wf_dir = self.repo / ".ai-workflow"
         wf_dir.mkdir(exist_ok=True)
         (wf_dir / "model-calls.jsonl").write_text("", encoding="utf-8")
         (wf_dir / "model-calls.lock").write_text("", encoding="utf-8")
+        (wf_dir / "model-usage.jsonl").write_text("", encoding="utf-8")
         (wf_dir / "run-ledger.lock").write_text("", encoding="utf-8")
 
         result = self._dispatch()
@@ -2522,8 +2522,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Dispatch Complete", result.stdout)
 
     def test_dirty_source_guard_rejects_other_untracked_ai_workflow_file(self):
-        """An untracked .ai-workflow file other than the three dispatcher-owned
-        ones is rejected as dirty source."""
+        """Other untracked .ai-workflow files remain dirty source."""
         self._write_task_card()
         wf_dir = self.repo / ".ai-workflow"
         wf_dir.mkdir(exist_ok=True)

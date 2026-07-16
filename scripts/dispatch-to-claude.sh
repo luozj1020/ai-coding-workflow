@@ -1338,6 +1338,7 @@ else
         | grep -vxF "$TASK_CARD_REL" \
         | grep -vxF ".ai-workflow/model-calls.jsonl" \
         | grep -vxF ".ai-workflow/model-calls.lock" \
+        | grep -vxF ".ai-workflow/model-usage.jsonl" \
         | grep -vxF ".ai-workflow/run-ledger.lock" \
         || true)"
     DIRTY_UNTRACKED_SKIPPED=0

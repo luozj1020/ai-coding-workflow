@@ -103,12 +103,12 @@ class InstallForCodexTests(unittest.TestCase):
     def test_skill_entrypoint_keeps_routing_context(self):
         skill = ROOT / "SKILL.md"
         content = skill.read_text(encoding="utf-8")
-        self.assertIn("When To Load More", content)
+        self.assertIn("Reference Router", content)
         self.assertIn("Builder", content)
         self.assertIn("Checker/Test", content)
-        self.assertIn("mixed-exception", content)
-        self.assertIn("permission/tool approval blocker", content)
-        self.assertIn("Dirty source or stale HEAD is a delegation blocker", content)
+        self.assertIn("claude-runtime.md", content)
+        self.assertIn("review-policy.md", content)
+        self.assertIn("Dirty source/stale HEAD blocks reliable delegation", content)
 
     def test_skill_entrypoint_stays_within_default_context_budget(self):
         content = (ROOT / "SKILL.md").read_text(encoding="utf-8")
