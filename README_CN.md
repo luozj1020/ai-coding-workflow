@@ -714,7 +714,7 @@ Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`co
 
 传入 `--output` 但未显式指定 `--result-mode` 时，helper 选择 `minimal`。`--output` 与 `--result-mode direct` 组合无效——`direct` 不创建持久化产物。源码写入模式（`controlled-builder`、`micro-builder`）强制使用 `full`。
 
-**可观测性取舍：** `direct` 模式有意不提供文件级指标——没有 `codex-spark.report.md`、没有产物目录、没有 manifest。这是为轻量级 advisory 调用设计的。当需要跨多次 Spark 调用进行 benchmark 聚合、质量追踪或审计时，选择 `minimal` 或 `full`，以便 `ai/benchmark-loop-runs.py` 和 `ai/summarize-loop-run.py` 可以聚合结果。
+**可观测性取舍：** `direct` 模式仍不生成 Spark 报告、产物目录和 manifest，但每次终止调用都会尝试向 `.ai-workflow/model-usage.jsonl` 追加一条紧凑记录。只有需要长期保留 advisor 结果本身时才选择 `minimal` 或 `full`；Token/耗时聚合不再要求完整 Spark 产物目录。
 
 **Spark 诊断（`--diagnostics`）：** 当 direct 模式调用产生不可用结果（空响应、可用性/执行失败、或 schema-invalid 估算器输出）时，`--diagnostics failure`（默认）在唯一的 `.worktrees/spark-diagnostic-<timestamp>-<suffix>/` 下写入紧凑脱敏记录，避免同秒失败互相覆盖。stderr 摘要中的密钥会被剥离。`--diagnostics off` 禁用所有持久化。`--diagnostics full` 将全部证据复制到永久目录以供复现。成功调用保持零持久化。
 
@@ -1005,6 +1005,24 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
 ```
 
 benchmark 还会聚合执行 owner、任务卡/审查包字节数、控制面耗时、是否派发 Checker 模型，以及 Claude diff 的近似复用率。primary run、efficient final-candidate review 和接受的 legacy loop 会自动写入经济性记录，并按 run/task 身份幂等追加历史；`calibrate` 只有在同类任务积累足够样本后才产生保守 owner bias。只有同时绑定 Claude diff 和最终接受 diff 时才计算复用率，否则明确记录 unavailable。原有 decision、quality、时延、token/cost、稳定性、Advisor、Spark 和并行元数据仍会保留。
+
+**经济性实验准备：** Codex、Spark 和 Claude 包装器会把终止调用归一化到同一个追加式账本。提供方没有返回的字段保持 `null`，并标记 `usage_complete=false`；工作流不会估算 Token。消耗模型额度前先生成平衡的三臂实验清单：
+
+```bash
+python ai/aiwf.py experiment init --experiment-id routing-v1 \
+  --task-id docs-fix --task-id python-helper --task-id shell-fix \
+  --repetitions 3 --output .ai-workflow/experiments/routing-v1/manifest.json
+python ai/aiwf.py experiment validate \
+  .ai-workflow/experiments/routing-v1/manifest.json
+python ai/aiwf.py experiment prepare \
+  .ai-workflow/experiments/routing-v1/manifest.json
+```
+
+固定实验臂为 `codex-direct`、`delegation-no-spark` 和 `full-workflow`。`prepare` 会为每次运行生成不含秘密的 `run-context.json` 和 `run-metrics.template.json`；后者分别记录 observe、route、plan、worktree setup、dispatch、execute、verify、review 和产物收尾耗时，但不会伪造结果产物。导出该上下文并保持任务输入和重复次数一致；生成产物后先运行 `experiment validate --check-artifacts`，再运行 `experiment summarize`。这些准备步骤完全确定性，不会调用模型。
+
+只有通过 `codex exec --json` 包装器运行直接修改实验臂时，才能获得精确的 Codex Token。交互式 Codex 界面不一定向仓库脚本暴露自身 Token 计数；此时对应字段保持 unavailable，但仍记录各工作流阶段的墙钟耗时。
+
+直接修改实验臂应保存 Codex JSONL 事件，再运行 `python ai/aiwf.py usage capture --source codex --input EVENTS.jsonl --ledger MODEL-USAGE.jsonl --call-id CALL --role codex --stage execute`；run/task/arm 参数取自 `run-context.json`。
 
 **效率证据强制执行：** `python scripts/compare-efficiency.py BASELINE CANDIDATE --enforce` 评估真实聚合证据（Codex 调用减少、时延、首次通过率、质量门控、延续成功、redispatch 避免和重新探索指标）。使用 `--enforce` 时，若 Advisor 效率证据不足或门控失败，脚本返回非零退出码；它必须不虚构 Token/时间节省。
 

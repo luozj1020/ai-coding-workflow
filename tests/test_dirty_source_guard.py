@@ -19,6 +19,7 @@ VALIDATE_ADVISOR_REQUEST = ROOT / "scripts" / "validate-advisor-request.py"
 VALIDATE_ADVISOR_RESPONSE = ROOT / "scripts" / "validate-advisor-response.py"
 WORKTREE_STATE_HASH = ROOT / "scripts" / "worktree_state_hash.py"
 PREPARE_WORKTREE_CONTINUATION = ROOT / "scripts" / "prepare-worktree-continuation.py"
+MODEL_USAGE = ROOT / "scripts" / "model-usage.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -78,10 +79,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(VALIDATE_ADVISOR_RESPONSE, self.repo / "scripts" / "validate-advisor-response.py")
         shutil.copy2(WORKTREE_STATE_HASH, self.repo / "scripts" / "worktree_state_hash.py")
         shutil.copy2(PREPARE_WORKTREE_CONTINUATION, self.repo / "scripts" / "prepare-worktree-continuation.py")
+        shutil.copy2(MODEL_USAGE, self.repo / "scripts" / "model-usage.py")
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
                    "scripts/validate-advisor-request.py", "scripts/validate-advisor-response.py",
                    "scripts/worktree_state_hash.py", "scripts/prepare-worktree-continuation.py"], cwd=self.repo)
+        self._run(["git", "add", "scripts/model-usage.py"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
     def tearDown(self):
@@ -528,6 +531,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Dispatch Complete", result.stdout)
         self.assertIn("Checker Report:", result.stdout)
         self.assertTrue(list((self.repo / ".worktrees").glob("claude-*.checker-report.md")))
+        rows = (self.repo / ".ai-workflow" / "model-usage.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0])["role"], "claude")
 
     def test_untracked_task_card_only_succeeds(self):
         self._write_task_card()

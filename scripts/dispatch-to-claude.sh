@@ -4114,6 +4114,30 @@ elif [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; th
     DISPATCH_OUTCOME="no_useful_progress"
 fi
 
+# Canonical per-call usage is append-only and intentionally records incomplete
+# terminal calls too. Legacy Markdown usage remains for compatibility.
+MODEL_USAGE_HELPER="${SCRIPT_DIR}/model-usage.py"
+MODEL_USAGE_LEDGER="${AI_WORKFLOW_MODEL_USAGE_LEDGER:-${REPO_ROOT}/.ai-workflow/model-usage.jsonl}"
+if [ -n "$PYTHON_CMD" ] && [ -f "$MODEL_USAGE_HELPER" ] && [ -f "$RESULT_FILE" ]; then
+    MODEL_USAGE_ARGS=(
+        --source claude --input "$RESULT_FILE" --ledger "$MODEL_USAGE_LEDGER"
+        --task-id "${AI_WORKFLOW_TASK_ID:-$TASK_ID}" --call-id "$TASK_ID" --role claude
+        --stage "${_PARSED_TASK_MODE:-builder}" --result "$DISPATCH_OUTCOME"
+    )
+    if [ -n "${FIRST_PROGRESS_ELAPSED_SECONDS:-}" ]; then
+        MODEL_USAGE_ARGS+=(--first-progress-ms "$((FIRST_PROGRESS_ELAPSED_SECONDS * 1000))")
+    fi
+    if [ -n "${AI_WORKFLOW_RUN_ID:-}" ]; then
+        MODEL_USAGE_ARGS+=(--run-id "$AI_WORKFLOW_RUN_ID")
+    fi
+    if [ -n "${AI_WORKFLOW_EXPERIMENT_ARM:-}" ]; then
+        MODEL_USAGE_ARGS+=(--experiment-arm "$AI_WORKFLOW_EXPERIMENT_ARM")
+    fi
+    "$PYTHON_CMD" "$MODEL_USAGE_HELPER" capture "${MODEL_USAGE_ARGS[@]}" \
+        >/dev/null 2>>"$PROGRESS_FILE" || \
+        progress_log "Warning: canonical Claude usage capture failed; legacy usage evidence was preserved"
+fi
+
 ATTEMPT_FAILURE_CLASS="unavailable"
 ATTEMPT_COUNTS_TOWARD_TAKEOVER="unknown"
 ATTEMPT_RECOMMENDED_ACTION="inspect-evidence-before-counting"

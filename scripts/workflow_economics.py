@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+import importlib.util
 import json
 import statistics
 from pathlib import Path
@@ -16,6 +17,18 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 SCHEMA_VERSION = 1
 DEFAULT_HISTORY = Path(".ai-workflow/economics-history.jsonl")
+
+
+def _usage_summary(path: Optional[Path]) -> Dict[str, Any]:
+    if path is None or not path.is_file():
+        return {}
+    helper = Path(__file__).with_name("model-usage.py")
+    spec = importlib.util.spec_from_file_location("aiwf_model_usage", helper)
+    if spec is None or spec.loader is None:
+        return {}
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.aggregate(module.load_records(path))
 
 
 def _read_json(path: Optional[Path]) -> Dict[str, Any]:
@@ -166,6 +179,7 @@ def build_record(args: argparse.Namespace) -> Dict[str, Any]:
     reuse = diff_reuse(args.claude_diff, args.final_diff) if args.claude_diff and args.final_diff else {}
     calls = metrics.get("model_calls", []) if isinstance(metrics.get("model_calls"), list) else []
     counts = Counter(str(call.get("role", "unknown")) for call in calls if isinstance(call, dict))
+    usage = _usage_summary(args.usage_ledger)
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": metrics.get("run_id", ""),
@@ -179,6 +193,8 @@ def build_record(args: argparse.Namespace) -> Dict[str, Any]:
         "claude_reuse_ratio": reuse.get("reuse_ratio"),
         "diff_reuse": reuse,
         "model_calls": dict(sorted(counts.items())),
+        "model_usage": usage,
+        "model_usage_complete": usage.get("totals", {}).get("usage_complete") if usage else None,
         "task_card_bytes": args.task_card.stat().st_size if args.task_card and args.task_card.is_file() else None,
         "review_packet_bytes": args.review_packet.stat().st_size if args.review_packet and args.review_packet.is_file() else None,
         "worktree_setup_seconds": metrics.get("worktree_setup_seconds"),
@@ -202,6 +218,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     rec = sub.add_parser("record", help="Build or append one observable economics record")
     rec.add_argument("--metrics", type=Path)
+    rec.add_argument("--usage-ledger", type=Path,
+                     help="Canonical model-usage.jsonl produced by model-usage.py")
     rec.add_argument("--claude-diff", type=Path)
     rec.add_argument("--final-diff", type=Path)
     rec.add_argument("--task-card", type=Path)

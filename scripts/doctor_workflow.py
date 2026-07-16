@@ -72,6 +72,8 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/summarize-loop-run.py",
     "ai/benchmark-loop-runs.py",
     "ai/workflow_economics.py",
+    "ai/model-usage.py",
+    "ai/economics-experiment.py",
     "ai/parse-spark-output.py",
     "ai/init-spec.py",
     "ai/plan-to-task-cards.py",
@@ -103,6 +105,8 @@ WORKFLOW_RUNTIME_HELPERS = [
     "ai/summarize-loop-run.py",
     "ai/benchmark-loop-runs.py",
     "ai/workflow_economics.py",
+    "ai/model-usage.py",
+    "ai/economics-experiment.py",
     "ai/parse-spark-output.py",
     "ai/init-spec.py",
     "ai/plan-to-task-cards.py",
@@ -156,6 +160,8 @@ WORKFLOW_PLAIN_FILE_SOURCES = [
     ("scripts/locate-code.py", "ai/locate-code.py"),
     ("scripts/summarize-loop-run.py", "ai/summarize-loop-run.py"),
     ("scripts/benchmark-loop-runs.py", "ai/benchmark-loop-runs.py"),
+    ("scripts/model-usage.py", "ai/model-usage.py"),
+    ("scripts/economics-experiment.py", "ai/economics-experiment.py"),
     ("scripts/init-spec.py", "ai/init-spec.py"),
     ("scripts/plan-to-task-cards.py", "ai/plan-to-task-cards.py"),
     ("scripts/init-plan.py", "ai/init-plan.py"),
@@ -855,8 +861,8 @@ def run_doctor(repo_path=None, hash_paths=None):
             findings.append((ERROR, "workflow",
                              "Project workflow is not bootstrapped; missing: {}".format(shown)))
         if missing_helpers:
-            shown_h = ", ".join(missing_helpers[:6])
-            if len(missing_helpers) > 6:
+            shown_h = ", ".join(missing_helpers[:8])
+            if len(missing_helpers) > 8:
                 shown_h += ", ..."
             findings.append((ERROR, "workflow-helpers",
                              "Documented runtime helpers missing: {}".format(shown_h)))

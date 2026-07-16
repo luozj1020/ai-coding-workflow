@@ -741,7 +741,7 @@ Spark output is advisory. Record `accepted_suggestions`, `ignored_suggestions`, 
 
 When `--output` is passed without an explicit `--result-mode`, the helper selects `minimal`. Combining `--output` with `--result-mode direct` is invalid — `direct` creates no persistent artifacts. Source-writing modes (`controlled-builder`, `micro-builder`) force `full` artifacts.
 
-**Observability tradeoff:** `direct` mode intentionally has no file-backed metrics — no `codex-spark.report.md`, no artifact directory, no manifest. This is by design for lightweight advisory calls. When benchmark aggregation, quality tracking, or audit evidence is needed across multiple Spark invocations, choose `minimal` or `full` so `ai/benchmark-loop-runs.py` and `ai/summarize-loop-run.py` can aggregate results.
+**Observability tradeoff:** `direct` mode still avoids a Spark report, artifact directory, and manifest, but every terminal call now attempts one compact append to `.ai-workflow/model-usage.jsonl`. Choose `minimal` or `full` when the advisor result itself must remain auditable; token/timing aggregation no longer requires a full Spark artifact directory.
 
 **Spark diagnostics (`--diagnostics`):** when a direct-mode call produces an unusable result (empty response, availability/execution failure, or schema-invalid estimator output), `--diagnostics failure` (default) writes a compact redacted record under a unique `.worktrees/spark-diagnostic-<timestamp>-<suffix>/` directory. Secrets are stripped from stderr excerpts. `--diagnostics off` disables all persistence. `--diagnostics full` copies all evidence into the permanent directory for reproduction. Successful calls remain zero-persistence. Estimator output classified as `schema-invalid` auto-disables Spark (exits 0) unless `--require-spark` is set.
 
@@ -1035,6 +1035,24 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
 ```
 
 The benchmark also aggregates execution owner, task-card/review-packet bytes, control-plane time, Checker model dispatches, and approximate Claude-diff reuse. Primary runs, efficient final-candidate reviews, and accepted legacy loops write economics records automatically; history append is idempotent by run/task identity. `calibrate` derives a conservative task-type owner bias only after enough accepted samples. Reuse stays unavailable until both Claude and final diffs are explicitly bound. Existing decision, quality, timing, token/cost, stability, advisor, Spark, and parallel metadata remain available.
+
+**Economics experiment preparation:** Codex, Spark, and Claude wrappers normalize terminal usage into the same append-only ledger. Missing provider fields remain `null` and make `usage_complete=false`; the workflow never estimates tokens. Prepare a balanced three-arm manifest before spending model quota:
+
+```bash
+python ai/aiwf.py experiment init --experiment-id routing-v1 \
+  --task-id docs-fix --task-id python-helper --task-id shell-fix \
+  --repetitions 3 --output .ai-workflow/experiments/routing-v1/manifest.json
+python ai/aiwf.py experiment validate \
+  .ai-workflow/experiments/routing-v1/manifest.json
+python ai/aiwf.py experiment prepare \
+  .ai-workflow/experiments/routing-v1/manifest.json
+```
+
+The fixed arms are `codex-direct`, `delegation-no-spark`, and `full-workflow`. `prepare` creates one non-secret `run-context.json` plus a `run-metrics.template.json` per run. The template times `observe`, `route`, `plan`, worktree setup, dispatch, execute, verify, review, and artifact finalization; it does not fabricate result artifacts. Export that context, keep task inputs and repetition counts identical, then run `experiment validate --check-artifacts` before `experiment summarize`. This preparation is deterministic and does not call a model.
+
+Exact Codex tokens are available only when the direct arm runs through a `codex exec --json` wrapper. An interactive Codex UI session may not expose its own token counters to repository scripts; in that case the field remains unavailable while workflow-stage wall time is still recorded.
+
+For a direct-arm call, save Codex JSONL events and normalize them with `python ai/aiwf.py usage capture --source codex --input EVENTS.jsonl --ledger MODEL-USAGE.jsonl --call-id CALL --role codex --stage execute`; provide the run/task/arm flags from `run-context.json`.
 
 **Efficiency evidence enforcement:** `python scripts/compare-efficiency.py BASELINE CANDIDATE --enforce` evaluates real aggregate evidence (codex call reduction, latency, first-pass rate, quality gates, continuation success, redispatch avoidance, and re-exploration metrics). With `--enforce`, it returns non-zero for failed or insufficient Advisor efficiency evidence; it must not fabricate Token/time savings.
 

@@ -66,6 +66,7 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         tdd_followup = summary.get("tdd_followup", {})
         claude_attempts = summary.get("claude_attempts", {})
         economics = summary.get("economics", {})
+        model_usage = summary.get("model_usage", {})
         runs.append(
             {
                 "run_path": summary["run_path"],
@@ -156,6 +157,8 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "control_plane_seconds": economics.get("control_plane_seconds"),
                 "checker_model_dispatched": economics.get("checker_model_dispatched"),
                 "claude_reuse_ratio": economics.get("claude_reuse_ratio"),
+                "model_usage_complete": model_usage.get("totals", {}).get("usage_complete"),
+                "model_usage_by_role": model_usage.get("by_role", {}),
             }
         )
 
@@ -163,6 +166,20 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
     accepted = sum(1 for run in runs if run["decision"] == "ACCEPT")
     quality_average = round(sum(run["quality_score"] for run in runs) / total, 3) if total else 0.0
     elapsed_total = sum((run["elapsed_seconds"] or 0) for run in runs)
+    role_usage = {}
+    for run in runs:
+        for role, values in run["model_usage_by_role"].items():
+            target = role_usage.setdefault(role, {"calls": 0, "complete_calls": 0})
+            for field in (
+                "calls", "complete_calls", "input_tokens", "cached_input_tokens",
+                "cache_creation_input_tokens", "output_tokens", "reasoning_tokens",
+                "total_tokens", "cost_usd", "wall_time_ms", "api_time_ms",
+            ):
+                value = values.get(field)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    target[field] = target.get(field, 0) + value
+    for values in role_usage.values():
+        values["usage_complete"] = bool(values["calls"]) and values["calls"] == values["complete_calls"]
     return {
         "run_count": total,
         "accepted_count": accepted,
@@ -172,6 +189,8 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         "input_tokens_total": sum(run["input_tokens"] for run in runs),
         "output_tokens_total": sum(run["output_tokens"] for run in runs),
         "total_cost_usd": round(sum(run["total_cost_usd"] for run in runs), 6),
+        "model_usage_by_role": role_usage,
+        "model_usage_complete_run_count": sum(run["model_usage_complete"] is True for run in runs),
         "advisor_calls_total": sum(run["advisor_calls"] for run in runs),
         "advisor_input_tokens_total": sum(run["advisor_input_tokens"] for run in runs),
         "advisor_output_tokens_total": sum(run["advisor_output_tokens"] for run in runs),

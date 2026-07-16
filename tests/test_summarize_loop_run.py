@@ -20,6 +20,23 @@ def load_module():
 
 
 class SummarizeLoopRunTests(unittest.TestCase):
+    def test_canonical_usage_takes_precedence_over_legacy_usage(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as raw:
+            run = pathlib.Path(raw) / "run"
+            run.mkdir()
+            (run / "model-usage.jsonl").write_text(json.dumps({
+                "schema_version": 1, "call_id": "c1", "role": "spark",
+                "stage": "preflight", "input_tokens": 11, "output_tokens": 3,
+                "cost_usd": 0.02, "usage_complete": True,
+            }) + "\n", encoding="utf-8")
+            (run / "old.usage.txt").write_text(
+                "input_tokens: 999\noutput_tokens: 999\n", encoding="utf-8"
+            )
+            summary = module.summarize(run)
+            self.assertEqual(summary["cost"]["input_tokens"], 11)
+            self.assertEqual(summary["model_usage"]["by_role"]["spark"]["output_tokens"], 3)
+
     def _validation_summary(self, claude_text="", checker_text=None, decision="UNKNOWN"):
         module = load_module()
         temp = tempfile.TemporaryDirectory()

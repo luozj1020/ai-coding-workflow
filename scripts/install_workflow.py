@@ -139,6 +139,8 @@ PYTHON_SCRIPTS = [
     ("validation-ingest.py", "ai/validation-ingest.py"),
     ("compare-efficiency.py", "ai/compare-efficiency.py"),
     ("workflow_economics.py", "ai/workflow_economics.py"),
+    ("model-usage.py", "ai/model-usage.py"),
+    ("economics-experiment.py", "ai/economics-experiment.py"),
     ("parse-spark-output.py", "ai/parse-spark-output.py"),
     ("efficiency-control.py", "ai/efficiency-control.py"),
     ("dispatch-efficient.py", "ai/dispatch-efficient.py"),

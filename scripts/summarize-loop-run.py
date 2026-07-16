@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -100,6 +101,21 @@ def parse_usage_file(path: Path) -> dict[str, float]:
 def add_usage(total: dict[str, float], usage: dict[str, float]) -> None:
     for key, value in usage.items():
         total[key] = total.get(key, 0) + value
+
+
+def parse_canonical_usage(paths: list[Path]) -> dict:
+    if not paths:
+        return {}
+    helper = Path(__file__).with_name("model-usage.py")
+    spec = importlib.util.spec_from_file_location("aiwf_model_usage", helper)
+    if spec is None or spec.loader is None:
+        return {}
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    records = []
+    for path in paths:
+        records.extend(module.load_records(path))
+    return module.aggregate(records)
 
 
 def parse_progress_seconds(paths: list[Path]) -> int | None:
@@ -660,6 +676,7 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
     return {
         "result": sorted(root.rglob("*.result.json")),
         "usage": sorted(root.rglob("*.usage.txt")) + sorted(root.rglob("*.codex-usage.txt")),
+        "model_usage": sorted(root.rglob("model-usage.jsonl")),
         "progress": sorted(root.rglob("*.progress.log")),
         "checker": sorted(root.rglob("*.checker-report.md")),
         "review": sorted(root.rglob("*.review.txt")) + sorted(root.glob("review-*.txt")),
@@ -845,9 +862,15 @@ def parse_diagnostic_probes(paths: list[Path]) -> dict:
 
 def summarize(path: Path) -> dict:
     artifacts = discover_run(path)
+    canonical_usage = parse_canonical_usage(artifacts["model_usage"])
     usage_total: dict[str, float] = {}
-    for usage_file in artifacts["usage"]:
-        add_usage(usage_total, parse_usage_file(usage_file))
+    if canonical_usage:
+        usage_total.update(canonical_usage.get("totals", {}))
+        if usage_total.get("cost_usd") is not None:
+            usage_total["total_cost_usd"] = usage_total["cost_usd"]
+    else:
+        for usage_file in artifacts["usage"]:
+            add_usage(usage_total, parse_usage_file(usage_file))
 
     checker_results = [checker_status(path) for path in artifacts["checker"]]
     decision = parse_decision(artifacts["review"])
@@ -915,6 +938,7 @@ def summarize(path: Path) -> dict:
             **stage_seconds,
         },
         "cost": usage_total,
+        "model_usage": canonical_usage,
         "goal_loop_contract": goal_contract,
         "advisor_gate": advisor_gate,
         "advisor_followup": advisor_followup,

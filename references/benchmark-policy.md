@@ -32,8 +32,9 @@ Cost answers how much model budget was spent.
 
 Signals:
 
-- Claude token/cost usage summaries.
-- Codex token/cost usage summaries.
+- Canonical `.ai-workflow/model-usage.jsonl` records for Claude, Codex, and Spark.
+- Per-role token/cache/cost totals and `usage_complete`; unavailable fields stay null.
+- Legacy Claude/Codex usage summaries only when no canonical ledger is present.
 - Number of turns when available.
 - Task-card and review-packet bytes.
 - Control-plane seconds before implementation.
@@ -89,6 +90,28 @@ python ai/summarize-loop-run.py .worktrees/loop-<timestamp> \
 `ai/run-loop.sh` writes these summaries automatically when it stops.
 
 `ai/run-loop.sh` also writes `loop-events.jsonl`. Treat it as the durable event stream for comparing workflow behavior across runs.
+
+## Controlled Economics Experiment
+
+Compare the same task/repetition matrix across exactly three arms:
+`codex-direct`, `delegation-no-spark`, and `full-workflow`. Generate and validate
+the matrix before model execution:
+
+```bash
+python ai/aiwf.py experiment init --experiment-id routing-v1 \
+  --task-id TASK-A --task-id TASK-B --repetitions 3 \
+  --output .ai-workflow/experiments/routing-v1/manifest.json
+python ai/aiwf.py experiment validate \
+  .ai-workflow/experiments/routing-v1/manifest.json
+python ai/aiwf.py experiment prepare \
+  .ai-workflow/experiments/routing-v1/manifest.json
+```
+
+Bind `AI_WORKFLOW_MODEL_USAGE_LEDGER` to the manifest's per-run ledger. After
+all runs, require `validate --check-artifacts` before `experiment summarize`.
+Do not compare incomplete matrices or replace unavailable provider usage with
+estimates. Pair cost/time with acceptance, first-pass success, takeover, and
+diff-reuse evidence; lower token use alone is not a passing result.
 
 ## Regression Use
 

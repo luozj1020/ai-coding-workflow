@@ -414,6 +414,7 @@ fi
 echo ""
 
 # Pass prompt via stdin or file to avoid huge command-line arguments
+CODEX_CALL_STARTED_EPOCH="$(date +%s)"
 set +e
 if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ]; then
     # Internal bypass for tests/bootstrap to avoid broker recursion.
@@ -452,6 +453,7 @@ else
 fi
 CODEX_STATUS=$?
 set -e
+CODEX_CALL_WALL_MS="$(( ($(date +%s) - CODEX_CALL_STARTED_EPOCH) * 1000 ))"
 
 if [ -s "$CODEX_EVENTS_FILE" ] && [ -n "$PYTHON_CMD" ]; then
     "$PYTHON_CMD" - "$CODEX_EVENTS_FILE" "$REVIEW_OUTPUT_FILE" <<'PYEOF'
@@ -485,6 +487,30 @@ else
 fi
 
 write_codex_usage
+
+# Also persist a canonical machine-readable record. The legacy Markdown file
+# remains available to old summaries and humans.
+if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/model-usage.py" ] && [ -f "$CODEX_EVENTS_FILE" ]; then
+    REVIEW_REPO_ROOT="$(git -C "$RUN_DIR" rev-parse --show-toplevel 2>/dev/null || pwd)"
+    MODEL_USAGE_LEDGER="${AI_WORKFLOW_MODEL_USAGE_LEDGER:-${REVIEW_REPO_ROOT}/.ai-workflow/model-usage.jsonl}"
+    CODEX_REVIEW_TASK_ID="${AI_WORKFLOW_TASK_ID:-review-$(basename "$REVIEW_PREFIX")}"
+    CODEX_USAGE_ARGS=(
+        --source codex --input "$CODEX_EVENTS_FILE" --ledger "$MODEL_USAGE_LEDGER"
+        --task-id "$CODEX_REVIEW_TASK_ID"
+        --call-id "review-$(basename "$REVIEW_PREFIX")"
+        --role codex --stage final-review --result "$CODEX_STATUS"
+        --wall-time-ms "$CODEX_CALL_WALL_MS"
+    )
+    if [ -n "${AI_WORKFLOW_RUN_ID:-}" ]; then
+        CODEX_USAGE_ARGS+=(--run-id "$AI_WORKFLOW_RUN_ID")
+    fi
+    if [ -n "${AI_WORKFLOW_EXPERIMENT_ARM:-}" ]; then
+        CODEX_USAGE_ARGS+=(--experiment-arm "$AI_WORKFLOW_EXPERIMENT_ARM")
+    fi
+    "$PYTHON_CMD" "${SCRIPT_DIR}/model-usage.py" capture "${CODEX_USAGE_ARGS[@]}" \
+        >/dev/null 2>>"${REVIEW_OUTPUT_FILE}.stderr" || \
+        echo "Warning: canonical Codex usage capture failed; legacy usage evidence was preserved." >&2
+fi
 
 # Parse the structured review decision from the review text
 REVIEW_DECISION_FILE="${REVIEW_PREFIX}.review-decision.json"

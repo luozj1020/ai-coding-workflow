@@ -789,6 +789,10 @@ else
     ARTIFACT_MANIFEST="${OUTPUT_DIR}/codex-spark.artifacts.txt"
 fi
 
+# Codex JSONL is retained separately from the final advisor message so token
+# usage can be normalized without exposing event noise to downstream callers.
+SPARK_EVENTS_FILE="${RESULT_FILE%.txt}.events.jsonl"
+
 WORKTREE_DIR=""
 RUN_DIR="$REPO_ROOT"
 CODEX_STATUS=0
@@ -1825,6 +1829,7 @@ append_artifact_excerpts
 # model call. Even an external caller timeout therefore has a usable state.
 emit_direct_envelope_start
 
+SPARK_CALL_STARTED_EPOCH="$(date +%s)"
 set +e
 (
     cd "$RUN_DIR"
@@ -1839,7 +1844,7 @@ set +e
         --task-id "spark-$(basename "$RUN_DIR")"
         --timeout-seconds "$CALL_TIMEOUT_SECONDS"
         --ledger "${REPO_ROOT}/.ai-workflow/model-calls.jsonl"
-        --input "$PROMPT_FILE" --output "$RESULT_FILE" --stderr "$STDERR_FILE"
+        --input "$PROMPT_FILE" --output "$SPARK_EVENTS_FILE" --stderr "$STDERR_FILE"
     )
     if [ -f "execution-plan.json" ]; then
         broker_args+=(--plan "execution-plan.json")
@@ -1847,26 +1852,78 @@ set +e
     if [ "${AI_CODING_WORKFLOW_BYPASS_BROKER:-0}" = "1" ]; then
         # Internal bypass for tests/bootstrap to avoid broker recursion.
         if [ -n "$CODEX_RUNTIME_HOME" ]; then
-            HOME="$CODEX_RUNTIME_HOME" CODEX_HOME="$CODEX_RUNTIME_HOME" run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+            HOME="$CODEX_RUNTIME_HOME" CODEX_HOME="$CODEX_RUNTIME_HOME" run_codex exec --json --output-last-message "$RESULT_FILE" --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$SPARK_EVENTS_FILE" 2> "$STDERR_FILE"
         else
-            run_codex exec --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$RESULT_FILE" 2> "$STDERR_FILE"
+            run_codex exec --json --output-last-message "$RESULT_FILE" --model "$MODEL" --sandbox "$SANDBOX" - < "$PROMPT_FILE" > "$SPARK_EVENTS_FILE" 2> "$STDERR_FILE"
         fi
     else
         # Broker-mediated execution for quota enforcement and audit.
         if [ -n "$CODEX_RUNTIME_HOME" ]; then
             HOME="$CODEX_RUNTIME_HOME" CODEX_HOME="$CODEX_RUNTIME_HOME" \
                 python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
-                "$CODEX_BIN" exec --model "$MODEL" --sandbox "$SANDBOX" -
+                "$CODEX_BIN" exec --json --output-last-message "$RESULT_FILE" --model "$MODEL" --sandbox "$SANDBOX" -
         else
             python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
-                "$CODEX_BIN" exec --model "$MODEL" --sandbox "$SANDBOX" -
+                "$CODEX_BIN" exec --json --output-last-message "$RESULT_FILE" --model "$MODEL" --sandbox "$SANDBOX" -
         fi
     fi
 )
 CODEX_STATUS=$?
 set -e
+SPARK_CALL_WALL_MS="$(( ($(date +%s) - SPARK_CALL_STARTED_EPOCH) * 1000 ))"
 HELPER_EXIT_STATUS="$CODEX_STATUS"
 SPARK_CALLS_USED=1
+
+# Fake/older Codex CLIs may ignore --output-last-message. Recover the final
+# message from JSONL, or preserve plain stdout as a compatibility fallback.
+if [ ! -s "$RESULT_FILE" ] && [ -s "$SPARK_EVENTS_FILE" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$SPARK_EVENTS_FILE" "$RESULT_FILE" <<'PYEOF' || true
+import json, sys
+from pathlib import Path
+source, target = Path(sys.argv[1]), Path(sys.argv[2])
+texts = []
+plain = []
+for raw in source.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        event = json.loads(raw)
+    except json.JSONDecodeError:
+        plain.append(raw)
+        continue
+    if not isinstance(event, dict):
+        continue
+    item = event.get("item") if isinstance(event.get("item"), dict) else event
+    for key in ("text", "message", "content"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            texts.append(value)
+            break
+content = "\n".join(texts or plain).strip()
+if content:
+    target.write_text(content + "\n", encoding="utf-8")
+PYEOF
+    else
+        cp "$SPARK_EVENTS_FILE" "$RESULT_FILE"
+    fi
+fi
+
+if command -v python3 >/dev/null 2>&1 && [ -f "${SCRIPT_DIR}/model-usage.py" ]; then
+    SPARK_USAGE_ARGS=(
+        --source codex --input "$SPARK_EVENTS_FILE"
+        --ledger "${AI_WORKFLOW_MODEL_USAGE_LEDGER:-${REPO_ROOT}/.ai-workflow/model-usage.jsonl}"
+        --task-id "${AI_WORKFLOW_TASK_ID:-spark-${TIMESTAMP}}" --call-id "spark-${TIMESTAMP}-$$"
+        --role spark --stage "$MODE" --model "$MODEL" --result "$CODEX_STATUS"
+        --wall-time-ms "$SPARK_CALL_WALL_MS"
+    )
+    if [ -n "${AI_WORKFLOW_RUN_ID:-}" ]; then
+        SPARK_USAGE_ARGS+=(--run-id "$AI_WORKFLOW_RUN_ID")
+    fi
+    if [ -n "${AI_WORKFLOW_EXPERIMENT_ARM:-}" ]; then
+        SPARK_USAGE_ARGS+=(--experiment-arm "$AI_WORKFLOW_EXPERIMENT_ARM")
+    fi
+    python3 "${SCRIPT_DIR}/model-usage.py" capture "${SPARK_USAGE_ARGS[@]}" \
+        >/dev/null 2>>"$STDERR_FILE" || true
+fi
 if [ "$CODEX_STATUS" -eq 0 ]; then
     normalize_estimator_output
 fi

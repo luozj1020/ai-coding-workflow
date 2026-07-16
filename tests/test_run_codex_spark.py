@@ -1,4 +1,5 @@
 import os
+import json
 import pathlib
 import stat
 import subprocess
@@ -140,6 +141,9 @@ class RunCodexSparkTests(unittest.TestCase):
             env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
             env["CODEX_FAKE_ARGS"] = bash_path(tmp_path / "args.txt")
             env["CODEX_FAKE_STDIN"] = bash_path(tmp_path / "stdin.md")
+            env["AI_WORKFLOW_EXPERIMENT_ARM"] = "full-workflow"
+            env["AI_WORKFLOW_RUN_ID"] = "run-1"
+            env["AI_WORKFLOW_TASK_ID"] = "task-1"
 
             result = subprocess.run(
                 [
@@ -174,10 +178,19 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn("| Spark purpose used | review-only |", report.read_text(encoding="utf-8"))
             self.assertIn("spark review ok", result_file.read_text(encoding="utf-8"))
             self.assertIn("Codex Spark Execution Request", prompt.read_text(encoding="utf-8"))
-            self.assertEqual(
-                (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
-                ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"],
+            usage_record = json.loads(
+                (repo / ".ai-workflow" / "model-usage.jsonl").read_text(encoding="utf-8").splitlines()[0]
             )
+            self.assertEqual(usage_record["role"], "spark")
+            self.assertEqual(usage_record["stage"], "review-only")
+            self.assertEqual(usage_record["experiment_arm"], "full-workflow")
+            self.assertEqual(usage_record["run_id"], "run-1")
+            self.assertEqual(usage_record["task_id"], "task-1")
+            self.assertFalse(usage_record["usage_complete"])
+            args = (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(args[:3], ["exec", "--json", "--output-last-message"])
+            self.assertTrue(args[3].endswith("codex-spark.result.txt"))
+            self.assertEqual(args[4:], ["--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"])
 
     def test_auto_mode_defaults_to_preflight_bundle_balanced(self):
         """Balanced auto mode for ordinary task resolves to preflight-bundle
@@ -234,10 +247,10 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn("| Sandbox used | workspace-write |", report)
             self.assertIn("codex exec (preflight-bundle in artifact dir)", report)
             self.assertIn("Mode resolved: preflight-bundle", prompt)
-            self.assertEqual(
-                (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
-                ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"],
-            )
+            args = (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(args[:3], ["exec", "--json", "--output-last-message"])
+            self.assertTrue(args[3].endswith("codex-spark.result.txt"))
+            self.assertEqual(args[4:], ["--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"])
             cwd_text = (tmp_path / "cwd.txt").read_text(encoding="utf-8").strip()
             cwd_text = cwd_text.replace("\\", "/").rstrip("/")
             self.assertIn("/.worktrees/.codex-spark-runtime.", cwd_text)
@@ -394,10 +407,10 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertNotIn("line 3", prompt)
             self.assertIn("Artifact inputs", report)
             self.assertIn("claude-1.status.txt", manifest)
-            self.assertEqual(
-                (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines(),
-                ["exec", "--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"],
-            )
+            args = (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(args[:3], ["exec", "--json", "--output-last-message"])
+            self.assertTrue(args[3].endswith("codex-spark.result.txt"))
+            self.assertEqual(args[4:], ["--model", "gpt-5.3-codex-spark", "--sandbox", "workspace-write", "-"])
 
     def test_micro_builder_requires_explicit_tiny_scope_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
