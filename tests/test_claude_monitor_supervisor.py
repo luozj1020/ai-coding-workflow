@@ -56,6 +56,20 @@ class ClaudeMonitorSupervisorTests(unittest.TestCase):
             self.assertFalse(supervisor._start_new_session())
             self.assertEqual(supervisor._natural_exit_grace_seconds(), 5)
 
+    def test_windows_prefers_git_bash_over_wsl_launcher(self):
+        supervisor = load_supervisor()
+        git = pathlib.Path(r"C:\Program Files\Git\cmd\git.exe")
+        expected = pathlib.Path(r"C:\Program Files\Git\bin\bash.exe")
+
+        def is_file(path):
+            return str(path).replace("\\", "/").endswith("/Git/bin/bash.exe")
+
+        with mock.patch.object(supervisor.os, "name", "nt"), \
+                mock.patch.object(supervisor.shutil, "which", side_effect=lambda name: str(git) if name == "git" else r"C:\Windows\System32\bash.exe"), \
+                mock.patch.object(supervisor.os.path, "isfile", side_effect=is_file):
+            selected = supervisor._bash_executable()
+        self.assertEqual(selected, str(expected))
+
     def test_windows_stale_bash_wrapper_is_success_after_monitor_event(self):
         supervisor = load_supervisor()
         watch = mock.Mock()

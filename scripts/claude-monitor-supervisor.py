@@ -12,10 +12,11 @@ import argparse
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from spark_control_protocol import evidence_hash, parse_and_normalize
 
@@ -43,6 +44,28 @@ def _start_new_session() -> bool:
 def _natural_exit_grace_seconds() -> int:
     """Allow Git Bash on Windows time to publish its final process status."""
     return 5 if os.name == "nt" else 1
+
+
+def _bash_executable() -> str:
+    """Prefer Git Bash over the Windows WSL launcher named ``bash.exe``."""
+    configured = os.environ.get("AI_WORKFLOW_BASH", "").strip()
+    if configured:
+        return configured
+    if os.name == "nt":
+        candidates = []
+        git = shutil.which("git")
+        if git:
+            git_path = PureWindowsPath(git)
+            candidates.extend(
+                [git_path.parent / "bash.exe", git_path.parent.parent / "bin" / "bash.exe"]
+            )
+        program_files = os.environ.get("ProgramFiles", "").strip()
+        if program_files:
+            candidates.append(PureWindowsPath(program_files) / "Git" / "bin" / "bash.exe")
+        for candidate in candidates:
+            if os.path.isfile(str(candidate)):
+                return str(candidate)
+    return shutil.which("bash") or "bash"
 
 
 def _snapshot(helper: Path, repo: Path, task_id: str) -> dict:
@@ -134,8 +157,9 @@ def main() -> int:
         parser.error("interval must be positive and spark-min-interval non-negative")
 
     args.event_log.parent.mkdir(parents=True, exist_ok=True)
+    bash = _bash_executable()
     watch = subprocess.Popen(
-        ["bash", _bash_path(args.watch_script, args.repo_root), args.task_id, "--machine",
+        [bash, _bash_path(args.watch_script, args.repo_root), args.task_id, "--machine",
          "--interval", str(args.interval)],
         cwd=str(args.repo_root), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
@@ -175,7 +199,7 @@ def main() -> int:
                 continue
             try:
                 result = subprocess.run(
-                    ["bash", _bash_path(args.monitor_script, args.repo_root), "decision", args.task_id,
+                    [bash, _bash_path(args.monitor_script, args.repo_root), "decision", args.task_id,
                      "--spark", args.spark],
                     cwd=str(args.repo_root), capture_output=True, text=True,
                     encoding="utf-8", errors="replace",
