@@ -69,21 +69,35 @@ class LedgerLock:
         if msvcrt is not None:
             # Atomically create or open without truncating.  An exists() check
             # races with concurrent Windows broker processes, while w+b can
-            # truncate a lock file another process already opened.
-            self._fh = open(self.lock_path, "a+b")  # noqa: SIM115
+            # truncate a lock file another process already opened. Windows can
+            # also report a transient sharing violation as PermissionError
+            # while another process opens the same sidecar, so retry the open
+            # under the same bounded acquisition deadline.
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    self._fh = open(self.lock_path, "a+b")  # noqa: SIM115
+                    break
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"Could not open ledger lock {self.lock_path} within {timeout}s"
+                        )
+                    time.sleep(0.05)
             # Ensure lock file contains at least one byte
             size = self._fh.seek(0, 2)  # seek to end, returns position
             if size == 0:
                 self._fh.write(b"\x00")
                 self._fh.flush()
             self._fh.seek(0)
-            deadline = time.monotonic() + timeout
             while True:
                 try:
                     msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
                     return
                 except OSError:
                     if time.monotonic() >= deadline:
+                        self._fh.close()
+                        self._fh = None
                         raise TimeoutError(
                             f"Could not acquire ledger lock {self.lock_path} within {timeout}s"
                         )

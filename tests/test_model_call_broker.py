@@ -654,6 +654,24 @@ class TestLedgerLock(unittest.TestCase):
             [mock.call(7, fake_msvcrt.LK_NBLCK, 1), mock.call(7, fake_msvcrt.LK_UNLCK, 1)]
         )
 
+    def test_windows_lock_retries_transient_open_permission_error(self):
+        handle = mock.MagicMock()
+        handle.seek.side_effect = [1, None, None]
+        handle.fileno.return_value = 7
+        fake_msvcrt = mock.Mock(LK_NBLCK=1, LK_UNLCK=2, locking=mock.Mock())
+
+        with mock.patch.object(broker_mod, "msvcrt", fake_msvcrt), mock.patch(
+            "builtins.open", side_effect=[PermissionError("sharing violation"), handle]
+        ) as opened, mock.patch.object(broker_mod.time, "sleep"):
+            lock = broker_mod.LedgerLock(Path("ledger.lock"))
+            lock.acquire(timeout=1)
+            lock.release()
+
+        self.assertEqual(opened.call_count, 2)
+        fake_msvcrt.locking.assert_has_calls(
+            [mock.call(7, fake_msvcrt.LK_NBLCK, 1), mock.call(7, fake_msvcrt.LK_UNLCK, 1)]
+        )
+
 
 class TestLedgerParseability(unittest.TestCase):
     """Ledger JSONL is parseable after concurrency and every reservation
