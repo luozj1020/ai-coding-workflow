@@ -42,6 +42,12 @@ class ClaudeMonitorSupervisorTests(unittest.TestCase):
         watch.terminate.assert_called_once_with()
         watch.kill.assert_called_once_with()
 
+    def test_windows_paths_are_normalized_for_bash(self):
+        supervisor = load_supervisor()
+        with mock.patch.object(supervisor.os, "name", "nt"):
+            normalized = supervisor._bash_path(pathlib.Path(r"C:\temp\watch.sh"))
+        self.assertEqual(normalized, "C:/temp/watch.sh")
+
     def test_ambiguous_event_invokes_bounded_spark_triage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
