@@ -20,10 +20,19 @@ from pathlib import Path
 from spark_control_protocol import evidence_hash, parse_and_normalize
 
 
-def _bash_path(path: Path) -> str:
-    """Return a path Bash can consume when launched by native Windows Python."""
-    value = str(path)
-    return value.replace("\\", "/") if os.name == "nt" else value
+def _bash_path(path: Path, cwd: Path | None = None) -> str:
+    """Return a path Git Bash can consume from native Windows Python."""
+    if os.name != "nt":
+        return str(path)
+    if cwd is not None:
+        try:
+            return path.resolve().relative_to(cwd.resolve()).as_posix()
+        except (OSError, ValueError):
+            pass
+    value = str(path).replace("\\", "/")
+    if len(value) >= 3 and value[1:3] == ":/":
+        return f"/{value[0].lower()}/{value[3:]}"
+    return value
 
 
 def _snapshot(helper: Path, repo: Path, task_id: str) -> dict:
@@ -100,7 +109,7 @@ def main() -> int:
 
     args.event_log.parent.mkdir(parents=True, exist_ok=True)
     watch = subprocess.Popen(
-        ["bash", _bash_path(args.watch_script), args.task_id, "--machine",
+        ["bash", _bash_path(args.watch_script, args.repo_root), args.task_id, "--machine",
          "--interval", str(args.interval)],
         cwd=str(args.repo_root), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", start_new_session=True,
@@ -137,7 +146,7 @@ def main() -> int:
                 continue
             try:
                 result = subprocess.run(
-                    ["bash", _bash_path(args.monitor_script), "decision", args.task_id,
+                    ["bash", _bash_path(args.monitor_script, args.repo_root), "decision", args.task_id,
                      "--spark", args.spark],
                     cwd=str(args.repo_root), capture_output=True, text=True,
                     encoding="utf-8", errors="replace",
