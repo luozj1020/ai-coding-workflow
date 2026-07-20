@@ -239,7 +239,10 @@ def _portable_lock(path: Path, timeout: float = 5.0):
             os.write(fd, (str(os.getpid()) + "\n").encode("ascii"))
             os.close(fd)
             break
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
+            # Windows may report sharing/access denial instead of EEXIST while
+            # another process creates or removes an O_EXCL lock file. Treat it
+            # as transient contention, still bounded by the same deadline.
             try:
                 if time.time() - lock.stat().st_mtime > 60:
                     lock.unlink()

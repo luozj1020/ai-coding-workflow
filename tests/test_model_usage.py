@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -20,6 +21,24 @@ usage = load_script("model_usage", "model-usage.py")
 
 
 class ModelUsageTests(unittest.TestCase):
+    def test_portable_lock_retries_windows_style_permission_contention(self):
+        with tempfile.TemporaryDirectory() as raw:
+            ledger = Path(raw) / "usage.jsonl"
+            real_open = usage.os.open
+            attempts = 0
+
+            def permission_once(*args, **kwargs):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise PermissionError("simulated Windows lock contention")
+                return real_open(*args, **kwargs)
+
+            with mock.patch.object(usage.os, "open", side_effect=permission_once):
+                with usage._portable_lock(ledger, timeout=1):
+                    self.assertTrue(ledger.with_name("usage.jsonl.lock").exists())
+            self.assertEqual(attempts, 2)
+
     def test_claude_and_codex_normalize_to_same_token_fields(self):
         claude = usage.parse_claude({
             "duration_ms": 1200,

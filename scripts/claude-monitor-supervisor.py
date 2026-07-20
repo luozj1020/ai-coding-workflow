@@ -152,13 +152,18 @@ def main() -> int:
             last_spark_at = now
             last_evidence_hash = values["evidence_hash"]
 
-    if watch.poll() is None:
-        stop_child()
     try:
-        return watch.wait(timeout=10)
+        # On Windows stdout can reach EOF just before Popen observes the
+        # process exit. Give a naturally completed watcher a brief grace
+        # period so terminate() does not turn a successful exit into code 1.
+        return watch.wait(timeout=1)
     except subprocess.TimeoutExpired:
-        _terminate_watch(watch, force=True)
-        return watch.wait()
+        stop_child()
+        try:
+            return watch.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _terminate_watch(watch, force=True)
+            return watch.wait()
 
 
 if __name__ == "__main__":
