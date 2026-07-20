@@ -56,6 +56,16 @@ class ClaudeMonitorSupervisorTests(unittest.TestCase):
             self.assertFalse(supervisor._start_new_session())
             self.assertEqual(supervisor._natural_exit_grace_seconds(), 5)
 
+    def test_windows_stale_bash_wrapper_is_success_after_monitor_event(self):
+        supervisor = load_supervisor()
+        watch = mock.Mock()
+        watch.poll.return_value = None
+        watch.wait.side_effect = [subprocess.TimeoutExpired("bash", 5), 1]
+        with mock.patch.object(supervisor.os, "name", "nt"):
+            result = supervisor._finish_watch(watch, saw_monitor_event=True)
+        self.assertEqual(result, 0)
+        watch.terminate.assert_called_once_with()
+
     def test_ambiguous_event_invokes_bounded_spark_triage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -79,7 +89,8 @@ class ClaudeMonitorSupervisorTests(unittest.TestCase):
                 env={**os.environ, "MONITOR_CAPTURE": str(capture)},
                 text=True, capture_output=True, timeout=20,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            diagnostic = event_log.read_text(encoding="utf-8") if event_log.exists() else "<missing>"
+            self.assertEqual(result.returncode, 0, f"{result.stderr}\nevents={diagnostic}")
             self.assertTrue(capture.exists())
             text = event_log.read_text(encoding="utf-8")
             self.assertIn("spark_monitor_event", text)
@@ -105,7 +116,8 @@ class ClaudeMonitorSupervisorTests(unittest.TestCase):
                  "--spark-min-interval", "0"],
                 text=True, capture_output=True, timeout=20,
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            diagnostic = event_log.read_text(encoding="utf-8") if event_log.exists() else "<missing>"
+            self.assertEqual(result.returncode, 0, f"{result.stderr}\nevents={diagnostic}")
             self.assertFalse(capture.exists())
             self.assertNotIn("spark_monitor_event", event_log.read_text(encoding="utf-8"))
 

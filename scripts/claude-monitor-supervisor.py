@@ -101,6 +101,22 @@ def _terminate_watch(watch: subprocess.Popen, *, force: bool = False) -> None:
         pass
 
 
+def _finish_watch(watch: subprocess.Popen, *, saw_monitor_event: bool) -> int:
+    """Collect watcher status, tolerating a stale Git Bash wrapper after EOF."""
+    try:
+        return watch.wait(timeout=_natural_exit_grace_seconds())
+    except subprocess.TimeoutExpired:
+        _terminate_watch(watch)
+        try:
+            return_code = watch.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            _terminate_watch(watch, force=True)
+            return_code = watch.wait()
+        if os.name == "nt" and saw_monitor_event:
+            return 0
+        return return_code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-id", required=True)
@@ -138,6 +154,7 @@ def main() -> int:
 
     last_spark_at = 0.0
     last_evidence_hash = ""
+    saw_monitor_event = False
     with args.event_log.open("a", encoding="utf-8") as log:
         assert watch.stdout is not None
         for line in watch.stdout:
@@ -145,6 +162,7 @@ def main() -> int:
             log.flush()
             if stopping or not line.startswith("monitor_event "):
                 continue
+            saw_monitor_event = True
             local = _snapshot(args.decision_helper, args.repo_root, args.task_id)
             decision = str(local.get("decision", "uncertain"))
             if args.spark == "off" or decision not in {"inspect", "interrupt-candidate"}:
@@ -178,18 +196,9 @@ def main() -> int:
             last_spark_at = now
             last_evidence_hash = values["evidence_hash"]
 
-    try:
-        # On Windows stdout can reach EOF just before Popen observes the
-        # process exit. Give a naturally completed watcher a brief grace
-        # period so terminate() does not turn a successful exit into code 1.
-        return watch.wait(timeout=_natural_exit_grace_seconds())
-    except subprocess.TimeoutExpired:
-        stop_child()
-        try:
-            return watch.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            _terminate_watch(watch, force=True)
-            return watch.wait()
+    # On Windows stdout can reach EOF before the Git Bash wrapper publishes
+    # its exit status. A parsed monitor event proves the watcher itself ran.
+    return _finish_watch(watch, saw_monitor_event=saw_monitor_event)
 
 
 if __name__ == "__main__":
