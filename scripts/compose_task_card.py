@@ -60,6 +60,9 @@ def compose(root, catalog, preset, gates):
     )
     task_mode = {
         "builder": "builder",
+        "batch-builder": "builder",
+        "solution-planner": "builder",
+        "exploratory-builder": "builder",
         "checker": "checker-test",
         "revision": "revision",
         "control-plane": "control-plane",
@@ -77,7 +80,14 @@ def recommend_components(facts):
 
     mode = str(facts.get("mode") or facts.get("task_mode") or "builder").lower()
     event = str(facts.get("routing_event") or "initial").lower()
-    if mode in ("checker", "checker-test"):
+    claude_role = str(facts.get("claude_role") or execution.get("claude_role") or "").lower()
+    if claude_role == "solution-planner" or mode == "solution-planner":
+        preset = "solution-planner"
+    elif claude_role == "batch-builder" or mode == "batch-builder":
+        preset = "batch-builder"
+    elif claude_role == "exploratory-builder" or mode == "exploratory-builder":
+        preset = "exploratory-builder"
+    elif mode in ("checker", "checker-test"):
         preset = "checker"
     elif mode == "revision" or event in ("revision", "narrow", "retry"):
         preset = "revision"
@@ -109,7 +119,7 @@ def recommend_components(facts):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--preset", choices=("builder", "checker", "revision", "control-plane"))
+    parser.add_argument("--preset", choices=("builder", "batch-builder", "solution-planner", "exploratory-builder", "checker", "revision", "control-plane"))
     parser.add_argument("--gate", action="append", default=[])
     parser.add_argument("--output")
     parser.add_argument("--force", action="store_true")

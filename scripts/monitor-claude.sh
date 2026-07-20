@@ -80,6 +80,8 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 if command -v python3 >/dev/null 2>&1; then PYTHON_CMD=python3; else PYTHON_CMD=python; fi
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"
+SUPERVISOR_SCRIPT="${SCRIPT_DIR}/claude-monitor-supervisor.py"
+DECISION_HELPER="${SCRIPT_DIR}/claude-monitor-decision.py"
 EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.monitor-events.log"
 MONITOR_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.monitor.pid"
 
@@ -108,8 +110,18 @@ case "$ACTION" in
             exit 0
         fi
         : > "$EVENT_LOG"
-        nohup bash "$WATCH_SCRIPT" "$TASK_ID" --machine --interval "$INTERVAL" \
-            > "$EVENT_LOG" 2>&1 < /dev/null &
+        if [ -f "$SUPERVISOR_SCRIPT" ] && [ -f "$DECISION_HELPER" ]; then
+            nohup "$PYTHON_CMD" "$SUPERVISOR_SCRIPT" \
+                --task-id "$TASK_ID" --repo-root "$REPO_ROOT" \
+                --watch-script "$WATCH_SCRIPT" --monitor-script "${SCRIPT_DIR}/monitor-claude.sh" \
+                --decision-helper "$DECISION_HELPER" --event-log "$EVENT_LOG" \
+                --interval "$INTERVAL" --spark "$SPARK_MODE" \
+                --spark-min-interval "${CLAUDE_MONITOR_SPARK_MIN_INTERVAL_SECONDS:-120}" \
+                >/dev/null 2>&1 < /dev/null &
+        else
+            nohup bash "$WATCH_SCRIPT" "$TASK_ID" --machine --interval "$INTERVAL" \
+                > "$EVENT_LOG" 2>&1 < /dev/null &
+        fi
         pid=$!
         echo "$pid" > "$MONITOR_PID_FILE"
         echo "Monitor started: pid=$pid"
@@ -133,7 +145,6 @@ case "$ACTION" in
         fi
         ;;
     decision)
-        DECISION_HELPER="${SCRIPT_DIR}/claude-monitor-decision.py"
         SPARK_HELPER="${SCRIPT_DIR}/run-codex-spark.sh"
         if [ ! -f "$DECISION_HELPER" ]; then
             echo "Error: monitor decision helper is unavailable: $DECISION_HELPER" >&2
@@ -144,6 +155,7 @@ case "$ACTION" in
         _local_json="${_tmp_dir}/local.json"
         "$PYTHON_CMD" "$DECISION_HELPER" snapshot --task-id "$TASK_ID" --format json > "$_local_json"
         _local_decision="$("$PYTHON_CMD" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("decision","inspect"))' "$_local_json")"
+        _local_completion_fields="$("$PYTHON_CMD" -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); print("execution_phase="+str(d.get("execution_phase","unknown"))); print("implementation_complete="+str(d.get("implementation_complete","unknown"))); print("completion_ready="+str(d.get("completion_ready","unknown"))); print("finish_recommended="+str(d.get("finish_recommended","no")))' "$_local_json")"
         _use_spark=0
         if [ "$SPARK_MODE" = "on" ]; then
             _use_spark=1
@@ -174,6 +186,7 @@ case "$ACTION" in
                         echo "codex_review_required=yes"
                     fi
                     echo "interrupt_authorized=no"
+                    printf '%s\n' "$_local_completion_fields"
                     exit 0
                     ;;
                 esac

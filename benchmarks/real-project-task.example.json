@@ -1,0 +1,20 @@
+{
+  "id": "real-project-task-01",
+  "prompt": "Describe one independently reviewable change without prescribing an execution owner.",
+  "category": "core-semantic",
+  "repository_scale": "large",
+  "allowed_files": ["src/component/**", "tests/component/**"],
+  "forbidden_files": [".git/**", "third_party/**"],
+  "validation_commands": ["python -m pytest tests/component/test_target.py -q"],
+  "acceptance": [
+    "The reported behavior is fixed.",
+    "The targeted regression test passes.",
+    "No file outside allowed_files is modified."
+  ],
+  "improvement_units": [
+    {"id": "IU-1", "description": "The reported behavior is fixed.", "weight": 3},
+    {"id": "IU-2", "description": "The targeted regression is covered.", "weight": 2},
+    {"id": "IU-3", "description": "The change stays within the allowed scope.", "weight": 1}
+  ],
+  "notes": "Keep the prompt, scope, validation, and base commit identical across all arms."
+}

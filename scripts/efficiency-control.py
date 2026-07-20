@@ -21,65 +21,59 @@ economics = load_module("aiwf_economics", "workflow_economics.py")
 
 digest = _evidence_hash
 
+DEFAULT_CONTROL_PLANE_POLICY = {
+    "max_prepare_seconds": 45.0,
+    "max_task_card_bytes": 24576,
+    "max_context_packet_bytes": 65536,
+    "max_combined_bytes": 81920,
+}
+
 def write_json(path, data):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
-def _evaluate_value_signals(hints: dict) -> dict:
-    """Evaluate deterministic value signals for Spark engagement.
+def _control_plane_policy(hints: dict) -> dict:
+    policy = dict(DEFAULT_CONTROL_PLANE_POLICY)
+    override = hints.get("control_plane_policy")
+    if isinstance(override, dict):
+        for key in policy:
+            value = override.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+                policy[key] = float(value) if key == "max_prepare_seconds" else int(value)
+    return policy
 
-    Returns dict with 'triggered' (bool), 'trigger_codes' (list of str),
-    and 'reason' (str). Missing/unknown evidence is treated conservatively
-    as absent (no signal).
-    """
-    codes = []
+def _json_bytes(value) -> int:
+    return len(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8"))
 
-    # Routing confidence is not high
-    rc = hints.get("routing_confidence")
-    if rc is not None and rc != "high":
-        codes.append("signal.routing_confidence_not_high")
-
-    # Context is incomplete
-    if hints.get("context_complete") is False:
-        codes.append("signal.context_incomplete")
-
-    # Preflight may avoid a Claude retry
-    if hints.get("may_avoid_claude_retry") is True:
-        codes.append("signal.may_avoid_claude_retry")
-
-    # Preflight may avoid a Codex call/review
-    if hints.get("may_avoid_codex_call") is True:
-        codes.append("signal.may_avoid_codex_call")
-
-    # Observed diff materially deviates from prediction
-    predicted = hints.get("predicted_diff_lines")
-    observed = hints.get("observed_diff_lines")
-    if (
-        isinstance(predicted, (int, float))
-        and isinstance(observed, (int, float))
-        and predicted > 0
-        and abs(observed - predicted) / predicted > 0.20
-    ):
-        codes.append("signal.diff_deviates_from_prediction")
-
-    # Acceptance is partial
-    if hints.get("acceptance_status") == "partial":
-        codes.append("signal.acceptance_partial")
-
-    # Failure attribution is unclear
-    if hints.get("failure_attribution") == "unclear":
-        codes.append("signal.failure_attribution_unclear")
-
+def _control_plane_state(started: float, policy: dict, card_bytes: int, context_bytes: int) -> dict:
+    elapsed = round(time.monotonic() - started, 6)
+    failures = []
+    if elapsed > policy["max_prepare_seconds"]:
+        failures.append("prepare-time-budget-exceeded")
+    if card_bytes > policy["max_task_card_bytes"]:
+        failures.append("task-card-byte-budget-exceeded")
+    if context_bytes > policy["max_context_packet_bytes"]:
+        failures.append("context-packet-byte-budget-exceeded")
+    if card_bytes + context_bytes > policy["max_combined_bytes"]:
+        failures.append("combined-artifact-byte-budget-exceeded")
     return {
-        "triggered": len(codes) > 0,
-        "trigger_codes": codes,
+        "policy": policy,
+        "prepare_elapsed_seconds": elapsed,
+        "task_card_bytes": card_bytes,
+        "context_packet_bytes": context_bytes,
+        "combined_bytes": card_bytes + context_bytes,
+        "within_budget": not failures,
+        "failures": failures,
     }
 
-
 def prepare(args):
+    started = time.monotonic()
     facts_path = args.facts or args.hints
     hints = json.loads(Path(facts_path).read_text(encoding="utf-8"))
-    route = router.route(hints); task_id = hints.get("task_id") or Path(args.task_card).stem
+    control_plane_policy = _control_plane_policy(hints)
+    route = router.route(hints)
+    task_card = Path(args.task_card) if args.task_card else None
+    task_id = hints.get("task_id") or (task_card.stem if task_card else "routing")
     # Copy single-pass eligibility from Router — never re-derive
     single = route["execution"]["single_pass_allowed"]
     spark_gate = str(hints.get("spark_gate", "auto")).lower()
@@ -104,18 +98,81 @@ def prepare(args):
         spark_reason = "Spark explicitly enabled"
         spark_trigger_codes = []
     else:
-        # Auto mode: evaluate value signals
-        vs = _evaluate_value_signals(hints)
-        if vs["triggered"]:
+        # Auto mode consumes the shared pre-card route. Generic uncertainty is
+        # not enough: Spark is paid only for an explicit plausible Claude
+        # candidate whose economics remain unresolved.
+        precard = route.get("precard_estimator", {})
+        if precard.get("spark_action") == "estimate":
             spark_use = True
             spark_skip_reason = None
-            spark_reason = "value signal present: " + ", ".join(vs["trigger_codes"])
-            spark_trigger_codes = vs["trigger_codes"]
+            spark_reason = "shared route requested one estimate for an explicit Claude candidate"
+            spark_trigger_codes = ["route.explicit_claude_candidate_estimate"]
         else:
             spark_use = False
-            spark_skip_reason = "skip.no_expected_decision_value"
-            spark_reason = "no value signal detected; skipping Spark to avoid cost without expected benefit"
+            spark_skip_reason = precard.get("reason_code", "skip.no_expected_decision_value")
+            spark_reason = "shared route completed without a Spark decision"
             spark_trigger_codes = []
+    output = Path(args.output_dir)
+    if route["execution"]["owner"] == "codex-fast-path":
+        plan = {
+            "schema_version": 1,
+            "generated_at": int(time.time()),
+            "task_id": task_id,
+            "lane": route["lane"],
+            "budget": route["budget"],
+            "task_card": str(task_card.resolve()) if task_card else "",
+            "task_type": hints.get("task_type", "unknown"),
+            "repository_scale": hints.get("repository_size", hints.get("repository_scale", "unknown")),
+            "execution": {
+                "owner": "codex-fast-path",
+                "owner_source": route["execution"].get("owner_source"),
+                "ownership_profile": route["execution"].get("ownership_profile", "claude-first"),
+                "claude_role": "none",
+                "builder_mode": "standard",
+                "builder_checker_split": False,
+                "checker_model_dispatch": False,
+                "checker_skip_reason": "checker skipped: deterministic evidence sufficient",
+                "single_pass_allowed": route["execution"].get("single_pass_allowed", False),
+                "single_pass_reason": route["execution"].get("single_pass_reason", ""),
+                "max_iterations": 0,
+                "require_new_evidence_for_retry": False,
+                "economy_gate": route["execution"].get("economy_gate", {}),
+            },
+            "spark": {
+                "invoke": False,
+                "stage": "precard-route",
+                "mode": None,
+                "reason": "deterministic Codex owner already bound",
+                "skip_reason": route["precard_estimator"].get("reason_code"),
+                "trigger_codes": [],
+                "max_calls": 0,
+            },
+            "context": {
+                "skipped": True,
+                "reason": "codex-fast-path-does-not-need-claude-context-packet",
+            },
+            "control_plane": _control_plane_state(started, control_plane_policy, 0, 0),
+            "legacy_loop_compatible": True,
+            "automatic_model_invocation": False,
+            "automatic_merge": False,
+        }
+        decision = {
+            "schema_version": 1,
+            "task_id": task_id,
+            "action": "codex-fast-path",
+            "claude_dispatched": False,
+            "task_card_required": False,
+            "context_packet_created": False,
+            "reason": "pre-card economy route selected Codex; control plane short-circuited",
+        }
+        write_json(output / "execution-plan.json", plan)
+        write_json(output / "dispatch-decision.json", decision)
+        print(json.dumps(plan, ensure_ascii=False, sort_keys=True, indent=2))
+        return
+
+    if task_card is None:
+        raise SystemExit("--task-card is required when routing selects Claude")
+
     levels = {
         "L0": {"files": hints.get("target_files", []), "symbols": hints.get("symbols", []), "targets": hints.get("build_targets", [])},
         "L1": {"snippets": hints.get("reference_snippets", []), "call_paths": hints.get("call_paths", []), "constraints": hints.get("constraints", [])},
@@ -123,15 +180,37 @@ def prepare(args):
     }
     cache_identity = {"commit": hints.get("commit"), "files": hints.get("target_files", []), "symbols": hints.get("symbols", []), "profile": hints.get("profile"), "targets": hints.get("build_targets", [])}
     plan = {"schema_version": 1, "generated_at": int(time.time()), "task_id": task_id, "lane": route["lane"], "budget": route["budget"],
-            "task_card": str(Path(args.task_card).resolve()), "task_type": hints.get("task_type", "unknown"),
+            "task_card": str(task_card.resolve()), "task_type": hints.get("task_type", "unknown"),
             "repository_scale": hints.get("repository_size", hints.get("repository_scale", "unknown")),
-            "execution": {"owner": route["execution"]["owner"], "builder_checker_split": route["execution"]["builder_checker_split"], "checker_model_dispatch": route["execution"]["checker_model_dispatch"], "checker_value_reasons": route["execution"]["checker_value_reasons"], "checker_skip_reason": route["execution"]["checker_skip_reason"], "single_pass_allowed": single, "single_pass_reason": route["execution"]["single_pass_reason"], "max_iterations": 2 if hints.get("latency_mode", "interactive") == "interactive" else 3, "require_new_evidence_for_retry": True},
+            "execution": {"owner": route["execution"]["owner"], "owner_source": route["execution"].get("owner_source"), "ownership_profile": route["execution"].get("ownership_profile", "claude-first"), "claude_role": route["execution"].get("claude_role", "execution-builder"), "builder_mode": route["execution"].get("builder_mode", "standard"), "durable_output_required": route["execution"].get("durable_output_required", False), "delegation_mode": route["execution"].get("delegation_mode", "unproven"), "parallel_release_allowed": False, "portfolio_concurrency_owner": "independent-user-terminals", "builder_checker_split": route["execution"]["builder_checker_split"], "checker_model_dispatch": route["execution"]["checker_model_dispatch"], "checker_value_reasons": route["execution"]["checker_value_reasons"], "checker_skip_reason": route["execution"]["checker_skip_reason"], "single_pass_allowed": single, "single_pass_reason": route["execution"]["single_pass_reason"], "max_iterations": 2, "require_new_evidence_for_retry": True, "economy_gate": route["execution"].get("economy_gate", {})},
             "review": {"reserved_for": route["budget"].get("codex_reserved_for", []), "milestones": ["implementation-complete", "validation-complete", "final-candidate"], "incremental": True},
-            "spark": {"invoke": bool(spark_use), "stage": "preflight", "mode": "preflight-bundle", "reason": spark_reason, "skip_reason": spark_skip_reason, "trigger_codes": spark_trigger_codes, "max_calls": 1},
+            "spark": {"invoke": bool(spark_use), "stage": "precard-route", "mode": "execution-cost-estimator", "reason": spark_reason, "skip_reason": spark_skip_reason, "trigger_codes": spark_trigger_codes, "max_calls": 1},
             "context": {"cache_key": digest(cache_identity), "levels": levels, "default_level": "L1", "allow_l2_on_gap": True},
             "legacy_loop_compatible": True, "automatic_model_invocation": False, "automatic_merge": False}
-    output = Path(args.output_dir)
     context_packet = {"schema_version": 1, "task_id": task_id, "goal": hints.get("goal", ""), "acceptance": hints.get("acceptance", []), "forbidden_paths": hints.get("forbidden_paths", []), "validation": hints.get("validation", []), **levels}
+    card_bytes = task_card.stat().st_size
+    context_bytes = _json_bytes(context_packet)
+    plan["control_plane"] = _control_plane_state(
+        started, control_plane_policy, card_bytes, context_bytes
+    )
+    if not plan["control_plane"]["within_budget"]:
+        plan["context"] = {
+            "skipped": True,
+            "reason": "control-plane-budget-exceeded-before-dispatch",
+        }
+        decision = {
+            "schema_version": 1,
+            "task_id": task_id,
+            "action": "recompose-before-dispatch",
+            "claude_dispatched": False,
+            "task_card_required": True,
+            "context_packet_created": False,
+            "reason": plan["control_plane"]["failures"],
+        }
+        write_json(output / "execution-plan.json", plan)
+        write_json(output / "dispatch-decision.json", decision)
+        print(json.dumps(plan, ensure_ascii=False, sort_keys=True, indent=2))
+        return 2
     cache_path = Path(args.cache_dir) / (plan["context"]["cache_key"] + ".json")
     plan["context"]["cache_reused"] = cache_path.exists()
     if cache_path.exists():
@@ -140,8 +219,9 @@ def prepare(args):
         write_json(cache_path, context_packet)
     write_json(output / "execution-plan.json", plan)
     write_json(output / "context-packet.json", context_packet)
-    write_json(output / "retry-state.json", {"task_card": _content_hash(Path(args.task_card).read_bytes()), "context": digest(levels), "failure_log": None, "environment": digest(hints.get("environment", {}))})
+    write_json(output / "retry-state.json", {"task_card": _content_hash(task_card.read_bytes()), "context": digest(levels), "failure_log": None, "environment": digest(hints.get("environment", {}))})
     print(json.dumps(plan, ensure_ascii=False, sort_keys=True, indent=2))
+    return 0
 
 def review(args):
     plan = json.loads(Path(args.plan).read_text()); evidence = json.loads(Path(args.evidence).read_text())
@@ -216,7 +296,7 @@ def review(args):
 
     write_json(args.output, output); print(json.dumps(output, sort_keys=True, indent=2))
     if args.milestone == "final-candidate":
-        owner = plan.get("execution", {}).get("owner", "claude-builder")
+        owner = plan.get("execution", {}).get("owner", "codex-fast-path")
         record = {
             "schema_version": 1,
             "run_id": Path(args.output).resolve().parent.name,
@@ -248,7 +328,7 @@ def review(args):
 
 def main():
     parser = argparse.ArgumentParser(); sub = parser.add_subparsers(dest="command", required=True)
-    prep = sub.add_parser("prepare"); source = prep.add_mutually_exclusive_group(required=True); source.add_argument("--facts"); source.add_argument("--hints", help="Legacy conservative input; cannot qualify for Express without complete risks"); prep.add_argument("--task-card", required=True); prep.add_argument("--output-dir", required=True); prep.add_argument("--cache-dir", default=".ai-workflow/cache/context")
+    prep = sub.add_parser("prepare"); source = prep.add_mutually_exclusive_group(required=True); source.add_argument("--facts"); source.add_argument("--hints", help="Legacy conservative input; cannot qualify for Express without complete risks"); prep.add_argument("--task-card", help="Required only when routing selects Claude"); prep.add_argument("--output-dir", required=True); prep.add_argument("--cache-dir", default=".ai-workflow/cache/context")
     rev = sub.add_parser("review"); rev.add_argument("--plan", required=True); rev.add_argument("--evidence", required=True); rev.add_argument("--previous"); rev.add_argument("--ledger", default=".ai-workflow/run-ledger.jsonl"); rev.add_argument("--milestone", choices=["implementation-complete", "validation-complete", "final-candidate"], required=True); rev.add_argument("--output", required=True)
     args = parser.parse_args(); return prepare(args) if args.command == "prepare" else review(args)
 

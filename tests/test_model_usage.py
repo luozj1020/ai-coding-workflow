@@ -78,6 +78,57 @@ class ModelUsageTests(unittest.TestCase):
         self.assertTrue(result["by_role"]["claude"]["usage_complete"])
         self.assertFalse(result["by_role"]["spark"]["usage_complete"])
 
+    def test_external_pricing_separates_calculated_and_provider_cost(self):
+        pricing = {
+            "schema_version": 1,
+            "models": [{
+                "pattern": "gpt-test*",
+                "input_per_million": 5.0,
+                "cached_input_per_million": 0.5,
+                "output_per_million": 30.0,
+                "input_includes_cached": True,
+            }],
+        }
+        records = [usage.parse_codex_events([
+            json.dumps({"model": "gpt-test-1", "usage": {
+                "input_tokens": 1000, "cached_input_tokens": 800, "output_tokens": 100,
+            }})
+        ], call_id="priced")]
+        result = usage.aggregate(records, pricing)
+        self.assertAlmostEqual(result["totals"]["calculated_cost_usd"], 0.0044)
+        self.assertTrue(result["totals"]["calculated_cost_complete"])
+        self.assertFalse(result["totals"]["provider_cost_complete"])
+
+    def test_claude_style_pricing_does_not_subtract_cache_hits_from_input(self):
+        pricing = {
+            "schema_version": 1,
+            "models": [{
+                "pattern": "mimo-*",
+                "input_per_million": 1.0,
+                "cached_input_per_million": 0.1,
+                "output_per_million": 2.0,
+                "input_includes_cached": False,
+            }],
+        }
+        record = usage.parse_claude({
+            "is_error": False,
+            "usage": {"input_tokens": 100, "cache_read_input_tokens": 1000, "output_tokens": 10},
+        }, call_id="mimo", model="mimo-test")
+        self.assertAlmostEqual(usage.calculate_cost(record, pricing), 0.00022)
+
+    def test_non_billable_catalog_entry_keeps_usage_but_zeroes_cost(self):
+        pricing = {"schema_version": 1, "models": [{
+            "pattern": "spark-*", "input_per_million": 9.0,
+            "cached_input_per_million": 1.0, "output_per_million": 20.0,
+            "input_includes_cached": True, "billable": False,
+        }]}
+        record = usage.parse_codex_events([json.dumps({
+            "model": "spark-test", "usage": {"input_tokens": 1000, "output_tokens": 100}
+        })], call_id="free-spark", role="spark")
+        result = usage.aggregate([record], pricing)
+        self.assertEqual(result["totals"]["calculated_cost_usd"], 0.0)
+        self.assertEqual(result["by_role"]["spark"]["input_tokens"], 1000)
+
     def test_concurrent_cli_appends_preserve_every_record(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

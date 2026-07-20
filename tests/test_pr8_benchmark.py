@@ -127,6 +127,12 @@ class TestCaseSchema(unittest.TestCase):
         errors = run_benchmark.validate_case(case)
         self.assertTrue(any("unsafe" in e for e in errors))
 
+    def test_routing_facts_must_be_object(self):
+        errors = run_benchmark.validate_case({
+            "id": "bad-routing", "task": "Test", "routing_facts": [],
+        })
+        self.assertTrue(any("routing_facts" in e for e in errors))
+
 
 class TestFakeAdapters(unittest.TestCase):
     """Test deterministic fake adapters."""
@@ -162,6 +168,13 @@ class TestFakeAdapters(unittest.TestCase):
         self.assertEqual(r1["tier"], r2["tier"])
         self.assertEqual(r1["accepted"], r2["accepted"])
 
+    def test_codex_direct_adapter_deterministic(self):
+        task = {"id": "direct-case", "expected_tier": "L0"}
+        r1 = run_benchmark.FakeCodexAdapter().implement(task, {"lane": "standard"})
+        r2 = run_benchmark.FakeCodexAdapter().implement(task, {"lane": "standard"})
+        self.assertEqual(r1["diff"], r2["diff"])
+        self.assertEqual(r1["adapter"], "codex")
+
 
 class TestPipelineExecution(unittest.TestCase):
     """Test full pipeline execution."""
@@ -187,7 +200,7 @@ class TestPipelineExecution(unittest.TestCase):
         self.assertIn("elapsed_seconds", result)
 
     def test_express_lane_no_spark(self):
-        """Express lane does not invoke Spark."""
+        """Express lane uses Claude directly without a Spark estimate."""
         case = {
             "id": "express-case",
             "task": "Simple fix",
@@ -199,9 +212,12 @@ class TestPipelineExecution(unittest.TestCase):
         result = run_benchmark.execute_case(case, claude, spark, codex)
 
         self.assertEqual(result["spark_calls"], 0)
+        self.assertEqual(result["claude_calls"], 1)
+        self.assertEqual(result["codex_calls"], 1)
+        self.assertEqual(result["route"]["owner"], "claude-builder")
 
-    def test_standard_lane_uses_spark(self):
-        """Standard lane invokes Spark."""
+    def test_standard_lane_defaults_to_claude_without_spark(self):
+        """Lane alone follows the deterministic Claude-first route."""
         case = {
             "id": "standard-case",
             "task": "Standard task",
@@ -212,7 +228,38 @@ class TestPipelineExecution(unittest.TestCase):
         codex = run_benchmark.FakeCodexAdapter()
         result = run_benchmark.execute_case(case, claude, spark, codex)
 
-        self.assertGreater(result["spark_calls"], 0)
+        self.assertEqual(result["spark_calls"], 0)
+        self.assertEqual(result["claude_calls"], 1)
+        self.assertEqual(result["codex_calls"], 1)
+        self.assertEqual(result["route"]["owner"], "claude-builder")
+
+    def test_uncertain_positive_claude_candidate_uses_one_spark_estimate(self):
+        case = {
+            "id": "planner-candidate",
+            "task": "Design a bounded multi-phase feature",
+            "expected_lane": "standard",
+            "routing_facts": {
+                "execution_owner": "claude-builder",
+                "claude_role": "solution-planner",
+                "goal_clarity": "high",
+                "implementation_path_clarity": "low",
+                "bounded_exploration_scope": True,
+                "durable_structured_output": True,
+                "expected_codex_work_reduction_ratio": 0.4,
+                "multi_phase_task": True,
+                "spark_route_requested": True,
+            },
+        }
+        result = run_benchmark.execute_case(
+            case,
+            run_benchmark.FakeClaudeAdapter(),
+            run_benchmark.FakeSparkAdapter(),
+            run_benchmark.FakeCodexAdapter(),
+        )
+        self.assertEqual(result["route"]["owner"], "claude-builder")
+        self.assertEqual(result["route"]["claude_role"], "solution-planner")
+        self.assertEqual(result["spark_calls"], 1)
+        self.assertEqual(result["claude_calls"], 1)
 
 
 class TestRepeatability(unittest.TestCase):

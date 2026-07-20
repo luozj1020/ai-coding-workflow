@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow/schemas/solution-contract-v1.schema.json",
+  "title": "Solution Contract v1",
+  "type": "object",
+  "required": [
+    "schema_version", "task_id", "goal", "end_state", "invariants",
+    "non_goals", "unknowns", "acceptance", "slices"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "goal": {"type": "string", "minLength": 1},
+    "end_state": {"type": "string", "minLength": 1},
+    "invariants": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+    "non_goals": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "unknowns": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "acceptance": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "required": ["id", "description"], "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "description": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "slices": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "goal", "write_scope", "depends_on", "acceptance_ids"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "goal": {"type": "string", "minLength": 1},
+          "write_scope": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+          "depends_on": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "acceptance_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+        }
+      }
+    },
+    "state": {"enum": ["draft", "frozen"]},
+    "contract_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "review": {"type": "object"}
+  },
+  "additionalProperties": false
+}

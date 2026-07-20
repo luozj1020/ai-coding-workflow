@@ -6,12 +6,14 @@ The AI coding workflow is an explicit observe/plan/execute/verify/review/learn l
 
 Core principle:
 
-**Codex designs and reviews. Claude Code edits. LSP/locator/CodeGraph/MCP tools gather low-token evidence first.**
+**Codex freezes intent and reviews. Claude Code converges the solution contract,
+implements, revises, tests, and validates. LSP/locator/CodeGraph/MCP tools gather
+low-token evidence first.**
 
 ## State Machine
 
 ```text
-OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW -> LEARN
+OBSERVE -> ROUTE -> PLAN/DIRECT -> EXECUTE -> VERIFY -> REVIEW -> LEARN
                                                              |
                         +------------------------------------+------------------------------------+
                         |                                    |                                    |
@@ -26,20 +28,27 @@ OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW -> LEARN
 
 The loop repeats until Codex accepts the work, the task is split or rejected for replanning, a stop condition is reached, or a human intervenes.
 
-When a first Claude round has a usable direction but lacks required evidence, the preferred next step is a narrow tests/evidence revision. If that tightened second round also exits without result/report and without useful progress, the loop may enter control-plane salvage: Codex cites both attempts, preserves the accepted direction, applies only the missing scoped changes, and produces validation evidence.
+When a Claude round has a usable direction but lacks required evidence, route again
+from the accepted diff and remaining delta before creating another card. The new
+route may select local deterministic checks, conditional Checker/Test work,
+same-worktree Claude continuation, or a reviewer-owned bounded Codex correction.
+Do not assume another Claude round merely because the first owner was Claude.
 
-For multi-phase or multi-part tasks, `ACCEPT` can mean "accepted this phase" rather than "all requested work is done." Codex must check the `Delegation Continuity Gate` after each accepted phase. If implementation or test-writing phases remain, the next action is PLAN -> DISPATCH to Claude with a follow-up task card, not Codex patching the remainder, unless a takeover threshold or explicit human override applies.
+For multi-phase or multi-part tasks, `ACCEPT` can mean "accepted this phase"
+rather than "all requested work is done." Route every remaining frozen slice or
+test responsibility independently back to Claude unless an explicit/high-risk
+Codex exception applies.
 
-For tasks with meaningful validation risk, split Claude work by role:
+When delegation materially reduces work, keep Claude roles separate:
 
 - **Builder Claude** executes implementation tasks and produces direction evidence, not acceptance validation.
 - **Codex direction review** decides whether the Builder direction matches the plan, whether to keep waiting, interrupt and narrow, re-dispatch, or enter takeover after repeated current-task failure.
-- **Checker/Test Claude** executes test-writing and validation tasks after Codex accepts the Builder direction.
+- **Checker/Test Claude** conditionally executes assigned test-writing, long validation, or evidence tasks after Codex accepts the Builder direction.
 - **Codex final review** checks validation artifacts and may run a second verification pass before acceptance.
 
 Do not treat every quiet or incomplete Claude run as a Claude execution failure. First classify the stall: task-card ambiguity, mixed Builder/Checker responsibilities, dirty source or stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress. A task that mixes implementation, test writing, broad validation, and phase stop gates should normally be split before dispatch unless it is explicitly marked `mixed-exception`.
 
-Dirty source or stale HEAD is a delegation blocker, not a takeover trigger. The loop should first restore a reliable Claude base by committing an accepted phase, stashing or patching source changes, refreshing local workflow files, re-dispatching from updated HEAD, requesting explicit dirty-source approval, or stopping for human input. Codex direct edits require an independent threshold or explicit human override.
+Dirty source or stale HEAD is a delegation blocker, not a takeover trigger. Restore a reliable base or obtain explicit dirty-source authority before another delegation. It does not override a fresh economic owner route; an independently selected Codex direct slice is not forced delegation takeover.
 
 ## States
 
@@ -49,8 +58,8 @@ The loop treats unknowns as first-class planning and review evidence:
 
 1. Codex records known facts, known unknowns, assumed-known constraints, and blindspot scan requests in the task card.
 2. Codex marks decision gates where architecture, data model, UX, security, or scope could change.
-3. Claude checks the map against the codebase, performs the requested blindspot pass, and records new unknowns or plan conflicts.
-4. Claude may proceed autonomously only where the task card grants authority; otherwise it chooses a conservative path or stops and reports.
+3. Codex/local tools resolve the map by default; an eligible Claude planner or Builder checks only its delegated boundary and records new unknowns or conflicts.
+4. Claude may proceed only where the composed task card grants authority; otherwise it stops and reports.
 5. Codex reviews whether unknowns were resolved, decision gates were respected, and deviations from plan were justified.
 
 ## Handoff Contracts
@@ -79,26 +88,37 @@ Each handoff should be directly checkable:
 
 **Output:** Context summary attached to the task card under Evidence.
 
-### 2. PLAN
+### 2. ROUTE
+
+**Owner:** Codex / deterministic local router
+
+**Purpose:** Select the least expensive owner before any delegation artifact.
+
+**Output:** Codex direct, Claude solution planner, Claude batch/auxiliary Builder,
+conditional Checker/Test, or human clarification. Optional Spark advice is used
+only for a concrete economically uncertain Claude candidate.
+
+### 3. PLAN
 
 **Owner:** Codex / GPT
 
-**Purpose:** Create or revise a task card with clear acceptance criteria, scope, budget, and stop conditions.
+**Purpose:** Compose a short Claude card from routing facts, or bind an explicit Codex exception.
 
 **Actions:**
 
-- Read `ai/task-card-components/catalog.md`, select a preset plus material gates, and compose the first-iteration short card locally.
+- For explicit Codex direct, stop before card authoring and edit from the reviewed brief.
+- For delegation, read `ai/task-card-components/catalog.md`, select a preset plus material gates, and compose the short card locally.
 - For a revision, use the `revision` preset and record only the delta against accepted evidence.
 - For a split, decompose into smaller task cards.
 - For a reject, replan from updated evidence instead of patching blindly.
 
-**Output:** One or more task cards with acceptance criteria, scoped files/modules, evidence, loop metadata, and stop conditions.
+**Output:** A Codex implementation brief, or one filled delegation card with acceptance criteria, scoped files/modules, evidence, loop metadata, and stop conditions.
 
-### 3. DISPATCH
+### 4. DISPATCH
 
 **Owner:** Human or workflow script
 
-**Purpose:** Send the task card to Claude Code in an isolated worktree.
+**Purpose:** Send the default Claude task card to an isolated worktree. Explicit Codex direct skips this state.
 
 **Actions:**
 
@@ -117,15 +137,16 @@ Each handoff should be directly checkable:
 
 **Adaptive timeout:** The first loop should have enough time for context gathering and first implementation, typically the fixed dispatch timeout. Later loops may estimate timeout from progress evidence: elapsed seconds divided by completed checklist items, multiplied by remaining checklist items plus buffer. If the human or environment sets an explicit timeout, scripts should respect it.
 
-### 4. EXECUTE
+### 5. EXECUTE
 
-**Owner:** Builder Claude
+**Owner:** Codex by default; Claude only for the positively routed responsibility
 
-**Purpose:** Make the concrete file edits required by the task card.
+**Purpose:** Produce the routed durable implementation or structured planning artifact.
 
 **Actions:**
 
-- Read the task card fully before editing.
+- Claude implements core and auxiliary work from the short contract; explicit Codex direct creates no card.
+- Claude reads the composed short card before acting.
 - Prefer LSP/locator/CodeGraph/MCP evidence before broad file reads.
 - Check Task Mode, Testing Responsibility, and Stall / Ambiguity Triage before editing.
 - If one task card mixes Builder and Checker/Test responsibilities without `mixed-exception`, stop-and-report with a split recommendation.
@@ -138,7 +159,7 @@ Each handoff should be directly checkable:
 
 **Output:** Modified files in the isolated worktree.
 
-### 5. DIRECTION REVIEW
+### 6. DIRECTION REVIEW
 
 **Owner:** Codex / GPT
 
@@ -150,13 +171,13 @@ Each handoff should be directly checkable:
 - Continue waiting when worktree changes and progress updates match the plan.
 - Interrupt and narrow the task when the implementation is off-plan, risky, or scope-expanding.
 - Dispatch a Checker/Test task only after the Builder direction is accepted.
-- Enter direct intervention only after repeated current-task failure or explicit human takeover.
+- Route a deterministic local correction separately when Codex already holds the accepted context; reserve failure-based takeover for the current-task threshold or explicit human direction.
 
 **Output:** Accept direction, revise Builder task, split, reject, or dispatch Checker/Test task.
 
-### 6. CHECKER / TEST
+### 7. CHECKER / TEST
 
-**Owner:** Checker/Test Claude
+**Owner:** Local deterministic tools by default; Checker/Test Claude only when its assigned work materially reduces Codex effort
 
 **Purpose:** Write assigned tests, run validation, and report mechanical evidence.
 
@@ -174,7 +195,7 @@ Each handoff should be directly checkable:
 
 **Testing responsibility:** Codex decides in the task card whether test code is part of the task, whether Checker/Test Claude must run tests, or whether Codex/human will run verification after Claude. If tests are not required, the task card must say so explicitly.
 
-### 7. REVIEW
+### 8. REVIEW
 
 **Owner:** Codex / GPT
 
@@ -285,7 +306,13 @@ When a stop condition is reached without acceptance, the task is escalated to th
 
 Codex may directly edit after Claude has made multiple unsuccessful attempts and another revision is unlikely to improve the result. Valid triggers are max iterations reached, the same failure in two consecutive iterations, failure count not decreasing for two consecutive iterations, repeated timeout/unavailability after delegation restoration, or an explicit human request. Codex must record the attempts, takeover reason, touched scope, and validation evidence.
 
-A no-progress or failed Claude iteration is not automatically a takeover trigger. The default next step is a sharper Claude task card: reduce scope, add diagnostics, require specific artifacts, and set stop-and-report gates. Takeover is reserved for threshold hits or explicit human direction.
+A no-progress or failed Claude iteration is not automatically a takeover trigger
+and does not automatically require another Claude card. First classify the round
+and run a fresh owner route over the remaining delta. Transport/approval failures
+favor restoration; a still-valuable Claude candidate may receive one tighter
+same-worktree continuation; a deterministic correction already in Codex context
+may route directly. Failure-based takeover remains reserved for threshold hits or
+explicit human direction.
 
 A dirty source or stale HEAD dispatch blocker is handled before this threshold audit. Record the Delegation Restoration Gate, restore the base when possible, then re-dispatch Claude.
 

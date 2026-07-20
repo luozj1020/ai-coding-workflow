@@ -215,6 +215,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "  diff-without-report)\n"
                 "    printf '# diff work\\n' > README.md\n"
                 "    ;;\n"
+                "  planner-contract)\n"
+                "    printf '%s\\n' '{\"schema_version\":1,\"task_id\":\"fixture\",\"goal\":\"g\",\"end_state\":\"done\",\"invariants\":[],\"non_goals\":[],\"unknowns\":[],\"acceptance\":[],\"slices\":[]}' > solution-contract.draft.json\n"
+                "    ;;\n"
                 "  empty-file)\n"
                 "    : > EMPTY_PLACEHOLDER.py\n"
                 "    ;;\n"
@@ -402,7 +405,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self._write_low_risk_checker_card()
         result = self._dispatch(
             "task-cards/CHECKER.md",
-            {"FAKE_CLAUDE_MODE": "approval-blocked", "FAKE_CLAUDE_SLEEP_SECONDS": "8"},
+            {"FAKE_CLAUDE_MODE": "approval-blocked", "FAKE_CLAUDE_SLEEP_SECONDS": "8",
+             "CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS": "1"},
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
@@ -1210,6 +1214,100 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("execution-only Builder mode", prompt)
         self.assertIn("Do NOT restate or redesign the plan", prompt)
         self.assertIn("--- CLAUDE EXECUTION CARD ---", prompt)
+
+    def test_exploratory_card_auto_selects_exploratory_prompt_and_locator_tools(self):
+        task = self._write_builder_task_card()
+        text = task.read_text(encoding="utf-8").replace(
+            "| Mode | builder |", "| Mode | builder |\n| Builder mode | exploratory |"
+        )
+        task.write_text(text, encoding="utf-8")
+        capture = self.case_root / "exploratory-prompt.md"
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_PROMPT_CAPTURE": str(capture), "CLAUDE_CODE_TOOL_PROFILE": "auto"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Builder Mode:    exploratory", result.stdout)
+        self.assertIn("Tool Profile:    locator-builder", result.stdout)
+        prompt = capture.read_text(encoding="utf-8")
+        self.assertIn("exploratory executor", prompt)
+        self.assertIn("Do not finish with only a repository summary", prompt)
+        self.assertIn("Produce at least one durable assigned output", prompt)
+
+    def test_solution_planner_card_auto_selects_planning_prompt_and_locator_tools(self):
+        task = self._write_builder_task_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Claude Solution Planner Contract\n\n"
+                "| Field | Value |\n|---|---|\n"
+                "| Planning owner | Claude |\n"
+                "| Required durable output | `solution-contract.draft.json` |\n"
+                "\n## Solution Contract Inputs\n\n- Goal: fixture\n"
+                "\n## Required Draft Shape\n\nValidate the JSON draft.\n"
+            )
+        capture = self.case_root / "solution-planner-prompt.md"
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_PROMPT_CAPTURE": str(capture), "CLAUDE_CODE_TOOL_PROFILE": "auto"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Builder Mode:    solution-planning", result.stdout)
+        self.assertIn("Tool Profile:    locator-builder", result.stdout)
+        prompt = capture.read_text(encoding="utf-8")
+        self.assertIn("solution planner in a Codex/Claude Code workflow", prompt)
+        self.assertIn("Do not edit product source", prompt)
+        self.assertIn("Claude Solution Planner Contract", prompt)
+
+    def test_batch_card_auto_selects_batch_prompt_and_minimal_tools(self):
+        task = self._write_builder_task_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Batch Builder Gate\n\n"
+                "| Field | Value |\n|---|---|\n"
+                "| Transformation rule | deterministic replacement |\n"
+                "| Independent write units | src/a.py, src/b.py |\n"
+            )
+        capture = self.case_root / "batch-prompt.md"
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_PROMPT_CAPTURE": str(capture), "CLAUDE_CODE_TOOL_PROFILE": "auto"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Builder Mode:    batch", result.stdout)
+        self.assertIn("Tool Profile:    minimal-builder", result.stdout)
+        prompt = capture.read_text(encoding="utf-8")
+        self.assertIn("batch executor in a Codex/Claude Code workflow", prompt)
+        self.assertIn("Never broaden the batch", prompt)
+        self.assertIn("Batch Builder Gate", prompt)
+
+    def test_solution_planner_allows_only_structured_contract_artifact(self):
+        task = self._write_builder_task_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Claude Solution Planner Contract\n\n"
+                "| Field | Value |\n|---|---|\n| Planning owner | Claude |\n"
+            )
+        result = self._dispatch(
+            "task-cards/BUILDER.md", {"FAKE_CLAUDE_MODE": "planner-contract"}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Dispatch Outcome:success", result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Solution-planner output scope PASSED", progress)
+
+    def test_solution_planner_source_edit_is_scope_violation(self):
+        task = self._write_builder_task_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Claude Solution Planner Contract\n\n"
+                "| Field | Value |\n|---|---|\n| Planning owner | Claude |\n"
+            )
+        result = self._dispatch(
+            "task-cards/BUILDER.md", {"FAKE_CLAUDE_MODE": "diff-without-report"}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Dispatch Outcome:scope_violation", result.stdout)
+        self.assertIn("solution-planner changed paths", result.stderr)
 
     def test_first_progress_timeout_legacy_alias_is_honored(self):
         self._write_builder_task_card()
@@ -2340,9 +2438,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotIn("Startup interaction probe:", progress)
         self.assertNotIn("Interaction probe (zero-output):", progress)
 
-    def test_observation_probe_result_reused_not_duplicated_by_zero_output(self):
-        """When observation probe runs at first-progress threshold, zero-output
-        finalization reuses its result instead of running a duplicate probe."""
+    def test_successful_startup_probe_skips_redundant_observation_probe(self):
+        """A successful startup probe is enough while Claude is still running;
+        zero-output finalization may probe current availability once."""
         self._write_builder_task_card()
         result = self._dispatch(
             "task-cards/BUILDER.md",
@@ -2354,12 +2452,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
-        # Observation probe should have run at first-progress threshold.
-        self.assertIn("First-progress observation probe: conclusion=", progress)
-        # At finalization, the observation result should be reused.
-        self.assertIn("Reusing observation-stage probe result", progress)
-        # A separate zero-output probe must NOT have been invoked.
-        self.assertNotIn("Interaction probe (zero-output):", progress)
+        self.assertIn("First-progress observation probe skipped: startup probe already confirmed availability", progress)
+        self.assertNotIn("First-progress observation probe: conclusion=", progress)
+        self.assertIn("Interaction probe (zero-output):", progress)
 
     # --- First-progress observe vs stop tests ---
 

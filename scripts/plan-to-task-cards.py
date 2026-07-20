@@ -99,7 +99,7 @@ def main(argv=None):
     parser.add_argument("--repo", default=".", help="Repository root (default: current directory)")
     parser.add_argument("--out-dir", default=None, help="Task-card output directory")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing task cards")
-    parser.add_argument("--preset", choices=("builder", "checker", "revision", "control-plane"), default="builder")
+    parser.add_argument("--preset", choices=("builder", "batch-builder", "solution-planner", "exploratory-builder", "checker", "revision", "control-plane"), default="builder")
     parser.add_argument("--gate", action="append", default=[], help="Optional task-card gate component")
     args = parser.parse_args(argv)
 

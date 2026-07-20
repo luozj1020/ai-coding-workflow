@@ -165,10 +165,20 @@ def progress_fields(worktree: Path, worktrees: Path, task_id: str, limit: int) -
     live = worktree / "CLAUDE_PROGRESS.md"
     archived = worktrees / f"{task_id}.claude-progress.md"
     text = bounded_tail(live if live.is_file() else archived, 32768)
-    result: Dict[str, Any] = {"phase": "", "next_check": "", "blocker": "", "last_update": ""}
+    result: Dict[str, Any] = {
+        "phase": "", "execution_phase": "", "next_check": "", "blocker": "",
+        "last_update": "", "implementation_complete": "unknown",
+        "assigned_tail_work": "", "tail_work_complete": "unknown",
+        "completion_ready": "unknown",
+    }
     labels = {
         "Current Phase": "phase", "Next Check": "next_check",
         "Blocker": "blocker", "Last Update": "last_update",
+        "Execution Phase": "execution_phase",
+        "Implementation Complete": "implementation_complete",
+        "Assigned Tail Work": "assigned_tail_work",
+        "Tail Work Complete": "tail_work_complete",
+        "Completion Ready": "completion_ready",
     }
     for label, key in labels.items():
         found = re.findall(rf"(?im)^-?\s*{re.escape(label)}:\s*(.+)$", text)
@@ -289,11 +299,22 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     if event.get("running") == "yes" and not running and not visibility and not terminal:
         conflicts.append("monitor-role-state-conflict")
     direction_deviation = "direction-deviation" in errors
+    completion_ready = str(progress["completion_ready"]).strip().lower() == "yes"
+    implementation_complete = str(progress["implementation_complete"]).strip().lower() == "yes"
+    tail_work_complete = str(progress["tail_work_complete"]).strip().lower() == "yes"
+    finish_expected = completion_ready or (
+        implementation_complete and tail_work_complete
+        and progress["next_check"].strip().lower() == "exit"
+    )
 
     if visibility and not terminal:
         decision, confidence, reason = "visibility-unknown", "high", "process-visibility-restricted"
     elif terminal and not overall_running:
         decision, confidence, reason = "terminal", "high", "terminal-evidence"
+    elif running and finish_expected:
+        # Completion is a voluntary-exit signal, never an interruption grant.
+        # Keep waiting for the child to flush its report/result and exit itself.
+        decision, confidence, reason = "continue", "high", "completion-ready-awaiting-voluntary-exit"
     elif direction_deviation:
         decision, confidence, reason = "interrupt-candidate", "high", "explicit-direction-deviation"
     elif running and level == "L3" and quiet >= args.interrupt_after and suspect >= args.confirmations and growth != "yes":
@@ -321,13 +342,20 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         "confidence": confidence, "reason_code": reason,
         "codex_review_required": "yes" if codex_review else "no",
         "interrupt_authorized": "no", "monitor_level": level,
+        "finish_expected": "yes" if finish_expected else "no",
+        "finish_recommended": "yes" if finish_expected and running else "no",
         "monitor_action": monitor_action, "running": "yes" if running else ("unknown" if visibility else "no"),
         "overall_running": "yes" if overall_running else ("unknown" if visibility else "no"),
         "dispatcher": states["dispatcher"], "claude": states["claude"], "checker": states["checker"],
         "elapsed_seconds": elapsed, "quiet_seconds": quiet, "suspect_count": suspect,
         "evidence_state": evidence, "artifact_growth": growth,
         "worktree_changes": changes, "changed_paths": paths, "diffstat": diffstat,
-        "phase": progress["phase"], "next_check": progress["next_check"],
+        "phase": progress["phase"], "execution_phase": progress["execution_phase"],
+        "implementation_complete": progress["implementation_complete"],
+        "assigned_tail_work": progress["assigned_tail_work"],
+        "tail_work_complete": progress["tail_work_complete"],
+        "completion_ready": progress["completion_ready"],
+        "next_check": progress["next_check"],
         "blocker": progress["blocker"], "checklist_done": progress["checklist_done"],
         "checklist_total": progress["checklist_total"], "error_categories": errors,
         "evidence_conflicts": sorted(set(conflicts)), "summary": summary,
@@ -336,7 +364,9 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
 
 def render_text(value: Dict[str, Any]) -> str:
     keys = ("decision", "confidence", "reason_code", "codex_review_required",
-            "interrupt_authorized", "monitor_level", "running", "elapsed_seconds",
+            "interrupt_authorized", "finish_expected", "finish_recommended",
+            "execution_phase", "implementation_complete", "completion_ready",
+            "monitor_level", "running", "elapsed_seconds",
             "quiet_seconds", "suspect_count", "artifact_growth", "worktree_changes", "summary")
     return "\n".join(f"{key}={clean(value.get(key), 240)}" for key in keys) + "\n"
 

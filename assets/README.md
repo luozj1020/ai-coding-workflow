@@ -1,5 +1,14 @@
 # AI Coding Workflow  -  Local Usage Guide
 
+## Applicability
+
+Use this workflow for non-trivial delegated work when conserving Codex quota is
+worth additional orchestration and latency. Bypass it for tiny or urgent edits,
+ordinary code questions, read-only investigation, tight interactive debugging,
+or when Claude execution, worktree isolation, or reviewable evidence is not
+reliable. Record `workflow bypassed: <reason>` and use ordinary Codex/local tools;
+do not create a task card or call Spark solely to justify the bypass.
+
 ## Installing This Skill for Codex
 
 To make this Skill discoverable by Codex, install it from a cloned copy of `ai-coding-workflow`:
@@ -52,14 +61,15 @@ python ~/.codex/skills/ai-coding-workflow/scripts/update_skill.py \
 
 This repository has been set up with a multi-agent AI coding workflow. The workflow splits software work between planning, execution, and review agents in an explicit loop:
 
-- **Codex / GPT**  -  plans and reviews (top-level design, not concrete edits)
-- **Claude Code**  -  implements in Builder tasks and validates in Checker/Test tasks
-- **Codex Spark**  -  default-on optional `gpt-5.3-codex-spark` auxiliary for task-size classification, task-card audits, plan splitting, validation planning, failure triage, evidence checks, or tiny isolated micro-builder work
+- **Codex / GPT**  -  intent freezer, high-risk exception owner, and semantic reviewer
+- **Claude Code**  -  default planner, implementation/revision Builder, and conditional Checker
+- **Codex Spark**  -  opt-in structured router/monitor; successful routing output stays short and direct
 - **Large-repo mode**  -  optional managed worktree reuse and reduced untracked-file scans for slow filesystems
-- **MiMo / DeepSeek**  -  optional exhaustive review helper
+- **Claude-compatible auxiliary model**  -  optional cost-efficient execution or exhaustive review helper
 - **LSP / Locator / CodeGraph / MCP**  -  low-token code intelligence with bounded large-repo lookup before broad reads
 
-**Core principle:** Codex designs and reviews. Claude edits. Tools gather low-token evidence first.
+**Core principle:** Minimize scarce Codex work. Claude plans and edits by default;
+Codex freezes intent and reviews bounded semantic evidence. Tools gather low-token evidence first.
 
 For non-trivial changes, split Claude work into two roles:
 
@@ -70,21 +80,35 @@ Task cards can require **Direction / Boundary Acknowledgement** before editing. 
 
 Use `ai/init-spec.py` for ambiguous feature, UX, API, or data-model work, then fill `Spec Gate` in the task card. `ai/init-plan.py` creates `task_plan.md` with `### Task N: ...` sections; use `ai/plan-to-task-cards.py` to turn reviewed task sections into scoped task cards. Use `Root Cause Gate` before bugfixes/regressions, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work is ready for human merge.
 
-Leave `Codex Spark Gate` at `auto` when a task can benefit from the separate Spark quota pool without spending stronger-model quota. Prefer Spark for uncertain task-size routing before spending stronger Codex/Claude context, but pass an explicit `--mode` when the support role is already known. `--mode auto` resolves to an applicable stage bundle: ordinary pre-Builder use evaluates deterministic signals (routing confidence not high, context incomplete, call may avoid Claude retry or Codex review, diff deviates from prediction, acceptance partial, failure attribution unclear) and invokes `preflight-bundle` only when at least one signal is present; otherwise Spark is skipped with reason `skip.no_expected_decision_value`. Diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility. Budget mode (`AI_SPARK_BUDGET_MODE` / `--budget-mode`): `balanced` (default), `aggressive` (enables additional revision drafting on failure), `conservative` (legacy single-role routing). Recommend at most three short Spark helper invocations per task — a preflight call, an optional targeted or failure role call, and a postflight call — as a workflow recommendation, not cross-process daemon or state enforcement. New explicit read-only modes: `observe-synthesizer`, `task-card-drafter`, `context-packet-builder`, `preflight-bundle`, `direction-precheck`, `acceptance-matrix`, `postflight-bundle`, `revision-drafter`, `lesson-extractor`, `execution-cost-estimator`. Bundle output uses seven compressed headings: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action. Prefer read-only modes: `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, `evidence-checker`, or `parallel-planner`; use `micro-builder` only when the task card authorizes Spark source edits, limits scope to one or two small files, rules out public API/contract risk, and gives exact narrow validation in the helper-created isolated worktree; use `controlled-builder` for narrow auditable source-write work with explicit `--allow-write` paths (1–3), required `--max-diff-lines` (1–200), all public API/data/security/migration/permission/concurrency/cross-module risks excluded, existing pattern/source-of-truth required, forced full artifacts and isolated worktree, and tracked/untracked path/line/binary evidence checked after run — violations exit non-zero, remain isolated, never modify source, merge, or satisfy acceptance. Spark result delivery modes: `direct` (advisory default, no permanent directory), `minimal` (stdout + compact report), `full` (all evidence preserved). `--output` without `--result-mode` selects `minimal`; `--output --result-mode direct` is invalid. Source-writing modes force `full`. Spark evidence is auxiliary, auto-disables when unavailable or quota-exhausted, must not silently fall back to GPT-5.5 or another stronger model, cannot independently satisfy acceptance, cannot authorize merge, and requires strong Codex review. No implicit strong-model fallback. No model-tier routing in this change. For summary/benchmark aggregation across multiple reports, record: helper invocation count, total Spark calls, unique modes/stages/roles, budget modes, provisional status, strong-review required, merge authorization status, and auto-disable occurrences/reasons.
+Spark supplies structured routing or monitoring only when that replaces Codex
+work. Invalid output falls back to the deterministic Claude-first route. Spark
+remains advisory, free in economics reports, and unable to approve or merge.
 
 Phase ownership is explicit:
 
 | Phase | Codex owns | Claude owns |
 |-------|------------|-------------|
-| Observe / Plan | Evidence, scope, task card, acceptance criteria, responsibility gates | N/A unless dispatched for exploration |
-| Builder Execute | Progress observation and direction review | Scoped implementation, progress updates, direction report |
+| Observe / Plan | Goal/risk boundary and one adversarial contract review | Default structured solution contract and bounded exploration |
+| Builder Execute | Compact direction review only | Default exploratory, batch, or frozen-solution implementation |
 | Direction Review | Wait, revise, split, dispatch checker-test, or threshold-based takeover decision | Report blockers and avoid repeated confirmation loops |
 | Checker/Test | Validation task dispatch and evidence review | Assigned tests, assigned validation, failure evidence |
 | Final Review | Accept / revise / split / reject; human merge stays separate | N/A unless re-dispatched |
 
-Codex direct work is preferred whenever delegation would not reduce context acquisition, semantic rereview, or total control-plane work—even above an ordinary small-change line gate when scope and solution stay bounded. Claude is preferred for mechanical batches, tests, long validation/evidence processing, independent units, or changes that permit sampled Codex review. Risk raises rigor and may bias only toward Codex.
+Claude-first is the default regardless of predicted lines. Broad work starts with
+a solution contract or bounded `exploratory-builder`; frozen, mechanical, test,
+and validation work remains Claude-owned. Confirmed high-risk core semantics may
+bias toward Codex. Portfolio concurrency is managed by separate user terminals,
+not by the Skill.
 
-After Codex accepts a Builder's main direction, run a fresh Spark `revision` route before writing another card. A deterministic correction may use `reviewer-owned bounded correction` when Codex already holds the exact reviewed context, no new design decision is needed, and the calibrated correction fits the repository-scale direct gate. This is economic re-routing, not repeated-failure takeover. Architectural/broad deviation is not eligible; if Claude remains owner, prefer reviewed same-worktree continuation.
+When `solution-planner` is selected, Claude writes `solution-contract.draft.json`; Codex performs one adversarial review and classifies findings as blocking, recommended, backlog, or spec-change. Freeze with `python ai/solution-contract.py freeze ...`. Only unresolved blocking findings or incorporated spec changes reopen planning; all frozen implementation slices route independently.
+
+Runtime role propagation is explicit: `solution-planner` selects
+`solution-planning`, `exploratory-builder` selects `exploratory`, `batch-builder`
+selects `batch`, and `execution-builder` selects `execution-only`.
+
+After Codex accepts a Builder's main direction, prefer one reviewed same-worktree
+Claude continuation. A deterministic correction may route to Codex only when it
+already holds the exact context and no new decision is needed.
 
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 
@@ -261,11 +285,11 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode task-card-audit
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode validation-planner
 ```
 
-Default `--mode auto` resolves to an applicable stage bundle: ordinary pre-Builder use evaluates deterministic signals (routing confidence not high, context incomplete, call may avoid Claude retry or Codex review, diff deviates from prediction, acceptance partial, failure attribution unclear) and invokes `preflight-bundle` only when at least one signal is present; otherwise Spark is skipped with reason `skip.no_expected_decision_value`. Diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility.
+Default `--mode auto` is short and value-triggered. Before execution it selects `execution-cost-estimator` only for an explicit, plausible Claude candidate whose economics remain uncertain; deterministic Codex ownership skips Spark. Postflight and failure analysis remain available only when they can change a decision.
 
 Budget mode (`AI_SPARK_BUDGET_MODE` / `--budget-mode`): `balanced` (default), `aggressive` (enables additional revision drafting on failure), `conservative` (legacy single-role routing).
 
-Recommend at most three short Spark helper invocations per task: a preflight call, an optional targeted or failure role call, and a postflight call. This is a workflow recommendation, not cross-process daemon or state enforcement.
+A normal Claude-first task should need at most one routing estimate and one terminal evidence check.
 
 New explicit read-only modes: `observe-synthesizer`, `task-card-drafter`, `context-packet-builder`, `preflight-bundle`, `direction-precheck`, `acceptance-matrix`, `postflight-bundle`, `revision-drafter`, `lesson-extractor`, `execution-cost-estimator`.
 
@@ -273,9 +297,15 @@ Bundle output uses seven compressed headings: Decision Summary, Risk Flags, Scop
 
 Use `task-size-classifier` to spend cheaper Spark quota before stronger-model context when task size is unclear. It should classify the task as `tiny`, `small`, `medium`, `large`, or `unknown` and recommend `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`. It also includes execution-cost fields when available.
 
-The `execution-cost-estimator` mode predicts diff range/files, `task_role`, repository-scale routing facts, and relative direct/delegated work units. Run a fresh estimate before every initial, revision, narrowed retry, re-dispatch, split-child, or next-phase task card; use `--routing-event initial|revision|narrow|retry|next-phase` and do not reuse the previous card's owner decision. Work units are relative estimates, not token-accounting measurements. The helper calibrates Spark's raw upper line estimate by 1.5x normally and 2.0x for tests/fixtures, shell/process orchestration, and cross-platform work, then applies the repository-scale gates above. Risk flags and validation complexity normally affect review, validation, isolation, and approval rigor rather than ownership. Risk must never push work from Codex to Claude; if a human or policy explicitly applies a risk-based owner override, it may bias high-risk work only toward Codex. Actual edits may exceed the estimate while scope, solution, and context remain stable. This is a pre-dispatch decision, not a post-Claude takeover; it never automatically edits source.
+The `execution-cost-estimator` predicts diff range/files and relative direct/delegated work units. Use it only when a fresh deterministic ROUTE has a concrete Claude candidate but cannot settle the economics. An earlier estimate never authorizes a revised card; invalid output keeps Codex ownership.
 
-When using explicit `task-size-classifier` mode or conservative auto routing (balanced/aggressive ordinary preflight is `preflight-bundle`), the helper runs Codex from the Spark artifact directory with `workspace-write` sandbox. This gives local helper initialization a writable working directory without granting write access to the source repository, and the mode contract still forbids source edits.
+Before Spark or card composition, the router records economics. Default
+`claude-first` treats elapsed time as advisory; optional `economy-first` requires
+15% cost saving, active time at most 2.0x direct, and 30% less Codex work.
+
+Auxiliary work without enough accepted history runs as a serial canary: no parallel release or automatic Checker. A counted model failure requires a fresh route before redispatch; transport/approval failures remain recoverable. Efficient preparation stops before Claude when the default 45-second, 24 KiB task-card, 64 KiB Context Packet, or 80 KiB combined control-plane budget is exceeded.
+
+Explicit diagnostic modes such as `task-size-classifier` and `preflight-bundle` run from the Spark artifact directory with a writable helper workspace while the source repository remains read-only. They are compatibility/debug tools rather than default routing stages.
 
 For evidence checks:
 
@@ -435,7 +465,7 @@ bash ai/run-parallel-loop.sh --max-concurrency 2 \
   ai/task-cards/PROJ-123-b.md
 ```
 
-The helper dispatches tasks concurrently, writes `.worktrees/parallel-*/parallel-summary.md`, and never merges automatically. It refuses ungated task cards and overlapping `Allowed files/modules` by default. Use `--allow-overlap` only for explicit manual-reconcile experiments.
+The helper first runs one canary and executes its declared narrow validation with the local checker helper. Only a passing canary releases the remaining tasks, up to the concurrency cap; every later unit is also validated. A missing worktree, missing command, or failed check is incomplete rather than success. The helper writes `.worktrees/parallel-*/parallel-summary.md` and never merges automatically. It refuses ungated task cards and overlapping `Allowed files/modules` by default. Use `--allow-overlap` only for explicit manual-reconcile experiments; `--no-ramp-up` and `--no-unit-validation` are diagnostic overrides.
 
 **Path 2: Reviewed DAG plan (`--plan`)**
 
@@ -453,7 +483,7 @@ bash ai/run-parallel-loop.sh --plan ai/plans/PROJ-123/parallel-plan.json
 
 Schema fields: `schema_version` (must be `1`), `group_id`, `max_concurrency`, `failure_policy` (currently `skip-dependents`), and `tasks` containing `id`, `task_card`, `depends_on` per task. Task-card paths resolve relative to the plan file. An explicit CLI `--max-concurrency` overrides the plan's cap.
 
-Scheduling semantics: the scheduler starts only dependency-ready tasks up to the concurrency cap. With `skip-dependents`, a failed prerequisite prevents all transitive dependents from dispatching while unrelated branches continue. All cards still require scope-gate and overlap checks. Review and merge remain serial.
+Scheduling semantics: the scheduler validates one dependency-ready canary before expansion, then starts only dependency-ready tasks up to the concurrency cap and validates every unit. With `skip-dependents`, a failed prerequisite prevents all transitive dependents from dispatching while unrelated branches continue. All cards still require scope-gate and overlap checks. Review and merge remain serial.
 
 While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
 
@@ -601,6 +631,13 @@ The benchmark aggregates advisor usage, diagnostic probe usage/cost, same-worktr
 
 The benchmark also aggregates execution owner, task-card/review-packet bytes, control-plane time, Checker model dispatches, and approximate Claude-diff reuse. Primary runs, efficient final-candidate reviews, and accepted legacy loops write records automatically. History append is idempotent; reuse remains unavailable until Claude and final diffs are both bound.
 
+Controlled economics experiments record Spark calls/tokens but exclude role
+`spark` from charged cost, paired cost ratios, and recommendations; raw usage
+remains visible as quota telemetry. Freeze weighted `improvement_units` in each
+real-project task spec and record `improvement_units_satisfied` per arm. The
+summary compares delivered weight, cost per weight, and active seconds per
+weight. Diff lines, changed files, and test counts are descriptive only.
+
 **Efficiency evidence enforcement:** `python scripts/compare-efficiency.py BASELINE CANDIDATE --enforce` evaluates real aggregate evidence (codex call reduction, latency, first-pass rate, quality gates, continuation success, redispatch avoidance, and re-exploration metrics). With `--enforce`, it returns non-zero for failed or insufficient Advisor efficiency evidence; it must not fabricate Token/time savings.
 
 Claude also maintains `CLAUDE_PROGRESS.md` as a compact progress memory with stable fields: Goal, Current Phase, Next Check, Blocker, and Last Update.
@@ -730,9 +767,11 @@ Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones.
 
 `watch-claude.sh` defaults to a low-cost status panel and prints full progress/status/network tails only when `--details` is explicit. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
 
-`watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
+`watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Watch events additionally expose `execution_phase`, `implementation_complete`, `completion_ready`, and `finish_recommended`. Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, use `monitor-claude.sh start <task-id>` and then `monitor-claude.sh decision <task-id>` at a review boundary. Deterministic local reduction runs first; only ambiguous or candidate-interrupt compact JSON may go to Spark `monitor-triage`. Neither helper authorizes interruption.
+For agent-driven runs, the dispatcher starts `monitor-claude.sh` automatically unless `CLAUDE_CODE_BACKGROUND_MONITOR=0`. A local supervisor evaluates only material transitions while Claude continues; machine mode reuses dispatcher heartbeat fields and avoids repeated diff/status scans. Its interval follows `CLAUDE_CODE_HEARTBEAT_SECONDS` unless overridden by `CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS`. Stable states remain zero-model, and only ambiguous or candidate-interrupt compact JSON may asynchronously go to rate-limited Spark `monitor-triage`. Use `CLAUDE_CODE_MONITOR_SPARK=off` for local-only monitoring. Manual `monitor-claude.sh decision <task-id>` remains available at review boundaries. Neither helper authorizes interruption.
+
+Builder cards use conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation remain disabled until assigned precisely. After that bounded tail, Claude sets `Completion Ready: yes`, writes its final report/result, and exits normally. The dispatcher writes `<task-id>.phase-metrics.json`; when `AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE` is exported by an experiment run, it also copies the same diagnostic metrics into that run directory automatically.
 
 Monitoring priority is intentionally conservative to avoid false kills:
 
@@ -783,7 +822,8 @@ When integrations are allowed:
 
 ## Control-Plane Exception
 
-The normal role split is: Codex plans/reviews, Claude Code edits. One exception is workflow control-plane repair: if the dispatcher, installer, review script, or loop runner is the component that prevents safe delegation, Codex may make a narrowly scoped hotfix after recording a task card and verification evidence. Use this only to restore the workflow itself; route normal product/code changes back through Claude Code.
+The normal role split is: Claude plans and implements; Codex freezes intent and
+reviews. Workflow control-plane repair follows the same owner route.
 
 ## Claude Dispatch Operations
 

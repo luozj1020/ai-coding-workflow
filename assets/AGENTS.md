@@ -5,8 +5,9 @@ Project-specific text outside the managed block is preserved by the installer.
 <!-- AI-CODING-WORKFLOW:BEGIN managed -->
 ## AI Coding Workflow Core
 
-**Use the least expensive path that preserves correctness.** Codex owns routing,
-design, and semantic review; Claude owns only delegated execution; Spark supplies
+**Minimize scarce Codex work while preserving correctness.** Codex freezes
+intent and performs bounded semantic review; Claude owns planning,
+implementation, revision, assigned tests, and long validation; Spark supplies
 optional bounded advice; humans own merge and destructive/high-impact approval.
 
 Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
@@ -14,25 +15,45 @@ Prefer LSP, `ai/locate-code.py`, targeted reads, initialized CodeGraph, and loca
 deterministic tools over broad reads. Do not browse the web for local repository
 failures unless the user explicitly requests external/current information.
 
-## Economy-First Ownership
+Apply this workflow only to non-trivial work where Claude delegation is expected
+to remove material Codex work and longer latency is acceptable. For tiny/urgent
+edits, ordinary code questions, read-only investigation, tight interactive
+debugging, or unreliable Claude/isolation/evidence, record `workflow bypassed:
+<reason>` and use ordinary Codex/local tools without a task card or Spark call.
 
-Before every initial, revision, narrow, retry, split-child, or next-phase card,
-ROUTE from a short current brief. A deterministic tiny skip or optional Spark
-`execution-cost-estimator`/`preflight-bundle` happens before card authoring.
+## Claude-First Ownership
+
+Before every initial, revision, narrow, retry, split-child, or next-phase action,
+ROUTE from a short current brief. `ownership_profile=claude-first` is the
+default. Claude owns source-writing unless the human explicitly chooses Codex,
+the task is confirmed high-risk core semantics, or Codex is applying a reviewed
+deterministic correction. `economy-first` is an explicit alternative profile.
+Spark may replace Codex estimation when ownership or task shape is uncertain;
+`preflight-bundle` remains diagnostic/compatibility-only.
 Unavailable or schema-invalid Spark auto-disables without strong-model fallback.
 
-Choose Codex direct editing when it already holds the exact context and Claude
-delegation would not reduce semantic rereview, context reacquisition, or total
-control-plane work. This includes focused core-semantic changes in large projects
-that Codex must fully rereview. Choose Claude for mechanical batches, independent
-units, assigned test writing, long validation/log/evidence work, or implementation
-that permits sampled rather than full Codex review. Risk increases rigor and may
-bias only toward Codex; it must never push ownership toward Claude.
+Use Claude `execution-builder` for a frozen solution, `batch-builder` for
+mechanical work, and `exploratory-builder` for bounded new-feature work whose
+implementation path is not yet clear. Single-task wall time is advisory because
+portfolio concurrency belongs to independent user terminals. Optimize accepted
+output per Codex token, not total downstream-model tokens. Confirmed high-risk core semantics
+may bias only toward Codex; unknown risk raises review rigor without silently
+changing the owner.
+
+For a large or multi-phase feature with a clear goal but open implementation
+path, ROUTE should prefer Claude `solution-planner` when the structured contract
+is expected to remove at least 30% of Codex planning work. Claude produces a validated
+structured solution contract; Codex performs one adversarial review and freezes
+it. Only blocking findings or incorporated spec changes reopen planning.
+Recommended findings become backlog. Route every frozen implementation slice
+back to Claude independently and do not repeat whole-project planning in cards.
 
 For delegated work, read only `ai/task-card-components/catalog.md`, select one
 preset plus material gates, and run `python ai/compose_task_card.py ...`. Fill the
-composed short card; the monolithic template is compatibility-only. Revision cards
-bind accepted evidence and describe only the delta.
+composed short card; the monolithic template is compatibility-only. The integrated
+runner performs this only after the positive route, inlines bounded context once,
+and dispatches the composed Markdown rather than the source Task JSON. Revision
+cards bind accepted evidence and describe only the delta.
 
 ## Dispatch and Validation
 
@@ -47,8 +68,9 @@ bind accepted evidence and describe only the delta.
   changes are required, record `checker skipped: deterministic evidence sufficient`.
 - Codex reviews Builder direction before any Checker dispatch. Final semantic
   review and merge authorization never belong to Spark or Claude.
-- Parallel execution is opt-in, normally max two, with independent write scopes
-  and serial reconciliation/review.
+- Do not coordinate multiple projects or portfolio concurrency inside the Skill.
+  The user runs one repository workflow per terminal. Legacy within-repository
+  parallel helpers remain explicit compatibility tools, never an automatic route.
 
 ## Recovery and Intervention
 
@@ -65,8 +87,8 @@ Prior-session failures do not transfer automatically.
 
 Dirty source/stale HEAD is a delegation blocker, not a forced Codex edit. Restore
 a reliable base or obtain explicit authority. After Codex accepts the main
-direction, a fresh revision ROUTE may select a reviewer-owned bounded correction
-when the remaining change is deterministic, local, and already in Codex context.
+direction, prefer one reviewed same-worktree Claude continuation. A fresh route
+may select a reviewer-owned correction only for a deterministic local delta.
 
 Missing prose is an evidence gap. Recover from matching diff and deterministic
 checks when possible. Seeded/fallback reports never count as Claude completion.

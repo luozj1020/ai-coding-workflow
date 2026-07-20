@@ -457,6 +457,18 @@ current_milestone() {
     fi
 }
 
+progress_field() {
+    local file="$1" label="$2" fallback="$3" value=""
+    if [ -f "$file" ]; then
+        value="$(sed -n "s/^-*[[:space:]]*${label}:[[:space:]]*//p" "$file" 2>/dev/null | tail -1 || true)"
+    fi
+    if [ -n "$value" ]; then
+        printf '%s\n' "$value"
+    else
+        printf '%s\n' "$fallback"
+    fi
+}
+
 progress_percent() {
     local file="$1"
     if [ ! -f "$file" ]; then
@@ -690,9 +702,12 @@ print_details_if_needed() {
 print_snapshot() {
     print_header
 
-    local claude_progress_source report_source running overall_running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor level digest show_details dispatcher_running claude_running checker_running artifact_bytes artifact_growth machine_milestone
+    local claude_progress_source report_source running overall_running last_line elapsed quiet result_bytes status_bytes network_bytes report_bytes claude_progress_bytes diff_bytes worktree_changes partial_summary risk_summary network_summary percent bar milestone reason action evidence monitor level digest show_details dispatcher_running claude_running checker_running artifact_bytes artifact_growth machine_milestone execution_phase implementation_complete completion_ready finish_recommended
     claude_progress_source="$(select_claude_progress_file)"
     report_source="$(select_report_file)"
+    execution_phase="$(progress_field "$claude_progress_source" "Execution Phase" "unknown")"
+    implementation_complete="$(progress_field "$claude_progress_source" "Implementation Complete" "unknown")"
+    completion_ready="$(progress_field "$claude_progress_source" "Completion Ready" "unknown")"
 
     # Spec item 3/4: role-aware running state
     dispatcher_running="$(role_state "$DISPATCHER_PID_FILE")"
@@ -720,6 +735,10 @@ print_snapshot() {
     else
         running="no"
     fi
+    finish_recommended="no"
+    if [ "$running" = "yes" ] && [ "$(printf '%s' "$completion_ready" | tr '[:upper:]' '[:lower:]')" = "yes" ]; then
+        finish_recommended="yes"
+    fi
     LAST_OVERALL_RUNNING="$overall_running"
     last_line="$(last_dispatch_line)"
     elapsed="$(field_from_line "$last_line" "elapsed_seconds")"; elapsed="${elapsed:-0}"
@@ -732,8 +751,16 @@ print_snapshot() {
     diff_bytes="$(file_size "$DIFF_FILE")"
     worktree_changes="$(field_from_line "$last_line" "worktree_changes")"
     worktree_changes="${worktree_changes:-$(worktree_change_count)}"
-    partial_summary="$(partial_diffstat | head -1)"
-    risk_summary="$(partial_risk_summary)"
+    if [ "$MACHINE" -eq 1 ]; then
+        # The persistent supervisor consumes dispatcher heartbeat fields. Avoid
+        # a second diff/status scan on every monitor tick in large repositories;
+        # bounded path/risk inspection remains available at a decision boundary.
+        partial_summary="deferred-machine-monitor"
+        risk_summary="deferred-machine-monitor"
+    else
+        partial_summary="$(partial_diffstat | head -1)"
+        risk_summary="$(partial_risk_summary)"
+    fi
     network_summary="$(latest_network_summary)"
     percent="$(progress_percent "$claude_progress_source")"
     bar="$(progress_bar "$percent")"
@@ -767,7 +794,7 @@ print_snapshot() {
     # Deliberately exclude elapsed/quiet seconds and their prose reason from the
     # event identity. Ordinary heartbeats must not wake an observing controller;
     # artifact, evidence, action/level, role, or terminal-state changes still do.
-    digest="${running}|${overall_running}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${action}|${monitor}|${level}|${monitor_suspect_count}|${dispatcher_running}|${claude_running}|${checker_running}"
+    digest="${running}|${overall_running}|${result_bytes}|${status_bytes}|${network_bytes}|${report_bytes}|${claude_progress_bytes}|${worktree_changes}|${partial_summary}|${risk_summary}|${network_summary}|${percent}|${milestone}|${evidence}|${action}|${monitor}|${level}|${monitor_suspect_count}|${dispatcher_running}|${claude_running}|${checker_running}|${execution_phase}|${implementation_complete}|${completion_ready}|${finish_recommended}"
     if [ "$digest" != "$last_digest" ]; then
         if [ "$running" = "yes" ]; then
             if [ "$checker_running" = "running" ]; then
@@ -789,8 +816,8 @@ print_snapshot() {
 
         if [ "$MACHINE" -eq 1 ]; then
             machine_milestone="$(printf '%s' "$milestone" | tr '\r\n\t' '   ' | tr -cd '[:print:]' | cut -c1-120)"
-            printf 'monitor_event task_id=%q state=%q monitor_level=%q action=%q evidence_state=%q quiet_seconds=%q suspect_count=%q running=%q overall_running=%q dispatcher=%q claude=%q checker=%q elapsed_seconds=%q worktree_changes=%q artifact_growth=%q milestone=%q\n' \
-                "$TASK_ID" "$state" "$level" "$action" "$evidence" "$quiet" "$monitor_suspect_count" "$running" "$overall_running" "$dispatcher_running" "$claude_running" "$checker_running" "$elapsed" "$worktree_changes" "$artifact_growth" "$machine_milestone"
+            printf 'monitor_event task_id=%q state=%q monitor_level=%q action=%q evidence_state=%q quiet_seconds=%q suspect_count=%q running=%q overall_running=%q dispatcher=%q claude=%q checker=%q elapsed_seconds=%q worktree_changes=%q artifact_growth=%q execution_phase=%q implementation_complete=%q completion_ready=%q finish_recommended=%q milestone=%q\n' \
+                "$TASK_ID" "$state" "$level" "$action" "$evidence" "$quiet" "$monitor_suspect_count" "$running" "$overall_running" "$dispatcher_running" "$claude_running" "$checker_running" "$elapsed" "$worktree_changes" "$artifact_growth" "$execution_phase" "$implementation_complete" "$completion_ready" "$finish_recommended" "$machine_milestone"
         elif [ "$PLAIN" -eq 1 ]; then
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] state=${state} elapsed=${elapsed}s quiet=${quiet}s ${bar}"
             echo "current: ${milestone}"
@@ -800,7 +827,7 @@ print_snapshot() {
             echo "risk: ${risk_summary}"
             echo "network: ${network_summary}"
             echo "monitor: ${monitor}"
-            echo "machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" quiet_seconds=${quiet} suspect_count=${monitor_suspect_count} running=${running} overall_running=${overall_running} dispatcher=${dispatcher_running} claude=${claude_running} checker=${checker_running} elapsed_seconds=${elapsed} worktree_changes=${worktree_changes} network=\"${network_summary}\""
+            echo "machine: monitor_level=${level} action=${action} evidence_state=\"${evidence}\" quiet_seconds=${quiet} suspect_count=${monitor_suspect_count} running=${running} overall_running=${overall_running} dispatcher=${dispatcher_running} claude=${claude_running} checker=${checker_running} elapsed_seconds=${elapsed} worktree_changes=${worktree_changes} execution_phase=${execution_phase} implementation_complete=${implementation_complete} completion_ready=${completion_ready} finish_recommended=${finish_recommended} network=\"${network_summary}\""
             echo "action: ${action}"
             echo "analysis: ${reason}"
             echo ""
@@ -816,7 +843,7 @@ print_snapshot() {
             printf ' RISK     : %s\n' "$risk_summary"
             printf ' NETWORK  : %s\n' "$network_summary"
             printf ' MONITOR  : %s\n' "$monitor"
-            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" quiet_seconds=%s suspect_count=%s running=%s overall_running=%s dispatcher=%s claude=%s checker=%s elapsed_seconds=%s worktree_changes=%s network="%s"\n' "$level" "$action" "$evidence" "$quiet" "$monitor_suspect_count" "$running" "$overall_running" "$dispatcher_running" "$claude_running" "$checker_running" "$elapsed" "$worktree_changes" "$network_summary"
+            printf ' MACHINE  : monitor_level=%s action=%s evidence_state="%s" quiet_seconds=%s suspect_count=%s running=%s overall_running=%s dispatcher=%s claude=%s checker=%s elapsed_seconds=%s worktree_changes=%s execution_phase=%s implementation_complete=%s completion_ready=%s finish_recommended=%s network="%s"\n' "$level" "$action" "$evidence" "$quiet" "$monitor_suspect_count" "$running" "$overall_running" "$dispatcher_running" "$claude_running" "$checker_running" "$elapsed" "$worktree_changes" "$execution_phase" "$implementation_complete" "$completion_ready" "$finish_recommended" "$network_summary"
             printf ' ACTION   : %s\n' "$action"
             if [ "$state" = "COMPLETE" ]; then
                 printf ' RESULT   : %s\n' "$reason"

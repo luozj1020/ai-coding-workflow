@@ -76,13 +76,13 @@ This policy applies to both Codex (during OBSERVE/PLAN) and Claude Code (during 
 
 ### Codex budget gate
 
-Codex should stop reading and dispatch to Claude when:
+Codex should stop broad reading and reassess the cheapest evidence path when:
 - A file exceeds 200 lines and LSP/locator/CodeGraph cannot answer the question.
 - More than 3 whole-file reads would be needed to plan the task.
 - A full repository scan is required.
 - Long test logs or CI output need analysis.
 
-In these cases, Codex records what it knows and delegates the high-token investigation to Claude Code in the task card.
+In these cases, Codex records what it knows and routes again. Prefer a bounded local index/query or direct targeted read. Delegate to Claude only when a durable structured artifact, implementation, test, or evidence result demonstrably removes substantial Codex work; prose-only investigation is not sufficient value.
 
 ### Claude evidence compression gate
 
@@ -94,7 +94,7 @@ Claude must not return large pasted content to Codex. Instead:
 
 ### Delegation checklist for task cards
 
-Every task card should include a `## High-Token Delegation Gate` section listing which reads or investigations are delegated to Claude. The reviewer checks whether this policy was followed.
+The monolithic compatibility card may include a `## High-Token Work Routing Gate`; short component cards include only material routing/context facts. Record why high-token work belongs to Codex, local tools, or Claude. The reviewer checks economic value and durable output rather than enforcing delegation by size.
 
 ## Principle
 

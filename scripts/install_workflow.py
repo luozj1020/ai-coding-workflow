@@ -45,6 +45,9 @@ DIRECT_COPY = [
     ("task-card-components/catalog.md", "ai/task-card-components/catalog.md"),
     ("task-card-components/core.md", "ai/task-card-components/core.md"),
     ("task-card-components/builder.md", "ai/task-card-components/builder.md"),
+    ("task-card-components/batch-builder.md", "ai/task-card-components/batch-builder.md"),
+    ("task-card-components/solution-planner.md", "ai/task-card-components/solution-planner.md"),
+    ("task-card-components/exploratory-builder.md", "ai/task-card-components/exploratory-builder.md"),
     ("task-card-components/checker.md", "ai/task-card-components/checker.md"),
     ("task-card-components/revision.md", "ai/task-card-components/revision.md"),
     ("task-card-components/control-plane.md", "ai/task-card-components/control-plane.md"),
@@ -89,6 +92,7 @@ PYTHON_SCRIPTS = [
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
     ("claude-healthcheck.py", "ai/claude-healthcheck.py"),
     ("claude-monitor-decision.py", "ai/claude-monitor-decision.py"),
+    ("claude-monitor-supervisor.py", "ai/claude-monitor-supervisor.py"),
     ("claude-process-state.py", "ai/claude-process-state.py"),
     ("classify-claude-attempt.py", "ai/classify-claude-attempt.py"),
     ("verify-claude-report.py", "ai/verify-claude-report.py"),
@@ -104,9 +108,11 @@ PYTHON_SCRIPTS = [
     ("benchmark-loop-runs.py", "ai/benchmark-loop-runs.py"),
     ("init-spec.py", "ai/init-spec.py"),
     ("plan-to-task-cards.py", "ai/plan-to-task-cards.py"),
+    ("solution-contract.py", "ai/solution-contract.py"),
     ("init-plan.py", "ai/init-plan.py"),
     ("session-catchup.py", "ai/session-catchup.py"),
     ("validate-parallel-plan.py", "ai/validate-parallel-plan.py"),
+    ("parallel-task-gate.py", "ai/parallel-task-gate.py"),
     ("assess-parallel-opportunity.py", "ai/assess-parallel-opportunity.py"),
     ("task_schema.py", "ai/task_schema.py"),
     ("compose-profiles.py", "ai/compose-profiles.py"),
@@ -142,6 +148,7 @@ PYTHON_SCRIPTS = [
     ("model-usage.py", "ai/model-usage.py"),
     ("economics-experiment.py", "ai/economics-experiment.py"),
     ("parse-spark-output.py", "ai/parse-spark-output.py"),
+    ("spark_control_protocol.py", "ai/spark_control_protocol.py"),
     ("efficiency-control.py", "ai/efficiency-control.py"),
     ("dispatch-efficient.py", "ai/dispatch-efficient.py"),
     ("remote-precheck.py", "ai/remote-precheck.py"),
@@ -166,6 +173,7 @@ SCHEMA_ASSETS = [
     ("schemas/handoff-v1.schema.json", "ai/schemas/handoff-v1.schema.json"),
     ("schemas/efficiency-plan-v1.schema.json", "ai/schemas/efficiency-plan-v1.schema.json"),
     ("schemas/routing-facts-v1.schema.json", "ai/schemas/routing-facts-v1.schema.json"),
+    ("schemas/solution-contract-v1.schema.json", "ai/schemas/solution-contract-v1.schema.json"),
 ]
 
 # Structured assets: profiles (source relative to repo root, dest relative to repo root)
@@ -180,6 +188,8 @@ PROFILE_ASSETS = [
 # Structured assets: examples (source relative to repo root, dest relative to repo root)
 EXAMPLE_ASSETS = [
     ("examples/fix-typo-in-readme.json", "ai/examples/fix-typo-in-readme.json"),
+    ("benchmarks/real-project-task.example.json", "ai/examples/real-project-task.json"),
+    ("benchmarks/model-pricing.example.json", "ai/examples/model-pricing.json"),
 ]
 
 WORKTREES_GITIGNORE_LINES = [

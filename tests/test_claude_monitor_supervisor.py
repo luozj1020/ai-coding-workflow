@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "claude-monitor-supervisor.py"
+
+
+class ClaudeMonitorSupervisorTests(unittest.TestCase):
+    def _script(self, path: pathlib.Path, text: str) -> pathlib.Path:
+        path.write_text(text, encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
+
+    def test_ambiguous_event_invokes_bounded_spark_triage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            event_log = root / "events.log"
+            capture = root / "monitor-called"
+            watcher = self._script(root / "watch.sh", "#!/usr/bin/env bash\necho 'monitor_event action=CONSIDER_INTERRUPT'\n")
+            decision = self._script(
+                root / "decision.py",
+                "#!/usr/bin/env python3\nimport json\nprint(json.dumps({'decision':'inspect','reason_code':'ambiguous-stall'}))\n",
+            )
+            monitor = self._script(
+                root / "monitor.sh",
+                "#!/usr/bin/env bash\nprintf x > \"$MONITOR_CAPTURE\"\nprintf '%s\\n' 'decision=inspect' 'confidence=medium' 'reason_code=bounded-review' 'triage_source=spark' 'codex_review_required=yes' 'interrupt_authorized=no'\n",
+            )
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--task-id", "claude-test",
+                 "--repo-root", str(root), "--watch-script", str(watcher),
+                 "--monitor-script", str(monitor), "--decision-helper", str(decision),
+                 "--event-log", str(event_log), "--spark", "auto",
+                 "--spark-min-interval", "0"],
+                env={**os.environ, "MONITOR_CAPTURE": str(capture)},
+                text=True, capture_output=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(capture.exists())
+            text = event_log.read_text(encoding="utf-8")
+            self.assertIn("spark_monitor_event", text)
+            self.assertIn("interrupt_authorized=no", text)
+            self.assertIn("finish_recommended=no", text)
+
+    def test_stable_continue_never_invokes_monitor_model_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            event_log = root / "events.log"
+            capture = root / "monitor-called"
+            watcher = self._script(root / "watch.sh", "#!/usr/bin/env bash\necho 'monitor_event action=CONTINUE_WAITING'\n")
+            decision = self._script(
+                root / "decision.py",
+                "#!/usr/bin/env python3\nimport json\nprint(json.dumps({'decision':'continue','reason_code':'recent-growth'}))\n",
+            )
+            monitor = self._script(root / "monitor.sh", f"#!/usr/bin/env bash\nprintf x > '{capture}'\n")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--task-id", "claude-test",
+                 "--repo-root", str(root), "--watch-script", str(watcher),
+                 "--monitor-script", str(monitor), "--decision-helper", str(decision),
+                 "--event-log", str(event_log), "--spark", "auto",
+                 "--spark-min-interval", "0"],
+                text=True, capture_output=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(capture.exists())
+            self.assertNotIn("spark_monitor_event", event_log.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

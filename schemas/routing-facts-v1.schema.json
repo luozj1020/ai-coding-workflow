@@ -1,1 +1,233 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Routing facts v1","type":"object","required":["schema_version","task_id","goal","declared_risks","effective_risks","target_files","target_files_count","validation_ids","exact_validation","profiles","commit","repository","repository_size","repository_markers","remote_validation_required","context_cache_state","routing_facts_hash"],"properties":{"schema_version":{"const":1},"task_id":{"type":"string","minLength":1},"goal":{"type":"string","minLength":1},"declared_risks":{"type":"object"},"effective_risks":{"type":"object"},"target_files":{"type":"array","items":{"type":"string"}},"target_files_count":{"type":"integer","minimum":0},"validation_ids":{"type":"array","items":{"type":"string"}},"exact_validation":{"type":"boolean"},"profiles":{"type":"array","items":{"type":"string"}},"commit":{"type":"string"},"repository":{"type":"object"},"repository_size":{"enum":["small","medium","large","monorepo"]},"repository_markers":{"type":"array","items":{"type":"string"}},"remote_validation_required":{"type":"boolean"},"context_cache_state":{"type":"object"},"routing_facts_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":true}
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Routing facts v1",
+    "type": "object",
+    "required": [
+        "schema_version",
+        "task_id",
+        "goal",
+        "declared_risks",
+        "effective_risks",
+        "target_files",
+        "target_files_count",
+        "validation_ids",
+        "exact_validation",
+        "profiles",
+        "commit",
+        "repository",
+        "repository_size",
+        "repository_markers",
+        "remote_validation_required",
+        "context_cache_state",
+        "routing_facts_hash"
+    ],
+    "properties": {
+        "schema_version": {
+            "const": 1
+        },
+        "task_id": {
+            "type": "string",
+            "minLength": 1
+        },
+        "goal": {
+            "type": "string",
+            "minLength": 1
+        },
+        "declared_risks": {
+            "type": "object"
+        },
+        "effective_risks": {
+            "type": "object"
+        },
+        "target_files": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "target_files_count": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "validation_ids": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "exact_validation": {
+            "type": "boolean"
+        },
+        "profiles": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "commit": {
+            "type": "string"
+        },
+        "repository": {
+            "type": "object"
+        },
+        "repository_size": {
+            "enum": [
+                "small",
+                "medium",
+                "large",
+                "monorepo"
+            ]
+        },
+        "repository_markers": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "remote_validation_required": {
+            "type": "boolean"
+        },
+        "context_cache_state": {
+            "type": "object"
+        },
+        "expected_delegated_cost_ratio": {
+            "type": [
+                "number",
+                "null"
+            ],
+            "minimum": 0
+        },
+        "ownership_profile": {
+            "enum": [
+                "claude-first",
+                "economy-first"
+            ]
+        },
+        "expected_active_elapsed_ratio": {
+            "type": [
+                "number",
+                "null"
+            ],
+            "minimum": 0
+        },
+        "expected_codex_work_reduction_ratio": {
+            "type": [
+                "number",
+                "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+        },
+        "economy_policy": {
+            "type": [
+                "object",
+                "null"
+            ]
+        },
+        "control_plane_policy": {
+            "type": [
+                "object",
+                "null"
+            ]
+        },
+        "task_role": {
+            "enum": [
+                "core-semantic",
+                "auxiliary",
+                "mixed",
+                "unknown"
+            ]
+        },
+        "claude_role": {
+            "enum": [
+                "none",
+                "execution-builder",
+                "solution-planner",
+                "exploratory-builder",
+                "batch-builder"
+            ]
+        },
+        "allow_claude_planner": {
+            "type": "boolean"
+        },
+        "allow_high_risk_claude": {
+            "type": "boolean"
+        },
+        "solution_contract_frozen": {
+            "type": "boolean"
+        },
+        "mechanical_batch": {
+            "type": "boolean"
+        },
+        "independent_write_scopes": {
+            "type": "boolean"
+        },
+        "codex_review_scope": {
+            "enum": [
+                "full",
+                "bounded",
+                "sampled"
+            ]
+        },
+        "spark_route_requested": {
+            "type": "boolean"
+        },
+        "goal_clarity": {
+            "enum": [
+                "high",
+                "medium",
+                "low",
+                "unknown"
+            ]
+        },
+        "implementation_path_clarity": {
+            "enum": [
+                "high",
+                "medium",
+                "low",
+                "unknown"
+            ]
+        },
+        "bounded_exploration_scope": {
+            "type": "boolean"
+        },
+        "durable_output_required": {
+            "type": "boolean"
+        },
+        "durable_structured_output": {
+            "type": "boolean"
+        },
+        "read_only_task": {
+            "type": "boolean"
+        },
+        "multi_phase_task": {
+            "type": "boolean"
+        },
+        "symbols": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "constraints": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "root_cause_evidence": {
+            "type": "string"
+        },
+        "source_of_truth_example": {
+            "type": "string"
+        },
+        "transformation_rule": {
+            "type": "string"
+        },
+        "routing_facts_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+        }
+    },
+    "additionalProperties": true
+}

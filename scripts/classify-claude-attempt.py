@@ -19,6 +19,7 @@ def classify(
     *, exit_code: int, outcome: str, semantic_error: bool, diff_changes: int,
     valid_report: bool, progress: str, direction: str, error_text: str,
     blocker_kind: str = "none", advisor_used: bool = False,
+    delegation_mode: str = "unknown",
 ) -> dict:
     useful = diff_changes > 0 or valid_report or progress == "useful"
     interacted = useful or progress in {"acknowledgement", "blocker"}
@@ -42,6 +43,14 @@ def classify(
         failure, action, counts = "model-no-progress", "narrow-and-redispatch-once", True
     else:
         failure, action, counts = "unclassified-execution-failure", "inspect-evidence-before-counting", False
+
+    economic_stop_loss = bool(
+        delegation_mode == "canary"
+        and counts
+        and failure in {"direction-deviation", "acknowledgement-only", "model-no-progress"}
+    )
+    if economic_stop_loss:
+        action = "reroute-before-redispatch"
 
     # Advisor continuation eligibility
     rejection_reason = None
@@ -68,6 +77,10 @@ def classify(
         "successful_interaction_is_authoritative": True,
         "advisor_continuation_eligible": rejection_reason is None,
         "advisor_rejection_reason": rejection_reason,
+        "delegation_mode": delegation_mode,
+        "economic_stop_loss": economic_stop_loss,
+        "reroute_required": economic_stop_loss,
+        "takeover_authorized": False,
     }
 
 
@@ -82,6 +95,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--direction", choices=["unknown", "on-plan", "off-plan"], default="unknown")
     p.add_argument("--blocker-kind", choices=["none", "semantic", "transport", "approval", "direction", "unknown"], default="none")
     p.add_argument("--advisor-used", action="store_true")
+    p.add_argument("--delegation-mode", choices=["unknown", "unproven", "canary", "proven", "explicit", "direct", "rejected"], default="unknown")
     p.add_argument("--error-text-file", type=Path)
     args = p.parse_args(argv)
     error_text = ""
@@ -92,6 +106,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         diff_changes=args.diff_changes, valid_report=args.valid_report, progress=args.progress,
         direction=args.direction, error_text=error_text,
         blocker_kind=args.blocker_kind, advisor_used=args.advisor_used,
+        delegation_mode=args.delegation_mode,
     ), sort_keys=True))
     return 0
 

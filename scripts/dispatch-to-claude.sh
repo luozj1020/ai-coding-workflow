@@ -72,6 +72,8 @@ CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_ACTIVE_PROGRESS_EXT
 CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-300}"
 CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS="${CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS:-60}"
 CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS="${CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS:-120}"
+CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS="${CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS:-2}"
+case "$CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS must be a positive integer." >&2; exit 1 ;; esac
 if [ "$CLAUDE_CODE_PROXY_MODE" != "direct" ] && [ "$CLAUDE_CODE_PROXY_MODE" != "inherit" ]; then
     echo "Error: CLAUDE_CODE_PROXY_MODE must be 'direct' or 'inherit'." >&2
     exit 1
@@ -84,6 +86,12 @@ case "$CLAUDE_CODE_NETWORK_MONITOR" in
         exit 1
         ;;
 esac
+CLAUDE_CODE_BACKGROUND_MONITOR="${CLAUDE_CODE_BACKGROUND_MONITOR:-1}"
+CLAUDE_CODE_MONITOR_SPARK="${CLAUDE_CODE_MONITOR_SPARK:-auto}"
+CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS="${CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS:-$CLAUDE_CODE_HEARTBEAT_SECONDS}"
+case "$CLAUDE_CODE_BACKGROUND_MONITOR" in 0|1) ;; *) echo "Error: CLAUDE_CODE_BACKGROUND_MONITOR must be 0 or 1." >&2; exit 1 ;; esac
+case "$CLAUDE_CODE_MONITOR_SPARK" in auto|on|off) ;; *) echo "Error: CLAUDE_CODE_MONITOR_SPARK must be auto, on, or off." >&2; exit 1 ;; esac
+case "$CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS must be a positive integer." >&2; exit 1 ;; esac
 CLAUDE_CODE_NETWORK_HEALTHCHECK_URL="${CLAUDE_CODE_NETWORK_HEALTHCHECK_URL:-}"
 CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS="${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS:-5}"
 CLAUDE_CODE_API_PROBE_MODE="${CLAUDE_CODE_API_PROBE_MODE:-always}"
@@ -356,9 +364,9 @@ case "$CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE" in
 esac
 CLAUDE_CODE_BUILDER_MODE="${CLAUDE_CODE_BUILDER_MODE:-auto}"
 case "$CLAUDE_CODE_BUILDER_MODE" in
-    auto|standard|execution-only) ;;
+    auto|standard|execution-only|solution-planning|batch|exploratory) ;;
     *)
-        echo "Error: CLAUDE_CODE_BUILDER_MODE must be 'auto', 'standard', or 'execution-only'." >&2
+        echo "Error: CLAUDE_CODE_BUILDER_MODE must be 'auto', 'standard', 'execution-only', 'solution-planning', 'batch', or 'exploratory'." >&2
         exit 1
         ;;
 esac
@@ -380,6 +388,16 @@ case "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" in
 esac
 if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
     if [ "$_PARSED_TASK_MODE" = "builder" ] && \
+       grep -Eiq '^\|[[:space:]]*Planning owner[[:space:]]*\|[[:space:]]*Claude([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
+        CLAUDE_CODE_BUILDER_MODE="solution-planning"
+    elif [ "$_PARSED_TASK_MODE" = "builder" ] && \
+       grep -Eiq '^\|[[:space:]]*Transformation rule[[:space:]]*\|' "$TASK_CARD" && \
+       grep -Eiq '^\|[[:space:]]*Independent write units[[:space:]]*\|' "$TASK_CARD"; then
+        CLAUDE_CODE_BUILDER_MODE="batch"
+    elif [ "$_PARSED_TASK_MODE" = "builder" ] && \
+       grep -Eiq '^\|[[:space:]]*Builder mode[[:space:]]*\|[[:space:]]*exploratory([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
+        CLAUDE_CODE_BUILDER_MODE="exploratory"
+    elif [ "$_PARSED_TASK_MODE" = "builder" ] && \
        grep -Eiq '^\|[[:space:]]*Execution-only eligible\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD" && \
        grep -Eiq '^\|[[:space:]]*Context is sufficient for execution\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
         CLAUDE_CODE_BUILDER_MODE="execution-only"
@@ -388,8 +406,11 @@ if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
     fi
 fi
 # Execution-only mode is only allowed for task mode builder.
-if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] && [ "$_PARSED_TASK_MODE" != "builder" ]; then
-    echo "Error: CLAUDE_CODE_BUILDER_MODE=execution-only requires task mode 'builder', found '${_PARSED_TASK_MODE:-unknown}'." >&2
+if { [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || \
+     [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] || \
+     [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ] || \
+     [ "$CLAUDE_CODE_BUILDER_MODE" = "exploratory" ]; } && [ "$_PARSED_TASK_MODE" != "builder" ]; then
+    echo "Error: CLAUDE_CODE_BUILDER_MODE=${CLAUDE_CODE_BUILDER_MODE} requires task mode 'builder', found '${_PARSED_TASK_MODE:-unknown}'." >&2
     exit 1
 fi
 
@@ -398,11 +419,13 @@ fi
 _TOOL_PROFILE_DERIVATION="explicit"
 if [ "$CLAUDE_CODE_TOOL_PROFILE" = "auto" ]; then
     _TOOL_PROFILE_DERIVATION="auto-resolved"
-    if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
+    if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ]; then
         CLAUDE_CODE_TOOL_PROFILE="minimal-builder"
     elif [ "$_PARSED_TASK_MODE" = "checker-test" ]; then
         CLAUDE_CODE_TOOL_PROFILE="checker"
-    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "standard" ]; then
+    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "standard" ] || \
+         [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] || \
+         [ "$CLAUDE_CODE_BUILDER_MODE" = "exploratory" ]; then
         CLAUDE_CODE_TOOL_PROFILE="locator-builder"
     else
         CLAUDE_CODE_TOOL_PROFILE="default"
@@ -427,7 +450,7 @@ fi
 if [ -z "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
     if [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT+x}" ] && [ -n "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT" ]; then
         CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS="$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT"
-    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
+    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ]; then
         CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=60
     else
         CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=0
@@ -460,6 +483,7 @@ esac
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"
+MONITOR_SCRIPT="${SCRIPT_DIR}/monitor-claude.sh"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 
 # Generate a collision-resistant suffix for task identity.
@@ -1300,6 +1324,7 @@ DISPATCHER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.pid"
 CLAUDE_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude.pid"
 CHECKER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker.pid"
 RUNTIME_JSON="${WORKTREE_ROOT}/${TASK_ID}.runtime.json"
+PHASE_METRICS_FILE="${WORKTREE_ROOT}/${TASK_ID}.phase-metrics.json"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 NETWORK_FILE="${WORKTREE_ROOT}/${TASK_ID}.network.log"
 ATTEMPT_CLASSIFICATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.attempt-classification.json"
@@ -1855,6 +1880,7 @@ render_claude_task_card() {
             || name == "Direction Review Gate" \
             || name == "Codex Context Budget" \
             || name == "High-Token Delegation Gate" \
+            || name == "High-Token Work Routing Gate" \
             || name == "Delegation Continuity Gate"
     }
     function compact_keep_section(name) {
@@ -1867,6 +1893,13 @@ render_claude_task_card() {
             || name == "Context" \
             || name == "Claude Context Packet" \
             || name == "Builder Contract" \
+            || name == "Batch Builder Gate" \
+            || name == "Claude Solution Planner Contract" \
+            || name == "Solution Contract Inputs" \
+            || name == "Required Draft Shape" \
+            || name == "Exploratory Builder Contract" \
+            || name == "Post-Implementation Contract" \
+            || name == "Required Exploratory Report" \
             || name == "Checker Contract" \
             || name == "Revision Delta" \
             || name == "Spec Gate" \
@@ -2118,6 +2151,11 @@ fi
     echo ""
     echo "- Goal: Execute ${TASK_CARD}"
     echo "- Current Phase: dispatch-started"
+    echo "- Execution Phase: context"
+    echo "- Implementation Complete: no"
+    echo "- Assigned Tail Work: read Post-Implementation Contract"
+    echo "- Tail Work Complete: no"
+    echo "- Completion Ready: no"
     echo "- Next Check: read CLAUDE_TASK_CARD.md and update this file before exploration or edits"
     echo "- Blocker: none reported yet"
     echo "- Last Update: $(date '+%Y-%m-%d %H:%M:%S')"
@@ -2148,7 +2186,40 @@ fi
     echo "Claude has not yet reported implementation progress."
 } > "${WORKTREE_DIR}/CLAUDE_REPORT.md"
 
-if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
+if [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ]; then
+cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
+You are the solution planner in a Codex/Claude Code workflow.
+
+Produce the structured solution contract assigned by `CLAUDE_TASK_CARD.md`. `TASK_CARD_FULL.md` is retained for audit only.
+
+Rules:
+- Read only inside the declared exploration boundary and update `CLAUDE_PROGRESS.md` at meaningful planning milestones.
+- Do not edit product source, tests, build files, or documentation. Your durable output is `solution-contract.draft.json`.
+- Converge on one coherent end state: invariants, integration points, acceptance criteria, non-goals, genuine unknowns, and independently executable slices.
+- Each slice must declare non-overlapping write scope, dependencies, and acceptance IDs. Do not turn recommendations into mandatory scope.
+- Validate the draft with the exact task-card command. If validation cannot run, record the blocker and still leave the best schema-shaped draft.
+- Update `CLAUDE_REPORT.md` with the draft path, validation evidence, unresolved blocking decisions, and no source-change confirmation.
+- Set `Implementation Complete: yes`, `Completion Ready: yes`, and `Next Check: exit` only after the structured draft is written; then exit normally.
+
+--- CLAUDE SOLUTION-PLANNING CARD ---
+EOF
+elif [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ]; then
+cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
+You are the batch executor in a Codex/Claude Code workflow.
+
+Apply the single reviewed transformation in `CLAUDE_TASK_CARD.md` across only the listed independent write units.
+
+Rules:
+- Read the source-of-truth example and exact assigned paths; do not rediscover or redesign shared contracts.
+- Update `CLAUDE_PROGRESS.md` before the first edit and after each completed unit group.
+- Stop and report any unit that overlaps another owner, requires architecture judgment, or does not match the reviewed pattern.
+- Never broaden the batch to nearby files. Report completed and blocked units separately; partial work is not silent success.
+- Run only assigned narrow validation and update `CLAUDE_REPORT.md` with the changed-unit manifest, blocked units, validation evidence, and deviations.
+- After assigned work is complete, set `Implementation Complete: yes`, `Completion Ready: yes`, and `Next Check: exit`; then exit normally.
+
+--- CLAUDE BATCH CARD ---
+EOF
+elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
 cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
 You are the executor in a Codex/Claude Code workflow operating in execution-only Builder mode.
 
@@ -2162,6 +2233,27 @@ Rules:
 - Report a blocker or split when scope is insufficient. Obey the testing boundary.
 - Update `CLAUDE_REPORT.md` before finishing with: files changed, acceptance criteria mapping, syntax outcome, deviations, remaining risks.
 - When blocked and requesting continuation advice, create `ADVISOR_REQUEST.json` exactly as described in the task card.
+- Keep the stable execution fields in `CLAUDE_PROGRESS.md`: `Execution Phase`, `Implementation Complete`, `Assigned Tail Work`, `Tail Work Complete`, and `Completion Ready`.
+- After implementation, perform only the task card's Post-Implementation Contract. Set `Completion Ready: yes` and `Next Check: exit`, write the report, and exit normally; do not wait for dispatcher acknowledgement.
+
+--- CLAUDE EXECUTION CARD ---
+EOF
+elif [ "$CLAUDE_CODE_BUILDER_MODE" = "exploratory" ]; then
+cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
+You are the exploratory executor in a Codex/Claude Code workflow.
+
+The goal and exploration boundary in `CLAUDE_TASK_CARD.md` are fixed; the implementation path inside that boundary is yours to discover and execute.
+
+Rules:
+- Update `CLAUDE_PROGRESS.md` before exploration, when selecting an implementation path, before long commands, and when blocked.
+- Keep exploration and implementation in this same run. Do not finish with only a repository summary, plan, bug list, or document analysis.
+- Produce at least one durable assigned output: source diff, test, runnable prototype, or structured repository asset.
+- Prefer a working vertical slice over broad unfinished scaffolding.
+- Stay inside the declared read/write boundary and forbidden paths. Product, API, data-model, security, permission, migration, or destructive decisions remain Codex/human-owned unless explicitly resolved in the card.
+- Use repository tools and existing patterns to resolve implementation details autonomously. Record only material assumptions and rejected alternatives.
+- If no durable output is possible, stop with the concrete blocker and the smallest decision needed; prose-only completion is not success.
+- Obey the testing boundary and update `CLAUDE_REPORT.md` with durable outputs, path chosen, assumptions checked, validation evidence, deviations, and remaining authority decisions.
+- Keep the stable execution fields in `CLAUDE_PROGRESS.md`. After the durable output is complete, perform only assigned tail work, set `Completion Ready: yes` and `Next Check: exit`, write the report, and exit normally.
 
 --- CLAUDE EXECUTION CARD ---
 EOF
@@ -2172,7 +2264,7 @@ You are the executor in a Codex/Claude Code workflow.
 Execute `CLAUDE_TASK_CARD.md`. `TASK_CARD_FULL.md` is retained for audit and may be consulted when the execution card is insufficient, but do not broaden scope beyond the execution card.
 
 Core rules:
-- Codex plans/reviews; Claude edits only the assigned scope.
+- Codex owns routing, core semantics, and review; Claude edits only this positively routed mechanical/auxiliary scope.
 - Update `CLAUDE_PROGRESS.md` before exploration or edits, at phase boundaries, before long commands, and when blocked.
 - Remove dispatcher seeded markers when you first update `CLAUDE_PROGRESS.md` or `CLAUDE_REPORT.md`.
 - If Direction / Boundary Acknowledgement is blocking, write it and stop for approval. If it is non-blocking and recommendation is `proceed`, continue implementation in the same run.
@@ -2182,6 +2274,8 @@ Core rules:
 - If `Local validation allowed?` is `no`, do not run local validation; report exact commands only.
 - If target, scope, testing responsibility, public API/data/security/migration impact, destructive actions, permissions, or production data are unclear, stop-and-report instead of guessing.
 - Preserve failures, blockers, exact commands, exit codes, and key output. Do not include secrets, large logs, or full diffs in progress/report files.
+- Keep `Execution Phase`, `Implementation Complete`, `Assigned Tail Work`, `Tail Work Complete`, and `Completion Ready` near the top of `CLAUDE_PROGRESS.md`.
+- After implementation, do only explicitly assigned tail work. Then set `Completion Ready: yes` and `Next Check: exit`, write the final report, and exit normally without waiting for acknowledgement.
 
 `CLAUDE_REPORT.md` before finishing must include: requirements summary, files changed, acceptance criteria mapping, out-of-scope confirmation, plan match, validation confidence, reviewer should check, checks run/blocked, deviations, risks, open questions, and human review checklist.
 
@@ -2205,9 +2299,15 @@ Execute the Claude execution card below. The full Codex planning card is preserv
   - Next Check
   - Blocker
   - Last Update
+  - Execution Phase (`context`, `implementation`, `validation`, or `tail`)
+  - Implementation Complete (`yes` or `no`)
+  - Assigned Tail Work
+  - Tail Work Complete (`yes` or `no`)
+  - Completion Ready (`yes` or `no`)
 - Before any command or investigation that may take more than a few minutes, write what you are about to do and what result you expect.
 - Do not include secrets, large logs, or full diffs.
 - Preserve failed commands and observations instead of deleting or rewriting them; later recovery depends on that evidence.
+- When assigned implementation is complete, set `Implementation Complete: yes` and enter `Execution Phase: tail`. Perform only work listed in the Post-Implementation Contract. Then set `Tail Work Complete: yes`, `Completion Ready: yes`, and `Next Check: exit`; update the final report and exit normally without waiting for dispatcher acknowledgement.
 - If `CLAUDE_TASK_CARD.md` has an `## Execution Progress` checklist, update the checklist after each completed assigned item. Do not edit `TASK_CARD_FULL.md`; it is Codex-owned audit context.
 
 
@@ -3145,6 +3245,14 @@ CLAUDE_PID=$!
 echo "$CLAUDE_PID" > "$PID_FILE"
 echo "$CLAUDE_PID" > "$CLAUDE_PID_FILE"
 progress_log "Claude process started: pid=${CLAUDE_PID}"
+if [ "$CLAUDE_CODE_BACKGROUND_MONITOR" = "1" ] && [ -x "$MONITOR_SCRIPT" ]; then
+    (
+        cd "$REPO_ROOT"
+        bash "$MONITOR_SCRIPT" start "$TASK_ID" --spark "$CLAUDE_CODE_MONITOR_SPARK" \
+            --interval "$CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS" \
+            >/dev/null 2>&1
+    ) || progress_log "Background monitor start failed; dispatch continues without asynchronous triage"
+fi
 
 START_EPOCH="$(date +%s)"
 CLAUDE_TIMED_OUT=0
@@ -3162,6 +3270,11 @@ FIRST_PROGRESS_ELAPSED_SECONDS=""
 FIRST_WORKTREE_CHANGE_SECONDS=""
 FIRST_PROGRESS_OBSERVATION_RECORDED=0
 BLOCKER_RECORDED=0
+IMPLEMENTATION_COMPLETE_DETECTED=0
+IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS=""
+COMPLETION_READY_DETECTED=0
+COMPLETION_READY_ELAPSED_SECONDS=""
+VALIDATION_STARTED_ELAPSED_SECONDS=""
 _CONTINUATION_THRESHOLD_SECONDS=120
 INITIAL_PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
 # --- Two-stage execution clock ---
@@ -3230,6 +3343,30 @@ while claude_is_running; do
     NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" "$QUIET_SECONDS")"
     progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, first_progress_detected=${FIRST_PROGRESS_DETECTED}, ${NETWORK_SUMMARY}"
 
+    # Stage markers are Claude-authored advisory evidence. They never stop the
+    # process; Completion Ready means the child should flush its report/result
+    # and exit voluntarily under the prompt contract.
+    if [ -s "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" ] && \
+       ! file_contains "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "$SEEDED_PROGRESS_MARKER"; then
+        if [ -z "$VALIDATION_STARTED_ELAPSED_SECONDS" ] && \
+           grep -Eiq '^(<!--[[:space:]]*)?-?[[:space:]]*(Execution|Current) Phase:[[:space:]]*(validation|testing|checking)' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
+            VALIDATION_STARTED_ELAPSED_SECONDS="$ELAPSED"
+            progress_log "Claude execution phase observed: phase=validation, elapsed_seconds=${ELAPSED}"
+        fi
+        if [ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 0 ] && \
+           grep -Eiq '^-?[[:space:]]*Implementation Complete:[[:space:]]*yes([[:space:]]|$)' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
+            IMPLEMENTATION_COMPLETE_DETECTED=1
+            IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS="$ELAPSED"
+            progress_log "Claude implementation completion observed: elapsed_seconds=${ELAPSED}, action=await-assigned-tail-and-voluntary-exit"
+        fi
+        if [ "$COMPLETION_READY_DETECTED" -eq 0 ] && \
+           grep -Eiq '^-?[[:space:]]*Completion Ready:[[:space:]]*yes([[:space:]]|$)' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
+            COMPLETION_READY_DETECTED=1
+            COMPLETION_READY_ELAPSED_SECONDS="$ELAPSED"
+            progress_log "Claude completion-ready observed: elapsed_seconds=${ELAPSED}, interrupt_authorized=no, action=await-voluntary-exit"
+        fi
+    fi
+
     # --- First-substantive-progress detection ---
     # Builder reading/planning, acknowledgement, generic progress text, seeded
     # artifacts, and blockers are useful evidence but do not refresh the clock.
@@ -3287,12 +3424,17 @@ while claude_is_running; do
                 # Observation mode: run probe at most once for attribution, record event, continue.
                 # Only run the observation probe when probe_mode=always; failure-only
                 # defers probing to confirmed zero-output at finalization.
-                if [ "$_OBSERVATION_PROBE_RAN" -eq 0 ] && [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ]; then
+                if [ "$_OBSERVATION_PROBE_RAN" -eq 0 ] && \
+                   [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ] && \
+                   [ "${_STARTUP_PROBE_CONCLUSION:-not-run}" != "available" ]; then
                     _OBSERVATION_PROBE_RAN=1
                     run_interaction_probe "observation" "$INTERACTION_HEALTH_FILE"
                     _OBSERVATION_PROBE_CONCLUSION="$_LAST_PROBE_CONCLUSION"
                     _OBSERVATION_PROBE_AUTHORITATIVE="$_LAST_PROBE_AUTHORITATIVE"
                     progress_log "First-progress observation probe: conclusion=${_OBSERVATION_PROBE_CONCLUSION}, artifact=${INTERACTION_HEALTH_FILE}"
+                elif [ "$_OBSERVATION_PROBE_RAN" -eq 0 ] && \
+                     [ "${_STARTUP_PROBE_CONCLUSION:-not-run}" = "available" ]; then
+                    progress_log "First-progress observation probe skipped: startup probe already confirmed availability"
                 fi
                 if [ "$FIRST_PROGRESS_OBSERVATION_RECORDED" -eq 0 ]; then
                     FIRST_PROGRESS_OBSERVATION_RECORDED=1
@@ -3327,7 +3469,7 @@ while claude_is_running; do
 
             if [ "$_ABC_FP" = "$_LAST_APPROVAL_FP" ]; then
                 _APPROVAL_CONVERGENCE_COUNT=$((_APPROVAL_CONVERGENCE_COUNT + 1))
-                if [ "$_APPROVAL_CONVERGENCE_COUNT" -ge 2 ]; then
+                if [ "$_APPROVAL_CONVERGENCE_COUNT" -ge "$CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS" ]; then
                     progress_log "Approval-blocked early convergence: stable for ${_APPROVAL_CONVERGENCE_COUNT} heartbeats after ${ELAPSED}s"
                     stop_claude "approval-blocked early convergence" "$ELAPSED"
                     CLAUDE_APPROVAL_CONVERGED=1
@@ -3405,6 +3547,59 @@ progress_log "Claude child exited: pid=${CLAUDE_PID}, exit_status=${CLAUDE_STATU
 
 END_EPOCH="$(date +%s)"
 ELAPSED=$((END_EPOCH - START_EPOCH))
+_PHASE_CONTEXT_SECONDS="${FIRST_PROGRESS_ELAPSED_SECONDS:-$ELAPSED}"
+if [ -n "$IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS" ]; then
+    _PHASE_IMPLEMENTATION_END="$IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS"
+else
+    _PHASE_IMPLEMENTATION_END="$ELAPSED"
+fi
+if [ -n "$FIRST_PROGRESS_ELAPSED_SECONDS" ]; then
+    _PHASE_IMPLEMENTATION_SECONDS=$((_PHASE_IMPLEMENTATION_END - FIRST_PROGRESS_ELAPSED_SECONDS))
+    if [ "$_PHASE_IMPLEMENTATION_SECONDS" -lt 0 ]; then _PHASE_IMPLEMENTATION_SECONDS=0; fi
+else
+    _PHASE_IMPLEMENTATION_SECONDS=0
+fi
+if [ -n "$IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS" ]; then
+    _PHASE_TAIL_SECONDS=$((ELAPSED - IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS))
+    if [ "$_PHASE_TAIL_SECONDS" -lt 0 ]; then _PHASE_TAIL_SECONDS=0; fi
+else
+    _PHASE_TAIL_SECONDS=0
+fi
+if [ -n "$VALIDATION_STARTED_ELAPSED_SECONDS" ]; then
+    _PHASE_VALIDATION_SECONDS=$((ELAPSED - VALIDATION_STARTED_ELAPSED_SECONDS))
+    if [ "$_PHASE_VALIDATION_SECONDS" -lt 0 ]; then _PHASE_VALIDATION_SECONDS=0; fi
+    _PHASE_VALIDATION_OBSERVED=true
+else
+    _PHASE_VALIDATION_SECONDS=0
+    _PHASE_VALIDATION_OBSERVED=false
+fi
+{
+    echo '{'
+    echo '  "schema_version": 1,'
+    printf '  "task_id": "%s",\n' "$TASK_ID"
+    printf '  "active_elapsed_seconds": %s,\n' "$ELAPSED"
+    printf '  "context_acquisition_seconds": %s,\n' "$_PHASE_CONTEXT_SECONDS"
+    printf '  "implementation_seconds": %s,\n' "$_PHASE_IMPLEMENTATION_SECONDS"
+    printf '  "tail_seconds": %s,\n' "$_PHASE_TAIL_SECONDS"
+    printf '  "validation_seconds_observed": %s,\n' "$_PHASE_VALIDATION_SECONDS"
+    printf '  "validation_phase_observed": %s,\n' "$_PHASE_VALIDATION_OBSERVED"
+    printf '  "first_progress_signal": "%s",\n' "${FIRST_PROGRESS_SIGNAL:-none}"
+    printf '  "implementation_complete_observed": %s,\n' "$([ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 1 ] && echo true || echo false)"
+    printf '  "completion_ready_observed": %s,\n' "$([ "$COMPLETION_READY_DETECTED" -eq 1 ] && echo true || echo false)"
+    printf '  "completion_ready_elapsed_seconds": %s,\n' "${COMPLETION_READY_ELAPSED_SECONDS:-null}"
+    echo '  "measurement": "dispatcher heartbeat observation; phase boundaries are approximate"'
+    echo '}'
+} > "$PHASE_METRICS_FILE"
+if [ -n "${AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE:-}" ]; then
+    _PHASE_METRICS_EXPORT="${AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE}"
+    if mkdir -p "$(dirname "$_PHASE_METRICS_EXPORT")" 2>/dev/null && \
+       cp "$PHASE_METRICS_FILE" "$_PHASE_METRICS_EXPORT" 2>/dev/null; then
+        progress_log "Claude phase metrics exported: artifact=${_PHASE_METRICS_EXPORT}"
+    else
+        progress_log "Claude phase metrics export failed: artifact=${_PHASE_METRICS_EXPORT}; canonical artifact preserved at ${PHASE_METRICS_FILE}"
+    fi
+fi
+progress_log "Claude phase metrics saved: context_seconds=${_PHASE_CONTEXT_SECONDS}, implementation_seconds=${_PHASE_IMPLEMENTATION_SECONDS}, tail_seconds=${_PHASE_TAIL_SECONDS}, validation_seconds_observed=${_PHASE_VALIDATION_SECONDS}, completion_ready=${COMPLETION_READY_DETECTED}, artifact=${PHASE_METRICS_FILE}"
 # Git Bash can lose visibility of a background wrapper PID while its script
 # descendant is still running.  If that makes the monitor leave its loop, use
 # the completed run's elapsed time to preserve the first-progress contract.
@@ -4047,6 +4242,40 @@ fi
 # allowed/forbidden boundaries.  A violation produces non-zero semantic failure,
 # remains isolated and never reports acceptance/merge.
 ADVISOR_POST_RUN_SCOPE_VIOLATION=0
+PLANNER_OUTPUT_SCOPE_VIOLATION=0
+PLANNER_CONTRACT_MISSING=0
+if [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ]; then
+    _PLANNER_CHANGED_PATHS="$(
+        printf '%s\n%s\n%s\n' \
+            "$(git -C "$WORKTREE_DIR" diff --name-only 2>/dev/null || true)" \
+            "$(git -C "$WORKTREE_DIR" diff --cached --name-only 2>/dev/null || true)" \
+            "$(git -C "$WORKTREE_DIR" ls-files --others --exclude-standard 2>/dev/null || true)" \
+        | sort -u | sed '/^$/d'
+    )"
+    _PLANNER_FORBIDDEN_CHANGES=""
+    while IFS= read -r _planner_path; do
+        [ -z "$_planner_path" ] && continue
+        case "$_planner_path" in
+            solution-contract.draft.json|CLAUDE_*.md|CLAUDE_*.json|TASK_CARD*.md|ADVISOR_REQUEST.json|advisor-*.json|advisor-*.md|truncation-manifest.json)
+                ;;
+            *)
+                _PLANNER_FORBIDDEN_CHANGES="${_PLANNER_FORBIDDEN_CHANGES}  ${_planner_path}\n"
+                ;;
+        esac
+    done <<< "$_PLANNER_CHANGED_PATHS"
+    if [ -n "$_PLANNER_FORBIDDEN_CHANGES" ]; then
+        PLANNER_OUTPUT_SCOPE_VIOLATION=1
+        ADVISOR_POST_RUN_SCOPE_VIOLATION=1
+        progress_log "Solution-planner output scope FAILED: product/source changes detected"
+        printf 'Error: solution-planner changed paths outside its structured artifact contract:\n%b' \
+            "$_PLANNER_FORBIDDEN_CHANGES" >&2
+    elif [ ! -s "${WORKTREE_DIR}/solution-contract.draft.json" ]; then
+        PLANNER_CONTRACT_MISSING=1
+        progress_log "Solution-planner output missing: solution-contract.draft.json"
+    else
+        progress_log "Solution-planner output scope PASSED: structured draft only"
+    fi
+fi
 if [ -n "${_ADVISOR_CONTINUE_TASK_ID:-}" ] && [ -n "${_ADVISOR_CONTINUE_RESPONSE:-}" ]; then
     if ! post_run_scope_enforcement \
         "$WORKTREE_DIR" \
@@ -4090,7 +4319,11 @@ fi
 # Allows distinguishing: success, api_error_with_diff, api_error_without_diff,
 # approval_blocked, timeout, fallback, no_useful_progress, scope_violation.
 DISPATCH_OUTCOME="success"
-if [ "${ADVISOR_POST_RUN_SCOPE_VIOLATION:-0}" -eq 1 ]; then
+if [ "${PLANNER_OUTPUT_SCOPE_VIOLATION:-0}" -eq 1 ]; then
+    DISPATCH_OUTCOME="scope_violation"
+elif [ "${PLANNER_CONTRACT_MISSING:-0}" -eq 1 ]; then
+    DISPATCH_OUTCOME="missing_required_artifact"
+elif [ "${ADVISOR_POST_RUN_SCOPE_VIOLATION:-0}" -eq 1 ]; then
     # Post-run scope violation is a semantic failure; never report acceptance/merge.
     DISPATCH_OUTCOME="scope_violation"
 elif [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
@@ -4157,6 +4390,7 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; th
         --diff-changes "$IMPLEMENTATION_CHANGES" --progress "$_ATTEMPT_PROGRESS"
         --direction "$ADVISOR_DIRECTION" --error-text-file "$STATUS_FILE"
         --blocker-kind "$ADVISOR_BLOCKER_KIND"
+        --delegation-mode "${AI_WORKFLOW_DELEGATION_MODE:-unknown}"
     )
     if [ "$ADVISOR_USED" = "true" ]; then _ATTEMPT_ARGS+=(--advisor-used); fi
     if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then _ATTEMPT_ARGS+=(--valid-report); fi
@@ -4590,6 +4824,7 @@ else
     echo "Worktree Strategy: $CLAUDE_CODE_WORKTREE_STRATEGY"
 fi
 echo "Runtime Identity: $RUNTIME_JSON"
+echo "Phase Metrics:    $PHASE_METRICS_FILE"
 echo "Large Repo Mode: $CLAUDE_CODE_LARGE_REPO_MODE"
 echo "Prompt Profile:  $CLAUDE_CODE_PROMPT_PROFILE"
 echo "Evidence Mode:   $CLAUDE_CODE_EVIDENCE_MODE"

@@ -106,7 +106,8 @@ class RunParallelLoopTests(unittest.TestCase):
                 "name=$(basename \"$1\" .md)\n"
                 "echo \"Result: /tmp/${name}.result.json\"\n"
                 "echo \"Diff: /tmp/${name}.diff\"\n"
-                "echo \"Report: /tmp/${name}.report.md\"\n",
+                "echo \"Report: /tmp/${name}.report.md\"\n"
+                "echo \"Worktree: $PWD\"\n",
                 encoding="utf-8",
             )
             fake_dispatch.chmod(fake_dispatch.stat().st_mode | stat.S_IXUSR)
@@ -144,6 +145,9 @@ class RunParallelLoopTests(unittest.TestCase):
             self.assertIn("Experimental Parallel Dispatch Summary", summary_text)
             self.assertIn("Parallel Execution Follow-up", summary_text)
             self.assertIn("| Dispatches succeeded | 2 |", summary_text)
+            self.assertIn("| Progressive ramp-up | yes |", summary_text)
+            self.assertIn("| Per-unit validation | required |", summary_text)
+            self.assertTrue((output_dir / "task-a.md.validation.json").exists())
             self.assertIn("| Automatic merge performed? | no |", summary_text)
             self.assertIn("task-a.md", manifest.read_text(encoding="utf-8"))
             self.assertIn("dispatch_start", events.read_text(encoding="utf-8"))
@@ -286,7 +290,8 @@ class TestDAGForkJoin(unittest.TestCase):
                 "# Record dispatch time and task\n"
                 "printf '%s %s\\n' \"$(date +%s%N 2>/dev/null || date +%s)\" \"$name\" >> \"$DISPATCH_LOG\"\n"
                 "echo \"Result: /tmp/${name}.result.json\"\n"
-                "echo \"Report: /tmp/${name}.report.md\"\n",
+                "echo \"Report: /tmp/${name}.report.md\"\n"
+                "echo \"Worktree: $PWD\"\n",
                 encoding="utf-8",
             )
             fake_dispatch.chmod(fake_dispatch.stat().st_mode | stat.S_IXUSR)
@@ -345,7 +350,8 @@ class TestDAGForkJoin(unittest.TestCase):
             fake_dispatch.write_text(
                 "#!/usr/bin/env bash\n"
                 "echo \"Result: /tmp/result.json\"\n"
-                "echo \"Report: /tmp/report.md\"\n",
+                "echo \"Report: /tmp/report.md\"\n"
+                "echo \"Worktree: $PWD\"\n",
                 encoding="utf-8",
             )
             fake_dispatch.chmod(fake_dispatch.stat().st_mode | stat.S_IXUSR)
@@ -412,7 +418,8 @@ class TestDAGFailureSkip(unittest.TestCase):
                 "  exit 1\n"
                 "fi\n"
                 "echo \"Result: /tmp/${name}.result.json\"\n"
-                "echo \"Report: /tmp/${name}.report.md\"\n",
+                "echo \"Report: /tmp/${name}.report.md\"\n"
+                "echo \"Worktree: $PWD\"\n",
                 encoding="utf-8",
             )
             fake_dispatch.chmod(fake_dispatch.stat().st_mode | stat.S_IXUSR)
@@ -482,7 +489,8 @@ class TestCLIConcurrencyOverride(unittest.TestCase):
             fake_dispatch.write_text(
                 "#!/usr/bin/env bash\n"
                 "echo \"Result: /tmp/result.json\"\n"
-                "echo \"Report: /tmp/report.md\"\n",
+                "echo \"Report: /tmp/report.md\"\n"
+                "echo \"Worktree: $PWD\"\n",
                 encoding="utf-8",
             )
             fake_dispatch.chmod(fake_dispatch.stat().st_mode | stat.S_IXUSR)
@@ -774,7 +782,8 @@ class TestFlatDispatchCollisionResistance(unittest.TestCase):
             fake_dispatch.write_text(
                 "#!/usr/bin/env bash\n"
                 "echo \"Result: /tmp/result.json\"\n"
-                "echo \"Report: /tmp/report.md\"\n",
+                "echo \"Report: /tmp/report.md\"\n"
+                "echo \"Worktree: $PWD\"\n",
                 encoding="utf-8",
             )
             fake_dispatch.chmod(fake_dispatch.stat().st_mode | stat.S_IXUSR)
@@ -843,6 +852,54 @@ class TestFlatDispatchCollisionResistance(unittest.TestCase):
             # Each dispatch should create a unique worktree
             self.assertEqual(len(worktree_names), len(set(worktree_names)),
                              f"worktree names collide: {worktree_names}")
+
+
+class TestProgressiveParallelGate(unittest.TestCase):
+    def test_failed_canary_validation_prevents_expansion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=str(repo), check=True, capture_output=True)
+            first = repo / "task-a.md"
+            second = repo / "task-b.md"
+            write_task(first, "src/a.py")
+            write_task(second, "src/b.py")
+            first.write_text(
+                first.read_text(encoding="utf-8").replace(
+                    "| Validation command | echo ok |",
+                    "| Validation command | false |",
+                ),
+                encoding="utf-8",
+            )
+            dispatch_log = root / "dispatch.log"
+            fake = root / "fake-dispatch.sh"
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "basename \"$1\" >> \"$DISPATCH_LOG\"\n"
+                "echo \"Worktree: $PWD\"\n"
+                "echo \"Result: /tmp/result.json\"\n"
+                "echo \"Report: /tmp/report.md\"\n",
+                encoding="utf-8",
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+            output = repo / ".worktrees" / "canary"
+            env = os.environ.copy()
+            env["AI_CODING_WORKFLOW_DISPATCH_BIN"] = bash_path(fake)
+            env["DISPATCH_LOG"] = bash_path(dispatch_log)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), "--output", bash_path(output),
+                 bash_path(first), bash_path(second)],
+                cwd=str(repo), env=env, text=True, encoding="utf-8",
+                errors="replace", capture_output=True, timeout=60,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(dispatch_log.read_text(encoding="utf-8").splitlines(), ["task-a.md"])
+            events = (output / "parallel-events.jsonl").read_text(encoding="utf-8")
+            self.assertIn("unit_validation_failed", events)
+            self.assertIn("canary_failed", events)
+            self.assertIn("task_skipped", events)
+            self.assertEqual((output / "task-b.md.exit").read_text().strip(), "125")
 
 
 if __name__ == "__main__":

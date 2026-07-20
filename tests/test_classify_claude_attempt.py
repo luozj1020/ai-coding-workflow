@@ -12,7 +12,7 @@ spec.loader.exec_module(mod)
 def classify(**overrides):
     values = dict(exit_code=1, outcome="failure", semantic_error=False, diff_changes=0,
                   valid_report=False, progress="none", direction="unknown", error_text="",
-                  blocker_kind="none", advisor_used=False)
+                  blocker_kind="none", advisor_used=False, delegation_mode="unknown")
     values.update(overrides)
     return mod.classify(**values)
 
@@ -53,6 +53,18 @@ class ClassifyClaudeAttemptTests(unittest.TestCase):
         result = classify(exit_code=0, outcome="success")
         self.assertEqual(result["failure_class"], "model-no-progress")
         self.assertTrue(result["counts_toward_takeover"])
+
+    def test_canary_model_failure_requires_reroute_without_takeover(self):
+        result = classify(exit_code=0, outcome="success", delegation_mode="canary")
+        self.assertTrue(result["economic_stop_loss"])
+        self.assertTrue(result["reroute_required"])
+        self.assertFalse(result["takeover_authorized"])
+        self.assertEqual(result["recommended_action"], "reroute-before-redispatch")
+
+    def test_canary_transport_keeps_same_worktree_retry(self):
+        result = classify(error_text="API Error: connection timed out", delegation_mode="canary")
+        self.assertFalse(result["economic_stop_loss"])
+        self.assertTrue(result["same_worktree_retry_eligible"])
 
     # --- advisor continuation eligibility ---
 

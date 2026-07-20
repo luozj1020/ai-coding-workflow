@@ -36,6 +36,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -63,6 +64,144 @@ def _load_module(name: str, filename: str):
 
 task_schema = _load_module("task_schema", "task_schema.py")
 route_task = _load_module("route_task", "route-task.py")
+
+
+def _validation_command(value: Any) -> str:
+    if isinstance(value, list):
+        return " ".join(str(part) for part in value)
+    return str(value or "not assigned")
+
+
+def _instantiate_delegation_card(
+    template: str,
+    composed: Dict[str, Any],
+    facts: Dict[str, Any],
+    execution: Dict[str, Any],
+) -> str:
+    """Fill a selected component card from the already-reviewed Task JSON."""
+    scope = composed.get("scope", {}) if isinstance(composed.get("scope"), dict) else {}
+    handoff = composed.get("handoff", {}) if isinstance(composed.get("handoff"), dict) else {}
+    acceptance = composed.get("acceptance", []) if isinstance(composed.get("acceptance"), list) else []
+    validation = composed.get("validation", []) if isinstance(composed.get("validation"), list) else []
+    role = execution.get("claude_role", "execution-builder")
+    write_paths = scope.get("write_paths", [])
+    forbidden_paths = scope.get("forbidden_paths", [])
+    target_files = facts.get("target_files", [])
+    validation_lines = [
+        _validation_command(item.get("command"))
+        for item in validation if isinstance(item, dict)
+    ]
+    acceptance_lines = [
+        f"- [ ] {item.get('id', 'acceptance')}: {item.get('description', '')}"
+        for item in acceptance if isinstance(item, dict)
+    ] or ["- [ ] Complete the observable goal inside the declared scope."]
+    test_owner = "Claude" if facts.get("test_writing_required") else "Codex/local deterministic tools"
+    context_sufficient = "yes" if target_files and role != "solution-planner" else "bounded-planning"
+    execution_only = "yes" if role == "execution-builder" and target_files else "no"
+
+    text = template.replace("<!-- stable task id -->", str(composed.get("id", facts.get("task_id", "unknown"))))
+    text = text.replace("<!-- one observable outcome -->", str(composed.get("goal", "")))
+    scope_body = (
+        "## Scope\n\n"
+        f"- Write paths: {', '.join(map(str, write_paths)) or 'none'}\n"
+        f"- Read paths: {', '.join(map(str, target_files)) or 'bounded by the selected role'}\n"
+        f"- Forbidden paths: {', '.join(map(str, forbidden_paths)) or 'none'}\n"
+        "- Explicitly out of scope: unrelated cleanup, redesign, deployment, merge\n\n"
+        "## Claude Context Packet"
+    )
+    text = re.sub(
+        r"## Scope\n\n.*?\n\n## Claude Context Packet",
+        lambda _match: scope_body,
+        text,
+        count=1,
+        flags=re.S,
+    )
+    context_body = (
+        "## Claude Context Packet\n\n"
+        "| Field | Value |\n|---|---|\n"
+        f"| Target files/modules | {', '.join(map(str, target_files)) or 'bounded discovery inside declared scope'} |\n"
+        f"| Exact symbols/tests | {', '.join(map(str, facts.get('symbols', []))) or 'not supplied'} |\n"
+        f"| Root-cause evidence or relevant excerpt | {facts.get('root_cause_evidence') or 'not applicable'} |\n"
+        f"| Reference implementation/source of truth | {facts.get('source_of_truth_example') or 'task contract and existing repository patterns'} |\n"
+        f"| Known constraints | {', '.join(map(str, facts.get('constraints', []))) or 'scope and acceptance below'} |\n"
+        f"| Do not read/modify | {', '.join(map(str, forbidden_paths)) or 'unrelated paths'} |\n"
+        f"| Context sufficient for execution? | {context_sufficient} |\n"
+        f"| Execution-only eligible? | {execution_only} |\n\n"
+        "## Handoff Contract"
+    )
+    text = re.sub(
+        r"## Claude Context Packet\n\n.*?\n\n## Handoff Contract",
+        lambda _match: context_body,
+        text,
+        count=1,
+        flags=re.S,
+    )
+    handoff_body = (
+        "## Handoff Contract\n\n"
+        f"- Must do: {', '.join(map(str, handoff.get('must_do', []))) or composed.get('goal', '')}\n"
+        f"- Must not do: {', '.join(map(str, handoff.get('must_not_do', []))) or 'broaden scope or merge'}\n"
+        "- May decide: local implementation details inside the frozen assignment\n"
+        "- Stop and report when: a stop condition below is reached\n\n"
+        "## Acceptance Criteria"
+    )
+    text = re.sub(
+        r"## Handoff Contract\n\n.*?\n\n## Acceptance Criteria",
+        lambda _match: handoff_body,
+        text,
+        count=1,
+        flags=re.S,
+    )
+    text = re.sub(
+        r"## Acceptance Criteria\n\n.*?\n\n## Testing Responsibility",
+        lambda _match: "## Acceptance Criteria\n\n" + "\n".join(acceptance_lines) + "\n\n## Testing Responsibility",
+        text, count=1, flags=re.S,
+    )
+    testing_body = (
+        "## Testing Responsibility\n\n| Responsibility | Owner |\n|---|---|\n"
+        f"| Implementation | {'none — structured planning only' if role == 'solution-planner' else 'Claude'} |\n"
+        f"| Test writing | {test_owner} |\n"
+        f"| Narrow validation | {'Claude' if validation_lines else 'not assigned'} |\n"
+        f"| Checker model dispatch | {'yes' if execution.get('checker_model_dispatch') else 'no'} |\n"
+        "| Direction review | Codex |\n| Final review | Codex |\n\n## Validation Contract"
+    )
+    text = re.sub(
+        r"## Testing Responsibility\n\n.*?\n\n## Validation Contract",
+        lambda _match: testing_body,
+        text,
+        count=1,
+        flags=re.S,
+    )
+    validation_body = (
+        "## Validation Contract\n\n"
+        f"- Local validation allowed: {'yes' if validation_lines else 'no'}\n"
+        f"- Exact narrow command: {'; '.join(validation_lines) or 'not assigned'}\n"
+        "- Required evidence: exit status and compact result summary\n\n## Execution Progress"
+    )
+    text = re.sub(
+        r"## Validation Contract\n\n.*?\n\n## Execution Progress",
+        lambda _match: validation_body,
+        text,
+        count=1,
+        flags=re.S,
+    )
+    text = text.replace("| Transformation rule | replace with one deterministic rule |", f"| Transformation rule | {facts.get('transformation_rule') or 'apply the task-defined deterministic transformation'} |")
+    text = text.replace("| Independent write units | replace with exact non-overlapping paths |", f"| Independent write units | {', '.join(map(str, target_files or write_paths)) or 'not resolved — stop'} |")
+    text = text.replace("| Source-of-truth example | replace with one existing correct pattern |", f"| Source-of-truth example | {facts.get('source_of_truth_example') or 'task-defined existing pattern'} |")
+    text = text.replace(
+        "| Narrow validation assigned | no — replace with one exact command when required |",
+        f"| Narrow validation assigned | {'; '.join(validation_lines) if validation_lines else 'no'} |",
+    )
+    text = text.replace(
+        "| Documentation assigned | no — replace with exact files when required |",
+        "| Documentation assigned | no |",
+    )
+    text = text.replace("- Observable goal:", f"- Observable goal: {composed.get('goal', '')}")
+    text = text.replace("- Exploration/read boundary:", f"- Exploration/read boundary: {', '.join(map(str, write_paths)) or 'declared repository scope'}")
+    text = text.replace("- Existing constraints and invariants:", f"- Existing constraints and invariants: {', '.join(map(str, facts.get('constraints', []))) or 'preserve existing contracts'}")
+    text = text.replace("- Known integration points:", f"- Known integration points: {', '.join(map(str, target_files)) or 'to be resolved inside boundary'}")
+    text = text.replace("- Non-goals:", "- Non-goals: source edits during planning, unrelated redesign")
+    text = text.replace("- Required acceptance surface:", f"- Required acceptance surface: {', '.join(item.get('id', '') for item in acceptance if isinstance(item, dict)) or 'observable goal'}")
+    return text
 workflow_economics = _load_module("workflow_economics", "workflow_economics.py")
 
 # ---------------------------------------------------------------------------
@@ -261,7 +400,8 @@ class RunContext:
                 return "human-review"
             return "escalate"
         if status == "routed":
-            return "codex-fast-path"
+            owner = (self.routing or {}).get("execution", {}).get("owner")
+            return "codex-fast-path" if owner == "codex-fast-path" else "claude-dispatch-ready"
         return "failed"
 
 
@@ -408,46 +548,27 @@ def phase_route(ctx: RunContext) -> None:
 
 
 def phase_context(ctx: RunContext) -> None:
-    """Phase 6: Build/cache context."""
+    """Phase 6: Select bounded context without duplicating dispatch artifacts."""
     ctx.phase_order.append("context")
     start = time.monotonic()
 
-    # Build a context packet from facts
-    context_packet = {
+    delegated = ctx.routing.get("execution", {}).get("owner") != "codex-fast-path"
+    decision = {
         "schema_version": 1,
         "task_id": ctx.facts.get("task_id", ""),
-        "goal": ctx.facts.get("goal", ""),
-        "L0": {
-            "files": ctx.facts.get("target_files", []),
-            "symbols": [],
-            "targets": [],
-        },
-        "L1": {
-            "snippets": [],
-            "call_paths": [],
-            "constraints": [],
-        },
-        "L2": {"enabled": False, "full_files": []},
-        "forbidden_paths": ctx.composed.get("scope", {}).get("forbidden_paths", []),
-        "validation": [v.get("command", "") for v in ctx.composed.get("validation", [])],
-        "acceptance": [
-            {"id": a.get("id", ""), "description": a.get("description", "")}
-            for a in ctx.composed.get("acceptance", [])
-        ],
+        "action": "inline-delegation-context" if delegated else "skip-claude-context-packet",
+        "source": "routing-facts.json" if delegated else None,
+        "reason": (
+            "selected facts will be inlined once into the composed delegation card"
+            if delegated else
+            "Codex owns implementation; no delegation context artifact is needed"
+        ),
     }
-
-    out = ctx.run_dir / "context-packet.json"
-    write_artifact(out, context_packet)
-    ctx.record_artifact(out)
-
-    # Also materialize CLAUDE_CONTEXT_PACKET.md
-    dispatch_efficient = _load_module("dispatch_efficient", "dispatch-efficient.py")
-    md_content = dispatch_efficient._render_context_packet_md(context_packet)
-    md_path = ctx.run_dir / "CLAUDE_CONTEXT_PACKET.md"
-    md_path.write_text(md_content, encoding="utf-8")
-
+    decision_path = ctx.run_dir / "context-decision.json"
+    write_artifact(decision_path, decision)
+    ctx.record_artifact(decision_path)
     ctx.phase_timings["context"] = time.monotonic() - start
-    ctx.emit_event("context_complete", "setup")
+    ctx.emit_event("context_selected" if delegated else "context_skipped", "setup", decision)
 
 
 def phase_plan(ctx: RunContext) -> None:
@@ -458,6 +579,29 @@ def phase_plan(ctx: RunContext) -> None:
     lane = ctx.routing.get("lane", "standard")
     budget = ctx.routing.get("budget", {})
     execution = ctx.routing.get("execution", {})
+    delegation_card = None
+    selected_components: List[str] = []
+    if execution.get("owner") != "codex-fast-path":
+        composer = _load_module("compose_task_card", "compose_task_card.py")
+        component_root = composer.component_root()
+        catalog = composer.load_catalog(component_root)
+        recommendation = composer.recommend_components({
+            **ctx.facts,
+            "execution": execution,
+            "claude_role": execution.get("claude_role"),
+        })
+        if recommendation.get("skip_card"):
+            raise PhaseError("plan", "failed", "delegated owner selected but card composer requested skip")
+        content, selected_components = composer.compose(
+            component_root,
+            catalog,
+            recommendation["preset"],
+            recommendation.get("gates", []),
+        )
+        content = _instantiate_delegation_card(content, ctx.composed, ctx.facts, execution)
+        delegation_card = ctx.run_dir / "delegation-task-card.md"
+        delegation_card.write_text(content, encoding="utf-8", newline="\n")
+        ctx.record_artifact(delegation_card, is_json=False)
 
     ctx.execution_plan = {
         "schema_version": 1,
@@ -473,8 +617,11 @@ def phase_plan(ctx: RunContext) -> None:
             "milestones": [],
         },
         "execution": {
-            "owner": execution.get("owner", "claude-builder"),
-            "owner_source": execution.get("owner_source", "compatibility-default"),
+            "owner": execution.get("owner", "codex-fast-path"),
+            "owner_source": execution.get("owner_source", "codex-safe-default"),
+            "claude_role": execution.get("claude_role", "none"),
+            "builder_mode": execution.get("builder_mode", "standard"),
+            "durable_output_required": execution.get("durable_output_required", False),
             "builder_checker_split": execution.get("builder_checker_split", False),
             "checker_model_dispatch": execution.get("checker_model_dispatch", False),
             "checker_value_reasons": execution.get("checker_value_reasons", []),
@@ -483,8 +630,11 @@ def phase_plan(ctx: RunContext) -> None:
             "single_pass_reason": execution.get("single_pass_reason", ""),
             "remote_rounds": execution.get("remote_rounds", 1),
         },
-        "context_packet": str(ctx.run_dir / "context-packet.json"),
+        "context_packet": None,
+        "context_delivery": "inline-delegation-task-card" if delegation_card else "none",
         "composed_task": str(ctx.run_dir / "composed-task.json"),
+        "delegation_task_card": str(delegation_card) if delegation_card else None,
+        "task_card_components": selected_components,
     }
 
     out = ctx.run_dir / "execution-plan.json"
@@ -521,11 +671,14 @@ def phase_dispatch(ctx: RunContext) -> None:
 
     if not ctx.execute:
         # Preview mode: write dispatch preview, skip execution
+        dispatch_card_value = ctx.execution_plan.get("delegation_task_card")
+        if not dispatch_card_value:
+            raise PhaseError("dispatch", "failed", "Claude route is missing its composed delegation task card")
         preview = {
             "mode": "preview",
             "task_id": ctx.facts.get("task_id", ""),
             "lane": ctx.routing.get("lane", "standard"),
-            "dispatch_card": str(ctx.task_path),
+            "dispatch_card": str(dispatch_card_value),
             "single_pass": ctx.execution_plan.get("execution", {}).get("single_pass_allowed", False),
             "execute": False,
             "message": "Preview mode. Use --execute to dispatch.",
@@ -534,16 +687,19 @@ def phase_dispatch(ctx: RunContext) -> None:
         write_artifact(out, preview)
         ctx.record_artifact(out)
         ctx.phase_timings["dispatch"] = 0.0
+        ctx.stop_after_dispatch = True
         ctx.emit_event("dispatch_preview", "dispatch", {"mode": "preview"})
         return
 
     start = time.monotonic()
 
     # Prepare dispatch card (may be modified for single-pass)
-    dispatch_card = ctx.task_path
+    dispatch_card_value = ctx.execution_plan.get("delegation_task_card")
+    if not dispatch_card_value:
+        raise PhaseError("dispatch", "failed", "Claude route is missing its composed delegation task card")
+    dispatch_card = Path(dispatch_card_value)
     if ctx.execution_plan.get("execution", {}).get("single_pass_allowed"):
-        text = ctx.task_path.read_text(encoding="utf-8")
-        import re
+        text = dispatch_card.read_text(encoding="utf-8")
         text = re.sub(
             r"(?im)^\|\s*Mode\s*\|\s*builder\s*\|",
             "| Mode | mixed-exception |",
@@ -562,6 +718,8 @@ def phase_dispatch(ctx: RunContext) -> None:
         "dispatch_card": str(dispatch_card),
         "single_pass": ctx.execution_plan.get("execution", {}).get("single_pass_allowed", False),
         "execute": True,
+        "claude_role": ctx.execution_plan.get("execution", {}).get("claude_role", "execution-builder"),
+        "builder_mode": ctx.execution_plan.get("execution", {}).get("builder_mode", "standard"),
     }
     preview_path = ctx.run_dir / "dispatch-preview.json"
     write_artifact(preview_path, preview)
@@ -573,6 +731,12 @@ def phase_dispatch(ctx: RunContext) -> None:
 
     stdout_path = ctx.run_dir / "dispatch.stdout"
     stderr_path = ctx.run_dir / "dispatch.stderr"
+    claude_phase_metrics_path = ctx.run_dir / "claude-phase-metrics.json"
+    dispatch_env = os.environ.copy()
+    dispatch_env["AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE"] = str(claude_phase_metrics_path.resolve())
+    dispatch_env["CLAUDE_CODE_BUILDER_MODE"] = ctx.execution_plan.get("execution", {}).get(
+        "builder_mode", "standard"
+    )
 
     try:
         with open(stdout_path, "wb") as out_f, open(stderr_path, "wb") as err_f:
@@ -581,6 +745,7 @@ def phase_dispatch(ctx: RunContext) -> None:
                 stdout=out_f,
                 stderr=err_f,
                 cwd=str(ctx.repo),
+                env=dispatch_env,
             )
         exit_code = proc.returncode
     except Exception as exc:
@@ -588,7 +753,7 @@ def phase_dispatch(ctx: RunContext) -> None:
 
     ctx.model_calls.append({
         "role": "claude",
-        "stage": "builder",
+        "stage": ctx.execution_plan.get("execution", {}).get("claude_role", "execution-builder"),
         "exit_code": exit_code,
         "stdout": str(stdout_path),
         "stderr": str(stderr_path),
@@ -596,12 +761,29 @@ def phase_dispatch(ctx: RunContext) -> None:
 
     ctx.record_artifact(stdout_path, is_json=False)
     ctx.record_artifact(stderr_path, is_json=False)
+    if claude_phase_metrics_path.is_file():
+        ctx.record_artifact(claude_phase_metrics_path)
 
     ctx.phase_timings["dispatch"] = time.monotonic() - start
     ctx.emit_event("dispatch_complete", "dispatch", {"exit_code": exit_code})
 
     if exit_code != 0:
         raise PhaseError("dispatch", "failed", f"exit code {exit_code}")
+
+    if ctx.execution_plan.get("execution", {}).get("claude_role") == "solution-planner":
+        decision = {
+            "schema_version": 1,
+            "task_id": ctx.facts.get("task_id", ""),
+            "action": "codex-review-solution-contract",
+            "claude_dispatched": True,
+            "implementation_dispatched": False,
+            "reason": "solution planner completed; contract must be reviewed and frozen before implementation",
+        }
+        decision_path = ctx.run_dir / "planning-decision.json"
+        write_artifact(decision_path, decision)
+        ctx.record_artifact(decision_path)
+        ctx.stop_after_dispatch = True
+        ctx.emit_event("solution_planning_complete", "decision", decision)
 
 
 def phase_evidence(ctx: RunContext) -> None:
@@ -734,6 +916,23 @@ def phase_ledger(ctx: RunContext) -> None:
 
     total_time = sum(ctx.phase_timings.values())
 
+    claude_phase_metrics_path = ctx.run_dir / "claude-phase-metrics.json"
+    claude_phase_seconds = None
+    if claude_phase_metrics_path.is_file():
+        try:
+            value = json.loads(claude_phase_metrics_path.read_text(encoding="utf-8"))
+            keys = (
+                "context_acquisition_seconds", "implementation_seconds",
+                "validation_seconds_observed", "tail_seconds",
+            )
+            if isinstance(value, dict) and all(
+                isinstance(value.get(key), (int, float)) and not isinstance(value.get(key), bool)
+                for key in keys
+            ):
+                claude_phase_seconds = {key: value[key] for key in keys}
+        except (OSError, json.JSONDecodeError):
+            claude_phase_seconds = None
+
     metrics = {
         "schema_version": 1,
         "run_id": ctx.run_id,
@@ -756,6 +955,8 @@ def phase_ledger(ctx: RunContext) -> None:
             ctx.phase_timings.get(name, 0.0)
             for name in ("lint", "compose", "validate", "facts", "route", "context", "plan")
         ), 3),
+        "claude_phase_seconds": claude_phase_seconds,
+        "claude_phase_metrics_file": str(claude_phase_metrics_path) if claude_phase_metrics_path.is_file() else None,
         "acceptance_status": ctx.acceptance.get("status") if ctx.acceptance else None,
         "review_tier": ctx.ladder.get("tier") if ctx.ladder else None,
         "remote_required": ctx.handoff.get("remote_required") if ctx.handoff else False,
@@ -1042,7 +1243,7 @@ def main(argv: Optional[list] = None) -> int:
         if phases:
             print(f"Phases completed: {', '.join(phases)}")
 
-    return 0 if result.get("status") == "completed" else 1
+    return 0 if result.get("status") in ("completed", "routed") else 1
 
 
 if __name__ == "__main__":

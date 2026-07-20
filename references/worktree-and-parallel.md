@@ -16,8 +16,13 @@ Checker worktree reuse requires every Checker Reuse Risk Gate row to be explicit
 
 ## Parallel Dispatch
 
-Parallel execution is opt-in wall-clock optimization, not a default. Run the zero-token `assess-parallel-opportunity.py` only when local evidence suggests multiple units. `serial-obvious` stops there. Only `parallel-candidate` may use one bounded Spark `parallel-planner` call.
+Parallel execution is a legacy within-repository compatibility tool, not a
+portfolio feature or default route. The Skill never coordinates projects or
+terminals; the user runs one repository workflow per terminal. Invoke
+`assess-parallel-opportunity.py` only for an explicit same-repository experiment.
 
 Before execution, review and save the strict schema-v1 DAG. Every card must declare the same real Base commit matching current `HEAD`, non-overlapping write scopes, independent owned contracts, and validation ownership. Shared API, data model, migration, security, permission, global configuration, or overlapping paths require serial work or explicit human-approved reconciliation.
 
 Use maximum concurrency 2 by default. The scheduler starts only dependency-ready tasks, skips transitive dependents after prerequisite failure, and lets unrelated branches continue. Review every diff and evidence packet serially; merge remains human-controlled. `--allow-overlap` is a manual-reconcile escape hatch, not permission to bypass base, contract, or validation checks.
+
+Default dispatch is progressive: run one ready canary alone, execute its declared narrow validation with the local checker helper, and release the remaining ready units only after that gate passes. Every later unit is also helper-validated; dispatcher exit zero without an available worktree or passing validation is incomplete, not success. `--no-ramp-up` and `--no-unit-validation` are diagnostic overrides and must be recorded in benchmark evidence.

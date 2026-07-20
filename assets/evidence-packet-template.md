@@ -437,15 +437,15 @@
 
 ## Delegation Continuity
 
-<!-- Fill for multi-phase or multi-part work. Accepted high-priority phases do not make remaining implementation Codex-owned. -->
+<!-- Fill for multi-phase or multi-part work. No earlier owner automatically retains the remaining work; route it again from current facts. -->
 
 | Field | Value |
 |-------|-------|
 | Current phase accepted? | yes/no |
 | Whole task accepted? | yes/no |
 | Remaining implementation/test-writing phases | |
-| Next executor for remaining phases | Claude Code / Codex control-plane / human |
-| Next task-card artifact | |
+| Next executor for remaining phases | fresh route: Codex / Claude Code / human |
+| Route decision / next task-card artifact | compact Codex decision / delegated card / human direction |
 
 ## Finish Branch Follow-up
 
@@ -506,13 +506,13 @@
 | LSP/locator/CodeGraph queries run | | |
 | Whole-file reads (Codex) | | |
 
-## High-Token Work Delegated
+## High-Token Work Routed
 
-<!-- List high-token work explicitly delegated to Claude Code. This should match the task card's High-Token Delegation Gate. -->
+<!-- List high-token work and its economic owner. Size alone does not require Claude. -->
 
-| Delegated Task | Rationale |
-|---------------|-----------|
-| | |
+| Work | Owner | Rationale |
+|------|-------|-----------|
+| | | |
 
 ## Compressed Evidence Summary
 

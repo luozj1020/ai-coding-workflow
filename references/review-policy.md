@@ -2,11 +2,11 @@
 
 ## Division of Labor
 
-### Builder Claude  -  Implementation Direction
+### Builder Claude - Primary Execution
 
 Responsibilities:
 
-- Implement the scoped task card change
+- Implement the assigned frozen, exploratory, mechanical, core, or auxiliary change
 - Keep edits within the Handoff Contract
 - Update `CLAUDE_PROGRESS.md` and `CLAUDE_TASK_CARD.md` progress after each assigned item
 - Report changed files, plan match, deviations, assumptions, and risks
@@ -32,7 +32,7 @@ Checker/Test Claude only for assigned test writing, long-running validation,
 large failure/log evidence, or an independent validation responsibility that
 materially reduces Codex work. Record the skip reason when no Checker is used.
 
-### MiMo / DeepSeek  -  Exhaustive Scan
+### Claude-Compatible Models  -  Exhaustive Scan
 
 Responsibilities:
 
@@ -41,7 +41,7 @@ Responsibilities:
 - Suggest additional test cases for edge conditions
 - Review changes across many files for consistency
 
-MiMo/DeepSeek is invoked when the diff is large or the task is complex enough to warrant exhaustive review. It is optional for small, well-scoped changes.
+The configured cost-efficient Claude-compatible model may be used when the diff is large or the task is complex enough to warrant exhaustive review. It is optional for small, well-scoped changes.
 
 ### Codex / GPT  -  Architectural Review
 
@@ -63,21 +63,39 @@ Responsibilities:
   - Did the loop stop when failures repeated, regressed, or stopped improving?
 - Return a structured decision (see below)
 
-Codex may edit directly when the pre-card economy route selects Codex, or after a
-valid reviewer-owned bounded correction/takeover decision. During a live Claude
-round it remains reviewer-only and must not race the Builder.
+Claude is the default implementation owner. During a live Claude round Codex
+remains reviewer-only and must not race the Builder.
+
+### Planning Review and Stop Rule
+
+When routing selects `solution-planner`, Claude owns one convergent structured
+draft and Codex owns one adversarial review. Codex classifies findings as:
+
+- `blocking`: violates the stated goal, invariant, required compatibility, or
+  acceptance surface; it must be resolved before freeze;
+- `recommended`: improves quality without invalidating acceptance;
+- `backlog`: useful future work outside the current economic scope;
+- `spec-change`: changes the requested contract and is rejected/deferred unless
+  Codex or the human explicitly incorporates it into a new draft.
+
+Only an unresolved `blocking` finding or an explicitly incorporated
+`spec-change` reopens planning. Recommendations and backlog items cannot cause a
+second full planning round or block implementation. After freeze, Codex reviews
+implementation against the contract rather than inventing a new ideal design.
+New improvements go to backlog unless concrete evidence shows a frozen invariant
+or acceptance criterion is wrong.
 
 ## Phase Responsibility Matrix
 
 | Phase | Codex responsibilities | Claude responsibilities | Claude must not | Codex must not |
 |-------|------------------------|-------------------------|-----------------|----------------|
-| OBSERVE | Gather low-token evidence with LSP/CodeGraph/MCP and identify unknowns | N/A unless dispatched for exploration | Edit files without a task card | Perform broad reads when lower-token evidence is enough |
-| PLAN | Select task-card components, fill the composed short card, and assign validation ownership | N/A | Decide task boundaries before dispatch | Leave testing responsibility implicit |
+| OBSERVE | Gather only enough evidence to freeze the goal and risk boundary | Perform bounded exploration when routed | Edit outside the task boundary | Perform broad reads when Claude/Spark can return durable evidence |
+| PLAN | Review goal, boundaries, acceptance, and critical invariants | Produce a solution contract or execute from the composed short card | Reopen frozen product direction | Hand-author a monolithic task card |
 | DISPATCH | Render the Claude execution card and preserve the full planning card | Read `CLAUDE_TASK_CARD.md` as the contract | Depend on Codex-only planning sections | Hand-write a second divergent Claude card |
-| BUILDER EXECUTE | Observe progress and partial diff direction only | Implement scoped changes, update progress, report direction | Write acceptance tests or run broad suites unless `mixed-exception` or narrow sanity checks are explicit | Patch implementation because the Builder is merely quiet |
+| BUILDER EXECUTE | Observe compact material transitions only | Implement scoped changes, update progress, report direction | Run unassigned broad suites | Patch implementation because the Builder is merely quiet |
 | DIRECTION REVIEW | Decide wait, local deterministic verification, optional Checker/Test, revise, split, reject, or takeover | Provide progress/report evidence and stop on blockers | Repeatedly ask for the same approval after proceed | Send off-plan work to validation |
 | CHECKER/TEST | Dispatch only when the Checker value gate passes; review evidence quality | Write/update assigned tests, run assigned commands, report bounded failures | Perform broad implementation rewrites | Use a model when local evidence already closes acceptance |
-| FINAL REVIEW | Accept/revise/split/reject and optionally run second verification | N/A unless re-dispatched | N/A | Merge automatically or edit directly without threshold |
+| FINAL REVIEW | Review compressed evidence and semantic hotspots; accept/revise/split/reject | N/A unless re-dispatched | N/A | Merge automatically or reread unaffected files without evidence need |
 | TAKEOVER | Edit only after explicit human request or current-task threshold, record scope and validation | N/A | N/A | Use prior-session failures alone as takeover permission |
 
 ## Delegation Restoration Before Takeover
@@ -118,11 +136,16 @@ Before editing, Codex must state the failed attempts, why another Claude revisio
 
 No-progress evidence, an early Claude exit, invalid result JSON, missing report, or a single failed implementation does not by itself satisfy the threshold. In those cases Codex should produce a smaller revision task with clearer acceptance criteria, stronger stop conditions, and required evidence for Claude.
 
+Under `claude-first`, useful on-plan evidence gets one same-worktree continuation
+before takeover review. Transport and approval failures remain recoverable
+environment events and do not spend the model-failure allowance. `economy-first`
+may still use the canary stop-loss.
+
 ### Reviewer-Owned Bounded Correction
 
 This is an ownership re-route, not failure-based takeover. After Codex accepts the main implementation direction, it may directly apply a deterministic correction without waiting for two Claude failures only when all of the following hold:
 
-- a fresh `revision` ROUTE runs before any new task card and selects the repository-scale Codex direct gate;
+- a fresh `revision` ROUTE explicitly selects Codex rather than the default Claude continuation;
 - Codex has already read the exact affected diff/context during direction review;
 - the correction is precise, local, and introduces no new architecture, product, API, or data-model decision;
 - affected files and symbols are known and the calibrated correction fits the ordinary direct gate, or a tightly concentrated gate with unchanged scope and high confidence;
@@ -178,7 +201,7 @@ A concise explanation of why this decision was made. Reference specific acceptan
 
 ### Next-Loop Instructions
 
-For **accept**: state whether this accepts the whole task or only the completed phase. If implementation or test-writing phases remain, do not mark the whole task ready for merge; create task-card-ready instructions for the next Claude dispatch and fill the Delegation Continuity Gate.
+For **accept**: state whether this accepts the whole task or only the completed phase. If implementation or test-writing phases remain, do not mark the whole task ready for merge; produce a compact remaining-work brief and run a fresh owner route. Create another task card only if that route positively selects Claude.
 
 For **revise**: provide specific, actionable revision instructions. These instructions become the "Revision instructions" field in the next iteration's task card. Be explicit about:
 - What needs to change and why

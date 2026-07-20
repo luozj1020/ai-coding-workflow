@@ -70,7 +70,7 @@ class SparkEngagementTests(unittest.TestCase):
                     "effective_risks": no_risks,
                 },
                 False,
-                "skip.no_expected_decision_value",
+                "claude-first-deterministic-route",
             ),
             (
                 {
@@ -112,13 +112,14 @@ class SparkEngagementTests(unittest.TestCase):
                 spark = self.prepare(root, facts, f"T-{index}")["spark"]
                 self.assertEqual(spark["invoke"], expected_invoke)
                 self.assertEqual(spark["skip_reason"], expected_skip)
-                self.assertEqual(spark["stage"], "preflight")
-                self.assertEqual(spark["mode"], "preflight-bundle")
+                self.assertEqual(spark["stage"], "precard-route")
+                self.assertEqual(spark["mode"], "execution-cost-estimator")
 
-    def test_value_signal_triggers_spark(self):
-        """Each documented value signal independently enables Spark in auto mode."""
+    def test_generic_value_signals_do_not_trigger_spark_without_route_request(self):
+        """Generic uncertainty no longer taxes an otherwise complete owner route."""
         no_risks = {key: "no" for key in RISK_KEYS}
         base = {
+            "execution_owner": "claude-builder",
             "target_files_count": 3,
             "predicted_diff_lines": 120,
             "exact_validation": True,
@@ -138,14 +139,37 @@ class SparkEngagementTests(unittest.TestCase):
             for index, (extra, expected_code) in enumerate(signals):
                 facts = {**base, **extra}
                 spark = self.prepare(root, facts, f"VS-{index}")["spark"]
-                self.assertTrue(spark["invoke"], f"Signal {expected_code} should trigger Spark")
-                self.assertIn(expected_code, spark["trigger_codes"])
-                self.assertIsNone(spark["skip_reason"])
+                self.assertFalse(spark["invoke"], f"Signal {expected_code} must not trigger Spark alone")
+                self.assertEqual(spark["trigger_codes"], [])
+                self.assertIsNotNone(spark["skip_reason"])
+
+    def test_explicit_uncertain_claude_candidate_triggers_one_estimator(self):
+        no_risks = {key: "no" for key in RISK_KEYS}
+        facts = {
+            "execution_owner": "claude-builder",
+            "claude_role": "batch-builder",
+            "mechanical_batch": True,
+            "task_role": "auxiliary",
+            "independent_write_scopes": True,
+            "durable_output_required": True,
+            "codex_review_scope": "sampled",
+            "spark_route_requested": True,
+            "target_files_count": 8,
+            "predicted_diff_lines": 400,
+            "exact_validation": True,
+            "effective_risks": no_risks,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            spark = self.prepare(Path(tmp), facts, "CANDIDATE")["spark"]
+        self.assertTrue(spark["invoke"])
+        self.assertEqual(spark["mode"], "execution-cost-estimator")
+        self.assertEqual(spark["trigger_codes"], ["route.explicit_claude_candidate_estimate"])
 
     def test_explicit_on_overrides_no_signals(self):
         """spark_gate=on invokes even without value signals."""
         no_risks = {key: "no" for key in RISK_KEYS}
         facts = {
+            "execution_owner": "claude-builder",
             "target_files_count": 3,
             "predicted_diff_lines": 120,
             "exact_validation": True,
@@ -179,7 +203,7 @@ class SparkEngagementTests(unittest.TestCase):
                         "task_id": "T",
                         "lane": "standard",
                         "budget": {"claude_calls": 1},
-                        "execution": {"single_pass_allowed": False},
+                        "execution": {"owner": "claude-builder", "single_pass_allowed": False},
                         "spark": spark_policy,
                     }
                 ),
@@ -223,7 +247,7 @@ class SparkEngagementTests(unittest.TestCase):
                         "task_id": "T",
                         "lane": "standard",
                         "budget": {"claude_calls": 1},
-                        "execution": {"single_pass_allowed": False},
+                        "execution": {"owner": "claude-builder", "single_pass_allowed": False},
                         "spark": {
                             "invoke": True,
                             "stage": "preflight",
@@ -365,7 +389,7 @@ class HostHandoffTests(unittest.TestCase):
                     "task_id": "HOST-HANDOFF",
                     "lane": "standard",
                     "budget": {"claude_calls": 1},
-                    "execution": {"single_pass_allowed": False},
+                    "execution": {"owner": "claude-builder", "single_pass_allowed": False},
                     "spark": {
                         "invoke": True,
                         "stage": "preflight",

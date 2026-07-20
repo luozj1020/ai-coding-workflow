@@ -158,7 +158,7 @@ def _materialize_context_packet(out: Path, context_packet_path: Path) -> Path:
     return md_path
 
 
-def _tee_subprocess(cmd, stdin_data=None, stdout_path=None, stderr_path=None, cwd=None):
+def _tee_subprocess(cmd, stdin_data=None, stdout_path=None, stderr_path=None, cwd=None, env=None):
     """Run a subprocess with real-time tee: stream to terminal AND save to files.
 
     Returns the exit code. Preserves child exit code exactly.
@@ -177,6 +177,7 @@ def _tee_subprocess(cmd, stdin_data=None, stdout_path=None, stderr_path=None, cw
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
+            env=env,
         )
 
         # Feed stdin and close
@@ -265,6 +266,21 @@ def _needs_host_execution(spark_out_dir: Path, spark_stderr_path: Path) -> bool:
     return False
 
 
+def _attempt_classification_path(explicit, out: Path):
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_file() else None
+    stdout_path = out / "dispatch.stdout"
+    if not stdout_path.is_file():
+        return None
+    text = stdout_path.read_text(encoding="utf-8", errors="replace")[-65536:]
+    matches = re.findall(r"(?m)^Attempt Class:\s*(.+?)\s*$", text)
+    if not matches:
+        return None
+    path = Path(matches[-1])
+    return path if path.is_file() else None
+
+
 def _truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes"}
 
@@ -342,7 +358,7 @@ def _run_spark_preflight(plan: dict, card: Path, out: Path) -> dict:
         "attempted": False,
         "invoked": False,
         "stage": policy.get("stage", "preflight"),
-        "mode": policy.get("mode", "preflight-bundle"),
+        "mode": policy.get("mode", "execution-cost-estimator"),
         "exit_code": None,
         "auto_disabled": False,
         "continued_to_claude": True,
@@ -391,6 +407,7 @@ def main(argv=None):
     p.add_argument("--retry-state")
     p.add_argument("--current-context")
     p.add_argument("--failure-log")
+    p.add_argument("--attempt-classification")
     p.add_argument("--execute", action="store_true")
     p.add_argument(
         "--host-authority",
@@ -415,6 +432,45 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     ledger = Path(a.ledger)
     calls = [x for x in rows(ledger) if x.get("task_id") == plan["task_id"] and x.get("model") == "claude"]
+
+    control_plane = plan.get("control_plane", {})
+    if control_plane and control_plane.get("within_budget") is False:
+        decision = {
+            "schema_version": 1,
+            "task_id": plan["task_id"],
+            "action": "recompose-before-dispatch",
+            "claude_dispatched": False,
+            "reason": control_plane.get("failures", ["control-plane-budget-exceeded"]),
+        }
+        (out / "dispatch-decision.json").write_text(
+            json.dumps(decision, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+        )
+        print(json.dumps(decision, sort_keys=True))
+        return 2
+
+    if calls and plan.get("execution", {}).get("delegation_mode") == "canary":
+        classification_path = _attempt_classification_path(a.attempt_classification, out)
+        if classification_path is None:
+            print("canary retry requires --attempt-classification")
+            return 2
+        classification = json.loads(classification_path.read_text(encoding="utf-8"))
+        if classification.get("economic_stop_loss") or classification.get("reroute_required"):
+            decision = {
+                "schema_version": 1,
+                "task_id": plan["task_id"],
+                "action": "reroute-before-redispatch",
+                "claude_dispatched": False,
+                "takeover_authorized": False,
+                "reason": classification.get("failure_class", "canary-economic-stop-loss"),
+            }
+            (out / "dispatch-decision.json").write_text(
+                json.dumps(decision, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+            )
+            print(json.dumps(decision, sort_keys=True))
+            return 2
+        if not classification.get("same_worktree_retry_eligible"):
+            print("canary retry blocked: classification does not authorize transport recovery")
+            return 2
 
     if len(calls) >= plan["budget"]["claude_calls"]:
         print("Claude call budget exhausted")
@@ -455,7 +511,9 @@ def main(argv=None):
         "single_pass": plan["execution"].get("single_pass_allowed", False),
         "call_index": len(calls) + 1,
         "execute": a.execute,
-        "owner": plan.get("execution", {}).get("owner", "claude-builder"),
+        "owner": plan.get("execution", {}).get("owner", "codex-fast-path"),
+        "claude_role": plan.get("execution", {}).get("claude_role", "execution-builder"),
+        "builder_mode": plan.get("execution", {}).get("builder_mode", "standard"),
         "checker_model_dispatch": plan.get("execution", {}).get(
             "checker_model_dispatch", False
         ),
@@ -608,6 +666,15 @@ def main(argv=None):
         stdin_data=None,
         stdout_path=str(out / "dispatch.stdout"),
         stderr_path=str(out / "dispatch.stderr"),
+        env={
+            **os.environ,
+            "CLAUDE_CODE_BUILDER_MODE": plan.get("execution", {}).get(
+                "builder_mode", "standard"
+            ),
+            "AI_WORKFLOW_DELEGATION_MODE": plan.get("execution", {}).get(
+                "delegation_mode", "unknown"
+            ),
+        },
     )
 
     entry = {
@@ -615,14 +682,21 @@ def main(argv=None):
         "timestamp": int(time.time()),
         "run_id": out.name,
         "task_id": plan["task_id"],
-        "stage": "single-pass" if preview["single_pass"] else "builder",
+        "stage": (
+            "single-pass" if preview["single_pass"]
+            else plan.get("execution", {}).get("claude_role", "execution-builder")
+        ),
         "model": "claude",
         "call_index": len(calls) + 1,
         "input_hash": _content_hash(dispatch_card.read_bytes()),
         "evidence_hash": _content_hash((a.failure_log or "initial").encode()),
         "elapsed_seconds": round(time.time() - start, 3),
         "result": "dispatched" if exit_code == 0 else "dispatch-failed",
-        "next_action": "milestone-review",
+        "next_action": (
+            "codex-review-solution-contract"
+            if plan.get("execution", {}).get("claude_role") == "solution-planner"
+            else "milestone-review"
+        ),
     }
     ledger.parent.mkdir(parents=True, exist_ok=True)
     with ledger.open("a", encoding="utf-8") as f:

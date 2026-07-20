@@ -2,37 +2,38 @@
 
 ## Core Principle
 
-**Codex designs and reviews. Claude edits. Tools gather low-token evidence first.**
+**Codex freezes intent and reviews. Claude plans, implements, revises, tests, and validates. Tools gather low-token evidence first.**
 
 This is the default operating principle for all work in this workflow:
 
-1. Codex/GPT is responsible for top-level design, planning, and review.
-2. Claude Code is responsible for concrete file modifications.
+1. Codex/GPT is responsible for a bounded intent freeze, high-risk decisions, and final semantic review.
+2. Claude Code is the default source-writing owner and handles solution planning, exploratory implementation, mechanical batches, revisions, assigned tests, and long validation.
 3. LSP, bounded locator search, CodeGraph, and MCP tools are used before broad file reads or repository scans to reduce token consumption and wall-clock stalls.
 
 ## Agent Roles
 
-### Codex / GPT  -  Planner and Reviewer
+### Codex / GPT  -  Intent Freezer and Reviewer
 
-- Decomposes large features into task cards with clear acceptance criteria.
+- Routes every initial, revision, split-child, and next-phase brief before any delegation card.
+- Avoids implementation unless the human selects it, confirmed high-risk core semantics require it, or a reviewed correction is deterministic and local.
+- Decomposes only positively delegated work into short component cards with clear acceptance criteria.
 - Reviews execution evidence and returns structured accept / revise / split / reject decisions with explicit next-loop instructions.
 - Evaluates architectural intent, regression risk, and design coherence.
 - Gathers context using low-token tools (LSP, `ai/locate-code.py`, bounded CodeGraph, MCP) during the OBSERVE phase.
-- Does NOT write production code directly  -  delegates all implementation to Claude Code.
-- Does NOT implement fixes during review  -  only evaluates and decides.
+- May apply reviewer-owned bounded corrections after a fresh route when the accepted context and deterministic delta are already known.
 
-### Claude Code  -  Execution Agent
+### Claude Code  -  Primary Planner and Execution Agent
 
-- Implements task cards in isolated git worktrees.
-- Makes concrete file edits.
-- Runs mechanical checks: tests, lint, type checks, build verification.
+- Produces a validated structured solution contract for eligible bounded open multi-phase work, without source edits.
+- Implements frozen, exploratory, mechanical, core, and auxiliary task cards in isolated git worktrees.
+- Runs only assigned narrow checks, tests, long validation, or evidence processing.
 - Produces evidence packets documenting what changed, why, and how it was verified.
 - Records assumptions, attempted commands, failed checks, and lessons learned.
 - Works within the LSP/locator/CodeGraph/MCP evidence hierarchy to minimize unnecessary file reads.
-- Handles all high-token work: whole-file reads > 200 lines, multi-file implementation, long log analysis, exhaustive scans.
+- Receives source-writing by default under `claude-first`; single-task wall time is advisory when the user runs independent projects in separate terminals.
 - Returns compressed evidence: summaries and artifact paths, not pasted large logs or full files.
 
-### MiMo / DeepSeek  -  High-Token Execution Helpers
+### Claude-Compatible Models  -  High-Token Execution Helpers
 
 - Assist with exhaustive diff scanning, long log analysis, and test suggestion generation.
 - Useful for tasks that require processing large amounts of text or code.
@@ -50,7 +51,7 @@ This is the default operating principle for all work in this workflow:
 The workflow is an explicit loop, not a linear handoff. See `references/loop-model.md` for the full state machine.
 
 ```text
-OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW
+OBSERVE -> ROUTE -> PLAN/DIRECT -> EXECUTE -> VERIFY -> REVIEW
                                                      |
                                                      +-- accept -> DONE
                                                      +-- revise -> PLAN (next iteration)
@@ -61,10 +62,10 @@ OBSERVE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW
 Each iteration:
 
 1. **OBSERVE:** Codex gathers context using low-token tools.
-2. **PLAN:** Codex creates or revises a task card.
-3. **DISPATCH:** Task card is sent to Claude Code in an isolated worktree.
-4. **EXECUTE:** Claude Code implements the changes.
-5. **VERIFY:** Claude Code runs checks and produces an evidence packet.
+2. **ROUTE:** deterministic facts select a Claude role by default; explicit/high-risk core work may select Codex. Spark can replace Codex estimation.
+3. **PLAN/DIRECT:** local components compose a short Claude card; Codex reviews only goal, boundaries, acceptance, and critical invariants.
+4. **EXECUTE:** Claude produces its assigned durable result in an isolated worktree; Codex direct is exceptional.
+5. **VERIFY:** local deterministic tools run by default; Checker/Test Claude is conditional.
 6. **REVIEW:** Codex evaluates the evidence and decides.
 7. **LEARN:** Both agents capture lessons from the iteration.
 
@@ -72,7 +73,8 @@ Each iteration:
 
 ### Task Card
 
-A task card is a structured description of a single unit of work. It is created by the planner (Codex/GPT) or by a human, and consumed by the executor (Claude Code).
+A task card is a compact execution contract for one Claude unit. Local facts and
+components build it after routing; Codex should not write a monolithic card.
 
 Fields:
 
@@ -82,17 +84,19 @@ Fields:
 - **Files / modules**  -  the scope of changes expected
 - **Codex context budget**  -  estimated token budget for Codex context gathering; 0 if LSP/locator/CodeGraph evidence is sufficient
 - **LSP / locator / CodeGraph evidence**  -  structured low-token evidence gathered before implementation
-- **High-token delegation gate**  -  checklist of what must be delegated to Claude (reads > 200 lines, multi-file work, long logs, full scans)
+- **High-token work route**  -  economic owner decision; size alone never forces Claude
 - **Evidence compression requirements**  -  instructions for Claude to return summaries + artifact paths, not pasted logs
 - **Dependencies**  -  other task cards, external services, data requirements
 - **Evidence**  -  LSP/locator/CodeGraph/MCP data gathered before implementation
 - **Loop context**  -  parent task ID, iteration, prior decision, revision instructions, budget/stop conditions, required evidence
 
-Default authoring: Codex reads `ai/task-card-components/catalog.md`, chooses a preset and material gates, then runs `python ai/compose_task_card.py`. The monolithic `ai/task-card-template.md` is compatibility-only.
+Default authoring: the deterministic selector chooses a preset from routing
+facts, Spark may fill structured gaps, and Codex reviews only material fields.
+The monolithic `ai/task-card-template.md` is compatibility-only.
 
 ### Evidence Packet
 
-An evidence packet documents the execution of a task card. It is produced by Claude Code and consumed by the reviewer (Codex/GPT) and human.
+An evidence packet documents routed execution and verification. Local tools, Claude, and Codex may each contribute bounded evidence; Codex and the human consume the final packet.
 
 Fields:
 
@@ -122,13 +126,14 @@ Template: `ai/evidence-packet-template.md`
 Human or Codex/GPT
        |
        v
-   Task Card (with loop context)
+   Deterministic ROUTE
+       |
+       +-- explicit/high-risk Codex -> implementation
+       |
+       +-- default Claude role -> short Task Card -> isolated worktree
        |
        v
-  Claude Code (executor, isolated worktree)
-       |
-       v
-  Evidence Packet (result JSON + .diff + lessons)
+  Evidence Packet (bounded results + diff/checks when applicable)
        |
        v
   Codex/GPT (reviewer, structured decision)

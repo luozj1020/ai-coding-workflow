@@ -1,4 +1,4 @@
 interface:
   display_name: "AI Coding Workflow"
-  short_description: "Install and run Codex, Claude, and Spark coding workflows."
-  default_prompt: "Use $ai-coding-workflow to route, dispatch, verify, and review this repository task."
+  short_description: "Delegate substantial work while conserving Codex quota."
+  default_prompt: "Use $ai-coding-workflow if this non-trivial repository task benefits from Claude delegation and bounded Codex review; otherwise state why the workflow should be bypassed."

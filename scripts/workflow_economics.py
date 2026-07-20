@@ -17,6 +17,113 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 SCHEMA_VERSION = 1
 DEFAULT_HISTORY = Path(".ai-workflow/economics-history.jsonl")
+DEFAULT_ROUTE_POLICY = {
+    "min_cost_savings_ratio": 0.15,
+    "max_active_elapsed_ratio": 2.0,
+    "min_codex_work_reduction_ratio": 0.30,
+    "min_history_samples": 3,
+    "min_claude_first_pass_rate": 0.70,
+    "min_claude_reuse_ratio": 0.70,
+    "max_codex_takeover_rate": 0.20,
+}
+
+
+def _number(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def delegation_economy_gate(
+    facts: Dict[str, Any], calibration: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Evaluate whether Claude delegation has enough expected economic value.
+
+    This is deliberately deterministic. Missing estimates produce ``unknown``
+    rather than an optimistic pass, so callers may request one bounded Spark
+    estimate before paying task-card and dispatch costs.
+    """
+    policy = dict(DEFAULT_ROUTE_POLICY)
+    override = facts.get("economy_policy")
+    if isinstance(override, dict):
+        for key in policy:
+            value = _number(override.get(key))
+            valid = value is not None and (
+                (key == "max_active_elapsed_ratio" and value > 0)
+                or (key == "min_history_samples" and value >= 1)
+                or (key not in {"max_active_elapsed_ratio", "min_history_samples"} and 0 <= value <= 1)
+            )
+            if valid:
+                policy[key] = value
+
+    cost_ratio = _number(facts.get("expected_delegated_cost_ratio"))
+    elapsed_ratio = _number(facts.get("expected_active_elapsed_ratio"))
+    work_reduction = _number(
+        facts.get(
+            "expected_codex_work_reduction_ratio",
+            facts.get("expected_codex_work_reduction"),
+        )
+    )
+    estimates_complete = all(
+        value is not None for value in (cost_ratio, elapsed_ratio, work_reduction)
+    )
+    estimate_failures = []
+    if estimates_complete:
+        if cost_ratio > 1.0 - policy["min_cost_savings_ratio"]:
+            estimate_failures.append("insufficient-expected-cost-saving")
+        if elapsed_ratio > policy["max_active_elapsed_ratio"]:
+            estimate_failures.append("expected-active-time-too-high")
+        if work_reduction < policy["min_codex_work_reduction_ratio"]:
+            estimate_failures.append("insufficient-codex-work-reduction")
+
+    history = calibration if isinstance(calibration, dict) else {}
+    reuse_samples_value = _number(history.get("reuse_sample_count"))
+    reuse_samples = int(reuse_samples_value) if reuse_samples_value is not None else 0
+    reuse = _number(history.get("median_claude_reuse_ratio"))
+    first_pass = _number(history.get("claude_first_pass_rate"))
+    takeover = _number(history.get("codex_takeover_rate"))
+    history_proves_value = bool(
+        reuse_samples >= int(policy["min_history_samples"])
+        and reuse is not None
+        and reuse >= policy["min_claude_reuse_ratio"]
+        and first_pass is not None
+        and first_pass >= policy["min_claude_first_pass_rate"]
+        and (takeover is None or takeover <= policy["max_codex_takeover_rate"])
+    )
+    history_veto = history.get("owner_bias") == "codex-fast-path"
+
+    if facts.get("delegation_value") is False:
+        status, reason = "reject", "delegation-value-explicitly-absent"
+    elif history_veto:
+        status, reason = "reject", "accepted-history-favors-codex"
+    elif estimates_complete and estimate_failures:
+        status, reason = "reject", estimate_failures[0]
+    elif estimates_complete:
+        status, reason = "pass", "expected-economics-within-budget"
+    elif history_proves_value and facts.get("delegation_value") is True:
+        status, reason = "pass", "accepted-history-proves-delegation-value"
+    elif (
+        facts.get("delegation_value") is True
+        and facts.get("task_role") == "auxiliary"
+        and reuse_samples < int(policy["min_history_samples"])
+    ):
+        status, reason = "canary", "auxiliary-delegation-needs-history"
+    else:
+        status, reason = "unknown", "economic-estimates-required"
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": status,
+        "reason": reason,
+        "estimate_failures": estimate_failures,
+        "estimates_complete": estimates_complete,
+        "expected_delegated_cost_ratio": cost_ratio,
+        "expected_active_elapsed_ratio": elapsed_ratio,
+        "expected_codex_work_reduction_ratio": work_reduction,
+        "history_proves_value": history_proves_value,
+        "history_veto": history_veto,
+        "policy": policy,
+    }
 
 
 def _usage_summary(path: Optional[Path]) -> Dict[str, Any]:

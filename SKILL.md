@@ -1,6 +1,6 @@
 ---
 name: ai-coding-workflow
-description: Install, update, or operate a local Codex, Claude Code, and Spark coding workflow with routing, task cards, isolated worktrees, monitoring, review, and low-token repository evidence.
+description: Install, update, or operate a Claude-first local coding workflow for non-trivial repository changes when Codex quota is scarce, a cost-efficient Claude Code compatible model is available, durable delegated output is useful, and longer single-task latency is acceptable (especially across multiple user-managed terminals). Do not use it for tiny or urgent edits, ordinary code questions, read-only analysis, tight interactive debugging, latency-sensitive single-task work, or environments without reliable Claude execution, isolation, and review evidence.
 ---
 
 # AI Coding Workflow
@@ -9,27 +9,49 @@ In a bootstrapped repository, its managed `AGENTS.md` is authoritative. Do not
 repeat those rules in working context. Use this file only as an entrypoint and
 load one directly relevant reference when needed.
 
+## Applicability Gate
+
+Use only when delegation materially reduces Codex planning/editing: multi-file
+or multi-phase features, batches, assigned tests, long validation, or several
+repositories progressing in user-managed terminals.
+
+For tiny/urgent edits, code questions, read-only or tight interactive debugging,
+excessive orchestration cost, or unreliable Claude/isolation/evidence, record
+`workflow bypassed: <reason>` and use ordinary Codex/local tools. Do not compose
+a card or invoke Spark merely to justify bypass.
+
 ## Default Loop
 
 Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 
 1. Gather bounded local evidence with LSP, `ai/locate-code.py`, targeted reads,
    initialized CodeGraph, or MCP. Avoid broad reads and unsolicited web search.
-2. Before any initial/revised/narrowed card, ROUTE from a short current brief.
-   Use deterministic tiny routing or optional Spark before paying card cost.
-3. Prefer Codex direct work when delegation cannot reduce context reacquisition,
-   semantic rereview, or total control-plane work. Prefer Claude for mechanical
-   batches, independent units, assigned tests, long validation/evidence work, or
-   changes where Codex can review selectively.
+2. ROUTE from bounded facts before writing an execution artifact. The default
+   profile is `claude-first`: Claude owns implementation while Codex spends one
+   bounded turn freezing intent and one bounded semantic review. Use
+   `ownership_profile=economy-first` only when single-task latency or total
+   model usage matters more than preserving Codex quota.
+3. Give Claude one convergent `solution-planner` pass for an open multi-phase
+   feature, freeze the contract after one Codex adversarial review, then route
+   its implementation slices back to Claude. Use `exploratory-builder` for a
+   bounded new feature with an unclear implementation path, `batch-builder` for
+   mechanical work, and `execution-builder` for an already-frozen solution.
+   Codex direct editing is reserved for explicit human ownership, confirmed
+   high-risk core semantics, or a reviewer-owned deterministic correction.
 4. For delegation, read `ai/task-card-components/catalog.md`, choose one preset
    plus material gates, and run `python ai/compose_task_card.py ...`. Fill only
-   the composed short card.
-5. Dispatch with `bash ai/dispatch-to-claude.sh <card>`. Review direction before
-   optional Checker/Test work. Humans merge.
+   the composed short card. `aiwf run` performs this after the positive route,
+   inlines bounded context once, and dispatches the Markdown card rather than
+   the source Task JSON.
+5. Dispatch with `bash ai/dispatch-to-claude.sh <card>`. Continue useful work in
+   the same worktree once before takeover. Review compressed terminal evidence
+   before optional Checker/Test work. Humans merge.
 
 ## Hard Rules
 
-- Spark is optional and advisory. No implicit strong-model fallback; it cannot
+- Spark routing is short, structured, and advisory. Use it when it can replace
+  Codex estimation, task-card shaping, or monitor interpretation. No implicit
+  strong-model fallback; it cannot
   satisfy acceptance, replace Claude implicitly, interrupt, approve, or merge.
 - Checker/Test is conditional. Skip model dispatch when deterministic local
   evidence closes acceptance and no test changes are required.
@@ -39,9 +61,16 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 - Do not poll unchanged Claude heartbeats with Codex turns. Use persistent local
   monitoring and bounded terminal/review summaries.
 - Dirty source/stale HEAD blocks reliable delegation; restore or obtain explicit
-  authority. Reviewer-owned bounded correction requires a fresh revision ROUTE.
+  authority. Prefer reviewed same-worktree Claude continuation over Codex edits.
+- The Skill never coordinates portfolio concurrency. Run one repository workflow
+  per user-managed terminal; do not create a cross-project DAG or scheduler.
+- Treat Claude wall time as advisory in `claude-first`. Measure accepted output
+  per Codex token; do not reject a productive Claude route merely for exceeding
+  the direct-execution time ratio.
 - No model merges. Destructive and production-impacting actions require explicit
   human authority.
+- A frozen solution contract is reopened only by a blocking invariant/acceptance
+  defect or an explicitly incorporated spec change. Recommendations go to backlog.
 
 ## Setup
 

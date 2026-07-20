@@ -20,7 +20,18 @@ python ai/compose_task_card.py --select-from routing-facts.json --output ai/task
 If those facts select `codex-fast-path`, the command returns `skip_card=true`
 and writes no delegation card.
 
-Codex fills the resulting short card. It does not read `ai/task-card-template.md` by default; that monolithic template remains compatibility-only. Component selection is a Codex planning decision, not a Spark or composer decision. Never omit a material stop condition:
+The integrated `aiwf run` path performs the same selection only after routing,
+fills `delegation-task-card.md` from reviewed Task JSON and routing facts, and
+inlines bounded context into that one card. It does not create a duplicate
+standalone Context Packet or pass the source JSON to the Markdown dispatcher.
+
+The local composer fills deterministic fields from routing facts; Spark may
+return structured missing fields. Codex reviews only the compact goal,
+boundaries, acceptance, and high-risk invariants instead of authoring a long
+card. Do not read `ai/task-card-template.md` by default; it is compatibility-only.
+Never omit a material stop condition:
+
+Builder presets ship with conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation are disabled/not-required until Codex replaces them with exact assignments. Do not leave ambiguous placeholders or enable broad tail work merely to make the card look complete.
 
 - Spec Gate for ambiguous product, UX, API, or data-model direction.
 - Root Cause Gate for bugs, regressions, or repeated failed fixes.
@@ -32,6 +43,22 @@ Codex fills the resulting short card. It does not read `ai/task-card-template.md
 
 Use the `revision` preset for narrowed retries and reviewer-requested corrections. Bind the accepted baseline and describe only the delta; do not copy the original task card. The dispatcher preserves the composed card as the full audit artifact and derives Claude's current-phase view with an execution-section allowlist.
 
+Use `exploratory-builder` for a bounded new feature whose goal is stable but
+implementation path remains unclear. It must produce source changes plus
+evidence, not a prose-only repository survey. Use `solution-planner` first for
+large/multi-phase work, then bind each implementation card to the frozen
+contract and return execution ownership to Claude.
+
+Use `solution-planner` only when pre-card routing selects
+`claude-converge-codex-freeze`. Claude must produce the structured solution
+contract named by the card. Codex reviews that artifact once and classifies every
+finding as `blocking`, `recommended`, `backlog`, or `spec-change`. Resolve
+blocking findings; defer recommendations/backlog; reject or explicitly
+incorporate spec changes. Then freeze with `aiwf solution-contract freeze`.
+Implementation cards bind the frozen contract hash and include only their slice;
+they must not invite Claude to repeat repository-wide planning. Codex performs
+one adversarial freeze review, not full task-card authorship plus replanning.
+
 Testing responsibility must state whether Checker model dispatch is required.
 Default to local deterministic validation. Select Checker only for assigned test
 writing, long validation/log processing, or an independent evidence responsibility
@@ -41,7 +68,10 @@ Task cards must assign implementation, test writing, validation, direction revie
 
 ## Context Packet
 
-For large repositories, run `ai/locate-code.py` when ownership is unclear. Include 1–5 target files, exact symbols, bounded root-cause excerpts, one correct reference pattern, forbidden paths, constraints, measurable acceptance, and exact narrow validation. If the packet is incomplete, Claude should stop-and-report rather than scan broadly.
+For large repositories, run `ai/locate-code.py` when scope is unclear. Include
+likely files/symbols and known constraints, but allow a bounded
+`exploratory-builder` to discover the implementation path. Missing exact files
+is not by itself a reason for Codex to perform broad discovery first.
 
 ## Evidence
 

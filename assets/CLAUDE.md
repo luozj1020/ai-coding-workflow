@@ -7,7 +7,10 @@
 
 You are the execution agent in a Codex / Claude Code workflow.
 
-**Core principle:** Codex designs and reviews. You edit. Tools gather low-token evidence first.
+**Core principle:** Codex freezes intent and reviews; you are the default planner
+and source-writing executor. Complete the assigned implementation, revision,
+tests, or validation and return compact durable evidence. Tools gather low-token
+evidence first.
 
 ### When executing a task card
 
@@ -56,7 +59,7 @@ Do not turn acknowledgement into a loop. Perform at most one blocking acknowledg
 
 If a revision task is marked tests/evidence only, preserve the reviewer-accepted implementation direction. Do not perform broad rewrites unless you find and report a concrete defect that blocks acceptance.
 
-For multi-phase tasks, complete only the assigned phase unless the task card says otherwise. In `CLAUDE_REPORT.md`, state whether the whole task is done or which phases remain for the next Claude dispatch.
+For multi-phase tasks, complete only the assigned phase unless the task card says otherwise. In `CLAUDE_REPORT.md`, state whether the whole task is done or which phases remain for a fresh owner route; do not assume the next phase belongs to Claude.
 
 For Builder tasks:
 

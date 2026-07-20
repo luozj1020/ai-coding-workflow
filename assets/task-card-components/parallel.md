@@ -1,7 +1,17 @@
 ## Parallel Execution Gate
 
-- Independent units and write scopes:
-- Owned contracts per unit:
+| Field | Value |
+|---|---|
+| Parallel allowed? | yes |
+| Parallel group id | |
+| Allowed files/modules | |
+| Owned contracts | |
+| Base commit | |
+| Validation owner | |
+| Validation command | |
+| Canary unit | |
+| Maximum concurrency | 2 |
+| Progressive release | yes |
+
 - Dependencies / stable serial order:
-- Maximum concurrency:
-- Serial reconciliation and validation owner:
+- Serial reconciliation owner:

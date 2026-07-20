@@ -179,6 +179,37 @@ def parse_progress_stage_seconds(paths: list[Path]) -> dict[str, int | None]:
     }
 
 
+def parse_claude_phase_metrics(paths: list[Path]) -> dict[str, int | float | None]:
+    keys = (
+        "context_acquisition_seconds", "implementation_seconds",
+        "validation_seconds_observed", "tail_seconds",
+    )
+    totals = {key: 0.0 for key in keys}
+    valid = 0
+    for path in paths:
+        try:
+            value = json.loads(read_text(path))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(value, dict) or not all(
+            isinstance(value.get(key), (int, float)) and not isinstance(value.get(key), bool)
+            and value.get(key, 0) >= 0 for key in keys
+        ):
+            continue
+        valid += 1
+        for key in keys:
+            totals[key] += float(value[key])
+    result: dict[str, int | float | None] = {
+        "claude_phase_metrics_runs": valid,
+    }
+    for key in keys:
+        number = totals[key]
+        result["claude_" + key] = int(number) if number.is_integer() else number if valid else None
+        if not valid:
+            result["claude_" + key] = None
+    return result
+
+
 def parse_decision(paths: list[Path]) -> str:
     for path in reversed(paths):
         text = read_text(path)
@@ -692,6 +723,7 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
         "audit": sorted(root.rglob("*.advisor-continuation-audit.json")),
         "health": sorted(root.rglob("*.interaction-health.json")),
         "economics": sorted(root.rglob("workflow-economics.json")) + sorted(root.rglob("run-metrics.json")),
+        "phase_metrics": sorted(root.rglob("*.phase-metrics.json")) + sorted(root.rglob("claude-phase-metrics.json")),
     }
 
 
@@ -906,6 +938,7 @@ def summarize(path: Path) -> dict:
     finish_branch_followup = parse_first_table(artifacts["report"], ["Finish Branch Follow-up"])
     elapsed_seconds = parse_progress_seconds(artifacts["progress"])
     stage_seconds = parse_progress_stage_seconds(artifacts["progress"])
+    claude_phase_seconds = parse_claude_phase_metrics(list(dict.fromkeys(artifacts["phase_metrics"])))
     stability = stability_findings(
         artifacts["progress"] + artifacts["status"] + artifacts["report"] + artifacts["checker"],
         checker_results,
@@ -936,6 +969,7 @@ def summarize(path: Path) -> dict:
             "progress_logs": len(artifacts["progress"]),
             "first_substantive_progress_seconds": parse_first_progress_seconds(artifacts["progress"]),
             **stage_seconds,
+            **claude_phase_seconds,
         },
         "cost": usage_total,
         "model_usage": canonical_usage,
@@ -1014,6 +1048,11 @@ def render_markdown(summary: dict) -> str:
         "claude_execution_seconds",
         "checker_seconds",
         "artifact_finalization_seconds",
+        "claude_context_acquisition_seconds",
+        "claude_implementation_seconds",
+        "claude_validation_seconds_observed",
+        "claude_tail_seconds",
+        "claude_phase_metrics_runs",
         "progress_logs",
     ]:
         lines.append(f"| {key} | {format_value(summary['speed'].get(key))} |")

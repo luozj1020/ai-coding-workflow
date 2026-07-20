@@ -609,7 +609,7 @@ resolve_auto_mode() {
             elif is_checker_task; then
                 MODE="validation-planner"
             else
-                MODE="preflight-bundle"
+                MODE="execution-cost-estimator"
             fi
             ;;
         aggressive)
@@ -620,7 +620,7 @@ resolve_auto_mode() {
                     MODE="postflight-bundle"
                 fi
             else
-                MODE="preflight-bundle"
+                MODE="execution-cost-estimator"
             fi
             ;;
     esac
@@ -1239,6 +1239,9 @@ emit_bounded_direct_result() {
     result_bytes="$(wc -c < "$RESULT_FILE")"
     if [ "$result_bytes" -le "$STDOUT_MAX_BYTES" ]; then
         cat "$RESULT_FILE"
+        # A model result is not required to end with LF.  Keep following
+        # machine fields parseable instead of joining them to the final line.
+        printf '\n'
         echo "spark_output_truncated=no"
         echo "spark_output_bytes=${result_bytes}"
         return
@@ -1247,7 +1250,7 @@ emit_bounded_direct_result() {
     # Estimator-family consumers need the schema fields, not tens of thousands
     # of advisory prose tokens. Preserve every recognized machine line.
     if [ "$MODE" = "execution-cost-estimator" ] || [ "$MODE" = "task-size-classifier" ] || [ "$MODE" = "preflight-bundle" ]; then
-        grep -E '^(predicted_diff_lines_low|predicted_diff_lines_high|predicted_files|context_scope|validation_complexity|delegation_overhead|context_reacquisition_cost|codex_semantic_rereview|solution_clarity|semantic_concentration|task_role|estimated_direct_work_units|estimated_delegated_work_units|delegation_to_direct_ratio|economic_recommendation|safety_eligible|recommended_owner|cost_confidence|confidence|risk_flags|reason|stop_condition|size|recommended_route|expected_files|estimator_normalizations|accepted_suggestions|ignored_suggestions|conflicts_with_claude|conflicts_with_local_evidence|acceptance_satisfied_by_spark)=' "$RESULT_FILE" 2>/dev/null || true
+        grep -E '^(predicted_diff_lines_low|predicted_diff_lines_high|predicted_files|context_scope|validation_complexity|delegation_overhead|context_reacquisition_cost|codex_semantic_rereview|solution_clarity|semantic_concentration|task_role|claude_role|durable_output_required|readonly_delegation_value|estimated_direct_work_units|estimated_delegated_work_units|delegation_to_direct_ratio|economic_recommendation|safety_eligible|recommended_owner|cost_confidence|confidence|risk_flags|reason|stop_condition|size|recommended_route|expected_files|estimator_normalizations|accepted_suggestions|ignored_suggestions|conflicts_with_claude|conflicts_with_local_evidence|acceptance_satisfied_by_spark)=' "$RESULT_FILE" 2>/dev/null || true
     else
         head_bytes=$((STDOUT_MAX_BYTES * 3 / 4))
         tail_bytes=$((STDOUT_MAX_BYTES - head_bytes))
@@ -1259,6 +1262,31 @@ emit_bounded_direct_result() {
     echo "spark_output_truncated=yes"
     echo "spark_output_bytes=${result_bytes}"
     echo "spark_output_max_bytes=${STDOUT_MAX_BYTES}"
+}
+
+emit_structured_control_decision() {
+    local kind=""
+    local decision_json=""
+    case "$MODE" in
+        execution-cost-estimator|task-size-classifier|preflight-bundle) kind="route" ;;
+        monitor-triage) kind="monitor" ;;
+        failure-triage) kind="failure" ;;
+        parallel-planner) kind="parallel" ;;
+        *) return 0 ;;
+    esac
+    [ -s "$RESULT_FILE" ] || return 0
+    [ -f "$SCRIPT_DIR/spark_control_protocol.py" ] || return 0
+    if [ "$kind" = "route" ]; then
+        decision_json="$(python3 "$SCRIPT_DIR/spark_control_protocol.py" "$kind" "$RESULT_FILE" --compact \
+            --set "deterministic_owner=${COST_RECOMMENDED_OWNER}" \
+            --set "calibrated_diff_lines_high=${COST_CALIBRATED_DIFF_HIGH}" \
+            --set "repository_scale=${REPOSITORY_ROUTING_SCALE}" 2>/dev/null || true)"
+    else
+        decision_json="$(python3 "$SCRIPT_DIR/spark_control_protocol.py" "$kind" "$RESULT_FILE" --compact 2>/dev/null || true)"
+    fi
+    case "$decision_json" in
+        \{*\}) echo "spark_decision_json=${decision_json}" ;;
+    esac
 }
 
 # Conservative secret redaction for stderr excerpts.
@@ -1750,7 +1778,7 @@ Large-repository full-rereview economy gate: ${FULL_REREVIEW_FAST_PATH_MAX_DIFF_
 Operating rules:
 - Use the requested Spark model only. Do not silently fall back to a stronger model.
 - Keep output compressed: decisions, evidence, changed files if any, checks run, and risks.
-- Keep the response below 12,000 bytes. For estimator-family modes, emit machine-readable fields first and omit repository narration.
+- Keep estimator-family responses below 4,096 bytes and emit only the requested unquoted key=value lines. Do not add Markdown headings, backticks, tables, acceptance matrices, or repository narration unless the caller explicitly selected preflight-bundle.
 - Treat Claude-owned implementation as Claude-owned unless this task card explicitly authorizes Spark micro-builder work.
 - Do not claim completion from prose alone. Cite artifacts, commands, or diffs.
 - If blocked by missing context, permissions, model access, network, or auth, report the blocker instead of guessing.
@@ -1759,7 +1787,7 @@ Operating rules:
 
 Mode contract:
 - task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output the standard estimator fields listed by execution-cost-estimator plus size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown. Choose owner from edit size/files, context sufficiency, solution clarity, confidence, context reacquisition, mandatory Codex rereview, and delegation overhead. Risk flags and validation complexity affect downstream rigor and MUST NOT push ownership from Codex to Claude.
-- execution-cost-estimator: read-only mode for routing event ${ROUTING_EVENT}. Estimate direct Codex editing cost versus Claude delegation overhead. Do not edit files. Output exactly these machine-readable fields: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; context_reacquisition_cost=none|low|medium|high; codex_semantic_rereview=none|sampled|full; solution_clarity=high|medium|low; semantic_concentration=high|medium|low; task_role=core-semantic|auxiliary|mixed|unknown; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short paragraph>; stop_condition=<one sentence>. predicted_files MUST be one integer or unknown, never a range. Classify tests/checker work, mechanical batches, long validation/log processing, evidence collection, and independent support units as auxiliary. Classify tightly coupled behavior/architecture implementation as core-semantic; mixed work should be split when practical. Work units are relative estimates, not actual/billable token measurements. Count Claude context reacquisition/handoff and mandatory Codex rereview in delegated work units, so an economic_recommendation=codex-fast-path must not claim lower delegated total work than direct work. Use the dynamic gates printed above. Concentrated routing is for core-semantic work only. In large/giant repositories, bounded core-semantic work that still requires full Codex rereview may use the full-rereview economy gate; auxiliary work above a tiny one-file/50-line edit prefers Claude. Risk flags and validation complexity MUST NOT push ownership from Codex to Claude. If a risk override is later applied, it may bias high-risk work only toward Codex. Risk changes rigor, not owner direction.
+- execution-cost-estimator: read-only mode for routing event ${ROUTING_EVENT}. Estimate direct Codex work versus Claude planning/execution overhead. Do not edit files. Output exactly these unquoted machine-readable lines and nothing else: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; context_reacquisition_cost=none|low|medium|high; codex_semantic_rereview=none|sampled|full; solution_clarity=high|medium|low; semantic_concentration=high|medium|low; task_role=core-semantic|auxiliary|mixed|unknown; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short line>; stop_condition=<one short line>; claude_role=solution-planner|execution-builder|batch-builder|none; durable_output_required=yes|no; readonly_delegation_value=yes|no. Codex is the default. Recommend solution-planner only for a bounded open multi-phase design that produces a structured solution contract and removes at least 30 percent of Codex planning work. Recommend batch-builder or execution-builder only for auxiliary/mechanical independent work with sampled or bounded Codex review. Never recommend Claude for concentrated core semantics that Codex must rereview fully. Prose-only discovery and summaries have no delegation value. predicted_files MUST be one integer or unknown. Risk may only bias toward Codex.
 - review-only: inspect the task card and available repository context, do not edit files.
 - task-card-audit: inspect the task card for missing gates, mixed responsibilities, unclear acceptance criteria, unsafe scope, and likely Claude stall risks; do not edit files.
 - plan-splitter: propose smaller Builder/Checker task cards or independent parallelizable slices; do not edit files.
@@ -2407,10 +2435,21 @@ else
     COST_SAFETY_REASONS="$(IFS=,; echo "${_safety_failures[*]}")"
 fi
 
-if [ "$COST_ECONOMIC_RECOMMENDATION" = "codex-fast-path" ] && [ "$COST_SAFETY_ELIGIBLE" = "yes" ]; then
+_claude_positive_gate="no"
+if [ "$COST_ECONOMIC_RECOMMENDATION" = "claude-builder" ] && \
+   [ "$COST_RECOMMENDED_OWNER" = "claude-builder" ]; then
+    case "$COST_CLAUDE_ROLE" in
+        solution-planner)
+            [ "$COST_READONLY_DELEGATION_VALUE" = "yes" ] && _claude_positive_gate="yes" ;;
+        execution-builder|batch-builder)
+            if [ "$COST_TASK_ROLE" = "auxiliary" ] && [ "$COST_CODEX_SEMANTIC_REREVIEW" != "full" ]; then
+                _claude_positive_gate="yes"
+            fi ;;
+    esac
+fi
+if [ "$_claude_positive_gate" != "yes" ]; then
     COST_RECOMMENDED_OWNER="codex-fast-path"
-elif [ "$COST_RECOMMENDED_OWNER" = "codex-fast-path" ] || [ "$COST_RECOMMENDED_OWNER" = "not recorded" ]; then
-    COST_RECOMMENDED_OWNER="claude-builder"
+    COST_CLAUDE_ROLE="none"
 fi
 
 # Detect schema-invalid estimator output for non-direct modes.
@@ -2449,6 +2488,7 @@ case "$RESULT_MODE" in
                 echo "owner_ignores_risk_flags=yes"
                 echo "risk_owner_override_direction=codex-only"
             fi
+            emit_structured_control_decision
         fi
         # Classify failure for diagnostics
         _direct_result_empty="no"

@@ -30,11 +30,15 @@ Options:
   --output DIR           Artifact directory (default: .worktrees/parallel-<timestamp>)
   --allow-overlap        Allow overlapping Allowed files/modules scopes
   --allow-ungated        Allow task cards without Parallel Execution Gate = yes
+  --no-ramp-up           Start all ready units immediately (diagnostic override)
+  --no-unit-validation   Trust dispatcher exit codes without helper validation
   -h, --help             Show this help
 
 Environment:
   AI_CODING_WORKFLOW_DISPATCH_BIN   Override dispatch script path for tests
   AI_CODING_WORKFLOW_PARALLEL_MAX   Default max concurrency
+  AI_CODING_WORKFLOW_PARALLEL_RAMP_UP  1 runs one validated canary before expansion
+  AI_CODING_WORKFLOW_PARALLEL_VALIDATE_UNITS  1 validates every completed unit
   AI_CODING_WORKFLOW_RAND_SUFFIX    Override random suffix for collision resistance
 
 Safety:
@@ -50,6 +54,8 @@ MAX_CONCURRENCY_SET_BY_CLI=0
 OUTPUT_DIR=""
 ALLOW_OVERLAP=0
 ALLOW_UNGATED=0
+RAMP_UP="${AI_CODING_WORKFLOW_PARALLEL_RAMP_UP:-1}"
+VALIDATE_UNITS="${AI_CODING_WORKFLOW_PARALLEL_VALIDATE_UNITS:-1}"
 PLAN_FILE=""
 TASK_CARDS=()
 
@@ -77,6 +83,14 @@ while [ $# -gt 0 ]; do
             ;;
         --allow-ungated)
             ALLOW_UNGATED=1
+            shift
+            ;;
+        --no-ramp-up)
+            RAMP_UP=0
+            shift
+            ;;
+        --no-unit-validation)
+            VALIDATE_UNITS=0
             shift
             ;;
         -h|--help)
@@ -121,6 +135,10 @@ if [ "$MAX_CONCURRENCY" -lt 1 ]; then
     echo "Error: --max-concurrency must be greater than 0." >&2
     exit 1
 fi
+case "$RAMP_UP:$VALIDATE_UNITS" in
+    0:0|0:1|1:0|1:1) ;;
+    *) echo "Error: parallel ramp-up and unit validation flags must be 0 or 1." >&2; exit 1 ;;
+esac
 
 for tool in git awk sed; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -137,18 +155,16 @@ if [ ! -f "$DISPATCH_BIN" ] && ! command -v "$DISPATCH_BIN" >/dev/null 2>&1; the
     exit 1
 fi
 
-# --- Validate Python availability for plan mode ---
-if [ -n "$PLAN_FILE" ]; then
-    PYTHON_CMD=""
-    if command -v python3 >/dev/null 2>&1; then
-        PYTHON_CMD="python3"
-    elif command -v python >/dev/null 2>&1; then
-        PYTHON_CMD="python"
-    fi
-    if [ -z "$PYTHON_CMD" ]; then
-        echo "Error: python3 or python is required for --plan mode." >&2
-        exit 1
-    fi
+# --- Python is required by deterministic plan/unit gates. ---
+PYTHON_CMD=""
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+fi
+if [ -z "$PYTHON_CMD" ]; then
+    echo "Error: python3 or python is required for parallel dispatch." >&2
+    exit 1
 fi
 
 # --- Resolve plan file path ---
@@ -195,6 +211,37 @@ run_dispatch() {
             "$DISPATCH_BIN" "$@"
             ;;
     esac
+}
+
+run_task_gate() {
+    local task_id="$1"
+    local card="$2"
+    local dispatch_out="$3"
+    [ "$VALIDATE_UNITS" = "1" ] || return 0
+    local gate_helper="${SCRIPT_DIR}/parallel-task-gate.py"
+    local checker_helper="${SCRIPT_DIR}/check-worktree.sh"
+    local safe_id
+    safe_id="$(printf '%s' "$task_id" | sed -E 's/[^A-Za-z0-9_.-]+/-/g')"
+    if [ ! -f "$gate_helper" ] || [ ! -f "$checker_helper" ]; then
+        write_event "unit_validation_failed" "$task_id" "reason=helper-unavailable"
+        return 2
+    fi
+    local status=0
+    if "$PYTHON_CMD" "$gate_helper" --dispatch-out "$dispatch_out" \
+        --task-card "$card" --checker "$checker_helper" \
+        --output "${OUTPUT_DIR}/${safe_id}.validation.json" \
+        --report "${OUTPUT_DIR}/${safe_id}.validation.md" \
+        --logs-dir "${OUTPUT_DIR}/${safe_id}.validation-logs"; then
+        status=0
+    else
+        status=$?
+    fi
+    if [ "$status" -eq 0 ]; then
+        write_event "unit_validation_passed" "$task_id" "validation=${OUTPUT_DIR}/${safe_id}.validation.json"
+    else
+        write_event "unit_validation_failed" "$task_id" "exit=${status};validation=${OUTPUT_DIR}/${safe_id}.validation.json"
+    fi
+    return "$status"
 }
 
 normalize_field_name() {
@@ -406,13 +453,41 @@ run_flat_mode() {
         set +e
         run_dispatch "$task" > "$out" 2> "$err"
         local status=$?
+        if [ "$status" -eq 0 ]; then
+            run_task_gate "$name" "$task" "$out"
+            status=$?
+        fi
         set -e
         printf '%s\n' "$status" > "$exit_file"
         write_event "dispatch_complete" "$task" "exit=${status}"
         exit "$status"
     }
 
-    for ((i = 0; i < ${#TASK_CARDS[@]}; i++)); do
+    start_index=0
+    if [ "$RAMP_UP" = "1" ] && [ "${#TASK_CARDS[@]}" -gt 1 ]; then
+        write_event "canary_start" "${TASK_CARDS[0]}" "ramp_up=yes"
+        run_one 0 &
+        canary_pid=$!
+        set +e
+        wait "$canary_pid"
+        canary_status=$?
+        set -e
+        if [ "$canary_status" -ne 0 ]; then
+            write_event "canary_failed" "${TASK_CARDS[0]}" "exit=${canary_status};remaining_not_dispatched=yes"
+            for ((i = 1; i < ${#TASK_CARDS[@]}; i++)); do
+                safe_name="$(basename "${TASK_CARDS[$i]}" | sed -E 's/[^A-Za-z0-9_.-]+/-/g')"
+                printf '%s\n' 125 > "${OUTPUT_DIR}/${safe_name}.exit"
+                write_event "task_skipped" "${TASK_CARDS[$i]}" "canary_failed=yes"
+            done
+            start_index="${#TASK_CARDS[@]}"
+        else
+            write_event "canary_passed" "${TASK_CARDS[0]}" "validated=yes"
+            write_event "parallel_ramp_released" "${TASK_CARDS[0]}" "max_concurrency=${MAX_CONCURRENCY}"
+            start_index=1
+        fi
+    fi
+
+    for ((i = start_index; i < ${#TASK_CARDS[@]}; i++)); do
         while [ "$(running_jobs)" -ge "$MAX_CONCURRENCY" ]; do
             sleep 1
         done
@@ -442,14 +517,16 @@ run_flat_mode() {
         echo "| Artifact directory | ${OUTPUT_DIR} |"
         echo "| Task count | ${#TASK_CARDS[@]} |"
         echo "| Max concurrency | ${MAX_CONCURRENCY} |"
+        echo "| Progressive ramp-up | $([ "$RAMP_UP" = "1" ] && echo yes || echo no) |"
+        echo "| Per-unit validation | $([ "$VALIDATE_UNITS" = "1" ] && echo required || echo disabled-by-override) |"
         echo "| Overlap allowed | $([ "$ALLOW_OVERLAP" = "1" ] && echo yes || echo no) |"
         echo "| Ungated allowed | $([ "$ALLOW_UNGATED" = "1" ] && echo yes || echo no) |"
         echo "| Automatic merge | no |"
         echo ""
         echo "## Task Results"
         echo ""
-        echo "| Task | Exit | Dispatch Output | Dispatch Stderr | Result | Diff | Report |"
-        echo "|------|------|-----------------|-----------------|--------|------|--------|"
+        echo "| Task | Exit | Dispatch Output | Dispatch Stderr | Validation | Result | Diff | Report |"
+        echo "|------|------|-----------------|-----------------|------------|--------|------|--------|"
         for entry in "${EXIT_CODES[@]}"; do
             task="${entry%:*}"
             status="${entry##*:}"
@@ -459,7 +536,9 @@ run_flat_mode() {
             result="$(sed -n 's/^Result:[[:space:]]*//p' "$out" | tail -1)"
             diff="$(sed -n 's/^Diff:[[:space:]]*//p' "$out" | tail -1)"
             report="$(sed -n 's/^Report:[[:space:]]*//p' "$out" | tail -1)"
-            echo "| ${task} | ${status} | ${out} | ${err} | ${result:-n/a} | ${diff:-n/a} | ${report:-n/a} |"
+            validation="${OUTPUT_DIR}/${safe_name}.validation.json"
+            [ -f "$validation" ] || validation="n/a"
+            echo "| ${task} | ${status} | ${out} | ${err} | ${validation} | ${result:-n/a} | ${diff:-n/a} | ${report:-n/a} |"
         done
         echo ""
         echo "## Review Contract"
@@ -723,6 +802,10 @@ run_dag_mode() {
             AI_CODING_WORKFLOW_DAG_BRANCH_NAME="$branch_name" \
             run_dispatch "$card" > "$out" 2> "$err"
             local status=$?
+            if [ "$status" -eq 0 ]; then
+                run_task_gate "$task_id" "$card" "$out"
+                status=$?
+            fi
             printf '%s\n' "$status" > "$exit_file"
             write_event "dispatch_complete" "$task_id" "exit=${status}"
             exit "$status"
@@ -741,6 +824,12 @@ run_dag_mode() {
         echo "$2" > "${OUTPUT_DIR}/.dag/${1}.state"
     }
 
+    RAMP_RELEASED=1
+    CANARY_TASK_ID=""
+    if [ "$RAMP_UP" = "1" ] && [ "$TASK_COUNT" -gt 1 ]; then
+        RAMP_RELEASED=0
+    fi
+
     # Recursive skip: mark task and all transitive dependents as skipped
     skip_dependents() {
         local failed_id="$1"
@@ -756,6 +845,17 @@ run_dag_mode() {
                 fi
             done < "$children_file"
         fi
+    }
+
+    skip_all_pending_after_canary() {
+        local failed_id="$1"
+        for ((skip_i = 0; skip_i < TASK_COUNT; skip_i++)); do
+            local pending_id="${DAG_IDS[$skip_i]}"
+            if [ "$(get_state "$pending_id")" = "pending" ]; then
+                set_state "$pending_id" "skipped"
+                write_event "task_skipped" "$pending_id" "canary_failed=${failed_id}"
+            fi
+        done
     }
 
     # Harvest completed background jobs
@@ -776,10 +876,20 @@ run_dag_mode() {
                 if [ "$exit_code" -eq 0 ]; then
                     set_state "$tid" "completed"
                     write_event "task_completed" "$tid" "exit=${exit_code}"
+                    if [ "$RAMP_RELEASED" = "0" ] && [ "$tid" = "$CANARY_TASK_ID" ]; then
+                        RAMP_RELEASED=1
+                        write_event "canary_passed" "$tid" "validated=yes"
+                        write_event "parallel_ramp_released" "$tid" "max_concurrency=${MAX_CONCURRENCY}"
+                    fi
                 else
                     set_state "$tid" "failed"
                     write_event "task_failed" "$tid" "exit=${exit_code}"
-                    skip_dependents "$tid"
+                    if [ "$RAMP_RELEASED" = "0" ] && [ "$tid" = "$CANARY_TASK_ID" ]; then
+                        write_event "canary_failed" "$tid" "exit=${exit_code};remaining_not_dispatched=yes"
+                        skip_all_pending_after_canary "$tid"
+                    else
+                        skip_dependents "$tid"
+                    fi
                 fi
             else
                 new_pids+=("$pid")
@@ -841,8 +951,18 @@ run_dag_mode() {
                 continue
             fi
             if all_deps_met "$i"; then
+                if [ "$RAMP_RELEASED" = "0" ] && [ -n "$CANARY_TASK_ID" ]; then
+                    break
+                fi
+                if [ "$RAMP_RELEASED" = "0" ]; then
+                    CANARY_TASK_ID="${DAG_IDS[$i]}"
+                    write_event "canary_start" "$CANARY_TASK_ID" "ramp_up=yes"
+                fi
                 dispatch_dag_task "${DAG_IDS[$i]}" "${DAG_RESOLVED[$i]}"
                 current_running=$((current_running + 1))
+                if [ "$RAMP_RELEASED" = "0" ]; then
+                    break
+                fi
             fi
         done
 
@@ -868,6 +988,9 @@ run_dag_mode() {
         echo "| Group | ${PLAN_GROUP_ID} |"
         echo "| Task count | ${TASK_COUNT} |"
         echo "| Max concurrency | ${MAX_CONCURRENCY} |"
+        echo "| Progressive ramp-up | $([ "$RAMP_UP" = "1" ] && echo yes || echo no) |"
+        echo "| Canary task | ${CANARY_TASK_ID:-n/a} |"
+        echo "| Per-unit validation | $([ "$VALIDATE_UNITS" = "1" ] && echo required || echo disabled-by-override) |"
         echo "| Failure policy | ${PLAN_FAILURE_POLICY} |"
         echo "| Overlap allowed | $([ "$ALLOW_OVERLAP" = "1" ] && echo yes || echo no) |"
         echo "| Ungated allowed | $([ "$ALLOW_UNGATED" = "1" ] && echo yes || echo no) |"
@@ -875,8 +998,8 @@ run_dag_mode() {
         echo ""
         echo "## Task Results"
         echo ""
-        echo "| Task ID | Card | State | Exit | Dispatch Output | Dispatch Stderr |"
-        echo "|---------|------|-------|------|-----------------|-----------------|"
+        echo "| Task ID | Card | State | Exit | Validation | Dispatch Output | Dispatch Stderr |"
+        echo "|---------|------|-------|------|------------|-----------------|-----------------|"
         for ((i = 0; i < TASK_COUNT; i++)); do
             tid="${DAG_IDS[$i]}"
             card="${DAG_CARDS[$i]}"
@@ -889,6 +1012,8 @@ run_dag_mode() {
             safe_id="$(printf '%s' "$tid" | sed -E 's/[^A-Za-z0-9_.-]+/-/g')"
             out="${OUTPUT_DIR}/${safe_id}.dispatch.out"
             err="${OUTPUT_DIR}/${safe_id}.dispatch.err"
+            validation="${OUTPUT_DIR}/${safe_id}.validation.json"
+            [ -f "$validation" ] || validation="n/a"
             if [ "$state" = "completed" ]; then
                 SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
             elif [ "$state" = "failed" ]; then
@@ -896,7 +1021,7 @@ run_dag_mode() {
             elif [ "$state" = "skipped" ]; then
                 SKIP_COUNT=$((SKIP_COUNT + 1))
             fi
-            echo "| ${tid} | ${card} | ${state} | ${exit_val} | ${out} | ${err} |"
+            echo "| ${tid} | ${card} | ${state} | ${exit_val} | ${validation} | ${out} | ${err} |"
         done
         echo ""
         echo "## Review Contract"

@@ -12,13 +12,14 @@ Case schema fields (PR8):
   - validations: list of validation commands (fake, just recorded)
   - quota_budget: max model calls allowed
   - latency_budget_seconds: max wall-clock time allowed
+  - routing_facts: optional deterministic owner-route overrides
 
 Deterministic fake adapters (no real model calls):
   - FakeClaudeAdapter: simulates Claude dispatch with deterministic output
   - FakeSparkAdapter: simulates Spark execution
-  - FakeCodexAdapter: simulates Codex review
+  - FakeCodexAdapter: simulates Codex direct implementation or review
 
-Full pipeline: Task → Route → Dispatch → Evidence → Review Ladder → Decision
+Full pipeline: Task → Deterministic Route → Direct/Dispatch → Evidence → Review → Decision
 
 Produces per-case outcomes and aggregate gates:
   - Codex calls reduction >= 30%
@@ -35,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import sys
 import time
@@ -60,7 +62,19 @@ CASE_OPTIONAL_FIELDS = {
     "quota_budget",
     "latency_budget_seconds",
     "trust",
+    "routing_facts",
 }
+
+
+def _load_route_module():
+    path = Path(__file__).resolve().with_name("route-task.py")
+    spec = importlib.util.spec_from_file_location("aiwf_benchmark_route", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+route_task = _load_route_module()
 
 
 def validate_case(case: Dict[str, Any]) -> List[str]:
@@ -94,6 +108,10 @@ def validate_case(case: Dict[str, Any]) -> List[str]:
     latency = case.get("latency_budget_seconds")
     if latency is not None and (not isinstance(latency, (int, float)) or latency < 0):
         errors.append(f"latency_budget_seconds must be non-negative, got {latency!r}")
+
+    routing_facts = case.get("routing_facts")
+    if routing_facts is not None and not isinstance(routing_facts, dict):
+        errors.append("routing_facts must be an object")
 
     return errors
 
@@ -158,7 +176,7 @@ class FakeSparkAdapter:
 
 
 class FakeCodexAdapter:
-    """Simulates Codex review."""
+    """Simulates Codex direct implementation and semantic review."""
 
     def __init__(self) -> None:
         self.call_count = 0
@@ -189,10 +207,61 @@ class FakeCodexAdapter:
             "latency_ms": (seed % 300) + 100,
         }
 
+    def implement(self, task: Dict[str, Any], route_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Simulate one Codex-owned implementation call."""
+        self.call_count += 1
+        case_id = task.get("id", "unknown")
+        seed = deterministic_seed(case_id)
+        diff_lines = (seed % 40) + 1
+        diff = "\n".join([f"+line {i}" for i in range(diff_lines)])
+        return {
+            "adapter": "codex",
+            "call_id": f"codex-{self.call_count}",
+            "lane": route_result.get("lane", "standard"),
+            "diff": diff,
+            "diff_lines": diff_lines,
+            "files_changed": [f"src/file_{seed % 10}.py"],
+            "success": True,
+            "accepted": True,
+            "false_accept": False,
+            "scope_violation": False,
+            "tier": task.get("expected_tier") or "L0",
+            "latency_ms": (seed % 250) + 80,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Pipeline execution
 # ---------------------------------------------------------------------------
+
+def _routing_facts(case: Dict[str, Any], task: Dict[str, Any]) -> Dict[str, Any]:
+    """Build deterministic route input while preserving optional case overrides."""
+    no_risks = {
+        key: "no" for key in (
+            "public_api", "data_model", "security", "migration", "permission",
+            "concurrency", "cross_module", "production_impact",
+        )
+    }
+    lane = case.get("expected_lane", "standard")
+    risks = dict(no_risks)
+    if lane == "assured":
+        risks["production_impact"] = "yes"
+    base = {
+        "task_id": task.get("id", "unknown"),
+        "effective_risks": risks,
+        "target_files_count": 1 if lane == "express" else 3,
+        "predicted_diff_lines": 20 if lane == "express" else 200,
+        "exact_validation": True,
+        "repository_size": "small",
+        "task_role": "core-semantic",
+        "claude_role": "none",
+        "codex_review_scope": "full",
+    }
+    overrides = case.get("routing_facts", {})
+    if isinstance(overrides, dict):
+        base.update(overrides)
+    return base
+
 
 def execute_case(
     case: Dict[str, Any],
@@ -212,15 +281,17 @@ def execute_case(
     task["expected_lane"] = case.get("expected_lane")
     task["expected_tier"] = case.get("expected_tier")
 
-    # Step 1: Route
-    expected_lane = case.get("expected_lane", "standard")
-    route_result = {
-        "lane": expected_lane or "standard",
-        "routing_facts": {"task_id": task["id"]},
-    }
+    before = (claude.call_count, spark.call_count, codex.call_count)
 
-    # Step 2: Dispatch (Claude)
-    dispatch_result = claude.dispatch(task, {"route": route_result})
+    # Step 1: use the same deterministic owner route as the real workflow.
+    route_result = route_task.route(_routing_facts(case, task))
+    owner = route_result.get("execution", {}).get("owner", "codex-fast-path")
+
+    # Step 2: direct Codex implementation is the default; Claude is positive-gated.
+    if owner == "claude-builder":
+        dispatch_result = claude.dispatch(task, {"route": route_result})
+    else:
+        dispatch_result = codex.implement(task, route_result)
 
     # Step 3: Evidence
     evidence = {
@@ -229,13 +300,17 @@ def execute_case(
         "diff_lines": dispatch_result.get("diff_lines", 0),
     }
 
-    # Step 4: Spark validation (if needed)
+    # Step 4: Spark is opt-in and only follows the router's bounded request.
     spark_result = None
-    if route_result["lane"] in ("standard", "assured"):
+    if route_result.get("precard_estimator", {}).get("spark_action") == "estimate":
         spark_result = spark.execute(task, dispatch_result)
 
-    # Step 5: Review Ladder (Codex)
-    review_result = codex.review(task, dispatch_result, spark_result)
+    # Step 5: delegated work receives Codex semantic review; direct work already
+    # consumed its single combined implementation/review call.
+    if owner == "claude-builder":
+        review_result = codex.review(task, dispatch_result, spark_result)
+    else:
+        review_result = dispatch_result
 
     # Step 6: Decision
     elapsed = time.monotonic() - start_time
@@ -261,20 +336,30 @@ def execute_case(
 
     # Check quota budget
     quota_budget = case.get("quota_budget")
-    total_calls = claude.call_count + spark.call_count + codex.call_count
+    per_case = (
+        claude.call_count - before[0],
+        spark.call_count - before[1],
+        codex.call_count - before[2],
+    )
+    total_calls = sum(per_case)
     quota_exceeded = quota_budget is not None and total_calls > quota_budget
 
     return {
         "case_id": case.get("id", "unknown"),
         "status": "passed" if decision["accepted"] and not constraint_violations else "failed",
         "decision": decision,
+        "route": {
+            "owner": owner,
+            "claude_role": route_result.get("execution", {}).get("claude_role", "none"),
+            "spark_action": route_result.get("precard_estimator", {}).get("spark_action", "skip"),
+        },
         "evidence": evidence,
         "constraint_violations": constraint_violations,
         "quota_exceeded": quota_exceeded,
         "total_model_calls": total_calls,
-        "claude_calls": claude.call_count,
-        "spark_calls": spark.call_count,
-        "codex_calls": codex.call_count,
+        "claude_calls": per_case[0],
+        "spark_calls": per_case[1],
+        "codex_calls": per_case[2],
         "elapsed_seconds": elapsed,
         "latency_ms": {
             "claude": dispatch_result.get("latency_ms", 0),

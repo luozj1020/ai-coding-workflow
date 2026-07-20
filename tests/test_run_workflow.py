@@ -125,8 +125,8 @@ def run_cli(*args, check=False):
 class TestRunWorkflowPreview(unittest.TestCase):
     """Test preview mode (default, no --execute)."""
 
-    def test_preview_completes_all_phases(self):
-        """All 13 phases run to completion in preview mode."""
+    def test_preview_stops_after_claude_first_route(self):
+        """The default Claude-first route stops before model execution."""
         with tempfile.TemporaryDirectory() as tmp:
             task = make_task()
             task_path = write_task(tmp, task)
@@ -136,12 +136,12 @@ class TestRunWorkflowPreview(unittest.TestCase):
                 repo=ROOT,
                 profiles_dir=PROFILES,
             )
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "routed")
+            self.assertEqual(result["final_decision"], "claude-dispatch-ready")
             self.assertIsNone(result["failed_phase"])
             expected_phases = [
                 "lint", "compose", "validate", "facts", "route",
-                "context", "plan", "dispatch", "evidence",
-                "acceptance", "review-ladder", "handoff", "ledger",
+                "context", "plan", "dispatch", "ledger",
             ]
             self.assertEqual(result["phases_completed"], expected_phases)
 
@@ -157,7 +157,52 @@ class TestRunWorkflowPreview(unittest.TestCase):
                 profiles_dir=PROFILES,
             )
             self.assertEqual(result["model_calls"], [])
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "routed")
+
+    def test_claude_solution_planner_preview_composes_dispatchable_card(self):
+        """A positive Claude route composes only the selected short card first."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(task_id="solution-plan", write_paths=["README.md"])
+            task["extensions"]["routing_hints"] = {
+                "execution_owner": "claude-builder",
+                "claude_role": "solution-planner",
+                "goal_clarity": "high",
+                "implementation_path_clarity": "low",
+                "bounded_exploration_scope": True,
+                "durable_structured_output": True,
+                "expected_codex_work_reduction_ratio": 0.4,
+                "multi_phase_task": True,
+                "symbols": ["run_lifecycle"],
+                "constraints": ["preserve Task JSON schema"],
+            }
+            task_path = write_task(tmp, task)
+            result = run_workflow.run_lifecycle(
+                task_path=task_path,
+                run_dir_base=Path(tmp),
+                repo=ROOT,
+                profiles_dir=PROFILES,
+            )
+            self.assertEqual(result["status"], "routed")
+            self.assertEqual(result["phases_completed"], [
+                "lint", "compose", "validate", "facts", "route",
+                "context", "plan", "dispatch", "ledger",
+            ])
+            run_dir = Path(result["run_dir"])
+            card_path = run_dir / "delegation-task-card.md"
+            self.assertTrue(card_path.is_file())
+            self.assertFalse((run_dir / "context-packet.json").exists())
+            self.assertFalse((run_dir / "CLAUDE_CONTEXT_PACKET.md").exists())
+            card = card_path.read_text(encoding="utf-8")
+            self.assertIn("## Claude Solution Planner Contract", card)
+            self.assertIn("run_lifecycle", card)
+            self.assertIn("preserve Task JSON schema", card)
+            self.assertNotIn("<!-- one observable outcome -->", card)
+            plan = json.loads((run_dir / "execution-plan.json").read_text())
+            self.assertEqual(plan["task_card_components"], ["core", "solution-planner"])
+            self.assertEqual(plan["context_delivery"], "inline-delegation-task-card")
+            preview = json.loads((run_dir / "dispatch-preview.json").read_text())
+            self.assertEqual(preview["dispatch_card"], str(card_path))
+            self.assertEqual(result["model_calls"], [])
 
     def test_preview_writes_result_json(self):
         """Preview mode writes result.json with all required fields."""
@@ -280,7 +325,7 @@ class TestRunWorkflowExpressLane(unittest.TestCase):
                 repo=ROOT,
                 profiles_dir=PROFILES,
             )
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "routed")
             self.assertEqual(result["lane"], "express")
             codex_calls = [
                 mc for mc in result["model_calls"]
@@ -303,10 +348,10 @@ class TestRunWorkflowStandardLane(unittest.TestCase):
                 repo=ROOT,
                 profiles_dir=PROFILES,
             )
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "routed")
             self.assertIn(result["lane"], ("standard", "express"))
             # Acceptance should be deterministic
-            self.assertIn(result["acceptance_status"], ("passed", "partial", "failed"))
+            self.assertIsNone(result["acceptance_status"])
 
 
 class TestRunWorkflowFailure(unittest.TestCase):
@@ -391,7 +436,7 @@ class TestRunWorkflowPathsSpaces(unittest.TestCase):
                 repo=ROOT,
                 profiles_dir=PROFILES,
             )
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "routed")
 
     def test_task_file_with_spaces(self):
         """Run succeeds when task file has spaces in name."""
@@ -405,7 +450,7 @@ class TestRunWorkflowPathsSpaces(unittest.TestCase):
                 repo=ROOT,
                 profiles_dir=PROFILES,
             )
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "routed")
 
 
 class TestRunWorkflowArtifacts(unittest.TestCase):
@@ -458,10 +503,15 @@ class TestRunWorkflowArtifacts(unittest.TestCase):
                 timestamps.append(event["timestamp"])
             self.assertEqual(timestamps, sorted(timestamps))
 
-    def test_dispatch_preview_artifact_exists(self):
-        """Dispatch preview artifact is written."""
+    def test_explicit_codex_route_decision_exists_without_dispatch_preview(self):
+        """Explicit Codex direct writes a compact decision and no Claude card."""
         with tempfile.TemporaryDirectory() as tmp:
             task = make_task()
+            task["extensions"]["routing_hints"] = {
+                "execution_owner": "codex-fast-path",
+                "deterministic_owner_decision": True,
+                "delegation_value": False,
+            }
             task_path = write_task(tmp, task)
             result = run_workflow.run_lifecycle(
                 task_path=task_path,
@@ -470,12 +520,19 @@ class TestRunWorkflowArtifacts(unittest.TestCase):
                 profiles_dir=PROFILES,
             )
             run_dir = Path(result["run_dir"])
-            self.assertTrue((run_dir / "dispatch-preview.json").exists())
-            preview = json.loads(
-                (run_dir / "dispatch-preview.json").read_text()
+            self.assertFalse((run_dir / "dispatch-preview.json").exists())
+            self.assertFalse((run_dir / "context-packet.json").exists())
+            self.assertFalse((run_dir / "CLAUDE_CONTEXT_PACKET.md").exists())
+            context_decision = json.loads(
+                (run_dir / "context-decision.json").read_text()
             )
-            self.assertEqual(preview["mode"], "preview")
-            self.assertFalse(preview["execute"])
+            self.assertEqual(context_decision["action"], "skip-claude-context-packet")
+            decision = json.loads(
+                (run_dir / "dispatch-decision.json").read_text()
+            )
+            self.assertEqual(decision["action"], "codex-fast-path")
+            self.assertFalse(decision["claude_dispatched"])
+            self.assertEqual(result["final_decision"], "codex-fast-path")
 
 
 class TestRunWorkflowRegistration(unittest.TestCase):
@@ -566,7 +623,7 @@ class TestRunWorkflowCLI(unittest.TestCase):
             self.assertEqual(r.returncode, 0)
             result = json.loads(r.stdout)
             self.assertIn("status", result)
-            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["status"], "routed")
 
     def test_cli_human_output(self):
         """Default output is human-readable."""

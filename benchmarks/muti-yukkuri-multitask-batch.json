@@ -1,0 +1,47 @@
+{
+  "id": "multi-service-reliability-batch",
+  "prompt": "Implement three independent reliability units from the same base commit. Unit A: in core/browser_manager.py make download detection deterministic and testable through narrow dependency injection, ignore incomplete downloads, choose a stable new MP3 candidate, use bounded polling, and preserve existing public call behavior; add mock-only tests/test_browser_manager.py. Unit B: in services/text_processor.py make the voice catalog immutable/data-driven with O(1) value lookup, remove the duplicate visible voice label, keep the existing fallback, strengthen empty-input language validation, and make combined LRC generation deterministic when text/audio lengths differ; add mock-only tests/test_text_processor.py. Unit C: in core/conversion_engine.py support constructor dependency injection without changing zero-argument behavior, initialize driver safely before try/finally, replace unbounded audio-file readiness waiting with a configurable bounded wait, preserve source-to-audio alignment when lines fail or are skipped, and return a small structured conversion summary while retaining callbacks; add mock-only tests/test_conversion_engine.py. The three units must remain independently reviewable and must not modify each other's files.",
+  "allowed_files": [
+    "core/browser_manager.py",
+    "tests/test_browser_manager.py",
+    "services/text_processor.py",
+    "tests/test_text_processor.py",
+    "core/conversion_engine.py",
+    "tests/test_conversion_engine.py"
+  ],
+  "forbidden_files": [
+    "gui/**",
+    "services/translation_service.py",
+    "core/audio_processor.py",
+    "README.md",
+    "resources/**"
+  ],
+  "validation_commands": [
+    "python -m unittest discover -s tests -p 'test_browser_manager.py' -v",
+    "python -m unittest discover -s tests -p 'test_text_processor.py' -v",
+    "python -m unittest discover -s tests -p 'test_conversion_engine.py' -v",
+    "python -m py_compile core/browser_manager.py services/text_processor.py core/conversion_engine.py"
+  ],
+  "acceptance": [
+    "Each unit has deterministic mock-only tests and performs no network, browser, audio, or GUI operation.",
+    "The three source/test path pairs are non-overlapping and can be implemented concurrently from the same base commit.",
+    "Existing zero-argument constructors and existing public method call forms remain compatible.",
+    "No broad formatting, generated files, bytecode, or unrelated edits are present.",
+    "All three narrow test commands, py_compile, and git diff --check pass."
+  ],
+  "parallel_units": [
+    {
+      "id": "browser-download-reliability",
+      "write_paths": ["core/browser_manager.py", "tests/test_browser_manager.py"]
+    },
+    {
+      "id": "text-lrc-determinism",
+      "write_paths": ["services/text_processor.py", "tests/test_text_processor.py"]
+    },
+    {
+      "id": "conversion-lifecycle",
+      "write_paths": ["core/conversion_engine.py", "tests/test_conversion_engine.py"]
+    }
+  ],
+  "parallel_max_concurrency": 2
+}

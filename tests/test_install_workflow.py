@@ -48,6 +48,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "task-card-components" / "catalog.md").exists())
             self.assertTrue((repo / "ai" / "task-card-components" / "core.md").exists())
             self.assertTrue((repo / "ai" / "compose_task_card.py").exists())
+            self.assertTrue((repo / "ai" / "task-card-components" / "exploratory-builder.md").exists())
             self.assertTrue((repo / "ai" / "spec-template.md").exists())
             self.assertTrue((repo / "ai" / "plan-task-template.md").exists())
             self.assertTrue((repo / "ai" / "plan-findings-template.md").exists())
@@ -70,9 +71,12 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "economics-experiment.py").exists())
             self.assertTrue((repo / "ai" / "init-spec.py").exists())
             self.assertTrue((repo / "ai" / "plan-to-task-cards.py").exists())
+            self.assertTrue((repo / "ai" / "solution-contract.py").exists())
+            self.assertTrue((repo / "ai" / "schemas" / "solution-contract-v1.schema.json").exists())
             self.assertTrue((repo / "ai" / "init-plan.py").exists())
             self.assertTrue((repo / "ai" / "session-catchup.py").exists())
             self.assertTrue((repo / "ai" / "validate-parallel-plan.py").exists())
+            self.assertTrue((repo / "ai" / "spark_control_protocol.py").exists())
             self.assertTrue((repo / "ai" / "assess-parallel-opportunity.py").exists())
             self.assertTrue((repo / "ai" / "task_schema.py").exists())
             self.assertTrue((repo / "ai" / "compose-profiles.py").exists())
@@ -85,6 +89,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "profiles" / "base.json").exists())
             self.assertTrue((repo / "ai" / "profiles" / "bugfix.json").exists())
             self.assertTrue((repo / "ai" / "examples" / "fix-typo-in-readme.json").exists())
+            self.assertTrue((repo / "ai" / "examples" / "real-project-task.json").exists())
+            self.assertTrue((repo / "ai" / "examples" / "model-pricing.json").exists())
             self.assertTrue((repo / ".worktrees" / ".gitkeep").exists())
             gitignore = (repo / ".gitignore").read_text(encoding="utf-8")
             self.assertIn("/.worktrees/*", gitignore)
@@ -233,8 +239,9 @@ class InstallWorkflowTests(unittest.TestCase):
             agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
             claude = (repo / "CLAUDE.md").read_text(encoding="utf-8")
             self.assertLess(len(agents.encode("utf-8")), 12_000)
-            self.assertIn("## Economy-First Ownership", agents)
-            self.assertIn("least expensive path", agents)
+            self.assertIn("## Claude-First Ownership", agents)
+            self.assertIn("Minimize scarce Codex work", agents)
+            self.assertIn("workflow bypassed:", agents)
             self.assertIn("task-card-components/catalog.md", agents)
             self.assertIn("Builder Claude", agents)
             self.assertIn("Checker/Test Claude", agents)
@@ -438,13 +445,13 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("direct-intervention threshold", review)
             self.assertIn("NOT enough for Codex takeover", review)
             self.assertIn("reviewer-owned bounded correction", review)
-            self.assertIn("fresh Spark revision ROUTE", review)
+            self.assertIn("Spark estimation is optional", review)
             self.assertIn("Prior-session Claude failures are context only", review)
             self.assertIn("Missing result/report/acceptance prose is an evidence gap", review)
-            self.assertIn("tests/evidence only", review)
-            self.assertIn("control-plane salvage", review)
-            self.assertIn("preserve the reviewer-accepted first-round direction", review)
-            self.assertIn("Delegation Continuity Gate", review)
+            self.assertIn("missing task-card-required tests or evidence", review)
+            self.assertIn("fresh owner route", review)
+            self.assertIn("preserve the accepted implementation direction", review)
+            self.assertIn("Classify Claude evidence explicitly", review)
             # Structured review decision JSON contract (replaces removed prose phrase)
             self.assertIn("parse-review-decision.py", review)
             self.assertIn("Review Decision:", review)
@@ -644,7 +651,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Do not browse the web", agents)
             self.assertIn("ai/locate-code.py", agents)
             self.assertIn("task-card-components/catalog.md", agents)
-            self.assertIn("reviewer-owned bounded correction", agents)
+            self.assertIn("reviewer-owned correction", agents)
             self.assertIn("references/review-policy.md", agents)
             self.assertIn("Loop stop rules", claude)
             self.assertIn("Progress memory", claude)
@@ -656,7 +663,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("--no-discover --command", claude)
             self.assertIn("Local validation allowed?", claude)
             self.assertIn("approval or sandbox policy blocks validation", claude)
-            self.assertIn("which phases remain for the next Claude dispatch", claude)
+            self.assertIn("which phases remain for a fresh owner route", claude)
 
     def test_installed_run_loop_preserves_dispatch_observability_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1002,11 +1009,18 @@ class InstallWorkflowTests(unittest.TestCase):
             monitor = repo / "ai" / "monitor-claude.sh"
             self.assertTrue(monitor.exists())
             self.assertTrue((repo / "ai" / "claude-monitor-decision.py").exists())
+            self.assertTrue((repo / "ai" / "claude-monitor-supervisor.py").exists())
+            self.assertTrue((repo / "ai" / "parallel-task-gate.py").exists())
             text = monitor.read_text(encoding="utf-8")
             for action in ("start)", "status)", "tail)", "decision)", "stop)"):
                 self.assertIn(action, text)
             self.assertIn("monitor-events.log", text)
             self.assertIn("--mode monitor-triage", text)
+            self.assertIn("claude-monitor-supervisor.py", text)
+            watch = (repo / "ai" / "watch-claude.sh").read_text(encoding="utf-8")
+            dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+            self.assertIn("deferred-machine-monitor", watch)
+            self.assertIn("CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS", dispatch)
 
     def test_status_defaults_to_bounded_local_decision(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1057,10 +1071,14 @@ class InstallWorkflowTests(unittest.TestCase):
             packet = json.loads(capture.read_text(encoding="utf-8"))
             self.assertEqual(packet["interrupt_authorized"], "no")
             self.assertNotIn("process_listing", packet)
-            self.assertEqual(result.stdout.count("\n"), 6)
+            self.assertEqual(result.stdout.count("\n"), 10)
             self.assertIn("triage_source=spark", result.stdout)
             self.assertIn("codex_review_required=yes", result.stdout)
             self.assertIn("interrupt_authorized=no", result.stdout)
+            self.assertIn("execution_phase=unknown", result.stdout)
+            self.assertIn("implementation_complete=unknown", result.stdout)
+            self.assertIn("completion_ready=unknown", result.stdout)
+            self.assertIn("finish_recommended=no", result.stdout)
 
     def test_watch_machine_line_overall_running_includes_dispatcher(self):
         """Watch machine line overall_running=yes when only dispatcher is alive."""
@@ -1245,17 +1263,17 @@ class InstallWorkflowTests(unittest.TestCase):
             # Task card must have token budget and delegation fields
             self.assertIn("## Codex Context Budget", task_card)
             self.assertIn("## LSP / Locator / CodeGraph Evidence", task_card)
-            self.assertIn("## High-Token Delegation Gate", task_card)
+            self.assertIn("## High-Token Work Routing Gate", task_card)
             self.assertIn("## Evidence Compression Requirements", task_card)
 
             # Evidence packet must have context budget and compression fields
             self.assertIn("## Context Budget Used", evidence)
-            self.assertIn("## High-Token Work Delegated", evidence)
+            self.assertIn("## High-Token Work Routed", evidence)
             self.assertIn("## Compressed Evidence Summary", evidence)
 
-            # AGENTS.md keeps only the economy contract; details are on-demand.
-            self.assertIn("## Economy-First Ownership", agents)
-            self.assertIn("semantic rereview", agents)
+            # AGENTS.md keeps only the Claude-first ownership contract; details are on-demand.
+            self.assertIn("## Claude-First Ownership", agents)
+            self.assertIn("Route every frozen implementation slice", agents)
             self.assertIn("compact summaries and paths", agents)
 
             # CLAUDE.md managed section must describe evidence compression
@@ -1288,9 +1306,10 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("minimal", routing)
             self.assertIn("full", routing)
 
-            # Check 1: at-most-three invocation recommendation
-            self.assertIn("at most three", routing)
-            self.assertIn("at most three", task_template)
+            # Check 1: bounded opt-in invocation recommendation
+            self.assertIn("one bounded estimate", routing)
+            self.assertIn("at most one uncertain-route estimate", task_template)
+            self.assertIn("terminal-evidence compression", routing)
 
             # Check 1: merge guardrails
             self.assertIn("cannot satisfy acceptance", agents)
@@ -1316,9 +1335,10 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("parallel-planner", task_template)
             self.assertIn("micro-builder", task_template)
 
-            # Check 5: no stale classifier wording - auto resolves to stage bundle
+            # Check 5: auto is value-triggered after deterministic routing
             self.assertIn("auto", routing)
-            self.assertIn("resolves to an applicable stage bundle", task_template)
+            self.assertIn("Deterministic ROUTE is the default", task_template)
+            self.assertIn("concrete Claude candidate", task_template)
 
             # Check 6: prefer "stage routing" over "default role selection"
             self.assertNotIn("default role selection", agents)
@@ -1335,16 +1355,21 @@ class InstallWorkflowTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         readme_cn = (ROOT / "README_CN.md").read_text(encoding="utf-8")
 
+        self.assertIn("## Should you use this Skill?", readme)
+        self.assertIn("## 是否应该使用这个 Skill？", readme_cn)
+        self.assertIn("workflow bypassed:", readme)
+        self.assertIn("workflow bypassed:", readme_cn)
+
         # Check 3: English README explains stage routing
         self.assertIn("stage bundle", readme)
         self.assertIn("preflight-bundle", readme)
         self.assertIn("postflight-bundle", readme)
-        self.assertIn("AI_SPARK_BUDGET_MODE", readme)
+        self.assertIn("Spark is advisory", readme)
 
         # Check 3: Chinese README explains stage routing
         self.assertIn("preflight-bundle", readme_cn)
         self.assertIn("postflight-bundle", readme_cn)
-        self.assertIn("AI_SPARK_BUDGET_MODE", readme_cn)
+        self.assertIn("Spark 是建议", readme_cn)
 
         # Check 3: multi-report metrics in both READMEs
         self.assertIn("helper invocation count", readme)
@@ -1354,8 +1379,8 @@ class InstallWorkflowTests(unittest.TestCase):
         # Check 6: no stale "default role selection" in READMEs
         self.assertNotIn("default role selection", readme)
         self.assertNotIn("默认角色选择", readme_cn)
-        self.assertIn("stage routing / bundle selection", readme)
-        self.assertIn("阶段路由 / 包选择", readme_cn)
+        self.assertIn("short, value-triggered stage routing", readme)
+        self.assertIn("短小、按价值触发的阶段路由", readme_cn)
 
     def test_english_and_chinese_readmes_share_recent_workflow_entrypoints(self):
         """Keep recently added setup and parallel-routing entry points bilingual."""
@@ -1467,10 +1492,10 @@ class InstallWorkflowTests(unittest.TestCase):
         self.assertIn("no model-tier routing in this change", readme)
         self.assertIn("无模型层级路由", readme_cn)
 
-        # No Sol/Terra/Luna routing names in either README
+        # No standalone Sol/Terra/Luna routing names in either README.
         for name in ("Sol", "Terra", "Luna"):
-            self.assertNotIn(name, readme)
-            self.assertNotIn(name, readme_cn)
+            self.assertNotRegex(readme, rf"\b{name}\b")
+            self.assertNotRegex(readme_cn, rf"\b{name}\b")
 
     def test_installed_templates_preserve_micro_builder_parallel_planner_and_stage_bundles(self):
         """Required test 6: preserve micro-builder, parallel-planner, stage bundles,
@@ -1498,7 +1523,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("postflight-bundle", template)
 
             # Key prior content preserved
-            self.assertIn("execution-cost-estimator", agents)
+            self.assertIn("ownership_profile=claude-first", agents)
             self.assertIn("Spark Roles", routing)
             self.assertIn("advisory", agents.lower())
 
@@ -1607,6 +1632,10 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("first_progress_timeout", dispatch)
             self.assertIn("execution_only_keep_section", dispatch)
             self.assertIn("execution-only Builder mode", dispatch)
+            self.assertIn("solution planner in a Codex/Claude Code workflow", dispatch)
+            self.assertIn("batch executor in a Codex/Claude Code workflow", dispatch)
+            self.assertIn("exploratory executor", dispatch)
+            self.assertIn("'solution-planning', 'batch', or 'exploratory'", dispatch)
             self.assertIn("Do NOT restate or redesign the plan", dispatch)
             self.assertIn("builder_mode", dispatch)
             self.assertIn("first_progress_signal", dispatch)

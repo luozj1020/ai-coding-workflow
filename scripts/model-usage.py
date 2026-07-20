@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import time
@@ -19,6 +20,64 @@ NUMERIC_FIELDS = (
 )
 SUM_FIELDS = NUMERIC_FIELDS
 TOKEN_FIELDS = ("input_tokens", "output_tokens")
+
+
+def load_pricing(path: Path) -> dict[str, Any]:
+    """Load a versioned, user-supplied API pricing catalog.
+
+    Pricing is deliberately external to usage normalization because model rates
+    change independently of workflow code. Entries are matched in order.
+    """
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise ValueError("pricing catalog schema_version must be 1")
+    entries = value.get("models")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("pricing catalog models must be a non-empty list")
+    required = ("pattern", "input_per_million", "cached_input_per_million", "output_per_million")
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict) or any(key not in entry for key in required):
+            raise ValueError("invalid pricing entry {}".format(index))
+        if not isinstance(entry["pattern"], str) or not entry["pattern"]:
+            raise ValueError("invalid pricing pattern {}".format(index))
+        for key in required[1:]:
+            if not isinstance(entry[key], (int, float)) or isinstance(entry[key], bool) or entry[key] < 0:
+                raise ValueError("invalid {} in pricing entry {}".format(key, index))
+        if not isinstance(entry.get("input_includes_cached", True), bool):
+            raise ValueError("input_includes_cached must be boolean in pricing entry {}".format(index))
+        if not isinstance(entry.get("billable", True), bool):
+            raise ValueError("billable must be boolean in pricing entry {}".format(index))
+    return value
+
+
+def calculate_cost(record: dict[str, Any], pricing: dict[str, Any]) -> Optional[float]:
+    """Calculate one call's API cost, or return None when evidence is incomplete."""
+    model = record.get("model")
+    input_tokens = record.get("input_tokens")
+    output_tokens = record.get("output_tokens")
+    cached_tokens = record.get("cached_input_tokens")
+    if not isinstance(model, str) or not isinstance(input_tokens, (int, float)) or not isinstance(output_tokens, (int, float)):
+        return None
+    for entry in pricing.get("models", []):
+        if not fnmatch.fnmatchcase(model.lower(), str(entry["pattern"]).lower()):
+            continue
+        if cached_tokens is None:
+            cached_tokens = 0
+        if not isinstance(cached_tokens, (int, float)) or isinstance(cached_tokens, bool):
+            return None
+        uncached = input_tokens
+        if entry.get("input_includes_cached", True):
+            if cached_tokens > input_tokens:
+                return None
+            uncached = input_tokens - cached_tokens
+        if entry.get("billable", True) is False:
+            return 0.0
+        return round((
+            uncached * entry["input_per_million"]
+            + cached_tokens * entry["cached_input_per_million"]
+            + output_tokens * entry["output_per_million"]
+        ) / 1_000_000, 9)
+    return None
 
 
 def _number(value: Any, *, integer: bool = True) -> Optional[Union[int, float]]:
@@ -235,7 +294,7 @@ def append_once(path: Path, record: dict[str, Any]) -> bool:
     return True
 
 
-def _group(records: list[dict[str, Any]]) -> dict[str, Any]:
+def _group(records: list[dict[str, Any]], pricing: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "calls": len(records),
         "complete_calls": sum(row.get("usage_complete") is True for row in records),
@@ -244,10 +303,21 @@ def _group(records: list[dict[str, Any]]) -> dict[str, Any]:
     for field in SUM_FIELDS:
         values = [row[field] for row in records if isinstance(row.get(field), (int, float)) and not isinstance(row.get(field), bool)]
         result[field] = sum(values) if values else None
+    result["provider_cost_complete"] = bool(records) and all(
+        isinstance(row.get("cost_usd"), (int, float)) and not isinstance(row.get("cost_usd"), bool)
+        for row in records
+    )
+    if pricing is not None:
+        calculated = [calculate_cost(row, pricing) for row in records]
+        result["calculated_cost_complete"] = bool(records) and all(value is not None for value in calculated)
+        result["calculated_cost_usd"] = (
+            round(sum(value for value in calculated if value is not None), 9)
+            if result["calculated_cost_complete"] else None
+        )
     return result
 
 
-def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
+def aggregate(records: list[dict[str, Any]], pricing: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     roles: dict[str, list[dict[str, Any]]] = defaultdict(list)
     stages: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in records:
@@ -255,9 +325,9 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         stages[str(row.get("stage") or "unknown")].append(row)
     return {
         "schema_version": SCHEMA_VERSION,
-        "totals": _group(records),
-        "by_role": {key: _group(value) for key, value in sorted(roles.items())},
-        "by_stage": {key: _group(value) for key, value in sorted(stages.items())},
+        "totals": _group(records, pricing),
+        "by_role": {key: _group(value, pricing) for key, value in sorted(roles.items())},
+        "by_stage": {key: _group(value, pricing) for key, value in sorted(stages.items())},
     }
 
 
@@ -284,6 +354,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary = sub.add_parser("aggregate", help="Aggregate a canonical JSONL ledger")
     summary.add_argument("ledger", type=Path)
     summary.add_argument("--output", type=Path)
+    summary.add_argument("--pricing", type=Path,
+                         help="Versioned API price catalog used for a separate calculated cost")
     args = parser.parse_args(argv)
     if args.command == "capture":
         metadata = {key: value for key, value in vars(args).items() if key in {
@@ -302,7 +374,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise ValueError("record must be a JSON object")
         payload = {"appended": append_once(args.ledger, record)}
     else:
-        payload = aggregate(load_records(args.ledger))
+        payload = aggregate(load_records(args.ledger), load_pricing(args.pricing) if args.pricing else None)
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if getattr(args, "output", None):
         args.output.parent.mkdir(parents=True, exist_ok=True)

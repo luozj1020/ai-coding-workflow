@@ -66,6 +66,29 @@ class ClaudeMonitorDecisionTests(unittest.TestCase):
         self.assertEqual(value["codex_review_required"], "yes")
         self.assertEqual(value["interrupt_authorized"], "no")
 
+    def test_completion_ready_waits_for_voluntary_exit_even_when_stale(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event monitor_level=L3 action=inspect evidence_state=diff+report "
+            "quiet_seconds=650 suspect_count=4 elapsed_seconds=700 artifact_growth=no running=yes"
+        )
+        progress = args.repo_root / ".worktrees" / args.task_id / "CLAUDE_PROGRESS.md"
+        progress.write_text(
+            "- Execution Phase: tail\n"
+            "- Implementation Complete: yes\n"
+            "- Assigned Tail Work: bounded self-review and report\n"
+            "- Tail Work Complete: yes\n"
+            "- Completion Ready: yes\n"
+            "- Next Check: exit\n",
+            encoding="utf-8",
+        )
+        with temporary, mock.patch.object(module, "role_state", return_value="running"):
+            value = module.snapshot(args)
+        self.assertEqual(value["decision"], "continue")
+        self.assertEqual(value["reason_code"], "completion-ready-awaiting-voluntary-exit")
+        self.assertEqual(value["finish_recommended"], "yes")
+        self.assertEqual(value["interrupt_authorized"], "no")
+
     def test_cli_json_is_bounded_and_machine_readable(self):
         temporary, args = self.make_case(
             "monitor_event monitor_level=L1 action=wait evidence_state=none "

@@ -242,11 +242,11 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
             prompt = (tmp_path / "stdin.md").read_text(encoding="utf-8")
-            self.assertIn("| Spark purpose used | preflight-bundle |", report)
+            self.assertIn("| Spark purpose used | execution-cost-estimator |", report)
             self.assertIn("| Spark requested mode | auto |", report)
             self.assertIn("| Sandbox used | workspace-write |", report)
-            self.assertIn("codex exec (preflight-bundle in artifact dir)", report)
-            self.assertIn("Mode resolved: preflight-bundle", prompt)
+            self.assertIn("codex exec (execution-cost-estimator in artifact dir)", report)
+            self.assertIn("Mode resolved: execution-cost-estimator", prompt)
             args = (tmp_path / "args.txt").read_text(encoding="utf-8").splitlines()
             self.assertEqual(args[:3], ["exec", "--json", "--output-last-message"])
             self.assertTrue(args[3].endswith("codex-spark.result.txt"))
@@ -856,11 +856,10 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("invalid", result.stderr.lower())
 
-    # --- Coverage 3: Balanced ordinary → preflight-bundle, stage preflight, roles, cwd, workspace-write ---
+    # --- Coverage 3: Balanced ordinary → short estimator ---
 
-    def test_balanced_ordinary_task_resolves_to_preflight_bundle(self):
-        """Coverage 3: Default balanced ordinary task → preflight-bundle, stage preflight,
-        expected roles, artifact-dir cwd, effective workspace-write."""
+    def test_balanced_ordinary_task_resolves_to_execution_cost_estimator(self):
+        """An explicit Spark auto call uses the short estimator, not a planning bundle."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\nSmall implementation task.\n")
@@ -879,22 +878,16 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
             prompt = (tmp_path / "stdin.md").read_text(encoding="utf-8")
-            self.assertIn("| Spark purpose used | preflight-bundle |", report)
-            self.assertIn("| Spark pipeline stage | preflight |", report)
-            # Roles list should include risk-classifier, evidence-synthesizer, etc.
-            self.assertIn("risk-classifier", report)
-            self.assertIn("evidence-synthesizer", report)
-            self.assertIn("task-card-drafter", report)
-            self.assertIn("context-packet-builder", report)
-            self.assertIn("unknown-extractor", report)
-            self.assertIn("split-advisor", report)
+            self.assertIn("| Spark purpose used | execution-cost-estimator |", report)
+            self.assertIn("| Spark pipeline stage | planning |", report)
+            self.assertIn("| Spark roles executed | execution-cost-estimator |", report)
             # Effective sandbox is workspace-write for read-only synthesis modes
             self.assertIn("| Sandbox used | workspace-write |", report)
             # Cwd is a transient writable runtime directory beside artifacts.
             cwd_text = (tmp_path / "cwd.txt").read_text(encoding="utf-8").strip()
             cwd_text = cwd_text.replace("\\", "/").rstrip("/")
             self.assertIn("/.worktrees/.codex-spark-runtime.", cwd_text)
-            self.assertIn("preflight-bundle", prompt)
+            self.assertIn("execution-cost-estimator", prompt)
 
     # --- Coverage 4: Balanced checker without artifacts retains validation-planner ---
 
@@ -965,8 +958,8 @@ class RunCodexSparkTests(unittest.TestCase):
 
     # --- Coverage 6: Aggressive routing (no-artifact, evidence, failure) ---
 
-    def test_aggressive_no_artifact_resolves_to_preflight_bundle(self):
-        """Coverage 6a: Aggressive no-artifact → preflight-bundle."""
+    def test_aggressive_no_artifact_resolves_to_execution_cost_estimator(self):
+        """Coverage 6a: Aggressive no-artifact still uses the short estimator."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\nSmall task.\n")
@@ -976,7 +969,7 @@ class RunCodexSparkTests(unittest.TestCase):
                                      env_extra={"AI_SPARK_BUDGET_MODE": "aggressive"})
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
             report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
-            self.assertIn("| Spark purpose used | preflight-bundle |", report)
+            self.assertIn("| Spark purpose used | execution-cost-estimator |", report)
             self.assertIn("| Spark budget mode effective | aggressive |", report)
 
     def test_aggressive_evidence_resolves_to_postflight_bundle(self):
@@ -1289,7 +1282,8 @@ class RunCodexSparkTests(unittest.TestCase):
             env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
             env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
             result = subprocess.run(
-                [bash_exe(), bash_path(SCRIPT), bash_path(task_card)],
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--mode", "task-card-drafter"],
                 cwd=str(repo), env=env,
                 text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
@@ -1300,6 +1294,30 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn("direct result line", result.stdout)
             self.assertIn("spark_status=success", result.stdout)
             self.assertIn("spark_protocol_end=aiwf-spark-stdout-v1", result.stdout)
+
+    def test_direct_result_without_final_newline_keeps_envelope_fields_separate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\nSmall task.\n")
+            fake_codex = tmp_path / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\nprintf 'acceptance_satisfied_by_spark=no'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                 "--mode", "task-card-drafter", "--result-mode", "direct"],
+                cwd=str(repo), env=env, text=True, encoding="utf-8",
+                errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            lines = [line for line in result.stdout.splitlines() if line]
+            self.assertIn("acceptance_satisfied_by_spark=no", lines)
+            self.assertIn("spark_output_truncated=no", lines)
+            self.assertNotIn("acceptance_satisfied_by_spark=nospark_output_truncated=no", result.stdout)
 
     def test_direct_no_permanent_spark_directory(self):
         """Direct mode: no permanent codex-spark directory is created."""
@@ -1919,12 +1937,12 @@ stop_condition=scope expands"""
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         prompt = prompt_path.read_text(encoding="utf-8")
-        self.assertIn("relative estimates, not actual/billable token measurements", prompt)
+        self.assertIn("Estimate direct Codex work versus Claude planning/execution overhead", prompt)
         self.assertIn("cost_confidence=high|medium|low", prompt)
-        self.assertIn("Risk flags and validation complexity MUST NOT push ownership from Codex to Claude", prompt)
-        self.assertIn("risk override is later applied, it may bias high-risk work only toward Codex", prompt)
-        self.assertIn("predicted_files MUST be one integer or unknown, never a range", prompt)
-        self.assertIn("full-rereview economy gate", prompt)
+        self.assertIn("Codex is the default", prompt)
+        self.assertIn("Risk may only bias toward Codex", prompt)
+        self.assertIn("predicted_files MUST be one integer or unknown", prompt)
+        self.assertIn("Large-repository full-rereview economy gate", prompt)
 
     def test_estimator_computes_safe_codex_fast_path(self):
         result, output_dir, _ = self._run(self.SAFE_OUTPUT)
@@ -1937,6 +1955,18 @@ stop_condition=scope expands"""
         self.assertIn("| Estimate calibration multiplier | 1.5 |", report)
         self.assertIn("| Calibrated diff lines (high) | 36 |", report)
         self.assertIn("| Fast-path class | ordinary |", report)
+
+    def test_direct_estimator_emits_valid_structured_route_decision(self):
+        result, _, _ = self._run(self.SAFE_OUTPUT, result_mode="direct")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        line = next(
+            value for value in result.stdout.splitlines()
+            if value.startswith("spark_decision_json=")
+        )
+        decision = json.loads(line.split("=", 1)[1])
+        self.assertEqual(decision["protocol"], "spark-route-decision-v1")
+        self.assertEqual(decision["decision"], "codex-fast-path")
+        self.assertTrue(decision["advisory_only"])
 
     def test_concentrated_context_reuse_allows_larger_semantic_edit(self):
         output = self.SAFE_OUTPUT.replace(
@@ -1965,7 +1995,7 @@ stop_condition=scope expands"""
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
         self.assertIn("no-fast-path-value-gate-passed", report)
-        self.assertIn("| Recommended owner | claude-builder |", report)
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
 
     def test_large_repo_full_rereview_economy_gate_avoids_duplicate_review(self):
         output = self.SAFE_OUTPUT.replace(
@@ -2010,9 +2040,9 @@ stop_condition=scope expands"""
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
                 self.assertIn("| Safety eligible | no |", report)
-                self.assertIn("| Recommended owner | claude-builder |", report)
+                self.assertIn("| Recommended owner | codex-fast-path |", report)
 
-    def test_large_repo_auxiliary_work_prefers_claude(self):
+    def test_large_repo_auxiliary_work_needs_a_positive_claude_gate(self):
         output = self.SAFE_OUTPUT.replace(
             "predicted_diff_lines_high=24", "predicted_diff_lines_high=60"
         ).replace("task_role=core-semantic", "task_role=auxiliary")
@@ -2020,7 +2050,7 @@ stop_condition=scope expands"""
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
         self.assertIn("large-repo-auxiliary-prefers-claude", report)
-        self.assertIn("| Recommended owner | claude-builder |", report)
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
 
     def test_large_repo_tiny_auxiliary_can_still_use_codex(self):
         output = self.SAFE_OUTPUT.replace("task_role=core-semantic", "task_role=auxiliary")
@@ -2055,7 +2085,7 @@ stop_condition=scope expands"""
                 report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
                 self.assertIn("| Safety eligible | no |", report)
                 self.assertIn(reason, report)
-                self.assertIn("| Recommended owner | claude-builder |", report)
+                self.assertIn("| Recommended owner | codex-fast-path |", report)
 
     def test_risk_and_validation_raise_rigor_not_owner(self):
         output = self.SAFE_OUTPUT.replace(
@@ -2079,7 +2109,7 @@ stop_condition=scope expands"""
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
                 report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
                 self.assertIn("| Safety eligible | no |", report)
-                self.assertIn("| Recommended owner | claude-builder |", report)
+                self.assertIn("| Recommended owner | codex-fast-path |", report)
 
         result, output_dir, _ = self._run(
             self.SAFE_OUTPUT.replace("risk_flags=none", "risk_flags=none,$(touch /tmp/nope)")
@@ -2121,7 +2151,7 @@ stop_condition=scope expands"""
         report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
         self.assertIn("| Delegation-to-direct ratio | not recorded |", report)
         self.assertIn("| Safety eligible | no |", report)
-        self.assertIn("| Recommended owner | claude-builder |", report)
+        self.assertIn("| Recommended owner | codex-fast-path |", report)
 
     def test_direct_estimator_returns_only_model_result_and_no_artifacts(self):
         result, output_dir, _ = self._run(self.SAFE_OUTPUT, result_mode="direct")
@@ -2172,7 +2202,7 @@ stop_condition=scope expands"""
         report2 = (output_dir2 / "codex-spark.report.md").read_text(encoding="utf-8")
         self.assertIn("| Safety eligible | no |", report2)
         self.assertIn("calibrated-diff-high-exceeds-100", report2)
-        self.assertIn("| Recommended owner | claude-builder |", report2)
+        self.assertIn("| Recommended owner | codex-fast-path |", report2)
 
     def test_explicit_cli_override_wins_over_default(self):
         """Explicit --fast-path-max-diff-lines overrides the default 100."""
@@ -2281,7 +2311,7 @@ class SparkDiagnosticsTests(unittest.TestCase):
             env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
             result = subprocess.run(
                 [bash_exe(), bash_path(SCRIPT), bash_path(task_card),
-                 "--diagnostics", "failure"],
+                 "--mode", "task-card-drafter", "--diagnostics", "failure"],
                 cwd=str(repo), env=env,
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True,

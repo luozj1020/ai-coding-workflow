@@ -235,7 +235,7 @@ PYEOF
 "$PYTHON_CMD" "${SCRIPT_DIR}/route-task.py" "$LEGACY_ROUTING_FACTS" > "$LEGACY_ROUTING_DECISION"
 LEGACY_EXECUTION_OWNER="$("$PYTHON_CMD" - "$LEGACY_ROUTING_DECISION" <<'PYEOF'
 import json, sys
-print(json.load(open(sys.argv[1], encoding="utf-8")).get("execution", {}).get("owner", "claude-builder"))
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("execution", {}).get("owner", "codex-fast-path"))
 PYEOF
 )"
 if [ "$LEGACY_EXECUTION_OWNER" = "codex-fast-path" ]; then

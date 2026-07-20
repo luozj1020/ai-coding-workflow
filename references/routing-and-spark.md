@@ -4,7 +4,30 @@ Load this reference for pre-task-card ownership routing, Spark invocation, Spark
 
 ## Pre-Card Route
 
-Before every full initial, revision, narrow, retry, re-dispatch, split-child, or next-phase task card, send Spark a current 20–40 line brief with `execution-cost-estimator` or `preflight-bundle`. Identify the event with `--routing-event`. An earlier estimate is context, not a reusable owner decision. Deterministic Express/tiny work may skip with `skip.sized_tiny_fastpath`; record all disable, budget, and availability skips.
+Run the deterministic owner route before an execution artifact. `claude-first`
+is the default profile: source-writing routes to Claude, while Codex freezes
+intent and reviews bounded semantic evidence. `economy-first` restores the
+strict positive delegation gate for users optimizing single-task latency or
+total model usage. Invoke Spark `execution-cost-estimator` when structured
+estimation can replace Codex analysis. `preflight-bundle` is diagnostic.
+
+Run `aiwf route` before Spark when deterministic facts are already available.
+Its `precard_estimator.spark_action=skip` is valid for an explicitly bound owner
+or a complete deterministic Claude-first role decision.
+Recovery always re-routes from fresh current facts and never inherits an earlier
+estimate. An explicit deterministic owner may still skip Spark; otherwise a
+concrete uncertain Claude candidate can request one bounded estimate.
+
+Under `claude-first`, the economy record optimizes Codex work: single-task
+elapsed time is advisory, the default Codex-work reduction target is 15%, and
+missing estimates do not push implementation back to Codex. Under
+`economy-first`, delegation still requires at least 15% cost saving, active time
+at most 2.0x direct execution, and at least 30% less Codex work. Explicit human
+ownership remains authoritative.
+
+Claude-first work gets one initial execution and one useful-evidence continuation
+before takeover review. Transport or approval failure does not consume the model
+failure allowance and should reuse the same worktree when safe.
 
 Calibrate Spark's upper line estimate by 1.5 normally and 2.0 for tests/fixtures, shell/process orchestration, or cross-platform work. Actual edits may exceed the estimate while scope, solution, and required context remain stable.
 
@@ -33,22 +56,46 @@ Classify tightly coupled behavior/architecture as `core-semantic`; classify test
 
 ## Delegation Value Gate
 
-Size is not sufficient. Prefer Codex direct work whenever Codex already holds the
-exact implementation context and delegation would still require full semantic
-rereview. Delegate only when at least one expected saving is explicit: Claude
-avoids substantial Codex context acquisition, performs a mechanical/independent
-batch, owns assigned test creation, runs long validation/evidence processing, or
-allows Codex to review a bounded interface/sample instead of the full edit.
+Size is not sufficient. Prefer Claude whenever it can own implementation,
+revision, assigned tests, or long validation and return a compact evidence
+boundary. Prefer Codex direct only for explicit human ownership, confirmed
+high-risk core semantics, or a deterministic reviewer-owned correction already
+fully in Codex context.
 
-Record `expected_codex_work_reduction`, `codex_review_scope=sampled|bounded|full`,
+Record `expected_delegated_cost_ratio`, `expected_active_elapsed_ratio`,
+`expected_codex_work_reduction_ratio`, `codex_review_scope=sampled|bounded|full`,
 and `delegation_value=yes|no`. If review scope is `full` and no other reduction is
 present, route to Codex even when the line estimate exceeds an ordinary small-task
 gate, provided scope and solution remain bounded. Repository scale affects this
 judgment because context reacquisition and worktree costs rise with project size.
 
+Claude roles are `solution-planner`, `exploratory-builder`, `batch-builder`, and
+`execution-builder`. Use one structured planner for a large open feature, freeze
+the contract after one Codex review, then return its slices to Claude. Use
+`exploratory-builder` when the goal and boundary are stable but the implementation
+path is unclear; it must create source changes and evidence rather than prose.
+A prose plan, repository summary, unverified bug list, or document summary is
+not completion.
+
+Default read-only routing to local tools, Spark, or Codex. A read-only Claude
+call is eligible only when it creates a durable structured result and is expected
+to remove at least 30% of Codex work. Bug scanning therefore needs a reproduction
+test, patch candidate, or executable structured issue artifact; document parsing
+needs a checked-in index/configuration/generated asset or equivalent downstream
+input. Do not pay Claude merely to hand prose back to Codex.
+
+Select `solution-planner` only for a multi-phase, multi-module, or large-repository
+feature whose goal is clear but implementation path remains open. It must write a
+validated `solution-contract.draft.json`, not a prose summary, and the expected
+reduction in Codex planning work must be at least 30%. Codex performs exactly one
+adversarial planning review. The deterministic solution-contract helper freezes
+the accepted end state, invariants, acceptance IDs, and slices. After freeze,
+implementation routing runs separately for each slice; neither model may reopen
+the whole plan unless new evidence invalidates a blocking invariant.
+
 ## Codex Quota Hotspots
 
-The costly path is usually duplicated semantic context, not the edit itself:
+The scarce-cost path is duplicated Codex semantic context, not downstream-model volume:
 
 1. broad repository discovery or loading several policy references;
 2. reading a monolithic template and authoring a long card;
@@ -58,15 +105,41 @@ The costly path is usually duplicated semantic context, not the edit itself:
 6. dispatching Checker when deterministic evidence already closes acceptance.
 
 Avoid those costs with bounded locators, one on-demand reference, component card
-composition, local persistent monitoring, the full-rereview economy route,
-delta-only revision cards, and conditional Checker dispatch. Delegation has value
-only when it removes more Codex context/review work than its control plane adds.
+composition, local persistent monitoring, delta-only same-worktree continuation,
+and conditional Checker dispatch. In `claude-first`, accept slower productive
+execution when it removes Codex planning, editing, polling, or full-diff rereview.
+Run separate projects in separate user terminals; the Skill does not orchestrate
+portfolio parallelism.
+
+The lower-level efficient control plane defaults to 45 seconds, 24 KiB for the
+composed task card, 64 KiB for a standalone Context Packet, and 80 KiB combined.
+The integrated runner instead inlines bounded context into its single short card.
+Exceeding a bound
+writes `recompose-before-dispatch` and makes no Claude call. Override these only
+with a reviewed `control_plane_policy`; human approval wait is not control-plane
+execution time.
 
 ## Spark Roles
 
 Prefer explicit read-only modes when the role is known: `observe-synthesizer`, `task-card-drafter`, `context-packet-builder`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `direction-precheck`, `acceptance-matrix`, `postflight-bundle`, `revision-drafter`, `lesson-extractor`, `evidence-checker`, `parallel-planner`, or `monitor-triage`. `monitor-triage` accepts only the deterministic compact monitor JSON, returns a bounded advisory decision, and cannot authorize interruption. `auto` is value-triggered and may skip with `skip.no_expected_decision_value`.
 
-Spark is advisory. It cannot replace Claude ownership implicitly, satisfy acceptance, approve final review, authorize merge, or silently fall back to a stronger model. Recommend at most three short helpers per task, excluding mandatory later pre-card re-estimates.
+Spark is advisory. It cannot satisfy acceptance, approve final review, authorize
+merge, or silently fall back to a stronger model. Use it for structured route,
+card-field, monitoring, and terminal-evidence compression when that avoids a
+Codex read. Every revised card starts with deterministic ROUTE; invoke Spark only
+when its structured answer replaces work Codex would otherwise perform.
+
+Treat routing, Claude monitoring, and failure triage as one
+structured control plane. `spark_control_protocol.py` normalizes legacy
+`key=value` output into `spark-route-decision-v1`,
+`spark-monitor-decision-v1`, `spark-failure-decision-v1`, or
+`spark-parallel-decision-v1`. Every object is capped, evidence-hashed, marked
+`advisory_only=true`, and validated locally. Monitor decisions always force
+`interrupt_authorized=false`; failure decisions cannot authorize takeover;
+parallel decisions remain legacy within-repository compatibility artifacts and
+never coordinate user terminals. Invalid output degrades to local/Codex review rather than prose
+reinterpretation. Downstream helpers consume the normalized object directly and
+avoid persisting successful advisory prose.
 
 ## Results and Failure
 
@@ -80,6 +153,10 @@ Spark is advisory. It cannot replace Claude ownership implicitly, satisfy accept
   (`success`, `failed`, or `unavailable`) plus `spark_protocol_end`. Parse it
   with `aiwf spark-output [FILE] --require-terminal`. A started-only envelope
   is not a usable Spark result.
+  Control-plane modes also append `spark_decision_json=<compact JSON>`.
+  `aiwf spark-output` validates this field and exposes it as
+  `structured_decision`; use `aiwf spark-decision KIND [FILE] --compact` to
+  normalize a legacy result explicitly.
 - `minimal`: stdout plus compact report.
 - `full`: prompt, result, stderr, status, diff, task card, and manifest.
 

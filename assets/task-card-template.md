@@ -36,11 +36,11 @@ Mixed-task guard: if a task asks one Claude dispatch to implement, write tests, 
 
 | Phase | Codex owns | Claude owns | Explicitly not Claude-owned | Explicitly not Codex-owned |
 |-------|------------|-------------|-----------------------------|----------------------------|
-| OBSERVE / PLAN | Evidence gathering, unknowns, task card, scope, acceptance criteria | N/A unless this is an exploration task | Product edits | Broad implementation without dispatch |
-| BUILDER EXECUTE | Progress observation, partial diff direction review | Scoped implementation, progress updates, direction report | Acceptance tests and broad validation unless explicitly allowed | Direct implementation edits while Builder has not hit threshold |
+| OBSERVE / PLAN | Evidence gathering, unknowns, default design, owner route | Optional bounded solution contract | Product edits outside a positive route | N/A |
+| BUILDER EXECUTE | Default core implementation; delegated direction review | Positively gated mechanical/auxiliary implementation, progress, direction report | Acceptance tests and broad validation unless explicitly allowed | N/A |
 | DIRECTION REVIEW | Decide wait / revise / split / dispatch checker-test / takeover threshold | Provide report/progress/blockers | Repeated confirmation after proceed | Validating an unaccepted direction |
 | CHECKER / TEST | Dispatch validation task and review evidence quality | Assigned test writing, assigned validation, failure evidence | Broad implementation rewrite unless allowed small fix | Treating unassigned tests as Claude failure |
-| FINAL REVIEW / MERGE | Accept/revise/split/reject; human merge remains separate | N/A unless re-dispatched | N/A | Automatic merge or direct edit without threshold |
+| FINAL REVIEW / MERGE | Accept/revise/split/reject; human merge remains separate | N/A unless positively re-routed | N/A | Automatic merge |
 
 ## Stall / Ambiguity Triage
 
@@ -256,7 +256,7 @@ Non-blocking acknowledgement rule: if acknowledgement is non-blocking and Claude
 
 ## Small Change Fast Path Gate
 
-<!-- This gate records a routing decision that should normally be made from a short Spark task brief BEFORE this full task card is authored. If Codex fast path is selected, record the decision in final evidence instead of completing the remaining delegation-only card. -->
+<!-- This compatibility gate records a decision made BEFORE this full task card is authored. Deterministic routing is normally sufficient; use a short Spark brief only for a concrete economically uncertain Claude candidate. If Codex direct is selected, record the decision in final evidence and stop authoring delegation sections. -->
 
 <!-- Fill before dispatch. If every owner-routing row supports direct Codex editing, Codex may skip Claude dispatch for this task and perform the bounded edit directly. Risk rows set downstream rigor, not ownership. If scope, solution, or required context materially expands, stop and route again before authoring a delegation card. -->
 
@@ -289,7 +289,7 @@ Fast path rules:
 - Concentrated context reuse applies only to `core-semantic` work and still requires local/bounded context, high solution clarity and semantic concentration, high Claude context reacquisition, full Codex semantic rereview, and delegated work >=1.5x direct work.
 - In large/giant repositories, `auxiliary` tests/checker work, mechanical batches, long validation/log/evidence work, and independent support units above one file/50 calibrated lines prefer Claude.
 - Risk does not choose Codex versus Claude. Public API, data shape, security, migration, permission, concurrency, and cross-module flags increase review, validation, isolation, or approval rigor.
-- Run Spark from the short brief before authoring any full task card. A deterministic Express/tiny skip may avoid both Spark and the delegation card when its skip reason is recorded.
+- Run deterministic ROUTE before authoring any full task card. A Codex decision avoids both Spark and the delegation card; only a concrete uncertain Claude candidate may request one short Spark estimate.
 - Record the reason Claude was not dispatched and preserve narrow validation evidence or an explicit validation-skip reason.
 
 ## Execution Cost / Fast Path Gate
@@ -325,7 +325,7 @@ Fast path rules:
 
 Execution cost rules:
 - This is a pre-dispatch fast-path decision, not a post-Claude takeover.
-- Run a fresh Spark estimate before every initial/revision/narrow/retry/next-phase task card. Do not reuse an earlier card's owner decision.
+- Run deterministic ROUTE before every initial/revision/narrow/retry/next-phase card. Use Spark only for a concrete Claude candidate whose economics remain uncertain.
 - Risk flags and validation complexity set review/validation/isolation rigor; they do not choose the implementation owner.
 - Risk must never push a task from Codex to Claude. If an explicit human/policy risk override is applied, it may bias high-risk work only toward Codex and must be recorded separately from the economic recommendation.
 - Calibrate Spark's upper line estimate by 1.5 normally and 2.0 for tests/fixtures, shell/process orchestration, or cross-platform work.
@@ -443,11 +443,11 @@ Advisor timing rules:
 
 ## Codex Spark Gate
 
-<!-- Optional execution-stage auxiliary using OpenAI gpt-5.3-codex-spark. Default to auto so eligible task-size classification, planning, task-card audit, validation planning, failure triage, review, and evidence work can use separate Spark quota before spending stronger-model context. Spark is auxiliary: if unavailable, unauthenticated, network-blocked, or quota-exhausted, auto-disable it for this run and continue the main workflow. It is not a default Claude replacement and must not silently fall back to a stronger model. -->
+<!-- Optional execution-stage auxiliary using OpenAI gpt-5.3-codex-spark. Default to no after a complete deterministic Codex route. Use auto only for a concrete Claude candidate whose economics remain uncertain, or select one explicit postflight/failure role when it has decision value. Spark is auxiliary: if unavailable, continue with Codex ownership. It must not silently fall back to a stronger model. -->
 
 | Field | Value |
 |-------|-------|
-| Spark enabled? | auto / no / yes |
+| Spark enabled? | no (default) / auto for uncertain Claude candidate / yes, explicit role |
 | Spark purpose | explicit mode preferred / auto / task-size-classifier / review-only / task-card-audit / plan-splitter / validation-planner / failure-triage / evidence-checker / parallel-planner / micro-builder / controlled-builder / observe-synthesizer / task-card-drafter / context-packet-builder / preflight-bundle / direction-precheck / acceptance-matrix / postflight-bundle / revision-drafter / lesson-extractor / none |
 | Spark model | gpt-5.3-codex-spark |
 | Budget mode | balanced (default) / aggressive / conservative |
@@ -456,7 +456,7 @@ Advisor timing rules:
 | Preflight skip reason | none / skip.sized_tiny_fastpath / skip.explicit_gate_off / skip.budget_zero / skip.model_unavailable |
 | Postflight required for non-empty diff? | yes / no, deterministic evidence already closes milestone |
 | Roles used | <!-- comma-separated list of Spark roles invoked --> |
-| Call cap recommendation | at most 3 short Spark helper invocations per task (workflow recommendation, not enforcement) |
+| Call cap recommendation | at most one uncertain-route estimate plus one value-triggered terminal evidence check |
 | Quota rationale | separate Spark quota / latency / cost / not applicable |
 | Invocation helper | ai/run-codex-spark.sh |
 | Sandbox | read-only / workspace-write |
@@ -485,7 +485,7 @@ Advisor timing rules:
 | Auto-disable when unavailable? | yes |
 | Auto-disable conditions | missing CLI / model access denied / auth or network blocker / Spark quota exhausted |
 | Strong-model fallback allowed? | no / yes, explicit human approval required |
-| Required Spark artifact | .worktrees/.../codex-spark.report.md |
+| Required Spark artifact | direct structured stdout / compact failure diagnostic / explicit full report |
 | Spark artifact inputs | none / specific `.worktrees/...` files via `--artifact` |
 | Spark result can satisfy acceptance? | no, advisory input only |
 | Spark can replace Claude Builder? | no |
@@ -494,16 +494,16 @@ Advisor timing rules:
 | Stop conditions | unclear scope / non-availability helper failure / explicit require-spark failure |
 
 Spark rules:
-- For non-Express work, pre-task-card Spark routing is the default. Skip only with a stable reason code and preserve that reason in execution evidence.
-- `aiwf efficient prepare` is model-free but emits the invoke/skip decision. `aiwf dispatch-efficient --execute` runs a planned non-Express `preflight-bundle` before Claude, persists minimal evidence plus `spark-dispatch.json`, and continues if Spark auto-disables or fails. Preview invokes no model.
-- Use `postflight-bundle` to compress non-empty diff/report evidence before semantic Codex review unless deterministic evidence already closes the milestone.
-- When `Spark purpose` is `auto`, use stage routing / bundle selection; prefer an explicit `Spark purpose` when Codex already knows the needed support role. Use `auto` for ordinary helper routing when task size or artifact type is uncertain.
-- `--mode auto` resolves to an applicable stage bundle: ordinary pre-Builder use resolves to `preflight-bundle`, diff/report/evidence use resolves to `postflight-bundle`, Checker/Test remains `validation-planner`, and failed/no-report evidence includes failure triage. In aggressive budget mode, failed evidence also adds revision drafting responsibility.
+- Deterministic ROUTE is the default and normally makes no Spark call. Request pre-card Spark only for a concrete Claude candidate whose economics remain uncertain; preserve the skip or request reason.
+- `aiwf efficient prepare` is model-free and emits the invoke/skip decision. `aiwf dispatch-efficient --execute` runs only the planned bounded Spark action, records its structured outcome, and continues with Codex ownership if optional Spark auto-disables or fails. Preview invokes no model.
+- Use `postflight-bundle` only when compacting non-empty diff/report evidence is expected to change or materially shorten semantic Codex review; deterministic evidence may close the milestone without it.
+- When `Spark purpose` is `auto`, use the short estimator only for a concrete Claude candidate with incomplete economics. Prefer an explicit postflight/failure purpose when Codex already knows the needed support role.
+- `--mode auto` uses the short `execution-cost-estimator` for an explicit uncertain Claude candidate. Long `preflight-bundle` behavior is diagnostic/compatibility-only; diff/report/failure modes remain value-triggered.
 - Budget mode (`AI_SPARK_BUDGET_MODE` / `--budget-mode`): `balanced` is the default, `aggressive` enables additional revision drafting on failure, and `conservative` uses legacy single-role routing.
-- Recommend at most three short Spark helper invocations per task: a preflight call, an optional targeted or failure role call, and a postflight call. This is a workflow recommendation, not cross-process daemon or state enforcement.
+- A normal delegated task should need at most one route estimate and one terminal evidence check. The default Codex route needs neither.
 - New explicit read-only modes: `observe-synthesizer`, `task-card-drafter`, `context-packet-builder`, `preflight-bundle`, `direction-precheck`, `acceptance-matrix`, `postflight-bundle`, `revision-drafter`, `lesson-extractor`.
 - Bundle output must use the seven compressed headings: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
-- Use `task-size-classifier` to cheaply route work before Codex spends stronger-model tokens: `codex-fast-path`, `spark-review-only`, `spark-micro-builder`, `claude-builder`, `checker-test`, `spec-first`, or `human-clarification`.
+- Keep `task-size-classifier` as a compatibility diagnostic; ordinary owner routing is deterministic and defaults to `codex-fast-path`.
 - Prefer `task-size-classifier`, `task-card-audit`, `plan-splitter`, `validation-planner`, `failure-triage`, `review-only`, `evidence-checker`, or `parallel-planner` before `micro-builder`.
 - Use `parallel-planner` to propose a reviewed DAG scheduling plan for independent task cards. Spark produces strict schema-v1 JSON only — it does not execute or dispatch. Codex/human must review and save the plan before running `ai/run-parallel-loop.sh --plan <json>`.
 - Use `task-card-audit` to catch missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
@@ -514,7 +514,7 @@ Spark rules:
 - Run `controlled-builder` only when the task card authorizes it with exact `--allow-write` paths (1–3), required `--max-diff-lines` (1–200), all public API/data/security/migration/permission/concurrency/cross-module risks excluded, existing pattern/source-of-truth identified, narrow validation specified, and `--sandbox workspace-write` in the helper-created isolated worktree. Source-writing modes force `full` result mode and isolated worktree. After the run, tracked and untracked paths, line counts, and binary evidence are checked. Violations exit non-zero, remain isolated, never modify source, merge, or satisfy acceptance.
 - Spark result delivery modes: `direct` (default for advisory/read-only, no permanent Spark directory), `minimal` (stdout + compact `codex-spark.report.md`), `full` (prompt/result/stderr/status/diff/task-card/manifest evidence). `--output` without explicit `--result-mode` selects `minimal`; `--output --result-mode direct` is invalid. Source-writing modes (`controlled-builder`, `micro-builder`) force `full`. Choose `minimal` or `full` when persistent metrics or audit evidence is required; `direct` intentionally has no file-backed metrics.
 - Spark evidence can inform Codex review, but it does not override Claude reports, task-card ownership, or required validation. Spark output cannot independently satisfy acceptance; Codex must verify and record acceptance separately.
-- Treat Spark as default-on optional support. If Spark is unavailable or quota-exhausted, record the auto-disable report and continue the main Claude/Codex workflow.
+- Treat Spark as opt-in optional support. If it is unavailable or quota-exhausted, record only the bounded failure diagnostic when requested and preserve Codex ownership.
 - Do not consume GPT-5.5/strong-model quota as an implicit fallback. If Spark is unavailable or insufficient, report the gap and let Codex or the human decide the next model.
 - No implicit strong-model fallback. No model-tier routing in this change.
 - Final evidence must record `accepted_suggestions`, `ignored_suggestions`, `conflicts_with_claude`, `conflicts_with_local_evidence`, and `acceptance_satisfied_by_spark`.
@@ -735,24 +735,24 @@ Checker expectations:
 
 ## Execution Phases
 
-<!-- Split non-trivial work into reviewable phases. Claude Code may decompose work inside a phase, but must not merge phases unless this section explicitly allows it. If Codex dispatches only high-priority phases first, remaining implementation/test-writing phases stay Claude-owned and require follow-up task cards after review. -->
+<!-- Split non-trivial work into reviewable phases. Claude Code may decompose only its assigned phase and must not merge phases unless explicitly allowed. Route every remaining phase independently after review; prior Claude ownership does not carry forward. -->
 
 | Phase | Owner | Scope | Exit Evidence | Stop Before Next Phase? | Continuation After Accept |
 |-------|-------|-------|---------------|-------------------------|---------------------------|
-| A | Claude/Codex/human | <!-- e.g., tests only / implementation only / docs only --> | <!-- exact files, test output, or report update expected --> | yes/no | next Claude task / done / human decision |
+| A | Claude/Codex/human | <!-- e.g., tests only / implementation only / docs only --> | <!-- exact files, test output, or report update expected --> | yes/no | fresh ROUTE / done / human decision |
 | B | | | | | |
 | C | | | | | |
 
 ## Delegation Continuity Gate
 
-<!-- Codex completes this after each accepted phase. A completed high-priority subset is not permission for Codex to implement the remaining subset. -->
+<!-- Codex completes this after each accepted phase. No previous owner automatically retains the remaining subset; route it from current facts. -->
 
 | Check | Value |
 |-------|-------|
 | Accepted phase(s) | |
 | Remaining implementation/test-writing phases | |
-| Next executor for remaining phases | Claude Code / Codex control-plane / human |
-| If not Claude, threshold or human override cited | |
+| Next executor for remaining phases | fresh route: Codex / Claude Code / human |
+| Route evidence | deterministic owner decision / bounded Spark estimate / human direction |
 
 ## Finish Branch Gate
 
@@ -791,7 +791,7 @@ Finish rule: do not claim completion from stale evidence, seeded/fallback report
 
 ## Codex Context Budget
 
-<!-- Estimated token budget Codex should spend on context gathering before dispatch. Set to 0 if LSP/locator/CodeGraph evidence is sufficient. Claude Code handles high-token reads by default. -->
+<!-- Estimated token budget Codex should spend on context gathering. Prefer LSP/locator/CodeGraph evidence. Delegate large reads only when their durable result demonstrably removes substantial Codex work. -->
 
 | Metric | Target |
 |--------|--------|
@@ -811,9 +811,9 @@ Finish rule: do not claim completion from stale evidence, seeded/fallback report
 | Codegraph callers | | |
 | Codegraph impact | | |
 
-## High-Token Delegation Gate
+## High-Token Work Routing Gate
 
-<!-- Codex must delegate the following to Claude Code unless explicitly approved for Codex execution. Check items that apply to this task. -->
+<!-- These items need an explicit economic owner decision; size alone does not require Claude. Check items that apply. -->
 
 - [ ] Reading files > 200 lines
 - [ ] Multi-file implementation or refactoring

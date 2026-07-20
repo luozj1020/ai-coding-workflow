@@ -121,6 +121,12 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "[2099-01-01 00:00:09] Dispatch evidence classification: state=diff + valid report\n",
                 encoding="utf-8",
             )
+            (dispatch / "claude.phase-metrics.json").write_text(json.dumps({
+                "context_acquisition_seconds": 1,
+                "implementation_seconds": 2,
+                "validation_seconds_observed": 1,
+                "tail_seconds": 1,
+            }), encoding="utf-8")
             (dispatch / "claude.checker-report.md").write_text(
                 "# Checker Report\n\nALL GREEN\n",
                 encoding="utf-8",
@@ -252,6 +258,9 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["speed"]["claude_execution_seconds"], 3)
             self.assertEqual(summary["speed"]["checker_seconds"], 2)
             self.assertEqual(summary["speed"]["artifact_finalization_seconds"], 5)
+            self.assertEqual(summary["speed"]["claude_context_acquisition_seconds"], 1)
+            self.assertEqual(summary["speed"]["claude_implementation_seconds"], 2)
+            self.assertEqual(summary["speed"]["claude_tail_seconds"], 1)
             self.assertEqual(summary["cost"]["input_tokens"], 100)
             self.assertEqual(summary["cost"]["output_tokens"], 50)
             self.assertEqual(summary["cost"]["total_cost_usd"], 0.25)
@@ -298,6 +307,7 @@ class SummarizeLoopRunTests(unittest.TestCase):
             markdown = module.render_markdown(summary)
             self.assertIn("## Speed", markdown)
             self.assertIn("| claude_execution_seconds | 3 |", markdown)
+            self.assertIn("| claude_tail_seconds | 1 |", markdown)
             self.assertIn("## Spark Status", markdown)
             self.assertIn("| routing_recommendation | codex-fast-path |", markdown)
             self.assertIn("| invoked | yes |", markdown)

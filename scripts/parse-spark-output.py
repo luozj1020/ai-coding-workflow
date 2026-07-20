@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from spark_control_protocol import parse_and_normalize
+
 FIELD = re.compile(r"^([a-z][a-z0-9_]*)=(.*)$")
 TERMINAL = {"success", "failed", "unavailable"}
 
@@ -30,7 +32,7 @@ def parse(text: str) -> dict:
         and values.get("spark_protocol_end") == protocol
         and terminal is not None
     )
-    return {
+    result = {
         "schema_version": 1,
         "protocol": protocol,
         "complete": complete,
@@ -42,6 +44,26 @@ def parse(text: str) -> dict:
         "model_response_received": values.get("spark_model_response_received") == "yes",
         "fields": values,
     }
+    mode = values.get("spark_mode", "")
+    if mode in {"execution-cost-estimator", "task-size-classifier", "preflight-bundle"}:
+        kind = "route"
+    elif mode == "monitor-triage":
+        kind = "monitor"
+    elif mode == "failure-triage":
+        kind = "failure"
+    elif mode == "parallel-planner":
+        kind = "parallel"
+    else:
+        kind = None
+    if kind and terminal == "success":
+        try:
+            embedded = values.get("spark_decision_json")
+            result["structured_decision"] = parse_and_normalize(kind, embedded or text)
+            result["decision_valid"] = True
+        except (ValueError, json.JSONDecodeError) as exc:
+            result["decision_valid"] = False
+            result["decision_error"] = str(exc)[:160]
+    return result
 
 
 def main() -> int:

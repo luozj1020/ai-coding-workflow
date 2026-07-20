@@ -3,6 +3,9 @@
   "base": ["core"],
   "presets": {
     "builder": ["builder"],
+    "batch-builder": ["builder", "batch-builder"],
+    "solution-planner": ["solution-planner"],
+    "exploratory-builder": ["exploratory-builder"],
     "checker": ["checker"],
     "revision": ["revision"],
     "control-plane": ["control-plane"]
@@ -19,6 +22,9 @@
   "order": [
     "core",
     "builder",
+    "batch-builder",
+    "solution-planner",
+    "exploratory-builder",
     "checker",
     "revision",
     "control-plane",
