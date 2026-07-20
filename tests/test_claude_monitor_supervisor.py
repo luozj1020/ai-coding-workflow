@@ -28,7 +28,8 @@ def load_supervisor():
 
 class ClaudeMonitorSupervisorTests(unittest.TestCase):
     def _script(self, path: pathlib.Path, text: str) -> pathlib.Path:
-        path.write_text(text, encoding="utf-8")
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
 
