@@ -56,6 +56,26 @@ def _append_summary(handle, fields: dict, local: dict) -> None:
     handle.flush()
 
 
+def _terminate_watch(watch: subprocess.Popen, *, force: bool = False) -> None:
+    """Stop the watcher without assuming POSIX process-group APIs."""
+    if watch.poll() is not None:
+        return
+    if os.name != "nt" and hasattr(os, "killpg"):
+        group_signal = (
+            getattr(signal, "SIGKILL", signal.SIGTERM)
+            if force else signal.SIGTERM
+        )
+        try:
+            os.killpg(watch.pid, group_signal)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        watch.kill() if force else watch.terminate()
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-id", required=True)
@@ -85,11 +105,7 @@ def main() -> int:
     def stop_child(_signum=None, _frame=None) -> None:
         nonlocal stopping
         stopping = True
-        if watch.poll() is None:
-            try:
-                os.killpg(watch.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                watch.terminate()
+        _terminate_watch(watch)
 
     signal.signal(signal.SIGTERM, stop_child)
     signal.signal(signal.SIGINT, stop_child)
@@ -141,10 +157,7 @@ def main() -> int:
     try:
         return watch.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(watch.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            watch.kill()
+        _terminate_watch(watch, force=True)
         return watch.wait()
 
 

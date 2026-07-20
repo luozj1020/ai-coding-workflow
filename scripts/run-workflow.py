@@ -600,7 +600,10 @@ def phase_plan(ctx: RunContext) -> None:
         )
         content = _instantiate_delegation_card(content, ctx.composed, ctx.facts, execution)
         delegation_card = ctx.run_dir / "delegation-task-card.md"
-        delegation_card.write_text(content, encoding="utf-8", newline="\n")
+        # Path.write_text gained the newline argument after Python 3.9.
+        # Use Path.open so the CI-supported Python 3.9 path still forces LF.
+        with delegation_card.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
         ctx.record_artifact(delegation_card, is_json=False)
 
     ctx.execution_plan = {

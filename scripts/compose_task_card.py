@@ -154,7 +154,9 @@ def main(argv=None):
         if output.exists() and not args.force:
             raise FileExistsError("output exists; use --force: {}".format(output))
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(content, encoding="utf-8", newline="\n")
+        # Path.write_text(newline=...) is unavailable on Python 3.9.
+        with output.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
         print(json.dumps({"output": str(output), "preset": args.preset, "components": selected}, sort_keys=True))
         return 0
     except (OSError, ValueError, json.JSONDecodeError) as exc:

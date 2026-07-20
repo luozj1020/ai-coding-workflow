@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 import pathlib
 import stat
@@ -8,10 +9,21 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "claude-monitor-supervisor.py"
+
+
+def load_supervisor():
+    scripts = str(ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    spec = importlib.util.spec_from_file_location("claude_monitor_supervisor", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class ClaudeMonitorSupervisorTests(unittest.TestCase):
@@ -19,6 +31,16 @@ class ClaudeMonitorSupervisorTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
+
+    def test_windows_termination_does_not_use_posix_process_groups(self):
+        supervisor = load_supervisor()
+        watch = mock.Mock()
+        watch.poll.return_value = None
+        with mock.patch.object(supervisor.os, "name", "nt"):
+            supervisor._terminate_watch(watch)
+            supervisor._terminate_watch(watch, force=True)
+        watch.terminate.assert_called_once_with()
+        watch.kill.assert_called_once_with()
 
     def test_ambiguous_event_invokes_bounded_spark_triage(self):
         with tempfile.TemporaryDirectory() as tmp:
