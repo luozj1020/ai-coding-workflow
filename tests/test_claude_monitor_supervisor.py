@@ -49,6 +49,12 @@ class ClaudeMonitorSupervisorTests(unittest.TestCase):
             normalized = supervisor._bash_path(windows_style_path)
         self.assertEqual(normalized, "/c/temp/watch.sh")
 
+    def test_windows_does_not_request_posix_session_and_gets_exit_grace(self):
+        supervisor = load_supervisor()
+        with mock.patch.object(supervisor.os, "name", "nt"):
+            self.assertFalse(supervisor._start_new_session())
+            self.assertEqual(supervisor._natural_exit_grace_seconds(), 5)
+
     def test_ambiguous_event_invokes_bounded_spark_triage(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

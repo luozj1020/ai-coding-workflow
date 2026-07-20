@@ -35,6 +35,16 @@ def _bash_path(path: Path, cwd: Path | None = None) -> str:
     return value
 
 
+def _start_new_session() -> bool:
+    """Request a separate process group only where POSIX group signals exist."""
+    return os.name != "nt"
+
+
+def _natural_exit_grace_seconds() -> int:
+    """Allow Git Bash on Windows time to publish its final process status."""
+    return 5 if os.name == "nt" else 1
+
+
 def _snapshot(helper: Path, repo: Path, task_id: str) -> dict:
     result = subprocess.run(
         [sys.executable, str(helper), "snapshot", "--repo-root", str(repo),
@@ -112,7 +122,8 @@ def main() -> int:
         ["bash", _bash_path(args.watch_script, args.repo_root), args.task_id, "--machine",
          "--interval", str(args.interval)],
         cwd=str(args.repo_root), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace", start_new_session=True,
+        text=True, encoding="utf-8", errors="replace",
+        start_new_session=_start_new_session(),
     )
 
     stopping = False
@@ -171,7 +182,7 @@ def main() -> int:
         # On Windows stdout can reach EOF just before Popen observes the
         # process exit. Give a naturally completed watcher a brief grace
         # period so terminate() does not turn a successful exit into code 1.
-        return watch.wait(timeout=1)
+        return watch.wait(timeout=_natural_exit_grace_seconds())
     except subprocess.TimeoutExpired:
         stop_child()
         try:
