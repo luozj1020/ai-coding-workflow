@@ -11,6 +11,7 @@ import argparse
 from collections import Counter, defaultdict
 import importlib.util
 import json
+import math
 import statistics
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -29,9 +30,21 @@ DEFAULT_ROUTE_POLICY = {
 
 
 def _number(value: Any) -> Optional[float]:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
         return float(value)
     return None
+
+
+def _valid_handoff_calibration(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    path = Path(__file__).resolve().with_name("handoff_routing.py")
+    spec = importlib.util.spec_from_file_location("aiwf_handoff_routing_validation", path)
+    if spec is None or spec.loader is None:
+        return False
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return not module.validate_calibration(value)
 
 
 def delegation_economy_gate(
@@ -56,17 +69,34 @@ def delegation_economy_gate(
             if valid:
                 policy[key] = value
 
-    cost_ratio = _number(facts.get("expected_delegated_cost_ratio"))
-    elapsed_ratio = _number(facts.get("expected_active_elapsed_ratio"))
-    work_reduction = _number(
+    base_cost_ratio = _number(facts.get("expected_delegated_cost_ratio"))
+    base_elapsed_ratio = _number(facts.get("expected_active_elapsed_ratio"))
+    base_work_reduction = _number(
         facts.get(
             "expected_codex_work_reduction_ratio",
             facts.get("expected_codex_work_reduction"),
         )
     )
-    estimates_complete = all(
-        value is not None for value in (cost_ratio, elapsed_ratio, work_reduction)
+    handoff = facts.get("handoff_tax")
+    handoff_enabled = isinstance(handoff, dict)
+    handoff_source = handoff.get("source") if handoff_enabled else None
+    handoff_status = handoff.get("status") if handoff_enabled else "not-enabled"
+    handoff_samples = _number(handoff.get("sample_count")) if handoff_enabled else None
+    penalty_cost = _number(handoff.get("penalty_cost_ratio")) if handoff_enabled else None
+    penalty_elapsed = _number(handoff.get("penalty_active_elapsed_ratio")) if handoff_enabled else None
+    penalty_codex = _number(handoff.get("penalty_codex_work_ratio")) if handoff_enabled else None
+    verified_handoff = bool(
+        handoff_enabled and _valid_handoff_calibration(handoff)
+        and handoff_source == "observed-calibration"
+        and handoff_status == "calibrated"
+        and handoff_samples is not None and handoff_samples >= policy["min_history_samples"]
+        and all(value is not None and value >= 0 for value in (penalty_cost, penalty_elapsed, penalty_codex))
     )
+    unverified_handoff = handoff_enabled and not verified_handoff
+    cost_ratio = base_cost_ratio + penalty_cost if verified_handoff and base_cost_ratio is not None else base_cost_ratio
+    elapsed_ratio = base_elapsed_ratio + penalty_elapsed if verified_handoff and base_elapsed_ratio is not None else base_elapsed_ratio
+    work_reduction = max(0.0, base_work_reduction - penalty_codex) if verified_handoff and base_work_reduction is not None else base_work_reduction
+    estimates_complete = all(value is not None for value in (cost_ratio, elapsed_ratio, work_reduction))
     estimate_failures = []
     if estimates_complete:
         if cost_ratio > 1.0 - policy["min_cost_savings_ratio"]:
@@ -92,12 +122,15 @@ def delegation_economy_gate(
     )
     history_veto = history.get("owner_bias") == "codex-fast-path"
 
+    handoff_veto = bool(verified_handoff and estimate_failures)
     if facts.get("delegation_value") is False:
         status, reason = "reject", "delegation-value-explicitly-absent"
     elif history_veto:
         status, reason = "reject", "accepted-history-favors-codex"
     elif estimates_complete and estimate_failures:
         status, reason = "reject", estimate_failures[0]
+    elif estimates_complete and unverified_handoff:
+        status, reason = "canary", "handoff-tax-needs-observed-calibration"
     elif estimates_complete:
         status, reason = "pass", "expected-economics-within-budget"
     elif history_proves_value and facts.get("delegation_value") is True:
@@ -120,6 +153,22 @@ def delegation_economy_gate(
         "expected_delegated_cost_ratio": cost_ratio,
         "expected_active_elapsed_ratio": elapsed_ratio,
         "expected_codex_work_reduction_ratio": work_reduction,
+        "base_expected_delegated_cost_ratio": base_cost_ratio,
+        "base_expected_active_elapsed_ratio": base_elapsed_ratio,
+        "base_expected_codex_work_reduction_ratio": base_work_reduction,
+        "handoff_tax": {
+            "enabled": handoff_enabled,
+            "source": handoff_source,
+            "status": handoff_status,
+            "sample_count": int(handoff_samples) if handoff_samples is not None else 0,
+            "verified_observed_calibration": verified_handoff,
+            "applied": verified_handoff,
+            "veto": handoff_veto,
+            "penalty_cost_ratio": penalty_cost if verified_handoff else None,
+            "penalty_active_elapsed_ratio": penalty_elapsed if verified_handoff else None,
+            "penalty_codex_work_ratio": penalty_codex if verified_handoff else None,
+            "unverified_input_ignored": unverified_handoff,
+        },
         "history_proves_value": history_proves_value,
         "history_veto": history_veto,
         "policy": policy,

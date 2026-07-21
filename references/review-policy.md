@@ -189,6 +189,29 @@ The following always require explicit human approval  -  agents must not perform
 
 ## Structured Review Decision
 
+### State-Backed Incremental Review
+
+When the run uses Workflow State IR and immutable Evidence Objects, use the
+Phase 6 review artifacts instead of re-sending the full acceptance surface:
+
+```bash
+python ai/build-acceptance-graph.py --state WORKFLOW_STATE.json \
+  --store ai/evidence/objects --previous-graph ACCEPTANCE_GRAPH.previous.json \
+  --new-diff-ref sha256:<digest> -o ACCEPTANCE_GRAPH.json
+python ai/build-delta-review-packet.py --graph ACCEPTANCE_GRAPH.json \
+  --previous-graph ACCEPTANCE_GRAPH.previous.json \
+  --receipt REVIEW_RECEIPT.previous.json -o DELTA_REVIEW_PACKET.json
+python ai/validate-review-receipt.py --receipt REVIEW_RECEIPT.json \
+  --graph ACCEPTANCE_GRAPH.json --packet DELTA_REVIEW_PACKET.json
+```
+
+The prior Receipt must bind the exact prior Graph and State. Only its accepted,
+unchanged items may be omitted. Conditional, rejected, unsupported,
+contradictory, reopened, or changed items remain in scope. Use
+`--mode revision` to emit only failing/reopened subgraphs. Missing, stale,
+unknown, unreadable, permission-denied, or contradictory evidence fails closed;
+a bounded lexical candidate cannot support Acceptance by itself.
+
 When Codex/GPT reviews an evidence packet, it must produce a structured decision with the following fields:
 
 ### Decision

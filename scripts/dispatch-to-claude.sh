@@ -484,6 +484,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"
 MONITOR_SCRIPT="${SCRIPT_DIR}/monitor-claude.sh"
+HANDOFF_RECORDER="${SCRIPT_DIR}/record-handoff-event.py"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 
 # Generate a collision-resistant suffix for task identity.
@@ -4346,6 +4347,60 @@ elif [ "$RESULT_FALLBACK_GENERATED" -eq 1 ]; then
     DISPATCH_OUTCOME="fallback"
 elif [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; then
     DISPATCH_OUTCOME="no_useful_progress"
+fi
+
+# Record exactly one cross-model handoff after terminal evidence is available.
+# Integrated aiwf runs point this at their run-events.jsonl; standalone
+# dispatches use the repository-local handoff ledger.  Recording is advisory
+# and must never change the dispatch result.
+if [ -n "$PYTHON_CMD" ] && [ -f "$HANDOFF_RECORDER" ]; then
+    HANDOFF_EVENTS_PATH="${AI_WORKFLOW_HANDOFF_EVENTS_PATH:-${REPO_ROOT}/.ai-workflow/handoff-events.jsonl}"
+    HANDOFF_RUN_ID="${AI_WORKFLOW_HANDOFF_RUN_ID:-${AI_WORKFLOW_RUN_ID:-$TASK_ID}}"
+    HANDOFF_TASK_ID="${AI_WORKFLOW_TASK_ID:-$TASK_ID}"
+    HANDOFF_TASK_TYPE="${AI_WORKFLOW_HANDOFF_TASK_TYPE:-${CLAUDE_CODE_BUILDER_MODE:-${_PARSED_TASK_MODE:-unknown}}}"
+    _HANDOFF_PAYLOAD_BYTES="unknown"
+    _HANDOFF_TASK_CARD_BYTES="unknown"
+    _HANDOFF_FIRST_ACTION_SECONDS="unknown"
+    if [ -f "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md" ]; then
+        _HANDOFF_PAYLOAD_BYTES="$(wc -c < "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md" | tr -d '[:space:]')"
+    fi
+    if [ -f "${WORKTREE_DIR}/TASK_CARD_FULL.md" ]; then
+        _HANDOFF_TASK_CARD_BYTES="$(wc -c < "${WORKTREE_DIR}/TASK_CARD_FULL.md" | tr -d '[:space:]')"
+    fi
+    case "${FIRST_PROGRESS_ELAPSED_SECONDS:-}" in
+        ''|*[!0-9]*)
+            case "${FIRST_WORKTREE_CHANGE_SECONDS:-}" in
+                ''|*[!0-9]*) ;;
+                *) _HANDOFF_FIRST_ACTION_SECONDS="$FIRST_WORKTREE_CHANGE_SECONDS" ;;
+            esac
+            ;;
+        *) _HANDOFF_FIRST_ACTION_SECONDS="$FIRST_PROGRESS_ELAPSED_SECONDS" ;;
+    esac
+    if _HANDOFF_RECORD_OUTPUT="$($PYTHON_CMD "$HANDOFF_RECORDER" \
+        --events-path "$HANDOFF_EVENTS_PATH" \
+        --run-id "$HANDOFF_RUN_ID" \
+        --task-id "$HANDOFF_TASK_ID" \
+        --sender "codex" \
+        --receiver "claude" \
+        --task-type "$HANDOFF_TASK_TYPE" \
+        --dispatch-outcome "$DISPATCH_OUTCOME" \
+        --payload-bytes "$_HANDOFF_PAYLOAD_BYTES" \
+        --novel-payload-bytes "${AI_WORKFLOW_HANDOFF_NOVEL_PAYLOAD_BYTES:-unknown}" \
+        --repeated-payload-bytes "${AI_WORKFLOW_HANDOFF_REPEATED_PAYLOAD_BYTES:-unknown}" \
+        --task-card-bytes "$_HANDOFF_TASK_CARD_BYTES" \
+        --review-packet-bytes "${AI_WORKFLOW_REVIEW_PACKET_BYTES:-unknown}" \
+        --receiver-reads-before-first-action "${AI_WORKFLOW_HANDOFF_RECEIVER_READS:-unknown}" \
+        --receiver-searches-before-first-action "${AI_WORKFLOW_HANDOFF_RECEIVER_SEARCHES:-unknown}" \
+        --seconds-to-first-meaningful-action "$_HANDOFF_FIRST_ACTION_SECONDS" \
+        --known-facts-rediscovered "${AI_WORKFLOW_HANDOFF_KNOWN_FACTS_REDISCOVERED:-unknown}" \
+        --rejected-hypotheses-revisited "${AI_WORKFLOW_HANDOFF_REJECTED_HYPOTHESES_REVISITED:-unknown}" \
+        --handoff-revision-count "${AI_WORKFLOW_HANDOFF_REVISION_COUNT:-unknown}" \
+        --context-objects-requested "${AI_WORKFLOW_HANDOFF_CONTEXT_OBJECTS_REQUESTED:-unknown}" \
+        --context-cache-hits "${AI_WORKFLOW_HANDOFF_CONTEXT_CACHE_HITS:-unknown}" 2>&1)"; then
+        progress_log "Handoff event recorded: events=${HANDOFF_EVENTS_PATH}, result=${_HANDOFF_RECORD_OUTPUT}"
+    else
+        progress_log "Handoff event advisory: ${_HANDOFF_RECORD_OUTPUT:-recording failed}"
+    fi
 fi
 
 # Canonical per-call usage is append-only and intentionally records incomplete

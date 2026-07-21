@@ -737,6 +737,14 @@ def phase_dispatch(ctx: RunContext) -> None:
     claude_phase_metrics_path = ctx.run_dir / "claude-phase-metrics.json"
     dispatch_env = os.environ.copy()
     dispatch_env["AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE"] = str(claude_phase_metrics_path.resolve())
+    # The dispatcher owns exactly-once handoff emission.  Point it at this
+    # run's canonical event log so an integrated run does not create a second
+    # handoff ledger or duplicate the event in RunContext.
+    dispatch_env["AI_WORKFLOW_HANDOFF_EVENTS_PATH"] = str(ctx.events_path.resolve())
+    dispatch_env["AI_WORKFLOW_HANDOFF_RUN_ID"] = ctx.run_id
+    dispatch_env["AI_WORKFLOW_RUN_ID"] = ctx.run_id
+    dispatch_env["AI_WORKFLOW_TASK_ID"] = ctx.facts.get("task_id", "")
+    dispatch_env["AI_WORKFLOW_HANDOFF_TASK_TYPE"] = ctx.facts.get("task_type", "unknown")
     dispatch_env["CLAUDE_CODE_BUILDER_MODE"] = ctx.execution_plan.get("execution", {}).get(
         "builder_mode", "standard"
     )
@@ -936,6 +944,18 @@ def phase_ledger(ctx: RunContext) -> None:
         except (OSError, json.JSONDecodeError):
             claude_phase_seconds = None
 
+    try:
+        handoff_summarizer = _load_module(
+            "summarize_handoff_metrics", "summarize-handoff-metrics.py"
+        )
+        handoff_metrics = handoff_summarizer.summarize_paths([ctx.events_path])
+    except (OSError, ValueError):
+        handoff_metrics = {
+            "schema_version": 1,
+            "handoff_count": 0,
+            "status": "unavailable",
+        }
+
     metrics = {
         "schema_version": 1,
         "run_id": ctx.run_id,
@@ -968,6 +988,7 @@ def phase_ledger(ctx: RunContext) -> None:
             ctx.routing.get("lane") == "express"
             and all(mc.get("role") != "codex" for mc in ctx.model_calls)
         ),
+        "handoff_metrics": handoff_metrics,
     }
 
     out = ctx.run_dir / "run-metrics.json"
@@ -1002,6 +1023,14 @@ def phase_ledger(ctx: RunContext) -> None:
         "model_calls": calls_by_role,
         "task_card_bytes": metrics["task_card_bytes"],
         "review_packet_bytes": None,
+        "handoff_count": handoff_metrics.get("handoff_count", 0),
+        "handoff_payload_bytes": (
+            handoff_metrics.get("totals", {}).get("payload_bytes", "unknown")
+            if isinstance(handoff_metrics.get("totals"), dict) else "unknown"
+        ),
+        "handoff_redundancy_rate": handoff_metrics.get(
+            "payload_redundancy_rate", "unknown"
+        ),
         "worktree_setup_seconds": metrics["phase_timings"].get("dispatch"),
         "total_elapsed_seconds": metrics["total_elapsed_seconds"],
         "control_plane_seconds": metrics["control_plane_seconds"],

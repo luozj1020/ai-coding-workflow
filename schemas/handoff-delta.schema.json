@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/handoff-delta.schema.json",
+  "title": "Handoff Delta v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "delta_id", "task_id", "base_state_id", "new_state_id",
+    "target_revision", "goal", "phase", "repository_state_hash",
+    "added_constraints", "added_decisions", "updated_decisions",
+    "invalidated_decisions", "added_evidence", "removed_evidence",
+    "rejected_hypotheses", "reopened_hypotheses", "resolved_questions", "new_open_questions",
+    "changed_acceptance", "next_action"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "delta_id": {"$ref": "#/$defs/hash"},
+    "task_id": {"$ref": "#/$defs/nonempty"},
+    "base_state_id": {"$ref": "#/$defs/hash"},
+    "new_state_id": {"$ref": "#/$defs/hash"},
+    "target_revision": {"type": "integer", "minimum": 1},
+    "goal": {"oneOf": [{"$ref": "workflow-state.schema.json#/$defs/goal"}, {"type": "null"}]},
+    "phase": {"oneOf": [{"enum": ["planning", "implementation", "verification", "review", "revision", "complete"]}, {"type": "null"}]},
+    "repository_state_hash": {"oneOf": [{"$ref": "#/$defs/nonempty"}, {"type": "null"}]},
+    "added_constraints": {"type": "array", "items": {"$ref": "workflow-state.schema.json#/$defs/constraint"}},
+    "added_decisions": {"type": "array", "items": {"$ref": "workflow-state.schema.json#/$defs/decision"}},
+    "updated_decisions": {"type": "array", "items": {"$ref": "workflow-state.schema.json#/$defs/decision"}},
+    "invalidated_decisions": {"$ref": "#/$defs/idList"},
+    "added_evidence": {"$ref": "#/$defs/idList"},
+    "removed_evidence": {"$ref": "#/$defs/idList"},
+    "rejected_hypotheses": {"type": "array", "items": {"$ref": "workflow-state.schema.json#/$defs/rejectedHypothesis"}},
+    "reopened_hypotheses": {"$ref": "#/$defs/idList"},
+    "resolved_questions": {"$ref": "#/$defs/idList"},
+    "new_open_questions": {"type": "array", "items": {"$ref": "workflow-state.schema.json#/$defs/question"}},
+    "changed_acceptance": {"type": "object", "additionalProperties": {"$ref": "workflow-state.schema.json#/$defs/acceptance"}},
+    "next_action": {"$ref": "workflow-state.schema.json#/$defs/nextAction"}
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1},
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "idList": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true}
+  }
+}

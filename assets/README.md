@@ -193,6 +193,196 @@ python ai/render-task-card.py ai/task-cards/PROJ-123.json --view execution
 Key behaviors:
 - **JSON is source of truth** when both `.json` and `.md` exist for the same task.
 - **Audit view** includes risk, extensions, full handoff. **Execution view** includes only goal, scope, acceptance, validation, stop conditions.
+
+### Workflow State IR (opt-in)
+
+Phase 1 can materialize a model-independent state and a replayable semantic
+event log without changing the existing Markdown dispatch boundary:
+
+```bash
+python ai/worktree_state_hash.py --worktree .
+python ai/init-workflow-state.py \
+  --task task.json \
+  --run-dir .ai-workflow/runs/T-17 \
+  --repository-state-hash sha256:<hash-from-previous-command>
+python ai/validate-workflow-state.py \
+  --state .ai-workflow/runs/T-17/WORKFLOW_STATE.json \
+  --events .ai-workflow/runs/T-17/WORKFLOW_EVENTS.jsonl
+python ai/render-task-card-from-state.py \
+  --state .ai-workflow/runs/T-17/WORKFLOW_STATE.json \
+  --output .ai-workflow/runs/T-17/task-card.md
+```
+
+Apply changes with `ai/apply-workflow-delta.py`. Its input is a small JSON
+envelope containing `schema_version`, the exact `base_state_id`, and one or
+more `{event_type, payload}` entries. A stale base, illegal phase transition,
+or silent overwrite of a frozen decision fails closed. The validator recomputes
+the state hash and replays the full event log before accepting the artifact.
+
+Build and validate a Phase 2 cross-model handoff after the target state changes:
+
+```bash
+python ai/build-handoff-delta.py \
+  --base .ai-workflow/runs/T-17/BASE_STATE.json \
+  --target .ai-workflow/runs/T-17/WORKFLOW_STATE.json \
+  --events .ai-workflow/runs/T-17/WORKFLOW_EVENTS.jsonl \
+  --output .ai-workflow/runs/T-17/HANDOFF_DELTA.json
+python ai/validate-handoff-ack.py \
+  --base-state .ai-workflow/runs/T-17/BASE_STATE.json \
+  --state .ai-workflow/runs/T-17/WORKFLOW_STATE.json \
+  --delta .ai-workflow/runs/T-17/HANDOFF_DELTA.json \
+  --events .ai-workflow/runs/T-17/WORKFLOW_EVENTS.jsonl \
+  --ack .ai-workflow/runs/T-17/HANDOFF_ACK.json \
+  --receiver-state-id sha256:<receiver-base-state-id>
+```
+
+ACKs are limited to 8192 UTF-8 bytes and one repair attempt. Missing frozen
+constraints or decisions, unresolved questions, contradictions, requested
+context, and writes outside `next_action.allowed_paths` keep execution closed
+and emit `HANDOFF_ACK_REPAIR.json`. The receiver must author one corrected ACK;
+`ai/merge-handoff-ack.py` combines its explicit acknowledgements with the first
+ACK. The event log must prove a continuous base-to-target ancestry. State,
+ancestry, or Delta mismatches are rejected without automatic repair.
+
+### Rejected Hypothesis Ledger (opt-in)
+
+Phase 3 stores negative investigation knowledge in
+`.ai-workflow/runs/<run-id>/REJECTED_HYPOTHESES.json`. Rejecting or reopening a
+hypothesis synchronizes the ledger with State IR and its semantic event log:
+
+```bash
+python ai/update-hypothesis-ledger.py \
+  --operation reject \
+  --input rejected-hypothesis-input.json \
+  --ledger .ai-workflow/runs/T-17/REJECTED_HYPOTHESES.json \
+  --state .ai-workflow/runs/T-17/WORKFLOW_STATE.json \
+  --state-events .ai-workflow/runs/T-17/WORKFLOW_EVENTS.jsonl \
+  --actor claude-builder
+python ai/check-revisited-hypothesis.py \
+  --ledger .ai-workflow/runs/T-17/REJECTED_HYPOTHESES.json \
+  --proposal proposed-hypothesis.json \
+  --review-output .ai-workflow/runs/T-17/relevant-rejected-hypotheses.json
+```
+
+Every rejection requires Evidence already referenced by State IR. Exact or
+explicitly linked repeats without new Evidence are recorded and rejected.
+Similar wording produces `possible-repeat` for bounded review rather than an
+automatic semantic identity claim. Reopening requires new Evidence, a reason,
+and explicit confirmation that the reopen condition is met. Review output is
+scope-filtered and capped; revisions do not receive the full historical ledger.
+Phase 2 handoffs carry successful reopen transitions in the explicit
+`reopened_hypotheses` Delta field.
+
+### Evidence Object Store (opt-in)
+
+Phase 4 stores immutable Evidence Objects under
+`.ai-workflow/objects/<digest-prefix>/<digest-rest>.json`. Object identity binds
+content, provenance, selector, and invalidation dependencies:
+
+```bash
+python ai/evidence-store.py put \
+  --metadata evidence-metadata.json \
+  --content optimizer-slice.txt \
+  --encoding utf-8
+python ai/evidence-store.py packet \
+  --object-id sha256:<object-id> \
+  --output .ai-workflow/runs/T-17/evidence-refs.json
+python ai/evidence-store.py read \
+  --object-id sha256:<object-id> \
+  --receiver claude-session-28 \
+  --receipt-output .ai-workflow/runs/T-17/evidence-read-receipt.json
+```
+
+Reference packets contain metadata references only and set
+`inline_content=false`; every reference is resolved before the packet is
+written. Missing, corrupted, stale, or unknown references fail explicitly.
+Receiver metrics distinguish the first successful read (`miss`) from subsequent
+reads (`hit`) and expose a known-read cache-hit rate.
+
+Evaluate file, symbol, commit, build configuration, validation command, and
+worktree dependencies with:
+
+```bash
+python ai/evidence-invalidate.py \
+  --current current-evidence-context.json \
+  --object-id sha256:<object-id> \
+  --apply
+```
+
+Validity is stored in a sidecar, leaving the content-addressed object immutable.
+Rechecking matching repository facts restores `valid` status without rewriting
+the object. Changes to unrelated paths do not invalidate path-bound evidence.
+
+### Pull Context Broker (opt-in)
+
+Phase 5 lets a receiving model request bounded repository context after the
+initial handoff. The request must bind the exact current Workflow State ID:
+
+```bash
+python ai/context-broker.py request \
+  --state WORKFLOW_STATE.json \
+  --query context-query.json \
+  --output context-response.json
+```
+
+The broker first reuses valid Phase 4 Evidence Objects, then generates only
+missing symbol definitions, callers, callees, related tests, or build-rule
+slices with deterministic local repository scans. Responses contain references,
+not inline content. `max_bytes` budgets referenced evidence content by whole
+object; objects are omitted rather than text-truncated. Every unresolved slot is
+classified as `not-found`, `stale`, `permission-denied`, or `budget-exceeded`.
+The optional query `role` and Workflow State phase determine result priority.
+Definition, test, and build matches are labeled `exact-text-candidate`; caller
+and callee results are labeled `bounded-lexical-candidate`. Neither label is a
+semantic proof, so correctness-critical consumers should confirm candidates
+with LSP, CodeGraph, compilation, or tests.
+When `state.next_action.allowed_paths` is non-empty it is a hard Broker read
+scope. An empty list means no additional State-level read restriction; operating
+system permissions and the explicitly selected repository remain authoritative.
+
+### Acceptance, ownership continuity, and communication routing (opt-in)
+
+Build the state-bound Acceptance Graph and changed-only review packet, then
+validate the Review Receipt against both exact hashes:
+
+```bash
+python ai/build-acceptance-graph.py --state WORKFLOW_STATE.json \
+  --store .ai-workflow/objects -o ACCEPTANCE_GRAPH.json
+python ai/build-delta-review-packet.py --graph ACCEPTANCE_GRAPH.json \
+  --previous-graph ACCEPTANCE_GRAPH.previous.json \
+  --receipt REVIEW_RECEIPT.previous.json -o DELTA_REVIEW_PACKET.json
+python ai/validate-review-receipt.py --receipt REVIEW_RECEIPT.json \
+  --graph ACCEPTANCE_GRAPH.json --packet DELTA_REVIEW_PACKET.json
+```
+
+For a revision or test fix, create a strict ownership request and select the
+continuation before opening another model session:
+
+```bash
+python ai/select-continuation-owner.py --request OWNER_REQUEST.json \
+  --previous-lease OWNER_LEASE.previous.json -o OWNER_LEASE.json
+```
+
+`resume-required` means the recorded session must be resumed first. A new
+same-owner session is granted only after `resume_status=failed`. Advisor is
+skipped without semantic blockers and Reviewer is skipped without new immutable
+evidence.
+
+Estimate Handoff Tax from observed run events, then calibrate it with an
+explicit reviewed cost policy:
+
+```bash
+python ai/estimate-handoff-tax.py run-events.jsonl --task-type builder \
+  -o HANDOFF_TAX.json
+python ai/calibrate-handoff-routing.py --estimate HANDOFF_TAX.json \
+  --policy handoff-cost-policy.json -o HANDOFF_ROUTING_CALIBRATION.json
+```
+
+The Router applies only `observed-calibration` with enough complete samples.
+Unknown data remains `unknown`/`canary`. Spark may advise task shape when
+explicitly requested, but cannot supply authoritative tax or override explicit
+human ownership.
+
 - **Conflict hard-fail.** Profile composition raises on conflicting scalars; use `lint-task-card.py` to catch before dispatch.
 - Schemas live at `ai/schemas/`, profiles at `ai/profiles/`, examples at `ai/examples/`.
 

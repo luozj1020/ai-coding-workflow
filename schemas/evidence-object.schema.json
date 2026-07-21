@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/evidence-object.schema.json",
+  "title": "Evidence Object v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "object_id", "kind", "content_hash", "content_bytes",
+    "repository", "selector", "producer", "dependency_hashes", "content"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "object_id": {"$ref": "#/$defs/hash"},
+    "kind": {
+      "enum": [
+        "symbol-slice", "file-slice", "call-path", "callers", "callees",
+        "test-definition", "test-result", "build-rule", "compiler-error",
+        "runtime-error", "diff-hunk", "repository-fact", "decision-record",
+        "acceptance-record"
+      ]
+    },
+    "content_hash": {"$ref": "#/$defs/hash"},
+    "content_bytes": {"type": "integer", "minimum": 0},
+    "repository": {
+      "type": "object", "additionalProperties": false,
+      "required": ["commit", "path"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/nullableString"},
+        "path": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "selector": {
+      "type": "object", "additionalProperties": false,
+      "required": ["symbol", "start_line", "end_line"],
+      "properties": {
+        "symbol": {"$ref": "#/$defs/nullableString"},
+        "start_line": {"$ref": "#/$defs/nullablePositiveInteger"},
+        "end_line": {"$ref": "#/$defs/nullablePositiveInteger"}
+      }
+    },
+    "producer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tool", "version"],
+      "properties": {
+        "tool": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "dependency_hashes": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "file_hash", "symbol_hash", "build_configuration_hash",
+        "validation_command_hash", "worktree_state_hash"
+      ],
+      "properties": {
+        "file_hash": {"$ref": "#/$defs/nullableString"},
+        "symbol_hash": {"$ref": "#/$defs/nullableString"},
+        "build_configuration_hash": {"$ref": "#/$defs/nullableString"},
+        "validation_command_hash": {"$ref": "#/$defs/nullableString"},
+        "worktree_state_hash": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "content": {
+      "type": "object", "additionalProperties": false,
+      "required": ["encoding", "value"],
+      "properties": {
+        "encoding": {"enum": ["utf-8", "base64", "json"]},
+        "value": {}
+      }
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nullableString": {
+      "oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+    },
+    "nullablePositiveInteger": {
+      "oneOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow/schemas/handoff-event-v1.schema.json",
+  "title": "Cross-model Handoff Event Detail v1",
+  "description": "Detail payload embedded in a run-event-v2 handoff_recorded event. Unobservable measurements are the literal string unknown and must never be coerced to zero or false.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sender",
+    "receiver",
+    "task_type",
+    "dispatch_outcome",
+    "payload_bytes",
+    "novel_payload_bytes",
+    "repeated_payload_bytes",
+    "task_card_bytes",
+    "review_packet_bytes",
+    "receiver_reads_before_first_action",
+    "receiver_searches_before_first_action",
+    "seconds_to_first_meaningful_action",
+    "known_facts_rediscovered",
+    "rejected_hypotheses_revisited",
+    "handoff_revision_count",
+    "context_objects_requested",
+    "context_cache_hits"
+  ],
+  "$defs": {
+    "measurement": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "const": "unknown" }
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": { "const": 1 },
+    "sender": { "type": "string", "minLength": 1 },
+    "receiver": { "type": "string", "minLength": 1 },
+    "task_type": { "type": "string", "minLength": 1 },
+    "dispatch_outcome": { "type": "string", "minLength": 1 },
+    "payload_bytes": { "$ref": "#/$defs/measurement" },
+    "novel_payload_bytes": { "$ref": "#/$defs/measurement" },
+    "repeated_payload_bytes": { "$ref": "#/$defs/measurement" },
+    "task_card_bytes": { "$ref": "#/$defs/measurement" },
+    "review_packet_bytes": { "$ref": "#/$defs/measurement" },
+    "receiver_reads_before_first_action": { "$ref": "#/$defs/measurement" },
+    "receiver_searches_before_first_action": { "$ref": "#/$defs/measurement" },
+    "seconds_to_first_meaningful_action": { "$ref": "#/$defs/measurement" },
+    "known_facts_rediscovered": { "$ref": "#/$defs/measurement" },
+    "rejected_hypotheses_revisited": { "$ref": "#/$defs/measurement" },
+    "handoff_revision_count": { "$ref": "#/$defs/measurement" },
+    "context_objects_requested": { "$ref": "#/$defs/measurement" },
+    "context_cache_hits": { "$ref": "#/$defs/measurement" }
+  }
+}

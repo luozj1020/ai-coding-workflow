@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/rejected-hypothesis.schema.json",
+  "title": "Rejected Hypothesis Ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "ledger_id", "task_id", "revision",
+    "repository_state_hash", "items", "revisit_events"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "ledger_id": {"$ref": "#/$defs/hash"},
+    "task_id": {"$ref": "#/$defs/nonempty"},
+    "revision": {"type": "integer", "minimum": 0},
+    "repository_state_hash": {"$ref": "#/$defs/nonempty"},
+    "items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+    "revisit_events": {"type": "array", "items": {"$ref": "#/$defs/revisitEvent"}}
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1},
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "stringList": {
+      "type": "array", "uniqueItems": true,
+      "items": {"$ref": "#/$defs/nonempty"}
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "statement", "statement_hash", "status", "reason",
+        "evidence_refs", "reopen_when", "producer", "repository_state_hash",
+        "scope_refs", "rejected_state_id", "reopened_reason",
+        "reopened_evidence_refs", "reopened_by"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty"},
+        "statement": {"$ref": "#/$defs/nonempty"},
+        "statement_hash": {"$ref": "#/$defs/hash"},
+        "status": {"enum": ["rejected", "reopened"]},
+        "reason": {"$ref": "#/$defs/nonempty"},
+        "evidence_refs": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonempty"}
+        },
+        "reopen_when": {"oneOf": [{"$ref": "#/$defs/nonempty"}, {"type": "null"}]},
+        "producer": {"$ref": "#/$defs/nonempty"},
+        "repository_state_hash": {"$ref": "#/$defs/nonempty"},
+        "scope_refs": {"$ref": "#/$defs/stringList"},
+        "rejected_state_id": {"$ref": "#/$defs/hash"},
+        "reopened_reason": {"oneOf": [{"$ref": "#/$defs/nonempty"}, {"type": "null"}]},
+        "reopened_evidence_refs": {"$ref": "#/$defs/stringList"},
+        "reopened_by": {"oneOf": [{"$ref": "#/$defs/nonempty"}, {"type": "null"}]}
+      }
+    },
+    "revisitEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id", "observed_at", "producer", "statement", "statement_hash",
+        "evidence_refs", "repository_state_hash", "scope_refs",
+        "matched_hypothesis_ids", "match_types", "outcome"
+      ],
+      "properties": {
+        "event_id": {"$ref": "#/$defs/hash"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "producer": {"$ref": "#/$defs/nonempty"},
+        "statement": {"$ref": "#/$defs/nonempty"},
+        "statement_hash": {"$ref": "#/$defs/hash"},
+        "evidence_refs": {"$ref": "#/$defs/stringList"},
+        "repository_state_hash": {"$ref": "#/$defs/nonempty"},
+        "scope_refs": {"$ref": "#/$defs/stringList"},
+        "matched_hypothesis_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonempty"}
+        },
+        "match_types": {
+          "type": "object",
+          "additionalProperties": {"enum": ["explicit", "exact", "similar"]}
+        },
+        "outcome": {"enum": ["rejected-repeat", "reopen-required", "possible-repeat"]}
+      }
+    }
+  }
+}

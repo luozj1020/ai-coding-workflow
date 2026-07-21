@@ -18,6 +18,18 @@ Recovery always re-routes from fresh current facts and never inherits an earlier
 estimate. An explicit deterministic owner may still skip Spark; otherwise a
 concrete uncertain Claude candidate can request one bounded estimate.
 
+For continuation, consume a granted Owner Lease before considering a switch.
+Mechanical revision and test-fix leases favor the original Builder; a same-owner
+new session is allowed only after recorded resume failure. `route-task.py`
+accepts the lease's `selected_model` as `continuation_owner` only with
+`continuation_eligible=true`.
+
+Communication-aware routing may apply a Handoff Tax calibration only when its
+source is `observed-calibration`, status is `calibrated`, and the configured
+minimum sample count is met. Missing or model-produced estimates remain
+`unknown`/`canary` and cannot override deterministic facts or explicit human
+ownership.
+
 Under `claude-first`, the economy record optimizes Codex work: single-task
 elapsed time is advisory, the default Codex-work reduction target is 15%, and
 missing estimates do not push implementation back to Codex. Under
@@ -128,6 +140,9 @@ merge, or silently fall back to a stronger model. Use it for structured route,
 card-field, monitoring, and terminal-evidence compression when that avoids a
 Codex read. Every revised card starts with deterministic ROUTE; invoke Spark only
 when its structured answer replaces work Codex would otherwise perform.
+Observed Handoff Tax and a valid Owner Lease make continuity deterministic, so
+Spark is skipped even when requested. With insufficient history, Spark may
+advise task shape only; it is never an authoritative Handoff Tax source.
 
 Treat routing, Claude monitoring, and failure triage as one
 structured control plane. `spark_control_protocol.py` normalizes legacy

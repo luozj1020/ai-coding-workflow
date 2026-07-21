@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/handoff-ack.schema.json",
+  "title": "Short Handoff ACK v1",
+  "$comment": "The serialized UTF-8 document is additionally limited to 8192 bytes by validate-handoff-ack.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "state_id", "receiver", "repair_attempt",
+    "understood_goal_id", "accepted_constraints", "accepted_decisions",
+    "open_questions", "planned_first_action", "additional_context_requested",
+    "contradictions"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "state_id": {"$ref": "#/$defs/hash"},
+    "receiver": {"$ref": "#/$defs/short"},
+    "repair_attempt": {"type": "integer", "minimum": 0, "maximum": 1},
+    "understood_goal_id": {"$ref": "#/$defs/short"},
+    "accepted_constraints": {"$ref": "#/$defs/idList128"},
+    "accepted_decisions": {"$ref": "#/$defs/idList128"},
+    "open_questions": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "planned_first_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "target"],
+      "properties": {
+        "operation": {"$ref": "#/$defs/short"},
+        "target": {"$ref": "#/$defs/short"},
+        "write_paths": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/short"}}
+      }
+    },
+    "additional_context_requested": {"type": "array", "maxItems": 16, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}},
+    "contradictions": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "short": {"type": "string", "minLength": 1, "maxLength": 256},
+    "text": {"type": "string", "minLength": 1, "maxLength": 512},
+    "idList128": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"$ref": "#/$defs/text"}}
+  }
+}

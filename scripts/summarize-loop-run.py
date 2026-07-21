@@ -46,6 +46,22 @@ def read_text(path: Path) -> str:
         return ""
 
 
+def parse_handoff_metrics(paths: list[Path]) -> dict:
+    """Load the standalone handoff summarizer and preserve unknown semantics."""
+    helper = Path(__file__).resolve().with_name("summarize-handoff-metrics.py")
+    if not helper.is_file():
+        return {"schema_version": 1, "handoff_count": 0, "status": "unavailable"}
+    spec = importlib.util.spec_from_file_location("summarize_handoff_metrics", helper)
+    if spec is None or spec.loader is None:
+        return {"schema_version": 1, "handoff_count": 0, "status": "unavailable"}
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        return module.summarize_paths(paths)
+    except (OSError, ValueError):
+        return {"schema_version": 1, "handoff_count": 0, "status": "invalid-events"}
+
+
 def summarize_attempts(paths: list[Path]) -> dict:
     attempts = []
     for path in paths:
@@ -716,7 +732,13 @@ def discover_run(path: Path) -> dict[str, list[Path]]:
         "report": sorted(root.rglob("*.report.md")),
         "spark_report": sorted(root.rglob("codex-spark.report.md")),
         "diff": sorted(root.rglob("*.diff")),
-        "events": sorted(root.rglob("loop-events.jsonl")),
+        "events": sorted(set(
+            root.rglob("loop-events.jsonl")
+        ) | set(
+            root.rglob("run-events.jsonl")
+        ) | set(
+            root.rglob("handoff-events.jsonl")
+        )),
         "parallel": sorted(root.rglob("parallel-summary.md")),
         "task_card": sorted(root.rglob("task-card-*.md")) + sorted(root.rglob("CLAUDE_TASK_CARD.md")),
         "attempt": sorted(root.rglob("*.attempt-classification.json")),
@@ -959,6 +981,7 @@ def summarize(path: Path) -> dict:
     continuation_audit = parse_continuation_audits(artifacts["audit"])
     diagnostic_probes = parse_diagnostic_probes(artifacts["health"])
     economics = parse_economics(artifacts["economics"])
+    handoff_metrics = parse_handoff_metrics(artifacts["events"])
 
     return {
         "run_path": str(path),
@@ -1004,6 +1027,7 @@ def summarize(path: Path) -> dict:
         "advisor_continuation": continuation_audit,
         "diagnostic_probes": diagnostic_probes,
         "economics": economics,
+        "handoff_metrics": handoff_metrics,
     }
 
 
@@ -1063,6 +1087,19 @@ def render_markdown(summary: dict) -> str:
             lines.append(f"| {key} | {format_value(value)} |")
     else:
         lines.append("| economics | unavailable |")
+
+    handoff = summary.get("handoff_metrics", {})
+    lines.extend(["", "## Cross-model Handoffs", "", "| Field | Value |", "|-------|-------|"])
+    for key in [
+        "handoff_count",
+        "payload_redundancy_rate",
+        "context_cache_hit_rate",
+        "handoff_induced_revision_rate",
+    ]:
+        lines.append(f"| {key} | {format_value(handoff.get(key))} |")
+    totals = handoff.get("totals", {}) if isinstance(handoff.get("totals"), dict) else {}
+    for key in ["payload_bytes", "task_card_bytes", "review_packet_bytes"]:
+        lines.append(f"| total_{key} | {format_value(totals.get(key))} |")
 
     lines.extend(["", "## Claude Evidence Classification", "", "| Field | Value |", "|-------|-------|"])
     for key in [
