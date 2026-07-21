@@ -5,20 +5,17 @@ description: Install, update, or operate a Claude-first local coding workflow fo
 
 # AI Coding Workflow
 
-In a bootstrapped repository, its managed `AGENTS.md` is authoritative. Do not
-repeat those rules in working context. Use this file only as an entrypoint and
-load one directly relevant reference when needed.
+In a bootstrapped repository, managed `AGENTS.md` is authoritative. Do not
+repeat it in working context. Load one relevant reference when needed.
 
 ## Applicability Gate
 
-Use only when delegation materially reduces Codex planning/editing: multi-file
-or multi-phase features, batches, assigned tests, long validation, or several
-repositories progressing in user-managed terminals.
+Use when delegation materially reduces Codex work: multi-file/multi-phase
+features, batches, assigned tests, or long validation.
 
-For tiny/urgent edits, code questions, read-only or tight interactive debugging,
-excessive orchestration cost, or unreliable Claude/isolation/evidence, record
-`workflow bypassed: <reason>` and use ordinary Codex/local tools. Do not compose
-a card or invoke Spark merely to justify bypass.
+For tiny/urgent edits, code questions, read-only or interactive debugging, or
+unreliable Claude/isolation/evidence, record `workflow bypassed: <reason>` and
+use ordinary Codex/local tools. Do not compose a card or invoke Spark for bypass.
 
 ## Default Loop
 
@@ -44,15 +41,14 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
    inlines bounded context once, and dispatches the Markdown card rather than
    the source Task JSON.
 5. Dispatch with `bash ai/dispatch-to-claude.sh <card>`. Continue useful work in
-   the same worktree once before takeover. Review compressed terminal evidence
+   the same worktree once before takeover; review bounded terminal evidence
    before optional Checker/Test work. Humans merge.
 
 ## Hard Rules
 
-- Spark routing is short, structured, and advisory. Use it when it can replace
-  Codex estimation, task-card shaping, or monitor interpretation. No implicit
-  strong-model fallback; it cannot
-  satisfy acceptance, replace Claude implicitly, interrupt, approve, or merge.
+- Spark is structured and advisory. Use it to replace Codex estimation,
+  task-card shaping, or monitor interpretation. It has no implicit strong-model
+  fallback and cannot satisfy acceptance, interrupt, approve, or merge.
 - Checker/Test is conditional. Skip model dispatch when deterministic local
   evidence closes acceptance and no test changes are required.
 - One Claude failure is not takeover authority. Classify it, preserve useful
@@ -71,18 +67,9 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
   human authority.
 - A frozen solution contract is reopened only by a blocking invariant/acceptance
   defect or an explicitly incorporated spec change. Recommendations go to backlog.
-- Continue mechanical revisions and test fixes with the original Builder when
-  its lease remains valid. Do not call Advisor without a semantic blocker or
-  Reviewer without new evidence. A new same-owner session requires recorded
-  resume failure; every model switch records a reason.
-- Apply Handoff Tax only from observed, sufficiently sampled calibration with
-  explicit cost weights. Unknown history stays `unknown`/`canary`; model or
-  Spark estimates cannot override explicit ownership or deterministic facts.
-- For state-backed review, build an Acceptance Graph from immutable Evidence
-  Objects. A State `satisfied` claim is not reviewable as `supported` from a
-  bounded lexical candidate alone. Omit an unchanged item only when a valid
-  prior Review Receipt accepted it; bind every Graph, packet, and Receipt to the
-  exact Workflow State hash. New diff/file paths reopen affected accepted items.
+- State-backed continuation, routing, and review must consume hash-bound
+  artifacts and fail closed on missing or stale evidence. Explicit human
+  ownership remains authoritative. Load the matching reference for details.
 
 ## Setup
 
@@ -102,14 +89,14 @@ value. `aiwf loop` remains the compatibility path.
 | Operation | Load |
 |---|---|
 | install/update/bootstrap/environment tools | `references/setup-policy.md` |
-| ownership routing or Spark invocation/failure/writes | `references/routing-and-spark.md` |
+| ownership, Owner Lease, Handoff Tax, or Spark | `references/routing-and-spark.md` |
 | task cards/specs/Context Packets/evidence | `references/task-card-policy.md` |
 | Claude probes, timeouts, monitoring, retry attribution | `references/claude-runtime.md` |
-| Builder/Checker, review, bounded correction, takeover | `references/review-policy.md` |
-| worktrees, dirty restoration, continuation, parallelism | `references/worktree-and-parallel.md` |
+| Builder/Checker, Acceptance Graph/Receipt, review/takeover | `references/review-policy.md` |
+| worktrees, lease continuation, dirty restoration, parallelism | `references/worktree-and-parallel.md` |
 | retrieval order and context budgets | `references/mcp-policy.md` |
 | loop state machine | `references/loop-model.md` |
-| metrics and regression comparison | `references/benchmark-policy.md` |
+| metrics, Handoff Tax calibration, regression comparison | `references/benchmark-policy.md` |
 
 For command detail, prefer installed `ai/README.md`; do not load multiple
 references preemptively.

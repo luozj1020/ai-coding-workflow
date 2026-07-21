@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+from tests._unittest_compat import load_function_tests, raises
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,7 +107,7 @@ def test_contradictory_evidence_fails_closed(tmp_path):
 def test_missing_or_stale_evidence_fails_graph_build(tmp_path):
     missing = "sha256:" + "0" * 64
     state = make_state({"AC-1": {"description": "works", "status": "satisfied", "evidence_refs": [missing]}})
-    with pytest.raises(AcceptanceGraphError, match="unreadable"):
+    with raises(AcceptanceGraphError, match="unreadable"):
         build_graph(state, tmp_path / "objects")
 
     ref = put(tmp_path / "objects", "test-result", {"status": "passed"})
@@ -119,7 +119,7 @@ def test_missing_or_stale_evidence_fails_graph_build(tmp_path):
         "reasons": [{"dependency": "file_hash", "status": "stale", "expected": "old", "actual": "new"}],
     }), encoding="utf-8")
     state = make_state({"AC-1": {"description": "works", "status": "satisfied", "evidence_refs": [ref]}})
-    with pytest.raises(AcceptanceGraphError, match="is stale"):
+    with raises(AcceptanceGraphError, match="is stale"):
         build_graph(state, tmp_path / "objects")
 
 
@@ -239,8 +239,12 @@ def test_acceptance_ref_must_also_be_declared_in_state_evidence_refs(tmp_path):
     state = make_state({"AC-1": {"description": "works", "status": "satisfied", "evidence_refs": [ref]}})
     state["evidence_refs"] = []
     state["state_id"] = state_id_for(state)
-    with pytest.raises(AcceptanceGraphError, match="absent from Workflow State"):
+    with raises(AcceptanceGraphError, match="absent from Workflow State"):
         build_graph(state, tmp_path / "objects")
+
+
+def load_tests(loader, tests, pattern):
+    return load_function_tests(globals())
 
 
 def test_cli_round_trip_and_strict_schemas_are_installed(tmp_path):

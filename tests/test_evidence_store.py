@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+from tests._unittest_compat import load_function_tests, skip
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -217,32 +217,32 @@ def test_tampered_receiver_metric_totals_fail_closed(tmp_path):
     assert "does not equal" in stats.stderr
 
 
-@pytest.mark.parametrize(
-    ("metadata_changes", "current_changes", "dependency"),
-    [
+def test_dependency_changes_invalidate_individual_object(tmp_path):
+    cases = [
         ({}, {"repository_commit": "commit-v2"}, "repository.commit"),
         ({}, {"file_hash": "sha256:file-v2"}, "file_hash"),
         ({}, {"symbol_hash": "sha256:symbol-v2"}, "symbol_hash"),
         ({"build_configuration_hash": "build-v1"}, {"build_configuration_hash": "build-v2"}, "build_configuration_hash"),
         ({"validation_command_hash": "validation-v1"}, {"validation_command_hash": "validation-v2"}, "validation_command_hash"),
         ({"worktree_state_hash": "worktree-v1"}, {"worktree_state_hash": "worktree-v2"}, "worktree_state_hash"),
-    ],
-)
-def test_dependency_changes_invalidate_individual_object(tmp_path, metadata_changes, current_changes, dependency):
-    store = tmp_path / "objects"
-    stored = put(tmp_path, store, meta=metadata(**metadata_changes))
-    context_kwargs = dict(current_changes)
-    file_hash = context_kwargs.pop("file_hash", "sha256:file-v1")
-    symbol_hash = context_kwargs.pop("symbol_hash", "sha256:symbol-v1")
-    context = current_context(file_hash=file_hash, symbol_hash=symbol_hash, **context_kwargs)
-    result = invalidate(tmp_path, store, stored["object_id"], context, apply=True)
-    assert result.returncode == 2
-    record = json.loads(result.stdout)["objects"][0]
-    assert record["status"] == "stale"
-    assert dependency in [reason["dependency"] for reason in record["reasons"]]
-    read = run(STORE_SCRIPT, "read", "--store", store, "--object-id", stored["object_id"])
-    assert read.returncode == 1
-    assert "is stale" in read.stderr
+    ]
+    for index, (metadata_changes, current_changes, dependency) in enumerate(cases):
+        case_path = tmp_path / str(index)
+        case_path.mkdir()
+        store = case_path / "objects"
+        stored = put(case_path, store, meta=metadata(**metadata_changes))
+        context_kwargs = dict(current_changes)
+        file_hash = context_kwargs.pop("file_hash", "sha256:file-v1")
+        symbol_hash = context_kwargs.pop("symbol_hash", "sha256:symbol-v1")
+        context = current_context(file_hash=file_hash, symbol_hash=symbol_hash, **context_kwargs)
+        result = invalidate(case_path, store, stored["object_id"], context, apply=True)
+        assert result.returncode == 2
+        record = json.loads(result.stdout)["objects"][0]
+        assert record["status"] == "stale"
+        assert dependency in [reason["dependency"] for reason in record["reasons"]]
+        read = run(STORE_SCRIPT, "read", "--store", store, "--object-id", stored["object_id"])
+        assert read.returncode == 1
+        assert "is stale" in read.stderr
 
 
 def test_unrelated_file_change_does_not_invalidate_object(tmp_path):
@@ -350,7 +350,7 @@ def test_symlinked_object_shard_is_not_followed(tmp_path):
     try:
         (store / "ab").symlink_to(outside, target_is_directory=True)
     except OSError:
-        pytest.skip("directory symlinks are unavailable")
+        skip("directory symlinks are unavailable")
     object_id = "sha256:ab" + "0" * 62
     result = run(STORE_SCRIPT, "read", "--store", store, "--object-id", object_id)
     assert result.returncode == 1
@@ -411,3 +411,7 @@ def test_schema_is_strict_and_content_addressed():
     assert schema["additionalProperties"] is False
     assert schema["properties"]["object_id"]["$ref"] == "#/$defs/hash"
     assert schema["properties"]["dependency_hashes"]["additionalProperties"] is False
+
+
+def load_tests(loader, tests, pattern):
+    return load_function_tests(globals())

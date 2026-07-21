@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+from tests._unittest_compat import load_function_tests
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,7 +133,7 @@ def test_economics_applies_only_observed_calibration(tmp_path):
     calibrated = calibrate_estimates([estimate_paths([events], task_type="builder")], policy())
     gate = economics.delegation_economy_gate(route_facts(handoff_tax=calibrated))
     assert gate["handoff_tax"]["applied"] is True
-    assert gate["expected_delegated_cost_ratio"] == pytest.approx(1.02)
+    assert abs(gate["expected_delegated_cost_ratio"] - 1.02) < 1e-12
     assert gate["status"] == "reject"
     model_guess = {**calibrated, "source": "spark-model-estimate", "penalty_cost_ratio": 0.0}
     gate = economics.delegation_economy_gate(route_facts(handoff_tax=model_guess))
@@ -218,3 +218,7 @@ def test_cli_roundtrip(tmp_path):
     installer = (SCRIPTS / "install_workflow.py").read_text(encoding="utf-8")
     for name in ("handoff_routing.py", "estimate-handoff-tax.py", "calibrate-handoff-routing.py"):
         assert name in installer
+
+
+def load_tests(loader, tests, pattern):
+    return load_function_tests(globals())

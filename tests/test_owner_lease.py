@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+from tests._unittest_compat import load_function_tests, raises
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,19 +28,19 @@ def request(**overrides):
     return value
 
 
-@pytest.mark.parametrize("operation", ["mechanical-revision", "test-fix"])
-def test_mechanical_and_test_revision_return_to_original_builder(operation):
-    lease = select_owner(request(
-        operation=operation, original_builder_id="claude-original",
-        current_builder_id="checker-current", resume_status="not-attempted",
-    ))
-    assert lease["selected_owner_id"] == "claude-original"
-    assert lease["selected_model"] == "claude-builder"
-    assert lease["model_switch"] == {
-        "required": True, "from_owner": "checker-current", "to_owner": "claude-original",
-        "reason": "return-to-original-builder",
-    }
-    assert lease["handoff_count"] == 1
+def test_mechanical_and_test_revision_return_to_original_builder():
+    for operation in ("mechanical-revision", "test-fix"):
+        lease = select_owner(request(
+            operation=operation, original_builder_id="claude-original",
+            current_builder_id="checker-current", resume_status="not-attempted",
+        ))
+        assert lease["selected_owner_id"] == "claude-original"
+        assert lease["selected_model"] == "claude-builder"
+        assert lease["model_switch"] == {
+            "required": True, "from_owner": "checker-current", "to_owner": "claude-original",
+            "reason": "return-to-original-builder",
+        }
+        assert lease["handoff_count"] == 1
 
 
 def test_no_semantic_blocker_skips_advisor_and_no_evidence_skips_reviewer():
@@ -77,7 +77,7 @@ def test_model_switch_always_has_reason_and_explicit_owner_wins():
 
 
 def test_reason_is_rejected_when_no_switch_occurs():
-    with pytest.raises(OwnerLeaseError, match="forbidden"):
+    with raises(OwnerLeaseError, match="forbidden"):
         select_owner(request(switch_reason="not-a-switch"))
 
 
@@ -98,7 +98,7 @@ def test_expire_and_revoke_are_hash_chained_terminal_transitions():
     assert validate_lease(expired) == []
     revoked = transition_lease(first, "revoked", "human-cancelled-task")
     assert revoked["transition_reason"] == "human-cancelled-task"
-    with pytest.raises(OwnerLeaseError, match="terminal"):
+    with raises(OwnerLeaseError, match="terminal"):
         transition_lease(revoked, "expired")
 
 
@@ -117,3 +117,7 @@ def test_cli_schema_and_installer_registration(tmp_path):
     installer = (ROOT / "scripts/install_workflow.py").read_text(encoding="utf-8")
     assert "select-continuation-owner.py" in installer
     assert "owner-lease.schema.json" in installer
+
+
+def load_tests(loader, tests, pattern):
+    return load_function_tests(globals())
