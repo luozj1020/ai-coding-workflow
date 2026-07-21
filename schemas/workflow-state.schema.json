@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/workflow-state.schema.json",
+  "title": "Workflow State IR v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "state_id", "parent_state_id", "revision", "task_id",
+    "phase", "repository_state_hash", "goal", "constraints",
+    "accepted_decisions", "rejected_hypotheses", "open_questions",
+    "evidence_refs", "acceptance_status", "next_action"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "state_id": {"$ref": "#/$defs/hash"},
+    "parent_state_id": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+    "revision": {"type": "integer", "minimum": 0},
+    "task_id": {"$ref": "#/$defs/nonempty"},
+    "phase": {"enum": ["planning", "implementation", "verification", "review", "revision", "complete"]},
+    "repository_state_hash": {"$ref": "#/$defs/nonempty"},
+    "goal": {"$ref": "#/$defs/goal"},
+    "constraints": {"type": "array", "items": {"$ref": "#/$defs/constraint"}},
+    "accepted_decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}},
+    "rejected_hypotheses": {"type": "array", "items": {"$ref": "#/$defs/rejectedHypothesis"}},
+    "open_questions": {"type": "array", "items": {"$ref": "#/$defs/question"}},
+    "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true},
+    "acceptance_status": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/acceptance"}
+    },
+    "next_action": {"$ref": "#/$defs/nextAction"}
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1},
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "goal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "acceptance_ids"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty"},
+        "statement": {"$ref": "#/$defs/nonempty"},
+        "acceptance_ids": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true}
+      }
+    },
+    "constraint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "statement", "source", "frozen"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty"}, "statement": {"$ref": "#/$defs/nonempty"},
+        "source": {"$ref": "#/$defs/nonempty"}, "frozen": {"type": "boolean"}
+      }
+    },
+    "decision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "statement", "status", "evidence_refs"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty"}, "statement": {"$ref": "#/$defs/nonempty"},
+        "status": {"enum": ["accepted", "frozen"]},
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true}
+      }
+    },
+    "rejectedHypothesis": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "statement", "reason", "evidence_refs"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty"}, "statement": {"$ref": "#/$defs/nonempty"},
+        "reason": {"$ref": "#/$defs/nonempty"},
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "minItems": 1, "uniqueItems": true}
+      }
+    },
+    "question": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "question"],
+      "properties": {"id": {"$ref": "#/$defs/nonempty"}, "question": {"$ref": "#/$defs/nonempty"}}
+    },
+    "acceptance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["description", "status", "evidence_refs"],
+      "properties": {
+        "description": {"$ref": "#/$defs/nonempty"},
+        "status": {"enum": ["pending", "satisfied", "failed", "blocked", "unknown"]},
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true}
+      }
+    },
+    "nextAction": {
+      "type": "object", "additionalProperties": false,
+      "required": ["owner", "operation", "allowed_paths"],
+      "properties": {
+        "owner": {"$ref": "#/$defs/nonempty"}, "operation": {"$ref": "#/$defs/nonempty"},
+        "allowed_paths": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true}
+      }
+    }
+  }
+}

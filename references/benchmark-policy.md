@@ -41,6 +41,10 @@ Signals:
 - Model calls by role and whether Checker was actually dispatched.
 - Approximate Claude diff reuse: normalized Claude-added lines retained in the
   final accepted diff. This is a routing signal, not semantic correctness proof.
+- Observed Handoff Tax components: serialization bytes, seconds to first
+  meaningful action, rediscovered facts/rejected hypotheses, and
+  handoff-induced revisions. Never coerce missing components to zero or combine
+  units without an explicit reviewed calibration policy.
 
 Spark usage is quota telemetry, not benchmark spend. Always record its calls and
 tokens by role, but exclude role `spark` from provider/calculated economic cost

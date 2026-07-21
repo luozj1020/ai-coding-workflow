@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/review-receipt.schema.json",
+  "title": "Review Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "review_id", "bound_state_id", "bound_graph_id", "reviewer", "accepted", "conditional", "rejected", "frozen_decisions_confirmed", "new_questions"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "review_id": {"$ref": "#/$defs/hash"},
+    "bound_state_id": {"$ref": "#/$defs/hash"},
+    "bound_graph_id": {"$ref": "#/$defs/hash"},
+    "reviewer": {"$ref": "#/$defs/nonempty"},
+    "accepted": {"$ref": "#/$defs/strings"},
+    "conditional": {"$ref": "#/$defs/strings"},
+    "rejected": {"$ref": "#/$defs/strings"},
+    "frozen_decisions_confirmed": {"$ref": "#/$defs/strings"},
+    "new_questions": {"$ref": "#/$defs/strings"}
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1},
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "strings": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true}
+  }
+}

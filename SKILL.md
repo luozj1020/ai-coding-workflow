@@ -71,6 +71,18 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
   human authority.
 - A frozen solution contract is reopened only by a blocking invariant/acceptance
   defect or an explicitly incorporated spec change. Recommendations go to backlog.
+- Continue mechanical revisions and test fixes with the original Builder when
+  its lease remains valid. Do not call Advisor without a semantic blocker or
+  Reviewer without new evidence. A new same-owner session requires recorded
+  resume failure; every model switch records a reason.
+- Apply Handoff Tax only from observed, sufficiently sampled calibration with
+  explicit cost weights. Unknown history stays `unknown`/`canary`; model or
+  Spark estimates cannot override explicit ownership or deterministic facts.
+- For state-backed review, build an Acceptance Graph from immutable Evidence
+  Objects. A State `satisfied` claim is not reviewable as `supported` from a
+  bounded lexical candidate alone. Omit an unchanged item only when a valid
+  prior Review Receipt accepted it; bind every Graph, packet, and Receipt to the
+  exact Workflow State hash. New diff/file paths reopen affected accepted items.
 
 ## Setup
 

@@ -83,6 +83,29 @@ def _load_economics():
 economics = _load_economics()
 
 
+def _validated_continuation(data: Dict[str, Any]):
+    lease = data.get("owner_lease")
+    if not isinstance(lease, dict):
+        return None, False, "owner-lease-absent"
+    path = Path(__file__).resolve().with_name("owner_lease.py")
+    spec = importlib.util.spec_from_file_location("aiwf_route_owner_lease", path)
+    if spec is None or spec.loader is None:
+        return None, False, "owner-lease-validator-unavailable"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if module.validate_lease(lease):
+        return None, False, "owner-lease-invalid"
+    if lease.get("status") != "granted":
+        return None, False, "owner-lease-not-granted"
+    expected_state = data.get("workflow_state_id")
+    if expected_state and lease.get("state_id") != expected_state:
+        return None, False, "owner-lease-state-mismatch"
+    model = lease.get("selected_model")
+    if model not in ("codex-fast-path", "claude-builder"):
+        return None, False, "owner-lease-model-unknown"
+    return model, True, "owner-lease-validated"
+
+
 def _extract_risks(data: Dict[str, Any]) -> Set[str]:
     """Extract risk categories that are 'yes' or 'unknown'.
 
@@ -158,6 +181,13 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     # Economy-first retains the stricter positive delegation gate.
     owner_hint = data.get("execution_owner", data.get("recommended_owner"))
     explicit_owner_hint = bool(owner_hint)
+    continuity_owner, continuity_eligible, continuity_reason = _validated_continuation(data)
+    if data.get("continuation_eligible") is False:
+        continuity_owner, continuity_eligible, continuity_reason = None, False, "continuation-explicitly-disabled"
+    continuity_selected = False
+    if not owner_hint and continuity_eligible:
+        owner_hint = continuity_owner
+        continuity_selected = True
     delegation_value = data.get("delegation_value")
     requested_role = str(data.get("claude_role") or "none")
     solution_planner_requested = requested_role == "solution-planner"
@@ -182,7 +212,7 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         economy_facts["economy_policy"] = policy
     economy_gate = economics.delegation_economy_gate(economy_facts, calibration)
     historical_bias = calibration.get("owner_bias", "none") if isinstance(calibration, dict) else "none"
-    owner_source = "explicit" if owner_hint else "codex-default"
+    owner_source = "continuation-lease" if continuity_selected else ("explicit" if owner_hint else "codex-default")
     if not owner_hint and historical_bias == "codex-fast-path":
         owner_hint = historical_bias
         owner_source = "accepted-history"
@@ -270,29 +300,32 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
 
     execution_owner = "codex-fast-path"
     claude_role = "none"
+    handoff_tax_veto = bool(economy_gate.get("handoff_tax", {}).get("veto"))
     if delegation_value is False or owner_hint in ("codex", "codex-fast-path"):
-        owner_source = "explicit" if explicit_owner_hint else "codex-default"
+        owner_source = "explicit" if explicit_owner_hint else ("continuation-lease" if continuity_selected else "codex-default")
     elif explicit_read_only_task and not readonly_value:
         owner_source = "readonly-without-durable-value"
     elif high_risk_codex_bias:
         owner_source = "confirmed-high-risk-core-codex-bias"
+    elif handoff_tax_veto and not explicit_owner_hint and not continuity_selected:
+        owner_source = "handoff-tax-veto"
     elif ownership_profile == "claude-first" and (
         not explicit_read_only_task or solution_planner_candidate
     ):
         execution_owner, claude_role = "claude-builder", inferred_claude_role
-        owner_source = "explicit-human-owner" if explicit_claude else "claude-first-default"
+        owner_source = "continuation-lease" if continuity_selected else ("explicit-human-owner" if explicit_claude else "claude-first-default")
     elif solution_planner_candidate and (economical_delegation or explicit_claude):
         execution_owner, claude_role = "claude-builder", "solution-planner"
-        owner_source = "solution-planner-positive-gate"
+        owner_source = "continuation-lease" if continuity_selected else "solution-planner-positive-gate"
     elif batch_candidate and (economical_delegation or explicit_claude):
         execution_owner, claude_role = "claude-builder", "batch-builder"
-        owner_source = "batch-positive-gate"
+        owner_source = "continuation-lease" if continuity_selected else "batch-positive-gate"
     elif execution_candidate and (economical_delegation or explicit_claude):
         execution_owner, claude_role = "claude-builder", "execution-builder"
-        owner_source = "auxiliary-positive-gate"
+        owner_source = "continuation-lease" if continuity_selected else "auxiliary-positive-gate"
     elif exploratory_candidate and (economical_delegation or explicit_claude):
         execution_owner, claude_role = "claude-builder", "exploratory-builder"
-        owner_source = "exploratory-positive-gate"
+        owner_source = "continuation-lease" if continuity_selected else "exploratory-positive-gate"
     elif explicit_claude:
         # Explicit human ownership remains authoritative, but broad/open
         # implementation is converted to planning when the planner gate fits.
@@ -300,7 +333,7 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         claude_role = "solution-planner" if solution_planner_candidate else (
             requested_role if requested_role in ("execution-builder", "batch-builder") else "execution-builder"
         )
-        owner_source = "explicit-human-owner"
+        owner_source = "continuation-lease" if continuity_selected else "explicit-human-owner"
     elif economy_gate["status"] == "reject":
         owner_source = "economy-gate"
     elif solution_planner_requested or requested_role in ("execution-builder", "batch-builder", "exploratory-builder"):
@@ -335,8 +368,13 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         and data.get("codex_review_scope") == "full"
     )
     spark_requested = data.get("spark_route_requested") is True
+    deterministic_handoff_route = bool(
+        economy_gate.get("handoff_tax", {}).get("verified_observed_calibration")
+    )
     if deterministic_owner:
         spark_action, spark_reason = "skip", "explicit-deterministic-owner"
+    elif deterministic_handoff_route:
+        spark_action, spark_reason = "skip", "communication-aware-deterministic-route"
     elif tiny_direct:
         spark_action, spark_reason = "skip", "sized-tiny-fastpath"
     elif spark_requested and (
@@ -383,6 +421,21 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         ["bounded deterministic scope"] if lane == "express" else
         ["ordinary scoped work"]
     )
+
+    if explicit_owner_hint and execution_owner == "codex-fast-path":
+        communication_mode = "direct-codex"
+    elif continuity_selected:
+        communication_mode = "same-model-single-pass"
+    elif execution_owner == "codex-fast-path":
+        communication_mode = "direct-codex"
+    elif claude_role == "solution-planner":
+        communication_mode = "claude-planner-builder-shared-state"
+    elif single_pass_allowed:
+        communication_mode = "claude-builder-local-acceptance"
+    elif data.get("delta_review_available") is True:
+        communication_mode = "claude-builder-delta-codex-review"
+    else:
+        communication_mode = "full-cross-model-workflow"
 
     return {
         "schema_version": 1,
@@ -455,6 +508,23 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         "estimated_efficiency": {
             "first_pass_confidence": data.get("first_pass_confidence", "medium"),
             "context_cache_reusable": bool(data.get("context_cache")),
+        },
+        "communication_routing": {
+            "mode": communication_mode,
+            "continuation_eligible": continuity_eligible,
+            "continuation_selected": continuity_selected,
+            "continuation_owner": continuity_owner if continuity_eligible else None,
+            "continuation_reason": continuity_reason,
+            "handoff_tax_status": economy_gate.get("handoff_tax", {}).get("status", "not-enabled"),
+            "handoff_tax_applied": bool(economy_gate.get("handoff_tax", {}).get("applied")),
+            "handoff_tax_veto": handoff_tax_veto,
+            "spark_estimate_authoritative": False,
+            "reason_components": [
+                "explicit-owner" if explicit_owner_hint else "deterministic-owner-route",
+                "continuation-lease" if continuity_selected else "no-continuation-lease",
+                "observed-handoff-tax" if deterministic_handoff_route else "handoff-tax-not-calibrated",
+                economy_gate.get("reason", "unknown-economy"),
+            ],
         },
         "quota_mode": qm,
         "latency_mode": lm,

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/owner-lease.schema.json",
+  "title": "Owner Lease v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lease_id", "task_id", "state_id", "operation", "original_builder_id", "current_builder_id", "selected_owner_id", "owner_source", "current_model", "selected_model", "status", "previous_lease_id", "lease_generation", "handoff_count", "last_handoff_event_id", "lease_ttl_seconds", "renewal_count", "session", "model_switch", "advisor", "reviewer", "transition_reason"],
+  "properties": {
+    "schema_version": {"const": 1}, "lease_id": {"$ref": "#/$defs/hash"},
+    "task_id": {"$ref": "#/$defs/nonempty"}, "state_id": {"$ref": "#/$defs/hash"},
+    "operation": {"enum": ["mechanical-revision", "test-fix", "semantic-revision", "validation", "continuation"]},
+    "original_builder_id": {"$ref": "#/$defs/nonempty"}, "current_builder_id": {"$ref": "#/$defs/nonempty"},
+    "selected_owner_id": {"$ref": "#/$defs/nonempty"}, "owner_source": {"$ref": "#/$defs/nonempty"},
+    "current_model": {"enum": ["claude-builder", "codex-fast-path", "unknown"]},
+    "selected_model": {"enum": ["claude-builder", "codex-fast-path", "unknown"]},
+    "status": {"enum": ["requested", "granted", "expired", "revoked"]},
+    "previous_lease_id": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+    "lease_generation": {"type": "integer", "minimum": 0}, "handoff_count": {"type": "integer", "minimum": 0},
+    "last_handoff_event_id": {"oneOf": [{"$ref": "#/$defs/nonempty"}, {"type": "null"}]},
+    "lease_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 86400}, "renewal_count": {"type": "integer", "minimum": 0},
+    "session": {
+      "type": "object", "additionalProperties": false, "required": ["session_id", "resume_status", "mode"],
+      "properties": {"session_id": {"oneOf": [{"$ref": "#/$defs/nonempty"}, {"type": "null"}]}, "resume_status": {"enum": ["not-attempted", "succeeded", "failed"]}, "mode": {"enum": ["resumed-session", "new-session", "resume-required"]}}
+    },
+    "model_switch": {
+      "type": "object", "additionalProperties": false, "required": ["required", "from_owner", "to_owner", "reason"],
+      "properties": {"required": {"type": "boolean"}, "from_owner": {"$ref": "#/$defs/nonempty"}, "to_owner": {"$ref": "#/$defs/nonempty"}, "reason": {"oneOf": [{"$ref": "#/$defs/nonempty"}, {"type": "null"}]}}
+    },
+    "advisor": {"$ref": "#/$defs/action"},
+    "reviewer": {
+      "type": "object", "additionalProperties": false, "required": ["action", "reason", "new_evidence_refs"],
+      "properties": {"action": {"enum": ["skip", "invoke"]}, "reason": {"$ref": "#/$defs/nonempty"}, "new_evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true}}
+    },
+    "transition_reason": {"$ref": "#/$defs/nonempty"}
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1}, "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "action": {"type": "object", "additionalProperties": false, "required": ["action", "reason"], "properties": {"action": {"enum": ["skip", "invoke"]}, "reason": {"$ref": "#/$defs/nonempty"}}}
+  }
+}

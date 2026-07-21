@@ -1,0 +1,14 @@
+{
+  "findings": [
+    {
+      "severity": "recommended",
+      "disposition": "defer",
+      "summary": "Normalize new Python helper names to the repository's hyphenated CLI convention when each implementation slice is authored."
+    },
+    {
+      "severity": "backlog",
+      "disposition": "defer",
+      "summary": "Split S3 further if its delta, ACK, negative-knowledge, and migration responsibilities cannot remain independently reviewable during implementation routing."
+    }
+  ]
+}

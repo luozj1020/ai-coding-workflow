@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/acceptance-graph.schema.json",
+  "title": "Acceptance Graph v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "graph_id", "state_id", "repository_state_hash", "task_id", "acceptance_items", "decisions", "frozen_decisions", "new_diff_refs", "changed_paths", "reopened_acceptance"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "graph_id": {"$ref": "#/$defs/hash"},
+    "state_id": {"$ref": "#/$defs/hash"},
+    "repository_state_hash": {"$ref": "#/$defs/nonempty"},
+    "task_id": {"$ref": "#/$defs/nonempty"},
+    "acceptance_items": {"type": "array", "items": {"$ref": "#/$defs/item"}},
+    "decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}},
+    "frozen_decisions": {"$ref": "#/$defs/strings"},
+    "new_diff_refs": {"$ref": "#/$defs/hashes"},
+    "changed_paths": {"$ref": "#/$defs/strings"},
+    "reopened_acceptance": {"$ref": "#/$defs/strings"}
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1},
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "strings": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true},
+    "hashes": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true},
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "evidence_refs", "decision_hash"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty"},
+        "status": {"enum": ["accepted", "frozen"]},
+        "evidence_refs": {"$ref": "#/$defs/strings"},
+        "decision_hash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "state_status", "graph_status", "decision_refs", "implementation_refs", "test_refs", "result_refs", "other_evidence_refs", "contradictory_refs", "evidence_paths", "unverified_claims"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonempty"},
+        "description": {"$ref": "#/$defs/nonempty"},
+        "state_status": {"enum": ["pending", "satisfied", "failed", "blocked", "unknown"]},
+        "graph_status": {"enum": ["supported", "unsupported", "contradictory", "reopened"]},
+        "decision_refs": {"$ref": "#/$defs/strings"},
+        "implementation_refs": {"$ref": "#/$defs/hashes"},
+        "test_refs": {"$ref": "#/$defs/hashes"},
+        "result_refs": {"$ref": "#/$defs/hashes"},
+        "other_evidence_refs": {"$ref": "#/$defs/hashes"},
+        "contradictory_refs": {"$ref": "#/$defs/hashes"},
+        "evidence_paths": {"$ref": "#/$defs/strings"},
+        "unverified_claims": {"$ref": "#/$defs/strings"}
+      }
+    }
+  }
+}

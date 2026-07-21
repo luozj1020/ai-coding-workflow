@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/context-response.schema.json",
+  "title": "Pull Context Response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "context_id", "state_id", "requester", "intent",
+    "objects", "unresolved", "cache", "budget"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "context_id": {"$ref": "#/$defs/hash"},
+    "state_id": {"$ref": "#/$defs/hash"},
+    "requester": {"type": "string", "minLength": 1},
+    "intent": {"type": "string", "minLength": 1},
+    "objects": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/objectReference"}
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/unresolved"}
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "hits", "generated"],
+      "properties": {
+        "requested": {"type": "integer", "minimum": 0},
+        "hits": {"type": "integer", "minimum": 0},
+        "generated": {"type": "integer", "minimum": 0}
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_bytes", "used_bytes", "max_objects", "used_objects"],
+      "properties": {
+        "max_bytes": {"type": "integer", "minimum": 1},
+        "used_bytes": {"type": "integer", "minimum": 0},
+        "max_objects": {"type": "integer", "minimum": 1},
+        "used_objects": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nullableString": {
+      "oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
+    },
+    "nullablePositiveInteger": {
+      "oneOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "path"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/nullableString"},
+        "path": {"$ref": "#/$defs/nullableString"}
+      }
+    },
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "start_line", "end_line"],
+      "properties": {
+        "symbol": {"$ref": "#/$defs/nullableString"},
+        "start_line": {"$ref": "#/$defs/nullablePositiveInteger"},
+        "end_line": {"$ref": "#/$defs/nullablePositiveInteger"}
+      }
+    },
+    "objectReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object_id", "kind", "content_hash", "content_bytes", "repository",
+        "selector", "query_type", "cache_outcome", "evidence_quality"
+      ],
+      "properties": {
+        "object_id": {"$ref": "#/$defs/hash"},
+        "kind": {
+          "enum": ["symbol-slice", "callers", "callees", "test-definition", "build-rule"]
+        },
+        "content_hash": {"$ref": "#/$defs/hash"},
+        "content_bytes": {"type": "integer", "minimum": 0},
+        "repository": {"$ref": "#/$defs/repository"},
+        "selector": {"$ref": "#/$defs/selector"},
+        "query_type": {
+          "enum": ["definition", "callers", "callees", "tests", "build-rules"]
+        },
+        "cache_outcome": {"enum": ["hit", "generated"]},
+        "evidence_quality": {
+          "enum": ["exact-text-candidate", "bounded-lexical-candidate"]
+        }
+      }
+    },
+    "unresolved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["symbol", "query_type", "status", "detail"],
+      "properties": {
+        "symbol": {"type": "string", "minLength": 1},
+        "query_type": {
+          "enum": ["definition", "callers", "callees", "tests", "build-rules"]
+        },
+        "status": {
+          "enum": ["not-found", "stale", "permission-denied", "budget-exceeded"]
+        },
+        "detail": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

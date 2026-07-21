@@ -1,0 +1,300 @@
+{
+  "acceptance": [
+    {
+      "description": "A State IR artifact generated twice from identical input artifacts produces identical content and SHA-256 hash.",
+      "id": "AC-1"
+    },
+    {
+      "description": "Every State IR generation emits a run event whose detail.state_ir_hash matches the artifact content hash.",
+      "id": "AC-2"
+    },
+    {
+      "description": "A delta computed between two State IR snapshots is bound to both base_state_hash and target_state_hash; both are recorded in the event detail.",
+      "id": "AC-3"
+    },
+    {
+      "description": "Receiver ACK validates base_state_hash and state_ir_hash; a mismatch rejects the handoff rather than proceeding.",
+      "id": "AC-4"
+    },
+    {
+      "description": "Missing or unavailable handoff metrics are recorded as unknown, never zero or estimated, in both run events and summary output.",
+      "id": "AC-5"
+    },
+    {
+      "description": "Preview mode emits State IR events and metrics without making any model API calls.",
+      "id": "AC-6"
+    },
+    {
+      "description": "Frozen review decisions are not overwritten by State IR updates; a frozen decision update event requires explicit cause and attribution fields.",
+      "id": "AC-7"
+    },
+    {
+      "description": "Stale evidence references cause the receiving model to fail closed: the event records stale=true and the receiver rejects the stale subset.",
+      "id": "AC-8"
+    },
+    {
+      "description": "Review receipts include only acceptance criteria that changed status between the previous and current State IR snapshots, not the full acceptance matrix.",
+      "id": "AC-9"
+    },
+    {
+      "description": "Ownership continuity fields in State IR record original_builder_id, current_builder_id, handoff_count, and last_handoff_event_id.",
+      "id": "AC-10"
+    },
+    {
+      "description": "Communication-aware routing output includes a per-receiver explanation string describing which State IR subset was selected and why.",
+      "id": "AC-11"
+    },
+    {
+      "description": "Handoff event count and total handoff payload bytes appear as fields in summarize-loop-run output and workflow-economics record output.",
+      "id": "AC-12"
+    },
+    {
+      "description": "Cross-model payload_bytes (State IR size) is recorded per handoff event; the ratio of State IR bytes to full-task-card bytes is computed when both are available.",
+      "id": "AC-13"
+    },
+    {
+      "description": "Context re-read count for a receiver model is recorded as a handoff event metric.",
+      "id": "AC-14"
+    },
+    {
+      "description": "Reconstruction elapsed_seconds for a receiver model is recorded as a handoff event metric; unknown when not observable.",
+      "id": "AC-15"
+    },
+    {
+      "description": "Legacy runs without State IR artifacts remain fully readable by summarize-loop-run and their existing Markdown task cards produce no validation errors.",
+      "id": "AC-16"
+    },
+    {
+      "description": "New schemas (state-ir-v1, delta-v1) are registered in install_workflow.py SCHEMA_ASSETS and installed to ai/schemas/ alongside existing schemas.",
+      "id": "AC-17"
+    },
+    {
+      "description": "Receiver reads and searches before first meaningful action are recorded separately per handoff event as receiver_reads_before_first_action and receiver_searches_before_first_action; unavailable observations are recorded as unknown.",
+      "id": "AC-18"
+    },
+    {
+      "description": "Known facts rediscovered and rejected hypotheses revisited are recorded separately per handoff event; the recorder does not infer either value from an access-count baseline, and unavailable observations are recorded as unknown.",
+      "id": "AC-19"
+    },
+    {
+      "description": "Handoff-induced revision count (number of receiver rework cycles triggered by handoff content) is recorded per handoff event; unavailable observations are recorded as unknown.",
+      "id": "AC-20"
+    }
+  ],
+  "contract_hash": "2183a493e5e8ae7b9993dff2c083f8f0d288c31c40f81a1af8f49048c36cfa43",
+  "end_state": "Full-text handoffs are replaced by a compact State IR artifact with delta/ACK validation. State IR captures task decision and ownership state, deltas are derived deterministically from consecutive snapshots, receivers validate with lightweight ACK, rejected hypotheses and evidence references are tracked with deterministic hashes, review receipts focus on changed acceptance, ownership continuity and explicit leases record the builder chain, evidence object store provides content-addressed artifact storage, pull context broker enables delta/ACK-coordinated retrieval, and communication-aware routing explains per-receiver subset selection with per-hop handoff-tax costs. Handoff metrics flow into summarize-loop-run and workflow economics. Missing metrics are unknown. Preview mode emits zero model calls. Legacy runs remain readable.",
+  "goal": "Reduce cross-model payload repetition and context reconstruction by evolving from full-text handoffs to shared State IR plus deltas, while preserving task success and existing compatibility paths.",
+  "invariants": [
+    "Code, tests, and tool output remain authoritative; model outputs alone are not repository truth.",
+    "State IR is event-derived and hash-bound; every State IR generation emits a run event whose detail.state_ir_hash matches the artifact.",
+    "Frozen review decisions cannot be silently overwritten by State IR updates; a frozen decision update requires an explicit event with cause and attribution.",
+    "Stale state or stale deltas fail closed: a receiver rejects a handoff whose base_state_hash does not match the last known State IR.",
+    "Missing or unavailable handoff metrics are recorded as unknown, never zero or estimated.",
+    "Preview mode makes zero model calls; State IR and metrics are computed deterministically from existing artifacts.",
+    "Legacy runs without State IR remain readable and their existing Markdown task cards remain valid.",
+    "Model outputs alone are not treated as repository truth; all state updates require tool-verified or event-sourced evidence.",
+    "Evidence object store uses content-addressed storage keyed by SHA-256 hash; a stale or missing reference fails closed."
+  ],
+  "non_goals": [
+    "Model activation or KV-cache sharing across providers.",
+    "Complete chain-of-thought persistence from any model.",
+    "Forcing express-lane tasks into multi-model flow.",
+    "Replacing state synchronization with larger full-text cards.",
+    "Broad redesign of unrelated workflow features.",
+    "Hidden-state mapping between model internal representations.",
+    "Provider-specific API integration or model routing logic."
+  ],
+  "review": {
+    "adversarial_rounds": 1,
+    "deferred": [
+      "Normalize new Python helper names to the repository's hyphenated CLI convention when each implementation slice is authored.",
+      "Split S3 further if its delta, ACK, negative-knowledge, and migration responsibilities cannot remain independently reviewable during implementation routing."
+    ],
+    "finding_counts": {
+      "backlog": 1,
+      "blocking": 0,
+      "recommended": 1,
+      "spec-change": 0
+    },
+    "stop_rule": "only-blocking-or-incorporated-spec-change-reopens"
+  },
+  "schema_version": 1,
+  "slices": [
+    {
+      "acceptance_ids": [
+        "AC-5",
+        "AC-12",
+        "AC-13",
+        "AC-14",
+        "AC-15",
+        "AC-18",
+        "AC-19",
+        "AC-20"
+      ],
+      "depends_on": [],
+      "goal": "Add handoff event recording and Phase-0 metrics to the existing run event system. Implement a schema-validated recorder and summarizer, then integrate emission at the Claude dispatcher and integrated runner handoff points so that every observed cross-model handoff emits exactly one run event with sender, receiver, payload_bytes, novel_payload_bytes, repeated_payload_bytes, task_card_bytes, review_packet_bytes, receiver_reads_before_first_action, receiver_searches_before_first_action, seconds_to_first_meaningful_action, known_facts_rediscovered, rejected_hypotheses_revisited, and handoff_revision_count. Unknown metrics are recorded as unknown, never zero or inferred. Integrate handoff counts and bytes into summarize-loop-run output. Preview makes zero model calls and existing execution outcomes do not change.",
+      "id": "S1-handoff-measurement",
+      "write_scope": [
+        "scripts/event_writer.py",
+        "schemas/run-event-v2.schema.json",
+        "schemas/handoff-event-v1.schema.json",
+        "scripts/record-handoff-event.py",
+        "scripts/summarize-handoff-metrics.py",
+        "scripts/summarize-loop-run.py",
+        "scripts/dispatch-to-claude.sh",
+        "scripts/run-workflow.py",
+        "scripts/install_workflow.py",
+        "tests/test_handoff_metrics.py"
+      ]
+    },
+    {
+      "acceptance_ids": [
+        "AC-1",
+        "AC-2",
+        "AC-5",
+        "AC-6",
+        "AC-17"
+      ],
+      "depends_on": [
+        "S1-handoff-measurement"
+      ],
+      "goal": "Define the State IR schema (state-ir-v1.schema.json) covering state_ir_id, base_state_hash, task_decision, rejected_hypotheses, evidence_refs with content hashes, acceptance_status, review_receipts (changed-only), ownership_continuity, and communication_routing_hints. Implement deterministic State IR generation from existing run artifacts. Emit state_ir_generated run event with state_ir_hash binding. Support preview mode with zero model calls. Resolve State IR storage location as top-level run file vs artifact manifest as an explicit S2 design decision.",
+      "id": "S2-state-ir-foundation",
+      "write_scope": [
+        "schemas/state-ir-v1.schema.json",
+        "scripts/generate_state_ir.py",
+        "scripts/install_workflow.py",
+        "tests/test_state_ir_schema.py",
+        "tests/test_state_ir_generation.py"
+      ]
+    },
+    {
+      "acceptance_ids": [
+        "AC-3",
+        "AC-4",
+        "AC-7",
+        "AC-8"
+      ],
+      "depends_on": [
+        "S2-state-ir-foundation"
+      ],
+      "goal": "Compute deterministic deltas between consecutive State IR snapshots, binding each delta to base_state_hash and target_state_hash. Resolve delta format (JSON Patch vs custom structural diff vs field-level key-value diff) as an explicit S3 design decision. Implement short ACK validation: receiver checks base_state_hash matches last known State IR; mismatch rejects handoff. Resolve stale-delta recovery action (full re-send vs disk re-read vs escalation) as an explicit S3 design decision. Resolve rejected-hypothesis persistence strategy (inline in State IR vs separate event log) as an explicit S3 design decision. Add negative-knowledge evidence recording. Add stale evidence detection. Emit delta_computed and ack_validated run events. Resolve deprecated Markdown task card migration strategy as an explicit S3 design decision.",
+      "id": "S3-delta-ack-evidence",
+      "write_scope": [
+        "schemas/delta-v1.schema.json",
+        "scripts/compute_state_delta.py",
+        "scripts/validate_handoff_ack.py",
+        "tests/test_delta_computation.py",
+        "tests/test_ack_validation.py"
+      ]
+    },
+    {
+      "acceptance_ids": [
+        "AC-9",
+        "AC-10"
+      ],
+      "depends_on": [
+        "S3-delta-ack-evidence"
+      ],
+      "goal": "Implement changed-acceptance-only review receipts: extract only acceptance criteria whose status changed between consecutive State IR snapshots. Track rejected hypotheses in State IR with rejection_reason and evidence_hash. Implement ownership continuity with original_builder_id, current_builder_id, handoff_count, and last_handoff_event_id. Implement explicit ownership leases with lease state machine (requested/granted/expired/revoked), timeout, renewal, and handoff-reason attribution. Wire acceptance graph edges into review receipt output. Emit ownership_handoff, lease_state_change, and review_receipt run events.",
+      "id": "S4-review-ownership",
+      "write_scope": [
+        "scripts/generate_state_ir.py",
+        "scripts/build_review_packet.py",
+        "tests/test_review_receipts.py",
+        "tests/test_ownership_continuity.py",
+        "tests/test_ownership_leases.py",
+        "tests/test_acceptance_graph.py"
+      ]
+    },
+    {
+      "acceptance_ids": [
+        "AC-11",
+        "AC-12",
+        "AC-13",
+        "AC-17"
+      ],
+      "depends_on": [
+        "S4-review-ownership"
+      ],
+      "goal": "Integrate State IR into route-task communication-aware routing: read State IR to determine per-receiver subsets, include routing explanation in route output. Feed handoff metrics into workflow_economics.py history records. Update summarize-loop-run to surface handoff efficiency metrics. Install new schemas via install_workflow.py.",
+      "id": "S5-routing-economics",
+      "write_scope": [
+        "scripts/route-task.py",
+        "scripts/workflow_economics.py",
+        "scripts/summarize-loop-run.py",
+        "scripts/install_workflow.py",
+        "tests/test_routing_explanation.py",
+        "tests/test_handoff_economics.py",
+        "tests/test_summarize_handoff_metrics.py"
+      ]
+    },
+    {
+      "acceptance_ids": [
+        "AC-8"
+      ],
+      "depends_on": [
+        "S2-state-ir-foundation"
+      ],
+      "goal": "Implement a content-addressed evidence object store for handoff artifacts. Store evidence objects keyed by SHA-256 hash. Implement put, get, and verify operations. Emit evidence_stored and evidence_retrieved run events. Implement stale evidence detection: hash mismatch fails closed. Wire evidence object store into State IR evidence_refs generation.",
+      "id": "S6-evidence-object-store",
+      "write_scope": [
+        "scripts/evidence_store.py",
+        "tests/test_evidence_store.py"
+      ]
+    },
+    {
+      "acceptance_ids": [
+        "AC-4",
+        "AC-11"
+      ],
+      "depends_on": [
+        "S3-delta-ack-evidence"
+      ],
+      "goal": "Implement a pull-based context broker that coordinates State IR, delta, and ACK retrieval between sender and receiver models. Broker resolves the context subset relevant to the receiver, attaches the latest delta/ACK state, and returns a compact context packet. Emit context_broker_resolved run event with subset explanation.",
+      "id": "S7-pull-context-broker",
+      "write_scope": [
+        "scripts/pull_context_broker.py",
+        "tests/test_pull_context_broker.py"
+      ]
+    },
+    {
+      "acceptance_ids": [
+        "AC-10"
+      ],
+      "depends_on": [
+        "S4-review-ownership"
+      ],
+      "goal": "Implement explicit ownership leases with lease lifecycle management: lease requested, granted, expired, revoked states. Lease timeout and renewal are tracked in run events. Implement continuation-resume semantics: a builder resuming from a lease records previous_builder_id, elapsed_since_lease_grant, and revalidation_status. Wire lease events into ownership continuity in State IR.",
+      "id": "S8-leases-continuation",
+      "write_scope": [
+        "scripts/ownership_lease_manager.py",
+        "tests/test_ownership_lease_manager.py",
+        "tests/test_continuation_resume.py"
+      ]
+    },
+    {
+      "acceptance_ids": [
+        "AC-11",
+        "AC-12",
+        "AC-15"
+      ],
+      "depends_on": [
+        "S5-routing-economics",
+        "S8-leases-continuation"
+      ],
+      "goal": "Implement per-receiver handoff-tax cost tracking in routing decisions. Handoff tax measures the cost of cross-model context transfer: payload_bytes, delta application time, ACK round-trip time, and receiver re-exploration cost. Feed handoff-tax metrics into route-task routing explanations and workflow economics. Emit handoff_tax_recorded run events.",
+      "id": "S9-handoff-tax-routing",
+      "write_scope": [
+        "scripts/handoff_tax.py",
+        "scripts/route-task.py",
+        "scripts/workflow_economics.py",
+        "tests/test_handoff_tax.py",
+        "tests/test_handoff_tax_routing.py"
+      ]
+    }
+  ],
+  "state": "frozen",
+  "task_id": "cross-model-handoff-state-bus",
+  "unknowns": []
+}

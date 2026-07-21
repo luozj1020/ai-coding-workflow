@@ -94,6 +94,16 @@ Missing prose is an evidence gap. Recover from matching diff and deterministic
 checks when possible. Seeded/fallback reports never count as Claude completion.
 No model merges automatically.
 
+Before a revision or test fix, use a granted Owner Lease to prefer the original
+Builder and recorded session. Do not open a fresh same-owner session until
+resume failure is recorded. Skip Advisor without a semantic blocker and
+Reviewer without new evidence; record a reason for every model switch.
+
+Communication-aware routing may apply Handoff Tax only from hash-valid observed
+calibration with sufficient complete samples and explicit cost weights. Missing
+history remains unknown/canary. Spark/model estimates are advisory and cannot
+override observed facts, a valid lease, or explicit human ownership.
+
 ## Context and Safety
 
 - Keep artifacts file-backed under `.worktrees/` or `ai/plans/<task-id>/`; return

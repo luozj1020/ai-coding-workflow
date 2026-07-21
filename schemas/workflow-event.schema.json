@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/workflow-event.schema.json",
+  "title": "Workflow State Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "timestamp", "actor", "event_type", "base_state_id", "new_state_id", "payload"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"$ref": "#/$defs/hash"},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "actor": {"$ref": "#/$defs/nonempty"},
+    "event_type": {
+      "enum": [
+        "state-initialized", "goal-updated", "constraint-added", "decision-accepted",
+        "decision-frozen", "decision-invalidated", "hypothesis-rejected", "hypothesis-reopened",
+        "question-opened", "question-resolved", "evidence-added", "acceptance-updated",
+        "next-action-updated", "repository-state-updated", "phase-changed"
+      ]
+    },
+    "base_state_id": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+    "new_state_id": {"$ref": "#/$defs/hash"},
+    "payload": {"type": "object"}
+  },
+  "$defs": {
+    "nonempty": {"type": "string", "minLength": 1},
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
