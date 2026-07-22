@@ -111,10 +111,12 @@ case "$CLAUDE_CODE_NETWORK_MONITOR" in
 esac
 CLAUDE_CODE_NETWORK_HEALTHCHECK_URL="${CLAUDE_CODE_NETWORK_HEALTHCHECK_URL:-}"
 CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS="${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS:-5}"
-CLAUDE_CODE_API_PROBE_MODE="${CLAUDE_CODE_API_PROBE_MODE:-always}"
+CLAUDE_CODE_API_PROBE_MODE="${CLAUDE_CODE_API_PROBE_MODE:-adaptive}"
 CLAUDE_CODE_PROBE_ENVIRONMENT="${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}"
 CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED="${CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED:-1}"
+CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS="${CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS:-86400}"
 case "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" in 0|1) ;; *) echo "Error: CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED must be 0 or 1." >&2; exit 1 ;; esac
+case "$CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS must be a positive integer." >&2; exit 1 ;; esac
 if [ -n "${CLAUDE_CODE_FIRST_PROGRESS_ACTION+x}" ]; then
     _FIRST_PROGRESS_ACTION_EXPLICIT=1
 else
@@ -301,9 +303,9 @@ case "$CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS" in
         ;;
 esac
 case "$CLAUDE_CODE_API_PROBE_MODE" in
-    always|failure-only|off) ;;
+    adaptive|always|failure-only|off) ;;
     *)
-        echo "Error: CLAUDE_CODE_API_PROBE_MODE must be 'always', 'failure-only', or 'off'." >&2
+        echo "Error: CLAUDE_CODE_API_PROBE_MODE must be 'adaptive', 'always', 'failure-only', or 'off'." >&2
         exit 1
         ;;
 esac
@@ -1432,6 +1434,7 @@ CHECKER_CONTRACT_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker-contract.json
 CODEGRAPH_WORKTREE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.codegraph-worktree.json"
 INTERACTION_HEALTH_FILE="${WORKTREE_ROOT}/${TASK_ID}.interaction-health.json"
 STARTUP_INTERACTION_HEALTH_FILE="${WORKTREE_ROOT}/${TASK_ID}.startup-interaction-health.json"
+API_AVAILABILITY_STATE_FILE="${REPO_ROOT}/.ai-workflow/claude-api-availability.json"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
 SEEDED_PROGRESS_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"
 FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
@@ -1460,6 +1463,10 @@ for path in json.load(open(sys.argv[1], encoding="utf-8")).get("archived_paths",
 PYEOF
 )"
     fi
+    if [ -z "$_ARCHIVED_CONTROL_PATHS" ]; then
+        rm -f "$CONTROL_ARCHIVE_FILE"
+        rmdir "$CONTROL_ARCHIVE_DIR" 2>/dev/null || true
+    fi
 fi
 if [ -z "$TASK_CARD_REL" ]; then
     TASK_CARD_ABS="$(cd "$(dirname "$TASK_CARD")" && pwd)/$(basename "$TASK_CARD")"
@@ -1482,6 +1489,7 @@ else
         | grep -vxF ".ai-workflow/model-calls.lock" \
         | grep -vxF ".ai-workflow/model-usage.jsonl" \
         | grep -vxF ".ai-workflow/run-ledger.lock" \
+        | grep -vxF ".ai-workflow/claude-api-availability.json" \
         | { if [ -n "$_ARCHIVED_CONTROL_PATHS" ]; then grep -vxFf <(printf '%s\n' "$_ARCHIVED_CONTROL_PATHS"); else cat; fi; } \
         || true)"
     DIRTY_UNTRACKED_SKIPPED=0
@@ -2155,6 +2163,8 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "recent_activity_window_seconds": %s,\n' "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS"
     printf '  "probe_mode": "%s",\n' "$CLAUDE_CODE_API_PROBE_MODE"
     printf '  "probe_environment": "%s",\n' "$CLAUDE_CODE_PROBE_ENVIRONMENT"
+    printf '  "api_availability_ttl_seconds": %s,\n' "$CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS"
+    printf '  "api_availability_state": "%s",\n' "$API_AVAILABILITY_STATE_FILE"
     printf '  "first_progress_action": "%s",\n' "$CLAUDE_CODE_FIRST_PROGRESS_ACTION"
     printf '  "external_integrations_allowed": "%s",\n' "$_EXTERNAL_INTEGRATIONS_ALLOWED"
     printf '  "strict_mcp_isolation": "%s",\n' "$_STRICT_MCP_ISOLATION"
@@ -2777,6 +2787,37 @@ if [ "$_ROUTE_SOURCE" = "default" ] && [ -n "$PYTHON_CMD" ] && [ -f "$ROUTE_PREF
     fi
 fi
 
+API_AVAILABILITY_HELPER="${SCRIPT_DIR}/claude-api-availability.py"
+_CLAUDE_COMMAND_PATH="$(command -v claude 2>/dev/null || true)"
+_STARTUP_PROBE_SOURCE="not-run"
+
+record_api_availability() {
+    local source="$1"
+    [ -n "$PYTHON_CMD" ] && [ -f "$API_AVAILABILITY_HELPER" ] || return 0
+    "$PYTHON_CMD" "$API_AVAILABILITY_HELPER" record \
+        --state "$API_AVAILABILITY_STATE_FILE" --repository "$REPO_ROOT" \
+        --route "$CLAUDE_CODE_PROXY_MODE" --environment "$CLAUDE_CODE_PROBE_ENVIRONMENT" \
+        --claude-command "$_CLAUDE_COMMAND_PATH" \
+        --source "$source" >/dev/null 2>&1 || true
+}
+
+invalidate_api_availability() {
+    local reason="$1"
+    [ -n "$PYTHON_CMD" ] && [ -f "$API_AVAILABILITY_HELPER" ] || return 0
+    "$PYTHON_CMD" "$API_AVAILABILITY_HELPER" invalidate \
+        --state "$API_AVAILABILITY_STATE_FILE" --reason "$reason" >/dev/null 2>&1 || true
+}
+
+load_cached_api_availability() {
+    local artifact_file="$1"
+    [ -n "$PYTHON_CMD" ] && [ -f "$API_AVAILABILITY_HELPER" ] || return 1
+    "$PYTHON_CMD" "$API_AVAILABILITY_HELPER" check \
+        --state "$API_AVAILABILITY_STATE_FILE" --repository "$REPO_ROOT" \
+        --route "$CLAUDE_CODE_PROXY_MODE" --environment "$CLAUDE_CODE_PROBE_ENVIRONMENT" \
+        --claude-command "$_CLAUDE_COMMAND_PATH" \
+        --ttl "$CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS" > "$artifact_file" 2>/dev/null
+}
+
 case "$CLAUDE_CODE_TIMEOUT_SECONDS" in
     ''|*[!0-9]*)
         echo "Error: CLAUDE_CODE_TIMEOUT_SECONDS must be a non-negative integer." >&2
@@ -2895,6 +2936,9 @@ PYEOF
 )"
     if [ "$_LAST_PROBE_CONCLUSION" = "available" ]; then
         _LAST_PROBE_AUTHORITATIVE="yes"
+        record_api_availability "${phase}-probe"
+    else
+        invalidate_api_availability "${phase}-probe-${_LAST_PROBE_CONCLUSION:-unknown}"
     fi
     progress_log "Interaction probe (${phase}): conclusion=${_LAST_PROBE_CONCLUSION}, authoritative=${_LAST_PROBE_AUTHORITATIVE}, artifact=${artifact_file}"
 
@@ -3618,12 +3662,22 @@ fi
 progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}"
 
 # --- Unified interaction probe: startup phase ---
-# Required by default so trust/transport failures stop before Builder starts.
-# The explicit diagnostic override preserves legacy advisory probe modes.
+# Adaptive mode accepts a recent success bound to this repository, route,
+# environment, and Claude executable. A missing/stale cache triggers one live
+# probe. Later suspicious zero-output still triggers a live probe regardless.
 _STARTUP_PROBE_CONCLUSION="not-run"
-if [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ] || [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ]; then
+if [ "$CLAUDE_CODE_API_PROBE_MODE" != "always" ] && \
+   [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ] && \
+   load_cached_api_availability "$STARTUP_INTERACTION_HEALTH_FILE"; then
+    _STARTUP_PROBE_CONCLUSION="available"
+    _STARTUP_PROBE_SOURCE="cache"
+    _LAST_PROBE_AUTHORITATIVE="yes"
+    progress_log "Startup API availability reused: conclusion=available, source=cache, ttl_seconds=${CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS}, artifact=${STARTUP_INTERACTION_HEALTH_FILE}"
+elif [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ] || \
+     [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ]; then
     run_interaction_probe "startup" "$STARTUP_INTERACTION_HEALTH_FILE"
     _STARTUP_PROBE_CONCLUSION="$_LAST_PROBE_CONCLUSION"
+    _STARTUP_PROBE_SOURCE="live"
     progress_log "Startup interaction probe: conclusion=${_STARTUP_PROBE_CONCLUSION}, required=${CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED}"
 fi
 
@@ -4316,7 +4370,7 @@ PYEOF
             "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS:-0}" \
             "${TIMEOUT_EXTENSION_ACTIVE:-0}" "${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-0}" \
             "${TIMEOUT_EXTENSION_REASON:-}" \
-            "${CLAUDE_CODE_API_PROBE_MODE:-always}" "${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}" \
+            "${CLAUDE_CODE_API_PROBE_MODE:-adaptive}" "${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}" \
             "${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}" "${_OBSERVATION_PROBE_RAN:-0}" \
             "${SECOND_EXTENSION_ACTIVE:-0}" "${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-0}" \
             "${SECOND_EXTENSION_REASON:-}" \
@@ -4418,7 +4472,7 @@ PYEOF
             echo "  \"first_progress_signal\": \"${FIRST_PROGRESS_SIGNAL:-}\","
             echo "  \"first_progress_timeout_seconds\": ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS:-0},"
             echo "  \"first_progress_action\": \"${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}\","
-            echo "  \"probe_mode\": \"${CLAUDE_CODE_API_PROBE_MODE:-always}\","
+            echo "  \"probe_mode\": \"${CLAUDE_CODE_API_PROBE_MODE:-adaptive}\","
             echo "  \"probe_environment\": \"${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}\","
             echo "  \"observation_probe_ran\": $([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo true || echo false),"
             echo "  \"timeout_extension_used\": $([ "${TIMEOUT_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo true || echo false),"
@@ -5088,7 +5142,7 @@ if [ -n "$_TAKEOVER_PRIOR_TASK_ID" ] && [ -s "$ATTEMPT_CLASSIFICATION_FILE" ] &&
 fi
 
 progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no), probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, observation_probe_ran=$([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"
-progress_log "API attribution: startup_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}, zero_output_conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
+progress_log "API attribution: startup_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}, startup_source=${_STARTUP_PROBE_SOURCE:-not-run}, zero_output_conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
 # Authoritative final outcome — emitted exactly once, after semantic validation.
 progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELAPSED}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
 {
@@ -5107,6 +5161,7 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] First-progress timed out: $([ "${CLAUDE_FIRST_PROGRESS_TIMED_OUT:-0}" -eq 1 ] && echo yes || echo no)"
     echo "[dispatch] Observation probe ran: $([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"
     echo "[dispatch] Startup probe conclusion: ${_STARTUP_PROBE_CONCLUSION:-not-run}"
+    echo "[dispatch] Startup probe source: ${_STARTUP_PROBE_SOURCE:-not-run}"
     echo "[dispatch] Startup interaction health artifact: ${STARTUP_INTERACTION_HEALTH_FILE}"
     echo "[dispatch] Zero-output API probe: ${ZERO_OUTPUT_PROBE_CONCLUSION}"
     echo "[dispatch] Zero-output API probe authoritative: ${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
@@ -5401,6 +5456,16 @@ if [ -n "$PYTHON_CMD" ] && [ -f "$ROUTE_PREFERENCE_HELPER" ]; then
     fi
 fi
 
+# Any useful model-owned evidence is a stronger availability signal than the
+# fixed probe and refreshes the same bounded cache.
+if [ "$IMPLEMENTATION_CHANGES" -gt 0 ] || \
+   [ "$VALID_CLAUDE_REPORT" -eq 1 ] || \
+   [ "${_ATTEMPT_PROGRESS:-none}" = "useful" ] || \
+   [ "${_ATTEMPT_PROGRESS:-none}" = "acknowledgement" ] || \
+   [ "${_ATTEMPT_PROGRESS:-none}" = "blocker" ]; then
+    record_api_availability "dispatch-evidence"
+fi
+
 if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then
     cp "${WORKTREE_DIR}/CLAUDE_REPORT.md" "$REPORT_FILE"
 else
@@ -5444,7 +5509,7 @@ else
         echo "- First-progress timed out: $([ "${CLAUDE_FIRST_PROGRESS_TIMED_OUT:-0}" -eq 1 ] && echo yes || echo no)"
         echo "- First-progress signal: ${FIRST_PROGRESS_SIGNAL:-none}"
         echo "- Builder mode: ${CLAUDE_CODE_BUILDER_MODE:-standard}"
-        echo "- API probe mode: ${CLAUDE_CODE_API_PROBE_MODE:-always}"
+        echo "- API probe mode: ${CLAUDE_CODE_API_PROBE_MODE:-adaptive}"
         echo "- Probe environment: ${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}"
         echo "- First-progress action: ${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}"
         echo "- Observation probe ran: $([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"

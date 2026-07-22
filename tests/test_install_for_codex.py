@@ -108,7 +108,7 @@ class InstallForCodexTests(unittest.TestCase):
         self.assertIn("Checker/Test", content)
         self.assertIn("claude-runtime.md", content)
         self.assertIn("review-policy.md", content)
-        self.assertIn("Dirty source/stale HEAD blocks reliable delegation", content)
+        self.assertIn("Dirty source requires clean restoration or an explicit hash-bound snapshot", content)
 
     def test_skill_entrypoint_stays_within_default_context_budget(self):
         content = (ROOT / "SKILL.md").read_text(encoding="utf-8")

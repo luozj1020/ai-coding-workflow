@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Capture and verify a Linux process identity without trusting PID alone."""
+"""Capture and verify a process identity without trusting PID alone."""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 
-def _process(pid: int) -> Optional[Dict[str, Any]]:
+def _process_linux(pid: int) -> Optional[Dict[str, Any]]:
     root = Path("/proc") / str(pid)
     try:
         stat = (root / "stat").read_text(encoding="utf-8", errors="replace")
@@ -27,6 +28,79 @@ def _process(pid: int) -> Optional[Dict[str, Any]]:
         }
     except (OSError, ValueError, IndexError):
         return None
+
+
+def _process_windows(pid: int) -> Optional[Dict[str, Any]]:
+    """Use stable native process metadata without optional dependencies."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        )
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.QueryFullProcessImageNameW.argtypes = (
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.ProcessIdToSessionId.argtypes = (wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+        kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        process = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not process:
+            return None
+        try:
+            creation = wintypes.FILETIME()
+            exit_time = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(
+                process,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                return None
+            size = wintypes.DWORD(32768)
+            executable = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(
+                process, 0, executable, ctypes.byref(size)
+            ):
+                return None
+            session = wintypes.DWORD()
+            if not kernel32.ProcessIdToSessionId(pid, ctypes.byref(session)):
+                return None
+            start = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
+            command_identity = executable.value.casefold().encode("utf-8", errors="replace")
+            return {
+                "pid": pid,
+                "start_time_ticks": start,
+                "pid_namespace_inode": int(session.value),
+                "cmdline_sha256": "sha256:" + hashlib.sha256(command_identity).hexdigest(),
+            }
+        finally:
+            kernel32.CloseHandle(process)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _process(pid: int) -> Optional[Dict[str, Any]]:
+    if sys.platform == "win32":
+        return _process_windows(pid)
+    return _process_linux(pid)
 
 
 def capture(pid: int, task_id: str, role: str) -> Dict[str, Any]:

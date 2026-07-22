@@ -175,6 +175,12 @@ The selected role reaches runtime directly: `solution-planner` maps to
 
 Advisor calls require a non-empty request/evidence binding and an explicit one-call cap. The Broker enforces the same `request_id` cap across roles and records interrupts as cancelled. Fixed Claude probes are `diagnostic_call` entries that never consume Builder, takeover, or success budgets. Same-worktree continuation audits feed summary/benchmark metrics without inventing token or time savings.
 
+Startup API probing is adaptive by default. A successful probe or useful Claude
+dispatch is cached for 24 hours and reused only for the same repository, route,
+probe environment, and Claude executable. Zero usable output or transport
+symptoms force a live probe and invalidate failed availability evidence. Set
+`CLAUDE_CODE_API_PROBE_MODE=always` only when a fresh diagnostic is required.
+
 These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create or refresh the target repository's `ai/` directory. Already bootstrapped projects keep local copies of `ai/dispatch-to-claude.sh`, `ai/task-card-template.md`, and other workflow files. Use `update_skill.py --bootstrap-current` or `install_workflow.py . --update-workflow-files` to refresh those local copies after updating the Skill.
 
 Use `--local-only` when a target repository should use `ai/`, `AGENTS.md`, `CLAUDE.md`, and `.worktrees/` locally but should not commit them. It writes those control-plane paths to `.git/info/exclude` and leaves `.gitignore` untouched; `doctor_workflow.py` accepts this as the local-only ignore mode.

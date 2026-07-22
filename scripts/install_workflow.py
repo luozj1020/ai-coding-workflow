@@ -172,6 +172,7 @@ PYTHON_SCRIPTS = [
     ("quota-ledger.py", "ai/quota-ledger.py"),
     ("model-call-broker.py", "ai/model-call-broker.py"),
     ("claude-route-preference.py", "ai/claude-route-preference.py"),
+    ("claude-api-availability.py", "ai/claude-api-availability.py"),
     ("latency-policy.py", "ai/latency-policy.py"),
     ("evaluate-acceptance.py", "ai/evaluate-acceptance.py"),
     ("select-review-tier.py", "ai/select-review-tier.py"),

@@ -25,9 +25,8 @@ class CodeGraphWorktreeGuardTests(unittest.TestCase):
         (self.source / ".codegraph").mkdir()
         for path in (self.source, self.worktree):
             subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
-        fake = self.bin / "codegraph"
-        fake.write_text(
-            "#!/usr/bin/env python3\n"
+        fake_script = self.bin / "fake_codegraph.py"
+        fake_script.write_text(
             "import json, os, pathlib, sys\n"
             "command, root = sys.argv[1], pathlib.Path(sys.argv[2]).resolve()\n"
             "marker = root / '.fake-codegraph-ready'\n"
@@ -45,7 +44,18 @@ class CodeGraphWorktreeGuardTests(unittest.TestCase):
             "'pendingChanges': pending}))\n",
             encoding="utf-8",
         )
-        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+        if sys.platform == "win32":
+            fake = self.bin / "codegraph.cmd"
+            fake.write_text(
+                f'@"{sys.executable}" "{fake_script}" %*\r\n', encoding="utf-8"
+            )
+        else:
+            fake = self.bin / "codegraph"
+            fake.write_text(
+                f'#!/bin/sh\nexec "{sys.executable}" "{fake_script}" "$@"\n',
+                encoding="utf-8",
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
         self.env = os.environ.copy()
         self.env["PATH"] = str(self.bin) + os.pathsep + self.env.get("PATH", "")
         self.env["FAKE_SOURCE"] = str(self.source)

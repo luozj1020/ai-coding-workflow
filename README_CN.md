@@ -169,6 +169,11 @@ Claude 是默认实现者：`exploratory-builder` 负责边界明确但路径不
 
 Advisor 调用必须绑定非空 request/evidence，并明确使用单次调用上限。Broker 会跨角色执行相同 `request_id` 的上限，并把中断记为 cancelled。固定 Claude 探针以 `diagnostic_call` 记账，不占 Builder、接管或成功预算；同 worktree 延续审计会进入 summary/benchmark，但不会虚构 token 或时间节省。
 
+启动 API 探针默认采用自适应模式。成功探针或产生有效证据的 Claude 调度会缓存
+24 小时，并且只在仓库、路由、探针环境和 Claude 可执行文件均一致时复用。
+出现零可用输出或传输异常迹象时会强制执行真实探针，失败结果同时使缓存失效。
+只有需要每次进行新诊断时才设置 `CLAUDE_CODE_API_PROBE_MODE=always`。
+
 安装 Skill 只会让 Codex 发现该 workflow，不会自动在目标仓库创建或刷新 `ai/` 目录。已经引导过的项目会保留本地的 `ai/dispatch-to-claude.sh`、`ai/task-card-template.md` 等 workflow 副本。更新 Skill 后，需要使用 `update_skill.py --bootstrap-current` 或 `install_workflow.py . --update-workflow-files` 刷新这些本地副本。
 
 如果目标仓库只想本地使用 `ai/`、`AGENTS.md`、`CLAUDE.md` 和 `.worktrees/`，不希望把这些控制面文件提交到业务仓库，使用 `--local-only`。它会把这些路径写入 `.git/info/exclude`，不会修改 `.gitignore`；`doctor_workflow.py` 会把这种配置识别为 local-only ignore mode。

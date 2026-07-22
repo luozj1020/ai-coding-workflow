@@ -1797,9 +1797,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("builder_mode", dispatch)
             self.assertIn("first_progress_signal", dispatch)
 
-    def test_installed_route_preference_helper(self):
-        """Installer must copy claude-route-preference.py and the dispatcher
-        must reference it for learned route resolution."""
+    def test_installed_route_and_api_availability_helpers(self):
+        """Installer must copy learned route and API availability helpers."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
 
@@ -1813,9 +1812,13 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("show", content)
             self.assertIn("schema_version", content)
             self.assertIn("atomic", content.lower())
+            availability = repo / "ai" / "claude-api-availability.py"
+            self.assertTrue(availability.exists(), "claude-api-availability.py should be installed")
+            self.assertIn("context_hash", availability.read_text(encoding="utf-8"))
 
             dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
             self.assertIn("claude-route-preference.py", dispatch)
+            self.assertIn("claude-api-availability.py", dispatch)
             self.assertIn("_ROUTE_SOURCE", dispatch)
             self.assertIn("route_source=", dispatch)
             self.assertIn("learned", dispatch)

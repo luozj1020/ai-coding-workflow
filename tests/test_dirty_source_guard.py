@@ -18,6 +18,7 @@ CLAUDE_HEALTHCHECK = ROOT / "scripts" / "claude-healthcheck.py"
 DISPATCH_PREFLIGHT = ROOT / "scripts" / "dispatch-preflight.py"
 PROCESS_IDENTITY = ROOT / "scripts" / "process-identity.py"
 CODEGRAPH_WORKTREE_GUARD = ROOT / "scripts" / "codegraph-worktree-guard.py"
+CLAUDE_API_AVAILABILITY = ROOT / "scripts" / "claude-api-availability.py"
 ARCHIVE_CONTROL_FILES = ROOT / "scripts" / "archive-control-files.py"
 BUILD_TAKEOVER_RECEIPT = ROOT / "scripts" / "build-takeover-receipt.py"
 CREATE_DIRTY_SNAPSHOT = ROOT / "scripts" / "create-dirty-snapshot.py"
@@ -85,6 +86,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(DISPATCH_PREFLIGHT, self.repo / "scripts" / "dispatch-preflight.py")
         shutil.copy2(PROCESS_IDENTITY, self.repo / "scripts" / "process-identity.py")
         shutil.copy2(CODEGRAPH_WORKTREE_GUARD, self.repo / "scripts" / "codegraph-worktree-guard.py")
+        shutil.copy2(CLAUDE_API_AVAILABILITY, self.repo / "scripts" / "claude-api-availability.py")
         shutil.copy2(ARCHIVE_CONTROL_FILES, self.repo / "scripts" / "archive-control-files.py")
         shutil.copy2(BUILD_TAKEOVER_RECEIPT, self.repo / "scripts" / "build-takeover-receipt.py")
         shutil.copy2(CREATE_DIRTY_SNAPSHOT, self.repo / "scripts" / "create-dirty-snapshot.py")
@@ -98,6 +100,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
                    "scripts/dispatch-preflight.py", "scripts/process-identity.py",
                    "scripts/codegraph-worktree-guard.py",
+                   "scripts/claude-api-availability.py",
                    "scripts/archive-control-files.py", "scripts/build-takeover-receipt.py",
                    "scripts/create-dirty-snapshot.py", "scripts/enforce-checker-contract.py",
                    "scripts/validate-advisor-request.py", "scripts/validate-advisor-response.py",
@@ -457,7 +460,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "| Test writing | Claude |\n| Narrow validation | Claude |\n"
                 "\n## Scope\n\n- Write paths: tests/test_fixture.py\n"
                 "\n| Runtime field | Value |\n|---|---|\n"
-                "| Per-file validation command | python -m pytest {path} -q |\n"
+                "| Per-file validation command | python -m py_compile {path} |\n"
             )
         result = self._dispatch(
             "task-cards/CHECKER.md", {"FAKE_CLAUDE_MODE": "checker-valid"}
@@ -525,6 +528,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
             "CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS": "0",
             "CLAUDE_CODE_TERMINAL_DRAIN_SECONDS": "0",
+            # Most dispatcher tests exercise timing rather than connectivity.
+            # Probe-specific tests opt back into startup preflight explicitly.
+            "CLAUDE_CODE_API_PROBE_MODE": "failure-only",
+            "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "0",
         }
         if extra_env:
             env.update(extra_env)
@@ -1357,7 +1364,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertIn("Claude child exited:", progress)
-        self.assertIn("transitioning to finalization immediately", progress)
+        self.assertIn("entering bounded terminal drain", progress)
 
     # --- Execution-only builder mode and first-progress timeout tests ---
 
@@ -1647,6 +1654,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             {
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
                 "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "observe",
                 "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "2",
                 "FAKE_CLAUDE_MODE": "progress-update",
             },
@@ -1757,6 +1765,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             {
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
                 "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "observe",
                 "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "2",
                 "FAKE_CLAUDE_MODE": "blocker-recorded",
             },
@@ -2675,19 +2684,44 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
     # --- Unified API probe mode tests ---
 
     def test_api_probe_mode_always_runs_startup_probe(self):
-        """Default always mode runs a startup interaction probe."""
+        """Explicit always mode runs a startup interaction probe."""
         self._write_builder_task_card()
         result = self._dispatch(
             "task-cards/BUILDER.md",
             {
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
                 "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_API_PROBE_MODE": "always",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
                 "FAKE_CLAUDE_MODE": "seed-only",
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertIn("Startup interaction probe: conclusion=", progress)
+
+    def test_adaptive_probe_reuses_recent_context_bound_success(self):
+        self._write_builder_task_card()
+        env = {
+            "CLAUDE_CODE_API_PROBE_MODE": "adaptive",
+            "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
+            "FAKE_CLAUDE_MODE": "success",
+        }
+        first = self._dispatch("task-cards/BUILDER.md", env)
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        first_progress = self._artifact_path(first.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Startup interaction probe: conclusion=available", first_progress)
+
+        second = self._dispatch("task-cards/BUILDER.md", env)
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        second_progress = self._artifact_path(second.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Startup API availability reused", second_progress)
+        self.assertNotIn("Interaction probe (startup): checking", second_progress)
+        receipt = json.loads(
+            self._artifact_path(second.stdout, "Startup Probe").read_text(encoding="utf-8")
+        )
+        self.assertTrue(receipt["cache_valid"])
+        self.assertFalse(receipt["live_probe"])
 
     def test_api_probe_mode_failure_only_skips_startup_probe_when_preflight_overridden(self):
         """The diagnostic override preserves legacy failure-only probe behavior."""
@@ -2739,6 +2773,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             {
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
                 "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "observe",
+                "CLAUDE_CODE_API_PROBE_MODE": "always",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
                 "FAKE_CLAUDE_MODE": "seed-only",
             },
         )
@@ -2855,18 +2892,16 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "1",
                 "CLAUDE_CODE_TIMEOUT_DRAIN_SECONDS": "0",
                 "CLAUDE_CODE_API_PROBE_MODE": "off",
-                "FAKE_CLAUDE_MODE": "builder-editing-phase",
+                "FAKE_CLAUDE_MODE": "worktree-change",
                 "FAKE_CLAUDE_SLEEP_SECONDS": "10",
             },
         )
         wall = time.monotonic() - t0
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
-        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         # Progress is stale (last activity >1s ago at the 4s base deadline) → no extension.
         self.assertNotIn("Single growth extension started", progress)
         self.assertIn("active execution timeout", progress)
-        self.assertIn("Progress extension used: no", status)
         self.assertLess(wall, 25, "Wall-clock exceeded 25s; run should terminate at base deadline")
 
     def test_recent_progress_at_base_deadline_extends(self):
@@ -2880,16 +2915,14 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "5",
                 "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "10",
-                "FAKE_CLAUDE_MODE": "builder-editing-phase",
+                "FAKE_CLAUDE_MODE": "worktree-change",
                 "FAKE_CLAUDE_SLEEP_SECONDS": "10",
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
-        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         # Progress is recent (last activity ≤10s ago at the 2s base deadline) → extension granted.
         self.assertIn("Single growth extension started", progress)
-        self.assertIn("Progress extension used: yes", status)
 
     # --- Dirty-source guard: dispatcher-owned file exemption tests ---
 

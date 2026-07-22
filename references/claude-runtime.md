@@ -24,7 +24,20 @@ Before classifying zero usable output as model no-progress, run one fixed intera
 python ai/claude-healthcheck.py --interaction-route auto --timeout 60
 ```
 
-Its fixed prompt is `你好`. Dispatch performs this minimal interaction in the exact execution worktree and resolved route before starting Builder. Workspace-trust, socket, and CLI failures stop immediately with a preflight result receipt instead of consuming the Builder window. It is read-only diagnostic evidence, not implementation or acceptance evidence, and it never changes configuration. Restricted-sandbox failure is inconclusive; a successful user-terminal interaction or dispatch is authoritative. Successful dispatches may persist only the proven `direct` or `inherit` route. `CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED=0` is an explicit diagnostic override, not the normal workflow.
+Its fixed prompt is `你好`. The default `adaptive` mode performs this minimal
+interaction only when no recent success is available for the same repository,
+resolved route, probe environment, and Claude executable. A success is cached
+for 24 hours by default (`CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS`) and useful
+model-owned dispatch evidence refreshes it. Later zero output, socket/transport
+symptoms, an inconclusive probe, or a changed execution context invalidates or
+bypasses the cache and triggers a live probe. `always` remains an explicit
+diagnostic mode; `failure-only` defers probing until suspicious terminal
+evidence. Workspace-trust, socket, and CLI failures discovered by a live probe
+stop before consuming the Builder window. Cached availability is attribution
+evidence, not implementation or acceptance evidence. Restricted-sandbox
+failure is inconclusive; a successful user-terminal interaction or dispatch is
+authoritative. `CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED=0` is an explicit
+diagnostic override, not the normal workflow.
 
 One failed Builder attempt is not takeover permission. Tighten and re-dispatch once. Two consecutive current-lineage counted rounds issue a hash-bound `*.takeover-receipt.json` containing only the permitted write scope and required validation. Transport, trust, approval, and sandbox failures never contribute. Useful on-plan diff remains salvageable; missing prose is an evidence gap, not automatic implementation failure.
 
