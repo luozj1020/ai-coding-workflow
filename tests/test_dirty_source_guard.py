@@ -957,7 +957,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
     def test_workspace_trust_preflight_stops_before_builder_window(self):
         self._write_task_card()
-        result = self._dispatch(extra_env={"FAKE_CLAUDE_HEALTHCHECK_TRUST": "1"})
+        result = self._dispatch(extra_env={
+            "CLAUDE_CODE_API_PROBE_MODE": "always",
+            "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
+            "FAKE_CLAUDE_HEALTHCHECK_TRUST": "1",
+        })
         self.assertEqual(result.returncode, 75)
         self.assertIn("workspace-not-trusted", result.stderr)
         result_file = next((self.repo / ".worktrees").glob("claude-*.result.json"))
@@ -1161,6 +1165,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "CLAUDE_CODE_BUILDER_MODE": "execution-only",
             "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "1",
             "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "stop",
+            "CLAUDE_CODE_API_PROBE_MODE": "adaptive",
+            "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
             "FAKE_CLAUDE_MODE": "seed-only",
         }
         first = self._dispatch("task-cards/BUILDER.md", timeout_env)
