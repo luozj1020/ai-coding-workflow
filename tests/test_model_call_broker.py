@@ -672,6 +672,29 @@ class TestLedgerLock(unittest.TestCase):
             [mock.call(7, fake_msvcrt.LK_NBLCK, 1), mock.call(7, fake_msvcrt.LK_UNLCK, 1)]
         )
 
+    def test_ledger_read_retries_transient_permission_error(self):
+        record = json.dumps({"state": "diagnostic"}) + "\n"
+        with mock.patch.object(Path, "exists", return_value=True), mock.patch.object(
+            Path, "read_text", side_effect=[PermissionError("sharing violation"), record]
+        ) as read_text, mock.patch.object(broker_mod.time, "sleep"):
+            records = broker_mod.load_ledger(Path("ledger.jsonl"))
+
+        self.assertEqual(records, [{"state": "diagnostic"}])
+        self.assertEqual(read_text.call_count, 2)
+
+    def test_ledger_append_retries_transient_permission_error(self):
+        handle = mock.MagicMock()
+        handle.fileno.return_value = 7
+        with mock.patch.object(
+            Path, "open", side_effect=[PermissionError("sharing violation"), handle]
+        ) as opened, mock.patch.object(broker_mod.os, "fsync"), mock.patch.object(
+            broker_mod.time, "sleep"
+        ):
+            broker_mod.append_ledger(Path("ledger.jsonl"), {"state": "diagnostic"})
+
+        self.assertEqual(opened.call_count, 2)
+        handle.write.assert_called_once()
+
 
 class TestLedgerParseability(unittest.TestCase):
     """Ledger JSONL is parseable after concurrency and every reservation

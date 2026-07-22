@@ -240,6 +240,7 @@ def make_compatibility_plan(
 # ---------------------------------------------------------------------------
 
 VALID_STATES = ("reserved", "running", "succeeded", "failed", "cancelled", "diagnostic")
+WINDOWS_IO_RETRY_SECONDS = 5.0
 
 # Legal state transitions (append-only audit trail).
 VALID_TRANSITIONS: Dict[str, set] = {
@@ -257,10 +258,17 @@ def load_ledger(path: Path) -> List[Dict[str, Any]]:
     """
     if not path.exists():
         return []
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise BrokerError(f"Cannot read ledger {path}: {exc}") from exc
+    deadline = time.monotonic() + WINDOWS_IO_RETRY_SECONDS
+    while True:
+        try:
+            text = path.read_text(encoding="utf-8")
+            break
+        except PermissionError as exc:
+            if time.monotonic() >= deadline:
+                raise BrokerError(f"Cannot read ledger {path}: {exc}") from exc
+            time.sleep(0.05)
+        except OSError as exc:
+            raise BrokerError(f"Cannot read ledger {path}: {exc}") from exc
 
     records: List[Dict[str, Any]] = []
     for lineno, raw_line in enumerate(text.splitlines(), 1):
@@ -293,10 +301,26 @@ def load_ledger(path: Path) -> List[Dict[str, Any]]:
 def append_ledger(path: Path, record: Dict[str, Any]) -> None:
     """Append a single JSONL record to the ledger. Caller must hold lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
+    deadline = time.monotonic() + WINDOWS_IO_RETRY_SECONDS
+    while True:
+        try:
+            f = path.open("a", encoding="utf-8")
+            break
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+    with f:
         f.write(json.dumps(record, sort_keys=True) + "\n")
         f.flush()
-        os.fsync(f.fileno())
+        while True:
+            try:
+                os.fsync(f.fileno())
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------
