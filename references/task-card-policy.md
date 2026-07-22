@@ -68,10 +68,19 @@ Task cards must assign implementation, test writing, validation, direction revie
 
 ## Context Packet
 
+Any CodeGraph-derived entry must record the producing worktree, Git HEAD/tree binding, and matching CodeGraph worktree receipt. If the receipt is absent, reports `worktreeMismatch`, or does not match the execution worktree/state, omit that graph-derived entry and use LSP/locator/targeted-read evidence instead. Do not paste a warning-bearing result into the packet and ask Claude to resolve its provenance.
+
 For large repositories, run `ai/locate-code.py` when scope is unclear. Include
 likely files/symbols and known constraints, but allow a bounded
 `exploratory-builder` to discover the implementation path. Missing exact files
 is not by itself a reason for Codex to perform broad discovery first.
+
+For `execution-only` and Checker test-writing tasks, include an executable
+interface contract: exact signatures/constructor fields, one runnable call
+example, the async/sync rule, and their deterministic evidence hash. A file or
+symbol name alone is insufficient. If these facts are unavailable, do not mark
+the packet execution-sufficient. Repository-local scratch files are forbidden
+unless listed in Write paths; generated helpers use `$TMPDIR`.
 
 ## Evidence
 

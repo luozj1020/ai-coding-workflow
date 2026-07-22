@@ -24,10 +24,29 @@ class ClassifyClaudeAttemptTests(unittest.TestCase):
         self.assertFalse(result["counts_toward_takeover"])
         self.assertTrue(result["same_worktree_retry_eligible"])
 
+    def test_transport_retry_budget_is_not_recommended_twice(self):
+        result = classify(
+            error_text="Unable to connect to API (FailedToOpenSocket)",
+            retry_ordinal=1,
+        )
+        self.assertEqual(result["failure_class"], "transient-transport")
+        self.assertEqual(result["recommended_action"], "fallback-local-or-reroute")
+        self.assertFalse(result["same_worktree_retry_eligible"])
+        self.assertEqual(result["retry_budget_remaining"], 0)
+
+    def test_workspace_trust_is_external_blocker(self):
+        result = classify(error_text="this workspace has not been trusted")
+        self.assertEqual(result["failure_class"], "external-approval-blocker")
+
     def test_timeout_outcome_without_text_is_transport(self):
         result = classify(outcome="timeout")
         self.assertEqual(result["failure_class"], "transient-transport")
         self.assertFalse(result["counts_toward_takeover"])
+
+    def test_execution_timeout_after_successful_preflight_counts(self):
+        result = classify(outcome="execution_timeout", error_text="first progress timeout")
+        self.assertEqual(result["failure_class"], "model-no-progress")
+        self.assertTrue(result["counts_toward_takeover"])
 
     def test_acknowledgement_only_counts(self):
         result = classify(exit_code=0, outcome="success", progress="acknowledgement")

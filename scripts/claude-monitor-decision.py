@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -52,6 +53,13 @@ def integer(value: Any, default: int = 0) -> int:
         return int(str(value).rstrip("s"))
     except (TypeError, ValueError):
         return default
+
+
+def observed_at(path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        return ""
 
 
 def fields(line: str) -> Dict[str, str]:
@@ -118,11 +126,14 @@ def runtime_worktree(worktrees: Path, task_id: str) -> Tuple[Path, List[str]]:
     return candidate, conflicts
 
 
-def role_state(helper: Path, pid_file: Path, progress: Path) -> str:
+def role_state(helper: Path, pid_file: Path, progress: Path, identity_file: Optional[Path] = None) -> str:
     if helper.is_file():
+        command = [sys.executable, str(helper), "--pid-file", str(pid_file),
+                   "--progress-file", str(progress)]
+        if identity_file is not None:
+            command.extend(("--identity-file", str(identity_file)))
         result = subprocess.run(
-            [sys.executable, str(helper), "--pid-file", str(pid_file),
-             "--progress-file", str(progress)],
+            command,
             capture_output=True, text=True, timeout=10,
         )
         state = result.stdout.strip()
@@ -253,25 +264,35 @@ def evidence_state(changes: int, result_size: int, report_text: str) -> str:
 
 
 def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
+    collected_at = datetime.now(timezone.utc).isoformat()
     root = repo_root(args.repo_root)
     worktrees = root / ".worktrees"
     task_id = normalize_task(args.task_id, worktrees)
     prefix = worktrees / task_id
     progress_file = worktrees / f"{task_id}.progress.log"
+    monitor_event_file = worktrees / f"{task_id}.monitor-events.log"
+    status_file = worktrees / f"{task_id}.status.txt"
+    result_file = worktrees / f"{task_id}.result.json"
     worktree, conflicts = runtime_worktree(worktrees, task_id)
     progress_tail = bounded_tail(progress_file)
-    status_tail = bounded_tail(worktrees / f"{task_id}.status.txt")
+    status_tail = bounded_tail(status_file)
     terminal = bool(TERMINAL_RE.search(progress_tail))
     last_line = last_matching(progress_tail, DISPATCH_RE)
     dispatch_fields = fields(last_line)
-    event = last_monitor_event(worktrees / f"{task_id}.monitor-events.log")
+    event = last_monitor_event(monitor_event_file)
     helper = Path(__file__).resolve().with_name("claude-process-state.py")
     states = {
-        role: role_state(helper, worktrees / f"{task_id}.{role}.pid", progress_file)
+        role: role_state(
+            helper, worktrees / f"{task_id}.{role}.pid", progress_file,
+            worktrees / f"{task_id}.{role}.process.json",
+        )
         for role in ("dispatcher", "claude", "checker")
     }
     if states["claude"] == "missing":
-        states["claude"] = role_state(helper, worktrees / f"{task_id}.pid", progress_file)
+        states["claude"] = role_state(
+            helper, worktrees / f"{task_id}.pid", progress_file,
+            worktrees / f"{task_id}.claude.process.json",
+        )
     visibility = any(value == "visibility-unknown" for value in states.values())
     running = states["claude"] == "running" or states["checker"] == "running"
     overall_running = any(value == "running" for value in states.values())
@@ -281,6 +302,10 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     level = event.get("monitor_level", "unknown")
     monitor_action = event.get("action", "unknown")
     growth = event.get("artifact_growth", "unknown")
+    execution_state = event.get("execution_state", "unknown")
+    edit_ready = event.get("edit_ready", "0") in {"1", "yes", "true"}
+    product_idle_seconds = integer(event.get("product_idle_seconds"))
+    idle_confirmations = integer(event.get("idle_confirmations"))
     known_changes = integer(event["worktree_changes"]) if "worktree_changes" in event else None
     changes, paths, diffstat = changed_state(
         worktree, args.max_changed_paths, known_changes,
@@ -292,7 +317,7 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     if not report_path.is_file():
         report_path = worktrees / f"{task_id}.report.md"
     report_text = bounded_tail(report_path, 32768)
-    result_size = (worktrees / f"{task_id}.result.json").stat().st_size if (worktrees / f"{task_id}.result.json").is_file() else 0
+    result_size = result_file.stat().st_size if result_file.is_file() else 0
     evidence = event.get("evidence_state") or evidence_state(changes, result_size, report_text)
     if terminal and overall_running:
         conflicts.append("terminal-marker-with-live-role")
@@ -317,6 +342,10 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         decision, confidence, reason = "continue", "high", "completion-ready-awaiting-voluntary-exit"
     elif direction_deviation:
         decision, confidence, reason = "interrupt-candidate", "high", "explicit-direction-deviation"
+    elif running and execution_state == "implementation-ready":
+        decision, confidence, reason = "continue", "high", "editing-ready-awaiting-durable-write"
+    elif running and execution_state == "implementation-idle":
+        decision, confidence, reason = "inspect", "high", "product-edit-idle-candidate"
     elif running and level == "L3" and quiet >= args.interrupt_after and suspect >= args.confirmations and growth != "yes":
         decision, confidence, reason = "interrupt-candidate", "medium", "corroborated-l3-stall"
     elif conflicts or errors or (
@@ -334,11 +363,22 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     codex_review = decision in {"inspect", "interrupt-candidate"} or direction_deviation or bool(conflicts)
     summary = clean(
         f"{decision}: {reason}; level={level}; running={'yes' if running else 'no'}; "
-        f"elapsed={elapsed}s quiet={quiet}s changes={changes}; evidence={evidence}",
+        f"elapsed={elapsed}s quiet={quiet}s changes={changes}; state={execution_state}; "
+        f"product_idle={product_idle_seconds}s confirmations={idle_confirmations}; evidence={evidence}",
         args.max_summary_chars,
     )
     return {
-        "schema_version": 1, "task_id": task_id, "decision": decision,
+        "schema_version": 1, "task_id": task_id, "collected_at": collected_at,
+        "observed_at": {
+            "processes": collected_at,
+            "progress_log": observed_at(progress_file),
+            "monitor_event": observed_at(monitor_event_file),
+            "status": observed_at(status_file),
+            "result": observed_at(result_file),
+            "report": observed_at(report_path),
+            "worktree": collected_at,
+        },
+        "decision": decision,
         "confidence": confidence, "reason_code": reason,
         "codex_review_required": "yes" if codex_review else "no",
         "interrupt_authorized": "no", "monitor_level": level,
@@ -348,8 +388,13 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         "overall_running": "yes" if overall_running else ("unknown" if visibility else "no"),
         "dispatcher": states["dispatcher"], "claude": states["claude"], "checker": states["checker"],
         "elapsed_seconds": elapsed, "quiet_seconds": quiet, "suspect_count": suspect,
+        "execution_activity_state": execution_state,
+        "edit_ready": "yes" if edit_ready else "no",
+        "product_idle_seconds": product_idle_seconds,
+        "idle_confirmations": idle_confirmations,
         "evidence_state": evidence, "artifact_growth": growth,
-        "worktree_changes": changes, "changed_paths": paths, "diffstat": diffstat,
+        "worktree_changes": changes, "product_changes": changes,
+        "changed_paths": paths, "diffstat": diffstat,
         "phase": progress["phase"], "execution_phase": progress["execution_phase"],
         "implementation_complete": progress["implementation_complete"],
         "assigned_tail_work": progress["assigned_tail_work"],
@@ -366,7 +411,8 @@ def render_text(value: Dict[str, Any]) -> str:
     keys = ("decision", "confidence", "reason_code", "codex_review_required",
             "interrupt_authorized", "finish_expected", "finish_recommended",
             "execution_phase", "implementation_complete", "completion_ready",
-            "monitor_level", "running", "elapsed_seconds",
+            "execution_activity_state", "edit_ready", "product_idle_seconds", "idle_confirmations",
+            "monitor_level", "running", "collected_at", "elapsed_seconds",
             "quiet_seconds", "suspect_count", "artifact_growth", "worktree_changes", "summary")
     return "\n".join(f"{key}={clean(value.get(key), 240)}" for key in keys) + "\n"
 

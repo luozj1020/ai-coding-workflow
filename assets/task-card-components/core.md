@@ -1,10 +1,6 @@
 # Task Card
 
-<!-- Generated from selected components. Fill concise task-specific facts; delete unused placeholder rows. -->
-
 ## ID
-
-<!-- stable task id -->
 
 ## Task Mode
 
@@ -29,6 +25,10 @@
 |---|---|
 | Target files/modules | |
 | Exact symbols/tests | |
+| Exact interface signatures | |
+| Runnable construction/call example | |
+| Async/sync contract | |
+| Interface evidence hash | |
 | Root-cause evidence or relevant excerpt | |
 | Reference implementation/source of truth | |
 | Known constraints | |
@@ -64,10 +64,13 @@
 - Exact narrow command:
 - Required evidence:
 
+## Temporary File Policy
+
+- Use `$TMPDIR` for scratch/generated validation helpers; repository-local scratch is forbidden unless listed in Write paths.
+
 ## Execution Progress
 
-- [ ] Read this card and update `CLAUDE_PROGRESS.md`.
-- [ ] Complete the assigned responsibility.
+- [ ] Read this card, update `CLAUDE_PROGRESS.md`, and complete the assigned responsibility.
 - [ ] Write the required report.
 
 ## Stop Conditions

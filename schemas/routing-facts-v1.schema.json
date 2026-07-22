@@ -221,6 +221,17 @@
         "source_of_truth_example": {
             "type": "string"
         },
+        "interface_signatures": {
+            "type": "array",
+            "items": {"type": "string"}
+        },
+        "runnable_examples": {
+            "type": "array",
+            "items": {"type": "string"}
+        },
+        "async_contract": {
+            "type": "string"
+        },
         "transformation_rule": {
             "type": "string"
         },

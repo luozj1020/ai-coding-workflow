@@ -6,6 +6,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
+REPOSITORY_HASH = "sha256:" + "a" * 64
+EVIDENCE_1 = "sha256:" + "1" * 64
+EVIDENCE_2 = "sha256:" + "2" * 64
 
 
 def run_script(name, *args):
@@ -38,7 +41,7 @@ def task_data():
     }
 
 
-def initialize(tmp_path, repository_hash="sha256:repo-state"):
+def initialize(tmp_path, repository_hash=REPOSITORY_HASH):
     tmp_path.mkdir(parents=True, exist_ok=True)
     task = tmp_path / "task.json"
     task.write_text(json.dumps(task_data()), encoding="utf-8")
@@ -84,9 +87,10 @@ def test_apply_delta_is_event_traced_and_replayable(tmp_path):
     run_dir = initialize(tmp_path)
     before = load_state(run_dir)
     delta = write_delta(tmp_path, before["state_id"], [
-        {"event_type": "decision-accepted", "payload": {"id": "D-1", "statement": "Preserve control inputs first", "evidence_refs": ["E-1"]}},
+        {"event_type": "evidence-added", "payload": {"ref": EVIDENCE_1}},
+        {"event_type": "decision-accepted", "payload": {"id": "D-1", "statement": "Preserve control inputs first", "evidence_refs": [EVIDENCE_1]}},
         {"event_type": "decision-frozen", "payload": {"id": "D-1"}},
-        {"event_type": "acceptance-updated", "payload": {"id": "AC-1", "status": "satisfied", "evidence_refs": ["E-1"]}},
+        {"event_type": "acceptance-updated", "payload": {"id": "AC-1", "status": "satisfied", "evidence_refs": [EVIDENCE_1]}},
     ])
     result = run_script(
         "apply-workflow-delta.py", "--state", run_dir / "WORKFLOW_STATE.json",
@@ -95,7 +99,7 @@ def test_apply_delta_is_event_traced_and_replayable(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     after = load_state(run_dir)
-    assert after["revision"] == 3
+    assert after["revision"] == 4
     assert after["parent_state_id"] != before["parent_state_id"]
     assert after["accepted_decisions"][0]["status"] == "frozen"
     assert after["acceptance_status"]["AC-1"]["status"] == "satisfied"
@@ -104,7 +108,7 @@ def test_apply_delta_is_event_traced_and_replayable(tmp_path):
         "--events", run_dir / "WORKFLOW_EVENTS.jsonl",
     )
     assert validation.returncode == 0, validation.stderr
-    assert len((run_dir / "WORKFLOW_EVENTS.jsonl").read_text(encoding="utf-8").splitlines()) == 4
+    assert len((run_dir / "WORKFLOW_EVENTS.jsonl").read_text(encoding="utf-8").splitlines()) == 5
 
 
 def test_concurrent_transitions_serialize_on_state_lock(tmp_path):
@@ -182,14 +186,16 @@ def test_frozen_decision_requires_explicit_invalidation(tmp_path):
     run_dir = initialize(tmp_path)
     initial = load_state(run_dir)
     accept = write_delta(tmp_path, initial["state_id"], [
-        {"event_type": "decision-accepted", "payload": {"id": "D-1", "statement": "Original", "evidence_refs": ["E-1"]}},
+        {"event_type": "evidence-added", "payload": {"ref": EVIDENCE_1}},
+        {"event_type": "evidence-added", "payload": {"ref": EVIDENCE_2}},
+        {"event_type": "decision-accepted", "payload": {"id": "D-1", "statement": "Original", "evidence_refs": [EVIDENCE_1]}},
         {"event_type": "decision-frozen", "payload": {"id": "D-1"}},
     ])
     assert run_script("apply-workflow-delta.py", "--state", run_dir / "WORKFLOW_STATE.json", "--events", run_dir / "WORKFLOW_EVENTS.jsonl", "--delta", accept, "--actor", "planner").returncode == 0
     frozen = load_state(run_dir)
     invalidate = write_delta(tmp_path, frozen["state_id"], [
-        {"event_type": "decision-invalidated", "payload": {"id": "D-1", "reason": "Counterexample", "evidence_refs": ["E-2"]}},
-        {"event_type": "decision-accepted", "payload": {"id": "D-1", "statement": "Replacement", "evidence_refs": ["E-2"]}},
+        {"event_type": "decision-invalidated", "payload": {"id": "D-1", "reason": "Counterexample", "evidence_refs": [EVIDENCE_2]}},
+        {"event_type": "decision-accepted", "payload": {"id": "D-1", "statement": "Replacement", "evidence_refs": [EVIDENCE_2]}},
     ])
     result = run_script("apply-workflow-delta.py", "--state", run_dir / "WORKFLOW_STATE.json", "--events", run_dir / "WORKFLOW_EVENTS.jsonl", "--delta", invalidate, "--actor", "reviewer")
     assert result.returncode == 0, result.stderr
@@ -266,7 +272,137 @@ def test_initializer_rejects_traversal_and_windows_absolute_scope_paths(tmp_path
         result = run_script(
             "init-workflow-state.py", "--task", task_path,
             "--run-dir", tmp_path / f"run-{index}",
-            "--repository-state-hash", "sha256:repo-state",
+            "--repository-state-hash", REPOSITORY_HASH,
         )
         assert result.returncode == 1
         assert "repository-relative and traversal-free" in result.stderr
+
+
+def test_initializer_rejects_non_hash_repository_binding(tmp_path):
+    task = tmp_path / "task.json"
+    task.write_text(json.dumps(task_data()), encoding="utf-8")
+    result = run_script(
+        "init-workflow-state.py", "--task", task, "--run-dir", tmp_path / "run",
+        "--repository-state-hash", "repo-state",
+    )
+    assert result.returncode == 1
+    assert "repository_state_hash must be a sha256" in result.stderr
+
+
+def test_nested_evidence_must_be_registered_before_use(tmp_path):
+    run_dir = initialize(tmp_path)
+    state = load_state(run_dir)
+    delta = write_delta(tmp_path, state["state_id"], [
+        {"event_type": "decision-accepted", "payload": {
+            "id": "D-UNREGISTERED", "statement": "Unsupported", "evidence_refs": [EVIDENCE_1],
+        }},
+    ])
+    result = run_script(
+        "apply-workflow-delta.py", "--state", run_dir / "WORKFLOW_STATE.json",
+        "--events", run_dir / "WORKFLOW_EVENTS.jsonl", "--delta", delta,
+        "--actor", "planner",
+    )
+    assert result.returncode == 1
+    assert "not registered in state.evidence_refs" in result.stderr
+
+
+def test_state_validator_enforces_nested_evidence_subset(tmp_path):
+    run_dir = initialize(tmp_path)
+    state_path = run_dir / "WORKFLOW_STATE.json"
+    state = load_state(run_dir)
+    state["accepted_decisions"].append({
+        "id": "D-BYPASS", "statement": "Injected", "status": "accepted",
+        "evidence_refs": [EVIDENCE_1],
+    })
+    sys.path.insert(0, str(SCRIPTS))
+    from workflow_state import state_id_for
+    state["state_id"] = state_id_for(state)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    result = run_script(
+        "validate-workflow-state.py", "--state", state_path,
+        "--events", run_dir / "WORKFLOW_EVENTS.jsonl",
+    )
+    assert result.returncode == 1
+    assert "absent from state.evidence_refs" in result.stderr
+
+
+def test_recovery_previews_and_applies_event_ahead_state(tmp_path):
+    run_dir = initialize(tmp_path)
+    state_path = run_dir / "WORKFLOW_STATE.json"
+    events_path = run_dir / "WORKFLOW_EVENTS.jsonl"
+    old_state = state_path.read_bytes()
+    state = load_state(run_dir)
+    delta = write_delta(tmp_path, state["state_id"], [
+        {"event_type": "evidence-added", "payload": {"ref": EVIDENCE_1}},
+    ])
+    applied = run_script(
+        "apply-workflow-delta.py", "--state", state_path, "--events", events_path,
+        "--delta", delta, "--actor", "planner",
+    )
+    assert applied.returncode == 0, applied.stderr
+    recovered_state = state_path.read_bytes()
+    state_path.write_bytes(old_state)
+
+    preview = run_script(
+        "recover-workflow-state.py", "--state", state_path, "--events", events_path,
+        "--preview",
+    )
+    assert preview.returncode == 0, preview.stderr
+    assert json.loads(preview.stdout)["classification"] == "event-ahead"
+    assert state_path.read_bytes() == old_state
+
+    recovery = run_script(
+        "recover-workflow-state.py", "--state", state_path, "--events", events_path,
+        "--apply",
+    )
+    assert recovery.returncode == 0, recovery.stderr
+    assert state_path.read_bytes() == recovered_state
+    receipt = json.loads((run_dir / "WORKFLOW_RECOVERY_RECEIPT.json").read_text(encoding="utf-8"))
+    assert receipt["before_state_id"] == state["state_id"]
+    assert receipt["after_state_id"] == load_state(run_dir)["state_id"]
+    assert receipt["receipt_id"].startswith("sha256:")
+    validation = run_script(
+        "validate-workflow-state.py", "--state", state_path, "--events", events_path,
+    )
+    assert validation.returncode == 0, validation.stderr
+
+
+def test_recovery_fails_closed_when_state_is_ahead(tmp_path):
+    run_dir = initialize(tmp_path)
+    state_path = run_dir / "WORKFLOW_STATE.json"
+    events_path = run_dir / "WORKFLOW_EVENTS.jsonl"
+    state = load_state(run_dir)
+    delta = write_delta(tmp_path, state["state_id"], [
+        {"event_type": "question-opened", "payload": {"id": "Q-AHEAD", "question": "Ahead?"}},
+    ])
+    applied = run_script(
+        "apply-workflow-delta.py", "--state", state_path, "--events", events_path,
+        "--delta", delta, "--actor", "planner",
+    )
+    assert applied.returncode == 0, applied.stderr
+    current_state = state_path.read_bytes()
+    lines = events_path.read_text(encoding="utf-8").splitlines()
+    events_path.write_text(lines[0] + "\n", encoding="utf-8")
+
+    result = run_script(
+        "recover-workflow-state.py", "--state", state_path, "--events", events_path,
+        "--apply",
+    )
+    assert result.returncode == 1
+    assert "state-ahead" in result.stderr
+    assert state_path.read_bytes() == current_state
+    assert not (run_dir / "WORKFLOW_RECOVERY_RECEIPT.json").exists()
+
+
+def test_recovery_refuses_receipt_aliasing_state(tmp_path):
+    run_dir = initialize(tmp_path)
+    state_path = run_dir / "WORKFLOW_STATE.json"
+    before = state_path.read_bytes()
+    result = run_script(
+        "recover-workflow-state.py", "--state", state_path,
+        "--events", run_dir / "WORKFLOW_EVENTS.jsonl", "--apply",
+        "--receipt", state_path,
+    )
+    assert result.returncode == 1
+    assert "receipt path must be distinct" in result.stderr
+    assert state_path.read_bytes() == before

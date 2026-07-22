@@ -5,40 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from copy import deepcopy
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from workflow_state import (  # noqa: E402
-    WorkflowStateError, apply_mutation, load_events, load_json, state_id_for,
-    validate_event, validate_state,
+    WorkflowStateError, load_events, load_json, replay_events, validate_event,
+    validate_state,
 )
-
-
-def replay(events: list[dict]) -> dict:
-    if not events:
-        raise WorkflowStateError("event log is empty")
-    first = events[0]
-    if first.get("event_type") != "state-initialized" or first.get("base_state_id") is not None:
-        raise WorkflowStateError("first event must be state-initialized with null base_state_id")
-    material = first.get("payload", {}).get("initial_state")
-    if not isinstance(material, dict):
-        raise WorkflowStateError("initial event must contain payload.initial_state")
-    current = deepcopy(material)
-    current["state_id"] = state_id_for(current)
-    if current["state_id"] != first.get("new_state_id"):
-        raise WorkflowStateError("initial event new_state_id does not match replayed state")
-    for index, event in enumerate(events[1:], 2):
-        if event.get("base_state_id") != current["state_id"]:
-            raise WorkflowStateError(f"event {index} base_state_id breaks the state chain")
-        mutated = apply_mutation(current, event["event_type"], event["payload"])
-        mutated["parent_state_id"] = current["state_id"]
-        mutated["revision"] = current["revision"] + 1
-        mutated["state_id"] = state_id_for(mutated)
-        if mutated["state_id"] != event.get("new_state_id"):
-            raise WorkflowStateError(f"event {index} new_state_id does not match replayed state")
-        current = mutated
-    return current
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
             errors.extend(f"event {index}: {error}" for error in validate_event(event))
         if errors:
             raise WorkflowStateError("; ".join(errors))
-        replayed = replay(events)
+        replayed = replay_events(events)
         if replayed != state:
             raise WorkflowStateError("replayed state does not equal WORKFLOW_STATE.json")
         print(json.dumps({"valid": True, "state_id": state["state_id"], "revision": state["revision"], "event_count": len(events)}, sort_keys=True))

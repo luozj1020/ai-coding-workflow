@@ -220,6 +220,25 @@ not be presented as normal Skill economics. Use `status` to resume without
 inventing missing results. A changed project HEAD is reported as drift; every
 actual run must still start from the recorded base commit.
 
+## Cross-Model Transfer Pilot
+
+Compare the legacy Markdown handoff and stateful path only from real, paired runs:
+
+```bash
+python ai/compare-transfer-pilot.py pilot-runs.json \
+  --minimum-pairs 3 --output transfer-summary.json
+```
+
+Each arm is `markdown-baseline` or `stateful` and must bind the same `pair_id`,
+`task_hash`, and `baseline_commit`. Records require `run_kind=real-model`,
+complete usage, acceptance, Codex input tokens, active elapsed time, first-action
+latency, receiver reads, handoff revisions, payload bytes, and final-diff reuse.
+The comparator returns `insufficient-evidence` for simulated, incomplete,
+unpaired, or fewer-than-three samples. `effective-and-economic` additionally
+requires no acceptance/diff-reuse regression, at least 10% median Codex input
+token savings, no increase in receiver reads/revisions, no slower first action,
+and active time within 2x. It reports rather than hides failed gates.
+
 ## Regression Use
 
 When changing workflow prompts, dispatch scripts, review policy, or checker behavior:

@@ -210,6 +210,11 @@ class TestContextMarkdownInjection(unittest.TestCase):
             "acceptance": [{"id": "a1", "description": "Tests pass"}],
             "L0": {"files": ["src/main.py"], "symbols": ["main"], "targets": ["//src:main"]},
             "L1": {"snippets": [{"file": "src/main.py", "start": 10, "end": 20}], "call_paths": ["main->run"], "constraints": ["no sql"]},
+            "interface_contract": {
+                "signatures": ["async def run(config: Config) -> Result"],
+                "runnable_examples": ["result = await run(config)"],
+                "async_contract": "run must be awaited",
+            },
             "L2": {"full_files": [], "enabled": False},
         }
         md = dispatch_mod._render_context_packet_md(packet)
@@ -223,6 +228,10 @@ class TestContextMarkdownInjection(unittest.TestCase):
         self.assertIn("L1", md)
         self.assertIn("main->run", md)
         self.assertIn("no sql", md)
+        self.assertIn("Executable Interface Contract", md)
+        self.assertIn("result = await run(config)", md)
+        self.assertIn("run must be awaited", md)
+        self.assertIn("Evidence hash", md)
         self.assertIn("auto-generated", md)
 
     def test_context_packet_md_materialized(self):

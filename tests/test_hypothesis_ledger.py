@@ -7,6 +7,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
+REPOSITORY_HASH = "sha256:" + "a" * 64
+UPDATED_REPOSITORY_HASH = "sha256:" + "b" * 64
+EVIDENCE_1 = "sha256:" + "1" * 64
+EVIDENCE_2 = "sha256:" + "2" * 64
+EVIDENCE_3 = "sha256:" + "3" * 64
+MISSING_EVIDENCE = "sha256:" + "f" * 64
 
 
 def run_script(name, *args):
@@ -38,7 +44,7 @@ def prepare_state(tmp_path):
     run_dir = tmp_path / "run"
     initialized = run_script(
         "init-workflow-state.py", "--task", task, "--run-dir", run_dir,
-        "--repository-state-hash", "sha256:repo-v1",
+        "--repository-state-hash", REPOSITORY_HASH,
     )
     assert initialized.returncode == 0, initialized.stderr
     state = json.loads((run_dir / "WORKFLOW_STATE.json").read_text(encoding="utf-8"))
@@ -47,9 +53,9 @@ def prepare_state(tmp_path):
         "schema_version": 1,
         "base_state_id": state["state_id"],
         "events": [
-            {"event_type": "evidence-added", "payload": {"ref": "E-1"}},
-            {"event_type": "evidence-added", "payload": {"ref": "E-2"}},
-            {"event_type": "evidence-added", "payload": {"ref": "E-3"}},
+            {"event_type": "evidence-added", "payload": {"ref": EVIDENCE_1}},
+            {"event_type": "evidence-added", "payload": {"ref": EVIDENCE_2}},
+            {"event_type": "evidence-added", "payload": {"ref": EVIDENCE_3}},
         ],
     }), encoding="utf-8")
     applied = run_script(
@@ -67,10 +73,10 @@ def reject_value(hypothesis_id="H-1", statement="Failure is caused by node order
         "id": hypothesis_id,
         "statement": statement,
         "reason": "The failing test reproduces with stable node order",
-        "evidence_refs": ["E-1"],
+        "evidence_refs": [EVIDENCE_1],
         "reopen_when": "Remote graph order differs from local order",
         "producer": "claude-builder",
-        "repository_state_hash": "sha256:repo-v1",
+        "repository_state_hash": REPOSITORY_HASH,
         "scope_refs": scope_refs if scope_refs is not None else ["AC-1", "GraphOptimizer"],
     }
 
@@ -106,7 +112,7 @@ def proposal(statement="Failure is caused by node ordering", evidence_refs=None,
         "statement": statement,
         "producer": "claude-revision",
         "evidence_refs": evidence_refs or [],
-        "repository_state_hash": "sha256:repo-v1",
+        "repository_state_hash": REPOSITORY_HASH,
         "scope_refs": scope_refs if scope_refs is not None else ["AC-1"],
         "related_hypothesis_ids": related or [],
     }
@@ -124,7 +130,7 @@ def test_reject_requires_evidence_present_in_state(tmp_path):
     run_dir = prepare_state(tmp_path)
     ledger = run_dir / "REJECTED_HYPOTHESES.json"
     value = reject_value()
-    value["evidence_refs"] = ["E-MISSING"]
+    value["evidence_refs"] = [MISSING_EVIDENCE]
     result = update(run_dir, ledger, write_json(tmp_path, "reject.json", value))
     assert result.returncode == 1
     assert "absent from State IR" in result.stderr
@@ -138,7 +144,7 @@ def test_reject_creates_hash_bound_ledger_and_synchronizes_state(tmp_path):
     state = json.loads((run_dir / "WORKFLOW_STATE.json").read_text(encoding="utf-8"))
     assert ledger["revision"] == 1
     assert ledger["items"][0]["status"] == "rejected"
-    assert ledger["items"][0]["evidence_refs"] == ["E-1"]
+    assert ledger["items"][0]["evidence_refs"] == [EVIDENCE_1]
     assert ledger["items"][0]["reopen_when"]
     assert state["rejected_hypotheses"][0]["id"] == "H-1"
     sys.path.insert(0, str(SCRIPTS))
@@ -161,7 +167,7 @@ def test_reject_retry_is_idempotent(tmp_path):
 def test_same_id_with_different_evidence_is_not_silently_idempotent(tmp_path):
     run_dir, ledger = create_ledger(tmp_path)
     value = reject_value()
-    value["evidence_refs"] = ["E-2"]
+    value["evidence_refs"] = [EVIDENCE_2]
     result = update(run_dir, ledger, write_json(tmp_path, "conflict.json", value))
     assert result.returncode == 1
     assert "conflicting hypothesis" in result.stderr or "different metadata" in result.stderr
@@ -180,7 +186,7 @@ def test_exact_repeat_without_new_evidence_is_recorded_each_time(tmp_path):
 
 def test_new_evidence_requires_explicit_reopen(tmp_path):
     _, ledger = create_ledger(tmp_path)
-    result = check(tmp_path, ledger, proposal(evidence_refs=["E-2"]))
+    result = check(tmp_path, ledger, proposal(evidence_refs=[EVIDENCE_2]))
     assert result.returncode == 3
     payload = json.loads(result.stdout)
     assert payload["status"] == "reopen-required"
@@ -191,7 +197,7 @@ def test_new_evidence_requires_explicit_reopen(tmp_path):
 def test_repository_change_requires_reopen_even_without_new_evidence(tmp_path):
     _, ledger = create_ledger(tmp_path)
     value = proposal()
-    value["repository_state_hash"] = "sha256:repo-v2"
+    value["repository_state_hash"] = UPDATED_REPOSITORY_HASH
     result = check(tmp_path, ledger, value)
     assert result.returncode == 3
     assert json.loads(result.stdout)["repository_changed"] is True
@@ -251,14 +257,14 @@ def test_reopen_requires_new_evidence_and_condition_confirmation(tmp_path):
         "hypothesis_id": "H-1",
         "producer": "codex-reviewer",
         "reason": "Remote ordering differs",
-        "new_evidence_refs": ["E-1"],
+        "new_evidence_refs": [EVIDENCE_1],
         "condition_met": True,
-        "repository_state_hash": "sha256:repo-v1",
+        "repository_state_hash": REPOSITORY_HASH,
     }
     no_new = update(run_dir, ledger, write_json(tmp_path, "no-new.json", base), "reopen")
     assert no_new.returncode == 1
     assert "evidence not present" in no_new.stderr
-    base["new_evidence_refs"] = ["E-2"]
+    base["new_evidence_refs"] = [EVIDENCE_2]
     base["condition_met"] = False
     unmet = update(run_dir, ledger, write_json(tmp_path, "unmet.json", base), "reopen")
     assert unmet.returncode == 1
@@ -274,16 +280,16 @@ def test_reopen_updates_ledger_and_removes_state_rejection(tmp_path):
         "hypothesis_id": "H-1",
         "producer": "codex-reviewer",
         "reason": "Remote graph order differs from local evidence",
-        "new_evidence_refs": ["E-2"],
+        "new_evidence_refs": [EVIDENCE_2],
         "condition_met": True,
-        "repository_state_hash": "sha256:repo-v1",
+        "repository_state_hash": REPOSITORY_HASH,
     }
     result = update(run_dir, ledger_path, write_json(tmp_path, "reopen.json", value), "reopen")
     assert result.returncode == 0, result.stderr
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     state = json.loads((run_dir / "WORKFLOW_STATE.json").read_text(encoding="utf-8"))
     assert ledger["items"][0]["status"] == "reopened"
-    assert ledger["items"][0]["reopened_evidence_refs"] == ["E-2"]
+    assert ledger["items"][0]["reopened_evidence_refs"] == [EVIDENCE_2]
     assert state["rejected_hypotheses"] == []
     validation = run_script(
         "validate-workflow-state.py", "--state", run_dir / "WORKFLOW_STATE.json",

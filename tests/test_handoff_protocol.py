@@ -7,6 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
+REPOSITORY_HASH = "sha256:" + "a" * 64
+EVIDENCE_1 = "sha256:" + "1" * 64
 
 
 def run_script(name, *args):
@@ -41,7 +43,7 @@ def prepare_states(tmp_path):
     run_dir = tmp_path / "run"
     initialized = run_script(
         "init-workflow-state.py", "--task", task, "--run-dir", run_dir,
-        "--repository-state-hash", "sha256:base-repository",
+        "--repository-state-hash", REPOSITORY_HASH,
     )
     assert initialized.returncode == 0, initialized.stderr
     base = tmp_path / "BASE_STATE.json"
@@ -53,12 +55,12 @@ def prepare_states(tmp_path):
         "base_state_id": base_data["state_id"],
         "events": [
             {"event_type": "constraint-added", "payload": {"id": "C-EXTRA", "statement": "Keep the patch narrow", "source": "reviewer"}},
-            {"event_type": "decision-accepted", "payload": {"id": "D-1", "statement": "Repair control-edge rewrite", "evidence_refs": ["E-1"]}},
+            {"event_type": "evidence-added", "payload": {"ref": EVIDENCE_1}},
+            {"event_type": "decision-accepted", "payload": {"id": "D-1", "statement": "Repair control-edge rewrite", "evidence_refs": [EVIDENCE_1]}},
             {"event_type": "decision-frozen", "payload": {"id": "D-1"}},
-            {"event_type": "hypothesis-rejected", "payload": {"id": "H-1", "statement": "Redesign all graph edges", "reason": "Out of scope", "evidence_refs": ["E-1"]}},
+            {"event_type": "hypothesis-rejected", "payload": {"id": "H-1", "statement": "Redesign all graph edges", "reason": "Out of scope", "evidence_refs": [EVIDENCE_1]}},
             {"event_type": "question-opened", "payload": {"id": "Q-1", "question": "Which regression test covers the edge?"}},
-            {"event_type": "evidence-added", "payload": {"ref": "E-1"}},
-            {"event_type": "acceptance-updated", "payload": {"id": "AC-1", "status": "satisfied", "evidence_refs": ["E-1"]}},
+            {"event_type": "acceptance-updated", "payload": {"id": "AC-1", "status": "satisfied", "evidence_refs": [EVIDENCE_1]}},
             {"event_type": "next-action-updated", "payload": {"owner": "execution-builder", "operation": "Repair control-edge rewrite", "allowed_paths": ["src/optimizer.cc"]}},
             {"event_type": "phase-changed", "payload": {"phase": "implementation"}},
         ],

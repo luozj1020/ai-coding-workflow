@@ -74,6 +74,29 @@ CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS="${CLAUDE_CODE_ZERO_OUTPUT_PROBE_T
 CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS="${CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS:-120}"
 CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS="${CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS:-2}"
 case "$CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS must be a positive integer." >&2; exit 1 ;; esac
+CLAUDE_CODE_TERMINAL_DRAIN_SECONDS="${CLAUDE_CODE_TERMINAL_DRAIN_SECONDS:-1}"
+case "$CLAUDE_CODE_TERMINAL_DRAIN_SECONDS" in ''|*[!0-9]*) echo "Error: CLAUDE_CODE_TERMINAL_DRAIN_SECONDS must be a non-negative integer." >&2; exit 1 ;; esac
+CLAUDE_CODE_DIRTY_SOURCE_MODE="${CLAUDE_CODE_DIRTY_SOURCE_MODE:-block}"
+case "$CLAUDE_CODE_DIRTY_SOURCE_MODE" in
+    block|snapshot) ;;
+    *) echo "Error: CLAUDE_CODE_DIRTY_SOURCE_MODE must be 'block' or 'snapshot'." >&2; exit 1 ;;
+esac
+CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT="${CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT:-1}"
+case "$CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT" in 0|1) ;; *) echo "Error: CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT must be 0 or 1." >&2; exit 1 ;; esac
+CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS="${CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS:-120}"
+case "$CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS must be a positive integer." >&2; exit 1 ;; esac
+CLAUDE_CODE_EDIT_READY_GRACE_SECONDS="${CLAUDE_CODE_EDIT_READY_GRACE_SECONDS:-120}"
+CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS="${CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS:-180}"
+CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS="${CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS:-2}"
+CLAUDE_CODE_CODEGRAPH_POLICY="${CLAUDE_CODE_CODEGRAPH_POLICY:-fallback}"
+CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS="${CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS:-180}"
+case "$CLAUDE_CODE_CODEGRAPH_POLICY" in fallback|repair|off) ;; *) echo "Error: CLAUDE_CODE_CODEGRAPH_POLICY must be fallback, repair, or off." >&2; exit 1 ;; esac
+case "$CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS must be a positive integer." >&2; exit 1 ;; esac
+for _idle_name in CLAUDE_CODE_EDIT_READY_GRACE_SECONDS CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS; do
+    _idle_value="${!_idle_name}"
+    case "$_idle_value" in ''|*[!0-9]*) echo "Error: ${_idle_name} must be a non-negative integer." >&2; exit 1 ;; esac
+done
+case "$CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS must be a positive integer." >&2; exit 1 ;; esac
 if [ "$CLAUDE_CODE_PROXY_MODE" != "direct" ] && [ "$CLAUDE_CODE_PROXY_MODE" != "inherit" ]; then
     echo "Error: CLAUDE_CODE_PROXY_MODE must be 'direct' or 'inherit'." >&2
     exit 1
@@ -86,17 +109,18 @@ case "$CLAUDE_CODE_NETWORK_MONITOR" in
         exit 1
         ;;
 esac
-CLAUDE_CODE_BACKGROUND_MONITOR="${CLAUDE_CODE_BACKGROUND_MONITOR:-1}"
-CLAUDE_CODE_MONITOR_SPARK="${CLAUDE_CODE_MONITOR_SPARK:-auto}"
-CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS="${CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS:-$CLAUDE_CODE_HEARTBEAT_SECONDS}"
-case "$CLAUDE_CODE_BACKGROUND_MONITOR" in 0|1) ;; *) echo "Error: CLAUDE_CODE_BACKGROUND_MONITOR must be 0 or 1." >&2; exit 1 ;; esac
-case "$CLAUDE_CODE_MONITOR_SPARK" in auto|on|off) ;; *) echo "Error: CLAUDE_CODE_MONITOR_SPARK must be auto, on, or off." >&2; exit 1 ;; esac
-case "$CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS must be a positive integer." >&2; exit 1 ;; esac
 CLAUDE_CODE_NETWORK_HEALTHCHECK_URL="${CLAUDE_CODE_NETWORK_HEALTHCHECK_URL:-}"
 CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS="${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS:-5}"
 CLAUDE_CODE_API_PROBE_MODE="${CLAUDE_CODE_API_PROBE_MODE:-always}"
 CLAUDE_CODE_PROBE_ENVIRONMENT="${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}"
-CLAUDE_CODE_FIRST_PROGRESS_ACTION="${CLAUDE_CODE_FIRST_PROGRESS_ACTION:-observe}"
+CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED="${CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED:-1}"
+case "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" in 0|1) ;; *) echo "Error: CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED must be 0 or 1." >&2; exit 1 ;; esac
+if [ -n "${CLAUDE_CODE_FIRST_PROGRESS_ACTION+x}" ]; then
+    _FIRST_PROGRESS_ACTION_EXPLICIT=1
+else
+    _FIRST_PROGRESS_ACTION_EXPLICIT=0
+    CLAUDE_CODE_FIRST_PROGRESS_ACTION=observe
+fi
 CLAUDE_CODE_EXECUTION_PROFILE="${CLAUDE_CODE_EXECUTION_PROFILE:-balanced}"
 case "$CLAUDE_CODE_EXECUTION_PROFILE" in
     safe)
@@ -405,6 +429,18 @@ if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
         CLAUDE_CODE_BUILDER_MODE="standard"
     fi
 fi
+
+_CHECKER_WRITES_TESTS=0
+if [ "$_PARSED_TASK_MODE" = "checker-test" ] && \
+   grep -Eiq '^\|[[:space:]]*Test writing[[:space:]]*\|[[:space:]]*Claude([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD" 2>/dev/null; then
+    _CHECKER_WRITES_TESTS=1
+fi
+if [ "$_FIRST_PROGRESS_ACTION_EXPLICIT" -eq 0 ] && \
+   { [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || \
+     [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ] || \
+     [ "$_CHECKER_WRITES_TESTS" -eq 1 ]; }; then
+    CLAUDE_CODE_FIRST_PROGRESS_ACTION=stop
+fi
 # Execution-only mode is only allowed for task mode builder.
 if { [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || \
      [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] || \
@@ -447,22 +483,28 @@ fi
 # First-progress timeout: accept both spellings with _SECONDS precedence.
 # If CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS is unset and
 # CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT is set, use the latter as the value.
+_FIRST_PROGRESS_TIMEOUT_EXPLICIT=0
+if [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
+    _FIRST_PROGRESS_TIMEOUT_EXPLICIT=1
+fi
 if [ -z "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
     if [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT+x}" ] && [ -n "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT" ]; then
         CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS="$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT"
-    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ]; then
-        CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=60
+    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || \
+         [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ] || \
+         [ "$_CHECKER_WRITES_TESTS" -eq 1 ]; then
+        CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=120
     else
         CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=0
     fi
 fi
 # Record first-progress timeout alias source for status evidence.
 _FIRST_PROGRESS_TIMEOUT_SOURCE="default"
-if [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ] && \
+if [ "$_FIRST_PROGRESS_TIMEOUT_EXPLICIT" -eq 0 ] && \
    [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT+x}" ] && \
    [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" = "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT" ]; then
     _FIRST_PROGRESS_TIMEOUT_SOURCE="alias(CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT)"
-elif [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
+elif [ "$_FIRST_PROGRESS_TIMEOUT_EXPLICIT" -eq 1 ]; then
     _FIRST_PROGRESS_TIMEOUT_SOURCE="env"
 fi
 case "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" in
@@ -513,6 +555,30 @@ fi
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 REUSE_WORKTREE_DIR="${WORKTREE_ROOT}/reuse/claude-managed"
 
+# Return 0 only when the recorded PID still identifies the same process.
+# Return 1 for exited/reused/foreign PIDs and 2 when identity is inconclusive.
+recorded_process_is_running() {
+    local pid_file="$1"
+    local identity_file="$2"
+    local task_id="${3:-}"
+    local role="${4:-}"
+    local helper="${SCRIPT_DIR}/process-identity.py"
+    if [ -n "$PYTHON_CMD" ] && [ -f "$helper" ] && [ -f "$identity_file" ]; then
+        set +e
+        "$PYTHON_CMD" "$helper" check --identity "$identity_file" \
+            --task-id "$task_id" --role "$role" >/dev/null 2>&1
+        local identity_status=$?
+        set -e
+        return "$identity_status"
+    fi
+    if [ -f "$pid_file" ]; then
+        local pid_value
+        pid_value="$(tr -d '[:space:]' < "$pid_file")"
+        [ -n "$pid_value" ] && kill -0 "$pid_value" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
 # --- Spec item 3: retry-in-place validation ---
 # Validate a prior run's recorded worktree for safe in-place reuse.
 # Sets _RETRY_TASK_ID, _RETRY_WORKTREE_DIR, _RETRY_BRANCH on success.
@@ -526,6 +592,9 @@ validate_retry_in_place() {
     local prior_claude_pid="${prior_root}.claude.pid"
     local prior_pid="${prior_root}.pid"
     local prior_checker_pid="${prior_root}.checker.pid"
+    local prior_dispatcher_identity="${prior_root}.dispatcher.process.json"
+    local prior_claude_identity="${prior_root}.claude.process.json"
+    local prior_checker_identity="${prior_root}.checker.process.json"
 
     # Load prior runtime identity artifact
     if [ ! -f "$prior_runtime" ]; then
@@ -534,11 +603,13 @@ validate_retry_in_place() {
         exit 1
     fi
 
-    local wt source_repo base_commit strategy
+    local wt source_repo base_commit strategy retry_ordinal
     wt="$(sed -n 's/.*"worktree"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
     source_repo="$(sed -n 's/.*"source_repository"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
     base_commit="$(sed -n 's/.*"base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
     strategy="$(sed -n 's/.*"strategy"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    retry_ordinal="$(sed -n 's/.*"retry_ordinal"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$prior_runtime" | head -1)"
+    [ -n "$retry_ordinal" ] || retry_ordinal=0
     _RETRY_BRANCH="$(sed -n 's/.*"branch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
 
     # Validate required fields
@@ -580,34 +651,44 @@ validate_retry_in_place() {
         exit 1
     fi
 
+    if [ "$retry_ordinal" -ge 1 ]; then
+        echo "Error: retry-in-place: retry budget exhausted (prior retry_ordinal=${retry_ordinal}, maximum=1)." >&2
+        echo "Use fallback-local, reroute, or request human intervention instead of another same-worktree retry." >&2
+        exit 1
+    fi
+
     # No live dispatcher/Claude/checker PIDs
-    local pid_val
-    if [ -f "$prior_dispatcher_pid" ]; then
-        pid_val="$(tr -d '[:space:]' < "$prior_dispatcher_pid")"
-        if [ -n "$pid_val" ] && kill -0 "$pid_val" 2>/dev/null; then
-            echo "Error: retry-in-place: prior dispatcher PID ${pid_val} is still running." >&2
+    local pid_val identity_status
+    if recorded_process_is_running "$prior_dispatcher_pid" "$prior_dispatcher_identity" "$prior_task_id" dispatcher; then
+        pid_val="$(tr -d '[:space:]' < "$prior_dispatcher_pid" 2>/dev/null || true)"
+        echo "Error: retry-in-place: prior dispatcher identity is still running (PID ${pid_val})." >&2
+        exit 1
+    else
+        identity_status=$?
+        if [ "$identity_status" -eq 2 ]; then
+            echo "Error: retry-in-place: prior dispatcher identity is visibility-unknown." >&2
             exit 1
         fi
     fi
     if [ -f "$prior_claude_pid" ]; then
-        pid_val="$(tr -d '[:space:]' < "$prior_claude_pid")"
-        if [ -n "$pid_val" ] && kill -0 "$pid_val" 2>/dev/null; then
-            echo "Error: retry-in-place: prior Claude PID ${pid_val} is still running." >&2
+        if recorded_process_is_running "$prior_claude_pid" "$prior_claude_identity" "$prior_task_id" claude; then
+            pid_val="$(tr -d '[:space:]' < "$prior_claude_pid" 2>/dev/null || true)"
+            echo "Error: retry-in-place: prior Claude identity is still running (PID ${pid_val})." >&2
+            exit 1
+        elif [ "$?" -eq 2 ]; then
+            echo "Error: retry-in-place: prior Claude identity is visibility-unknown." >&2
             exit 1
         fi
-    elif [ -f "$prior_pid" ]; then
-        pid_val="$(tr -d '[:space:]' < "$prior_pid")"
-        if [ -n "$pid_val" ] && kill -0 "$pid_val" 2>/dev/null; then
-            echo "Error: retry-in-place: prior Claude PID ${pid_val} is still running." >&2
-            exit 1
-        fi
+    elif recorded_process_is_running "$prior_pid" "$prior_claude_identity" "$prior_task_id" claude; then
+        echo "Error: retry-in-place: prior Claude identity is still running." >&2
+        exit 1
     fi
-    if [ -f "$prior_checker_pid" ]; then
-        pid_val="$(tr -d '[:space:]' < "$prior_checker_pid")"
-        if [ -n "$pid_val" ] && kill -0 "$pid_val" 2>/dev/null; then
-            echo "Error: retry-in-place: prior checker PID ${pid_val} is still running." >&2
-            exit 1
-        fi
+    if recorded_process_is_running "$prior_checker_pid" "$prior_checker_identity" "$prior_task_id" checker; then
+        echo "Error: retry-in-place: prior checker identity is still running." >&2
+        exit 1
+    elif [ "$?" -eq 2 ]; then
+        echo "Error: retry-in-place: prior checker identity is visibility-unknown." >&2
+        exit 1
     fi
 
     # Worktree must be clean (tracked/staged/untracked)
@@ -658,6 +739,9 @@ validate_retry_in_place() {
     fi
 
     _RETRY_TASK_ID="$prior_task_id"
+    _RETRY_ROOT_TASK_ID="$(sed -n 's/.*"lineage_root_task_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    [ -n "$_RETRY_ROOT_TASK_ID" ] || _RETRY_ROOT_TASK_ID="$prior_task_id"
+    _RETRY_ORDINAL=$((retry_ordinal + 1))
     _RETRY_WORKTREE_DIR="$wt"
     [ -n "$_RETRY_BRANCH" ] || _RETRY_BRANCH="claude-task-retry-${prior_task_id}"
 }
@@ -1188,10 +1272,15 @@ post_run_scope_enforcement() {
 # On success, TASK_ID and WORKTREE_DIR are set from prior run's runtime.json.
 # On failure, the script exits with an actionable error (fail closed).
 BASE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+WORKTREE_START_COMMIT="$BASE_COMMIT"
+DIRTY_SNAPSHOT_COMMIT=""
+DIRTY_SNAPSHOT_TREE=""
 
 _RETRY_TASK_ID=""
 _RETRY_WORKTREE_DIR=""
 _RETRY_BRANCH=""
+_RETRY_ROOT_TASK_ID=""
+_RETRY_ORDINAL=0
 _REVIEWED_CONTINUATION_TASK_ID=""
 _REVIEWED_CONTINUATION_WORKTREE_DIR=""
 _REVIEWED_CONTINUATION_APPROVAL=""
@@ -1325,10 +1414,22 @@ DISPATCHER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.pid"
 CLAUDE_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude.pid"
 CHECKER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker.pid"
 RUNTIME_JSON="${WORKTREE_ROOT}/${TASK_ID}.runtime.json"
+PREFLIGHT_JSON="${WORKTREE_ROOT}/${TASK_ID}.dispatch-preflight.json"
+DIRTY_PATHS_FILE="${WORKTREE_ROOT}/${TASK_ID}.dirty-paths.txt"
+CONTROL_ARCHIVE_FILE="${WORKTREE_ROOT}/${TASK_ID}.control-archive.json"
+CONTROL_ARCHIVE_DIR="${WORKTREE_ROOT}/control-archive/${TASK_ID}"
+DISPATCHER_IDENTITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.process.json"
+CLAUDE_IDENTITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude.process.json"
+CHECKER_IDENTITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker.process.json"
 PHASE_METRICS_FILE="${WORKTREE_ROOT}/${TASK_ID}.phase-metrics.json"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
+MONITOR_EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.monitor-events.log"
 NETWORK_FILE="${WORKTREE_ROOT}/${TASK_ID}.network.log"
 ATTEMPT_CLASSIFICATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.attempt-classification.json"
+TAKEOVER_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.takeover-receipt.json"
+DIRTY_SNAPSHOT_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.dirty-snapshot.json"
+CHECKER_CONTRACT_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker-contract.json"
+CODEGRAPH_WORKTREE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.codegraph-worktree.json"
 INTERACTION_HEALTH_FILE="${WORKTREE_ROOT}/${TASK_ID}.interaction-health.json"
 STARTUP_INTERACTION_HEALTH_FILE="${WORKTREE_ROOT}/${TASK_ID}.startup-interaction-health.json"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
@@ -1338,12 +1439,27 @@ FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
 for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
          "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
          "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$DISPATCHER_PID_FILE" "$CLAUDE_PID_FILE" "$CHECKER_PID_FILE" \
-         "$PROGRESS_FILE" "$NETWORK_FILE"; do
+         "$PROGRESS_FILE" "$MONITOR_EVENT_LOG" "$NETWORK_FILE"; do
     mkdir -p "$(dirname "$f")"
 done
 TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
 if [ -z "$TASK_CARD_REL" ]; then
     TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --others --exclude-standard --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
+fi
+
+_ARCHIVED_CONTROL_PATHS=""
+if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/archive-control-files.py" ]; then
+    "$PYTHON_CMD" "${SCRIPT_DIR}/archive-control-files.py" \
+        --repo "$REPO_ROOT" --archive-dir "$CONTROL_ARCHIVE_DIR" \
+        --output "$CONTROL_ARCHIVE_FILE" >/dev/null 2>&1 || true
+    if [ -s "$CONTROL_ARCHIVE_FILE" ]; then
+        _ARCHIVED_CONTROL_PATHS="$($PYTHON_CMD - "$CONTROL_ARCHIVE_FILE" <<'PYEOF' 2>/dev/null || true
+import json, sys
+for path in json.load(open(sys.argv[1], encoding="utf-8")).get("archived_paths", []):
+    print(path)
+PYEOF
+)"
+    fi
 fi
 if [ -z "$TASK_CARD_REL" ]; then
     TASK_CARD_ABS="$(cd "$(dirname "$TASK_CARD")" && pwd)/$(basename "$TASK_CARD")"
@@ -1366,12 +1482,47 @@ else
         | grep -vxF ".ai-workflow/model-calls.lock" \
         | grep -vxF ".ai-workflow/model-usage.jsonl" \
         | grep -vxF ".ai-workflow/run-ledger.lock" \
+        | { if [ -n "$_ARCHIVED_CONTROL_PATHS" ]; then grep -vxFf <(printf '%s\n' "$_ARCHIVED_CONTROL_PATHS"); else cat; fi; } \
         || true)"
     DIRTY_UNTRACKED_SKIPPED=0
 fi
 
 if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" ]; then
-    if [ "${CLAUDE_CODE_ALLOW_DIRTY_SOURCE:-0}" = "1" ]; then
+    if [ "$CLAUDE_CODE_DIRTY_SOURCE_MODE" = "snapshot" ]; then
+        if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" != "fresh" ] || \
+           [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}${CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID:-}${CLAUDE_CODE_REVIEWED_CONTINUATION:-}" ] || \
+           [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
+            echo "Error: dirty-snapshot mode supports only a single fresh worktree dispatch." >&2
+            exit 1
+        fi
+        _SNAPSHOT_HELPER="${SCRIPT_DIR}/create-dirty-snapshot.py"
+        if [ -z "$PYTHON_CMD" ] || [ ! -f "$_SNAPSHOT_HELPER" ]; then
+            echo "Error: dirty-snapshot mode requires Python and create-dirty-snapshot.py." >&2
+            exit 1
+        fi
+        _SNAPSHOT_ARGS=(--repo "$REPO_ROOT" --output "$DIRTY_SNAPSHOT_RECEIPT_FILE")
+        if [ -n "$TASK_CARD_REL" ]; then
+            _SNAPSHOT_ARGS+=(--exclude "$TASK_CARD_REL")
+        fi
+        while IFS= read -r _archived_control; do
+            [ -n "$_archived_control" ] && _SNAPSHOT_ARGS+=(--exclude "$_archived_control")
+        done <<< "$_ARCHIVED_CONTROL_PATHS"
+        DIRTY_SNAPSHOT_COMMIT="$("$PYTHON_CMD" "$_SNAPSHOT_HELPER" "${_SNAPSHOT_ARGS[@]}")" || {
+            echo "Error: failed to create dirty-source snapshot." >&2
+            exit 1
+        }
+        DIRTY_SNAPSHOT_TREE="$("$PYTHON_CMD" - "$DIRTY_SNAPSHOT_RECEIPT_FILE" <<'PYEOF'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("snapshot_tree", ""))
+PYEOF
+)"
+        case "$DIRTY_SNAPSHOT_COMMIT" in
+            ''|*[!0-9a-f]*) echo "Error: dirty snapshot returned an invalid commit id." >&2; exit 1 ;;
+        esac
+        WORKTREE_START_COMMIT="$DIRTY_SNAPSHOT_COMMIT"
+        echo "Dirty source captured as isolated snapshot: ${DIRTY_SNAPSHOT_COMMIT}"
+        echo "Snapshot receipt: ${DIRTY_SNAPSHOT_RECEIPT_FILE}"
+    elif [ "${CLAUDE_CODE_ALLOW_DIRTY_SOURCE:-0}" = "1" ]; then
         echo "Warning: Source worktree is dirty; proceeding because CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1." >&2
     else
         echo "Error: Source worktree is dirty. Claude would run from stale HEAD." >&2
@@ -1406,17 +1557,22 @@ fi
 : > "$INTERACTION_HEALTH_FILE"
 : > "$STARTUP_INTERACTION_HEALTH_FILE"
 echo "$$" > "$DISPATCHER_PID_FILE"
+if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/process-identity.py" ]; then
+    "$PYTHON_CMD" "${SCRIPT_DIR}/process-identity.py" capture \
+        --pid "$$" --task-id "$TASK_ID" --role dispatcher \
+        --output "$DISPATCHER_IDENTITY_FILE" >/dev/null 2>&1 || true
+fi
 
 create_dispatch_worktree() {
     local branch_name="$1"
     if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "fresh" ]; then
         if [ "$CLAUDE_CODE_WORKTREE_PROGRESS" = "quiet" ]; then
-            git worktree add -b "$branch_name" "$WORKTREE_DIR" "$BASE_COMMIT" >/dev/null || {
+            git worktree add -b "$branch_name" "$WORKTREE_DIR" "$WORKTREE_START_COMMIT" >/dev/null || {
                 echo "Error: Failed to create git worktree at $WORKTREE_DIR" >&2
                 exit 1
             }
         else
-            git worktree add -b "$branch_name" "$WORKTREE_DIR" "$BASE_COMMIT" || {
+            git worktree add -b "$branch_name" "$WORKTREE_DIR" "$WORKTREE_START_COMMIT" || {
                 echo "Error: Failed to create git worktree at $WORKTREE_DIR" >&2
                 exit 1
             }
@@ -1686,6 +1842,110 @@ if [ -z "${_RETRY_WORKTREE_DIR:-}" ] && \
     fi
 fi
 
+# Give Claude a task-scoped scratch directory outside the repository. This
+# makes the default temporary-file policy actionable instead of prompt-only.
+_SYSTEM_TMP_ROOT="${AI_WORKFLOW_SYSTEM_TMP_ROOT:-/tmp}"
+if [ ! -d "$_SYSTEM_TMP_ROOT" ]; then
+    echo "Error: task scratch root is unavailable: ${_SYSTEM_TMP_ROOT}" >&2
+    exit 1
+fi
+TASK_TMPDIR="$(mktemp -d "${_SYSTEM_TMP_ROOT%/}/aiwf-${TASK_ID}.XXXXXX")" || {
+    echo "Error: failed to create task scratch directory under ${_SYSTEM_TMP_ROOT}." >&2
+    exit 1
+}
+export TMPDIR="$TASK_TMPDIR"
+export TEMP="$TASK_TMPDIR"
+export TMP="$TASK_TMPDIR"
+
+# Model-session continuity is distinct from worktree continuity. Every initial
+# run gets an explicit UUID; same-owner continuations resume it when a valid
+# prior runtime receipt exists. Missing identity falls back to a new named
+# session while recording that only file-backed context was preserved.
+CLAUDE_SESSION_MODE_EFFECTIVE="new"
+CLAUDE_SESSION_RESUME_STATUS="not-requested"
+CLAUDE_SESSION_PRIOR_TASK_ID=""
+CLAUDE_SESSION_ID="${CLAUDE_CODE_RESUME_SESSION_ID:-}"
+if [ -z "$PYTHON_CMD" ]; then
+    CLAUDE_SESSION_ID=""
+    CLAUDE_SESSION_MODE_EFFECTIVE="implicit"
+    CLAUDE_SESSION_RESUME_STATUS="python-unavailable-file-backed-only"
+elif [ -n "$CLAUDE_SESSION_ID" ]; then
+    CLAUDE_SESSION_MODE_EFFECTIVE="resume"
+    CLAUDE_SESSION_RESUME_STATUS="explicit"
+else
+    if [ -n "${_REVIEWED_CONTINUATION_TASK_ID:-}" ]; then
+        CLAUDE_SESSION_PRIOR_TASK_ID="$_REVIEWED_CONTINUATION_TASK_ID"
+    elif [ -n "${_RETRY_TASK_ID:-}" ]; then
+        CLAUDE_SESSION_PRIOR_TASK_ID="$_RETRY_TASK_ID"
+    elif [ -n "${_ADVISOR_CONTINUE_TASK_ID:-}" ]; then
+        CLAUDE_SESSION_PRIOR_TASK_ID="$_ADVISOR_CONTINUE_TASK_ID"
+    fi
+    if [ -n "$CLAUDE_SESSION_PRIOR_TASK_ID" ] && [ -s "${WORKTREE_ROOT}/${CLAUDE_SESSION_PRIOR_TASK_ID}.runtime.json" ]; then
+        CLAUDE_SESSION_ID="$("$PYTHON_CMD" - "${WORKTREE_ROOT}/${CLAUDE_SESSION_PRIOR_TASK_ID}.runtime.json" <<'PYEOF' 2>/dev/null || true
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("claude_session_id", ""))
+PYEOF
+)"
+        if [ -n "$CLAUDE_SESSION_ID" ]; then
+            CLAUDE_SESSION_MODE_EFFECTIVE="resume"
+            CLAUDE_SESSION_RESUME_STATUS="prior-runtime"
+        fi
+    fi
+fi
+if [ -z "$PYTHON_CMD" ]; then
+    :
+elif [ -n "$CLAUDE_SESSION_ID" ]; then
+    if ! "$PYTHON_CMD" - "$CLAUDE_SESSION_ID" <<'PYEOF' >/dev/null 2>&1
+import sys, uuid
+uuid.UUID(sys.argv[1])
+PYEOF
+    then
+        echo "Error: Claude session id is not a valid UUID." >&2
+        exit 1
+    fi
+else
+    CLAUDE_SESSION_ID="$("$PYTHON_CMD" - "$TASK_ID" <<'PYEOF'
+import sys, uuid
+print(uuid.uuid5(uuid.NAMESPACE_URL, "ai-coding-workflow:" + sys.argv[1]))
+PYEOF
+)"
+    if [ -n "$CLAUDE_SESSION_PRIOR_TASK_ID" ]; then
+        CLAUDE_SESSION_RESUME_STATUS="unavailable-file-backed-fallback"
+    fi
+fi
+
+# Dirty-source authority never implies that a stale fresh worktree is usable.
+# Bind every task-mentioned dirty path to the isolated execution copy before
+# invoking Claude. Unrelated dirty paths remain recorded but do not block.
+if [ "$CLAUDE_CODE_DIRTY_SOURCE_MODE" != "snapshot" ] && \
+   [ "${CLAUDE_CODE_ALLOW_DIRTY_SOURCE:-0}" = "1" ] && \
+   { [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" ]; }; then
+    {
+        printf '%s\n' "$DIRTY_TRACKED"
+        printf '%s\n' "$DIRTY_STAGED"
+        printf '%s\n' "$DIRTY_UNTRACKED"
+    } | sed '/^[[:space:]]*$/d' | sort -u > "$DIRTY_PATHS_FILE"
+    _PREFLIGHT_HELPER="${SCRIPT_DIR}/dispatch-preflight.py"
+    if [ -z "$PYTHON_CMD" ] || [ ! -f "$_PREFLIGHT_HELPER" ]; then
+        echo "Error: dirty-source execution requires dispatch-preflight.py." >&2
+        exit 1
+    fi
+    _TASK_CARD_SOURCE="$(cd "$(dirname "$TASK_CARD")" && pwd)/$(basename "$TASK_CARD")"
+    set +e
+    "$PYTHON_CMD" "$_PREFLIGHT_HELPER" \
+        --source "$REPO_ROOT" --worktree "$WORKTREE_DIR" \
+        --task-card "$_TASK_CARD_SOURCE" --dirty-paths "$DIRTY_PATHS_FILE" \
+        --output "$PREFLIGHT_JSON" >/dev/null
+    _PREFLIGHT_STATUS=$?
+    set -e
+    if [ "$_PREFLIGHT_STATUS" -ne 0 ]; then
+        echo "Error: dispatch preflight blocked stale or missing task-relevant dirty source." >&2
+        echo "Evidence: ${PREFLIGHT_JSON}" >&2
+        echo "Create an accepted clean baseline or explicitly use CLAUDE_CODE_DIRTY_SOURCE_MODE=snapshot; do not dispatch from stale HEAD." >&2
+        exit 1
+    fi
+fi
+
 # Validate explicitly declared integrations only after the isolated worktree
 # exists, but before writing runtime/source evidence or invoking Claude.
 _MCP_CONFIG_PATHS=()
@@ -1699,6 +1959,39 @@ if [ "$_EXTERNAL_INTEGRATIONS_ALLOWED" = "yes" ]; then
         _EXTERNAL_INTEGRATION_VALID=0
     fi
 fi
+
+# CodeGraph indexes are worktree-bound. Never let an index discovered through
+# the source repository or a stale MCP session become execution evidence for a
+# different isolated worktree. Default to deterministic local fallback; an
+# explicit repair policy may sync/reindex the execution worktree.
+CODEGRAPH_EXECUTION_STATUS="unavailable"
+CODEGRAPH_EXECUTION_ACTION="fallback-local"
+CODEGRAPH_EXECUTION_REASON="guard-unavailable"
+CODEGRAPH_SAFE_TO_USE="no"
+_CODEGRAPH_GUARD="${SCRIPT_DIR}/codegraph-worktree-guard.py"
+if [ -n "$PYTHON_CMD" ] && [ -f "$_CODEGRAPH_GUARD" ]; then
+    "$PYTHON_CMD" "$_CODEGRAPH_GUARD" \
+        --source "$REPO_ROOT" --worktree "$WORKTREE_DIR" \
+        --output "$CODEGRAPH_WORKTREE_RECEIPT_FILE" \
+        --policy "$CLAUDE_CODE_CODEGRAPH_POLICY" \
+        --timeout "$CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS" >/dev/null || true
+    if [ -s "$CODEGRAPH_WORKTREE_RECEIPT_FILE" ]; then
+        readarray -t _CODEGRAPH_FIELDS < <("$PYTHON_CMD" - "$CODEGRAPH_WORKTREE_RECEIPT_FILE" <<'PYEOF'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print(value.get("status", "unavailable"))
+print(value.get("action", "fallback-local"))
+print(value.get("reason", "unknown"))
+print("yes" if value.get("safe_to_use") is True else "no")
+PYEOF
+)
+        CODEGRAPH_EXECUTION_STATUS="${_CODEGRAPH_FIELDS[0]:-unavailable}"
+        CODEGRAPH_EXECUTION_ACTION="${_CODEGRAPH_FIELDS[1]:-fallback-local}"
+        CODEGRAPH_EXECUTION_REASON="${_CODEGRAPH_FIELDS[2]:-unknown}"
+        CODEGRAPH_SAFE_TO_USE="${_CODEGRAPH_FIELDS[3]:-no}"
+    fi
+fi
+echo "CodeGraph execution guard: status=${CODEGRAPH_EXECUTION_STATUS}, action=${CODEGRAPH_EXECUTION_ACTION}, reason=${CODEGRAPH_EXECUTION_REASON}, receipt=${CODEGRAPH_WORKTREE_RECEIPT_FILE}"
 
 {
     echo "# Source Repository Status - ${TIMESTAMP}"
@@ -1734,6 +2027,11 @@ fi
     echo "- MCP config paths: ${_MCP_CONFIG_PATHS_EVIDENCE}"
     echo "- Plugin paths: ${_PLUGIN_PATHS_EVIDENCE}"
     echo "- External integration rejection: ${_EXTERNAL_INTEGRATION_REJECTION:-none}"
+    echo "- CodeGraph policy: ${CLAUDE_CODE_CODEGRAPH_POLICY}"
+    echo "- CodeGraph execution status: ${CODEGRAPH_EXECUTION_STATUS}"
+    echo "- CodeGraph execution action: ${CODEGRAPH_EXECUTION_ACTION}"
+    echo "- CodeGraph execution reason: ${CODEGRAPH_EXECUTION_REASON}"
+    echo "- CodeGraph receipt: ${CODEGRAPH_WORKTREE_RECEIPT_FILE}"
     echo "- First-progress timeout: ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s (source: ${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default})"
     echo "- First-progress action: ${CLAUDE_CODE_FIRST_PROGRESS_ACTION}"
     echo "- Context-acquisition timeout: ${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}s"
@@ -1767,10 +2065,16 @@ echo "Source status saved to: $SOURCE_STATUS_FILE"
 # --- Spec item 1: write runtime identity artifact ---
 # Write atomically (via temp + mv) so monitors never see a partial file.
 _RUNTIME_STRATEGY="${CLAUDE_CODE_WORKTREE_STRATEGY}"
+_LINEAGE_ROOT_TASK_ID="${_RETRY_ROOT_TASK_ID:-$TASK_ID}"
 if [ -n "${_REVIEWED_CONTINUATION_TASK_ID:-}" ]; then
     _RUNTIME_STRATEGY="reviewed-continuation"
+    _LINEAGE_ROOT_TASK_ID="$(sed -n 's/.*"lineage_root_task_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${WORKTREE_ROOT}/${_REVIEWED_CONTINUATION_TASK_ID}.runtime.json" 2>/dev/null | head -1)"
+    [ -n "$_LINEAGE_ROOT_TASK_ID" ] || _LINEAGE_ROOT_TASK_ID="$_REVIEWED_CONTINUATION_TASK_ID"
 elif [ -n "${_RETRY_TASK_ID:-}" ]; then
     _RUNTIME_STRATEGY="retry-in-place"
+elif [ -n "${_ADVISOR_CONTINUE_TASK_ID:-}" ]; then
+    _LINEAGE_ROOT_TASK_ID="$(sed -n 's/.*"lineage_root_task_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${WORKTREE_ROOT}/${_ADVISOR_CONTINUE_TASK_ID}.runtime.json" 2>/dev/null | head -1)"
+    [ -n "$_LINEAGE_ROOT_TASK_ID" ] || _LINEAGE_ROOT_TASK_ID="$_ADVISOR_CONTINUE_TASK_ID"
 fi
 _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
 {
@@ -1781,12 +2085,26 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "strategy": "%s",\n' "$_RUNTIME_STRATEGY"
     printf '  "branch": "%s",\n' "$BRANCH_NAME"
     printf '  "base_commit": "%s",\n' "$BASE_COMMIT"
+    printf '  "worktree_start_commit": "%s",\n' "$WORKTREE_START_COMMIT"
+    printf '  "dirty_source_mode": "%s",\n' "$CLAUDE_CODE_DIRTY_SOURCE_MODE"
+    if [ -n "$DIRTY_SNAPSHOT_COMMIT" ]; then
+        printf '  "dirty_snapshot_commit": "%s",\n' "$DIRTY_SNAPSHOT_COMMIT"
+        printf '  "dirty_snapshot_tree": "%s",\n' "$DIRTY_SNAPSHOT_TREE"
+        printf '  "dirty_snapshot_receipt": "%s",\n' "$DIRTY_SNAPSHOT_RECEIPT_FILE"
+    fi
     printf '  "source_repository": "%s",\n' "$REPO_ROOT"
+    printf '  "lineage_root_task_id": "%s",\n' "$_LINEAGE_ROOT_TASK_ID"
+    printf '  "retry_ordinal": %s,\n' "${_RETRY_ORDINAL:-0}"
     if [ -n "${_WORKTREE_SETUP_DURATION:-}" ]; then
         printf '  "worktree_setup_seconds": %s,\n' "$_WORKTREE_SETUP_DURATION"
     else
         echo '  "worktree_setup_seconds": null,'
     fi
+    printf '  "task_tmpdir": "%s",\n' "$TASK_TMPDIR"
+    printf '  "claude_session_id": "%s",\n' "$CLAUDE_SESSION_ID"
+    printf '  "claude_session_mode": "%s",\n' "$CLAUDE_SESSION_MODE_EFFECTIVE"
+    printf '  "claude_session_resume_status": "%s",\n' "$CLAUDE_SESSION_RESUME_STATUS"
+    printf '  "claude_session_prior_task_id": "%s",\n' "$CLAUDE_SESSION_PRIOR_TASK_ID"
     if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
         printf '  "retry_of": "%s",\n' "$CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID"
     fi
@@ -1803,12 +2121,28 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '    "checker": "%s",\n' "$CHECKER_PID_FILE"
     printf '    "pid": "%s"\n' "$PID_FILE"
     echo "  },"
+    printf '  "process_identity_files": {\n'
+    printf '    "dispatcher": "%s",\n' "$DISPATCHER_IDENTITY_FILE"
+    printf '    "claude": "%s",\n' "$CLAUDE_IDENTITY_FILE"
+    printf '    "checker": "%s"\n' "$CHECKER_IDENTITY_FILE"
+    echo "  },"
     printf '  "builder_mode": "%s",\n' "$CLAUDE_CODE_BUILDER_MODE"
     printf '  "task_mode": "%s",\n' "${_PARSED_TASK_MODE:-unknown}"
     printf '  "tool_profile": "%s",\n' "$CLAUDE_CODE_TOOL_PROFILE"
     printf '  "tool_profile_derivation": "%s",\n' "$_TOOL_PROFILE_DERIVATION"
     printf '  "tool_profile_supported": %s,\n' "$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo true || echo false)"
     printf '  "task_validation_allowlist": %s,\n' "$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo true || echo false)"
+    printf '  "checker_runtime_enforcement": %s,\n' "$([ "$CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT" -eq 1 ] && echo true || echo false)"
+    printf '  "checker_file_timeout_seconds": %s,\n' "$CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS"
+    printf '  "edit_ready_grace_seconds": %s,\n' "$CLAUDE_CODE_EDIT_READY_GRACE_SECONDS"
+    printf '  "product_idle_timeout_seconds": %s,\n' "$CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS"
+    printf '  "product_idle_confirmations": %s,\n' "$CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS"
+    printf '  "codegraph_policy": "%s",\n' "$CLAUDE_CODE_CODEGRAPH_POLICY"
+    printf '  "codegraph_execution_status": "%s",\n' "$CODEGRAPH_EXECUTION_STATUS"
+    printf '  "codegraph_execution_action": "%s",\n' "$CODEGRAPH_EXECUTION_ACTION"
+    printf '  "codegraph_execution_reason": "%s",\n' "$CODEGRAPH_EXECUTION_REASON"
+    printf '  "codegraph_safe_to_use": %s,\n' "$([ "$CODEGRAPH_SAFE_TO_USE" = yes ] && echo true || echo false)"
+    printf '  "codegraph_worktree_receipt": "%s",\n' "$CODEGRAPH_WORKTREE_RECEIPT_FILE"
     printf '  "first_progress_timeout_seconds": %s,\n' "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS"
     printf '  "first_progress_timeout_source": "%s",\n' "${_FIRST_PROGRESS_TIMEOUT_SOURCE:-default}"
     printf '  "base_timeout_seconds": %s,\n' "$CLAUDE_CODE_TIMEOUT_SECONDS"
@@ -1913,6 +2247,7 @@ render_claude_task_card() {
             || name == "Acceptance Criteria" \
             || name == "Testing Responsibility" \
             || name == "Validation Contract" \
+            || name == "Temporary File Policy" \
             || name == "Execution Progress" \
             || name == "Execution Phases" \
             || name == "Stop Conditions" \
@@ -1931,6 +2266,7 @@ render_claude_task_card() {
             || name == "Acceptance Criteria" \
             || name == "Testing Responsibility" \
             || name == "Validation Contract" \
+            || name == "Temporary File Policy" \
             || name == "Required Report"
     }
     BEGIN {
@@ -2146,13 +2482,17 @@ if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
     echo "Claude execution card rendered to: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
 fi
 
+_INITIAL_EXECUTION_PHASE="context"
+if [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ]; then
+    _INITIAL_EXECUTION_PHASE="planning"
+fi
 {
     echo "<!-- ${SEEDED_PROGRESS_MARKER} -->"
     echo "# Claude Progress"
     echo ""
     echo "- Goal: Execute ${TASK_CARD}"
     echo "- Current Phase: dispatch-started"
-    echo "- Execution Phase: context"
+    echo "- Execution Phase: ${_INITIAL_EXECUTION_PHASE}"
     echo "- Implementation Complete: no"
     echo "- Assigned Tail Work: read Post-Implementation Contract"
     echo "- Tail Work Complete: no"
@@ -2195,6 +2535,7 @@ Produce the structured solution contract assigned by `CLAUDE_TASK_CARD.md`. `TAS
 
 Rules:
 - Read only inside the declared exploration boundary and update `CLAUDE_PROGRESS.md` at meaningful planning milestones.
+- Use `Execution Phase: context`, `planning`, `contract-validation`, or `complete`; never label solution-contract work as `implementation`.
 - Do not edit product source, tests, build files, or documentation. Your durable output is `solution-contract.draft.json`.
 - Converge on one coherent end state: invariants, integration points, acceptance criteria, non-goals, genuine unknowns, and independently executable slices.
 - Each slice must declare non-overlapping write scope, dependencies, and acceptance IDs. Do not turn recommendations into mandatory scope.
@@ -2235,6 +2576,7 @@ Rules:
 - Update `CLAUDE_REPORT.md` before finishing with: files changed, acceptance criteria mapping, syntax outcome, deviations, remaining risks.
 - When blocked and requesting continuation advice, create `ADVISOR_REQUEST.json` exactly as described in the task card.
 - Keep the stable execution fields in `CLAUDE_PROGRESS.md`: `Execution Phase`, `Implementation Complete`, `Assigned Tail Work`, `Tail Work Complete`, and `Completion Ready`.
+- For `solution-planning`, use only `context`, `planning`, `contract-validation`, and `complete`; never label contract work as `implementation`.
 - After implementation, perform only the task card's Post-Implementation Contract. Set `Completion Ready: yes` and `Next Check: exit`, write the report, and exit normally; do not wait for dispatcher acknowledgement.
 
 --- CLAUDE EXECUTION CARD ---
@@ -2270,12 +2612,14 @@ Core rules:
 - Remove dispatcher seeded markers when you first update `CLAUDE_PROGRESS.md` or `CLAUDE_REPORT.md`.
 - If Direction / Boundary Acknowledgement is blocking, write it and stop for approval. If it is non-blocking and recommendation is `proceed`, continue implementation in the same run.
 - Builder tasks implement and report direction. Do not add acceptance tests or broad validation unless explicitly assigned.
-- Checker/Test tasks write/update assigned tests, run assigned validation when local validation is allowed, and avoid broad implementation rewrites.
+- Checker/Test tasks must use the exact Context Packet interface signature and runnable example before calling an API. After each test-file write, immediately run that file's syntax/import check and narrow single-file test before writing another test. Avoid broad implementation rewrites.
+- Put generated validation helpers under `$TMPDIR`; repository-root scratch scripts are forbidden unless explicitly listed in Write paths.
 - If one dispatch mixes implementation, test writing, broad validation, and phase stop gates without explicit `mixed-exception`, stop and recommend a split.
 - If `Local validation allowed?` is `no`, do not run local validation; report exact commands only.
 - If target, scope, testing responsibility, public API/data/security/migration impact, destructive actions, permissions, or production data are unclear, stop-and-report instead of guessing.
 - Preserve failures, blockers, exact commands, exit codes, and key output. Do not include secrets, large logs, or full diffs in progress/report files.
 - Keep `Execution Phase`, `Implementation Complete`, `Assigned Tail Work`, `Tail Work Complete`, and `Completion Ready` near the top of `CLAUDE_PROGRESS.md`.
+- For `solution-planning`, use only `context`, `planning`, `contract-validation`, and `complete`; never label contract work as `implementation`.
 - After implementation, do only explicitly assigned tail work. Then set `Completion Ready: yes` and `Next Check: exit`, write the final report, and exit normally without waiting for acknowledgement.
 
 `CLAUDE_REPORT.md` before finishing must include: requirements summary, files changed, acceptance criteria mapping, out-of-scope confirmation, plan match, validation confidence, reviewer should check, checks run/blocked, deviations, risks, open questions, and human review checklist.
@@ -2300,12 +2644,15 @@ Execute the Claude execution card below. The full Codex planning card is preserv
   - Next Check
   - Blocker
   - Last Update
-  - Execution Phase (`context`, `implementation`, `validation`, or `tail`)
+  - Execution Phase (`context`, `implementation`, `validation`, or `tail`; for solution-planning: `context`, `planning`, `contract-validation`, or `complete`)
+  - Context Acquisition Complete (`yes` or `no`)
+  - Planned First Write (exact path and intended change, or `none`)
   - Implementation Complete (`yes` or `no`)
   - Assigned Tail Work
   - Tail Work Complete (`yes` or `no`)
   - Completion Ready (`yes` or `no`)
 - Before any command or investigation that may take more than a few minutes, write what you are about to do and what result you expect.
+- Enter `Execution Phase: implementation` only after repository scanning, requirement understanding, and a local edit plan are complete. At that transition set `Context Acquisition Complete: yes` and a non-empty `Planned First Write`. This is edit readiness only; the dispatcher will not count it as durable output until product content changes.
 - Do not include secrets, large logs, or full diffs.
 - Preserve failed commands and observations instead of deleting or rewriting them; later recovery depends on that evidence.
 - When assigned implementation is complete, set `Implementation Complete: yes` and enter `Execution Phase: tail`. Perform only work listed in the Post-Implementation Contract. Then set `Tail Work Complete: yes`, `Completion Ready: yes`, and `Next Check: exit`; update the final report and exit normally without waiting for dispatcher acknowledgement.
@@ -2355,6 +2702,9 @@ In addition to making the requested edits, update `CLAUDE_REPORT.md` in the work
 
 Checker expectations:
 - Run project validation before finishing only when this task mode assigns validation and local validation is allowed. If `ai/check-worktree.sh` is available and assigned exact commands, prefer `bash ai/check-worktree.sh --task-card CLAUDE_TASK_CARD.md --no-discover --command 'label=command'` so broad unrelated checks do not create noise.
+- Before the first API call in a Checker test, copy the exact signature, constructor fields, runnable call example, and async/sync rule from the Context Packet into your working plan. If any required item is missing or contradicts the repository, stop and report the evidence gap instead of guessing.
+- After each assigned test file is written, immediately run the language syntax/import check and the exact single-file test. Fix or report that file before creating the next one; do not defer all validation until the end.
+- Store ad-hoc validation helpers only under `$TMPDIR`. Any repository-local helper must be an explicitly allowed write path.
 - If `Local validation allowed?` is `no`, do not run local validation; report the commands only.
 - Preserve failed command, exit code, key original output, and file:line details.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.
@@ -2389,6 +2739,16 @@ Context Packet:
 --- CLAUDE EXECUTION CARD ---
 EOF
 fi
+cat >> "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<EOF
+
+CodeGraph worktree identity:
+- Guard status: ${CODEGRAPH_EXECUTION_STATUS}
+- Guard action: ${CODEGRAPH_EXECUTION_ACTION}
+- Guard reason: ${CODEGRAPH_EXECUTION_REASON}
+- Receipt: ${CODEGRAPH_WORKTREE_RECEIPT_FILE}
+- If guard status is not ready, do not use CodeGraph MCP/CLI results in this execution. They may belong to another worktree. Use the supplied Context Packet, LSP, ai/locate-code.py, targeted search, and targeted reads instead.
+- If guard status is ready, CodeGraph queries must still run from ${WORKTREE_DIR}. Never reuse graph output carrying a different project/worktree identity.
+EOF
 cat "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md" >> "${WORKTREE_DIR}/CLAUDE_PROMPT.md"
 
 CLAUDE_CODE_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_SECONDS:-600}"
@@ -2479,6 +2839,12 @@ esac
 progress_log() {
     local message="$1"
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message" | tee -a "$PROGRESS_FILE"
+}
+
+monitor_event() {
+    # Compact, append-only boundary events are the only monitor surface an
+    # agent needs while waiting. Values supplied here are machine-safe tokens.
+    printf 'monitor_event source=dispatcher task_id=%s %s\n' "$TASK_ID" "$1" >> "$MONITOR_EVENT_LOG"
 }
 
 ZERO_OUTPUT_PROBE_CONCLUSION="not-run"
@@ -2761,6 +3127,20 @@ file_contains() {
     [ -f "$file" ] && grep -qE "$pattern" "$file" 2>/dev/null
 }
 
+# Hash semantic progress while ignoring volatile clock-only rewrites. Rewriting
+# the same milestone with a new Last Update/Timestamp must not refresh runtime.
+progress_semantic_hash() {
+    local file="$1"
+    if [ ! -f "$file" ]; then
+        echo ""
+        return
+    fi
+    sed -E \
+        -e '/^[[:space:]-]*(Last Update|Updated At|Timestamp|Observed At|Collected At):/Id' \
+        -e 's/[[:space:]]+$//' \
+        "$file" 2>/dev/null | sha1sum 2>/dev/null | awk '{print $1}' || true
+}
+
 # Detect if substantive progress is actively growing.
 # Returns 0 (true) if there is meaningful progress growth; 1 otherwise.
 # Tracks actual implementation/progress changes, not merely seeded files or a live PID.
@@ -2780,12 +3160,12 @@ progress_is_growing() {
             return 0
         fi
     fi
-    # 3. Non-seeded progress content changed, including shorter rewrites.
+    # 3. Non-seeded semantic progress changed. Clock-only rewrites are ignored.
     now_progress_bytes="$(file_size "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
     if [ -s "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" ] && \
        ! file_contains "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "$SEEDED_PROGRESS_MARKER"; then
-        now_progress_hash="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
-        if [ "$now_progress_bytes" -gt "${3:-0}" ] || [ "$now_progress_hash" != "${5:-}" ]; then
+        now_progress_hash="$(progress_semantic_hash "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
+        if [ "$now_progress_hash" != "${5:-}" ]; then
             return 0
         fi
     fi
@@ -2997,6 +3377,11 @@ run_claude() {
     # in direct/inherit and broker/bypass branches.
     # Length check avoids empty-array expansion error under set -u.
     local claude_base_args=(-p --permission-mode acceptEdits --output-format json)
+    if [ "$CLAUDE_SESSION_MODE_EFFECTIVE" = "resume" ] && [ -n "$CLAUDE_SESSION_ID" ]; then
+        claude_base_args+=(--resume "$CLAUDE_SESSION_ID")
+    elif [ -n "$CLAUDE_SESSION_ID" ]; then
+        claude_base_args+=(--session-id "$CLAUDE_SESSION_ID")
+    fi
     if [ ${#_CLAUDE_TOOLS_ARGS[@]} -gt 0 ]; then
         claude_base_args+=("${_CLAUDE_TOOLS_ARGS[@]}")
     fi
@@ -3075,6 +3460,7 @@ fi
 cd "$WORKTREE_DIR"
 
 : > "$PROGRESS_FILE"
+: > "$MONITOR_EVENT_LOG"
 write_network_header
 if [ -n "${_REVIEWED_CONTINUATION_LEASE_DIR:-}" ]; then
     if ! mkdir "$_REVIEWED_CONTINUATION_CONSUMED_DIR" 2>/dev/null; then
@@ -3232,12 +3618,69 @@ fi
 progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}"
 
 # --- Unified interaction probe: startup phase ---
-# Advisory only: startup probe failure must not prevent dispatch.
+# Required by default so trust/transport failures stop before Builder starts.
+# The explicit diagnostic override preserves legacy advisory probe modes.
 _STARTUP_PROBE_CONCLUSION="not-run"
-if [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ]; then
+if [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ] || [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ]; then
     run_interaction_probe "startup" "$STARTUP_INTERACTION_HEALTH_FILE"
     _STARTUP_PROBE_CONCLUSION="$_LAST_PROBE_CONCLUSION"
-    progress_log "Startup interaction probe: conclusion=${_STARTUP_PROBE_CONCLUSION} (advisory; dispatch continues)"
+    progress_log "Startup interaction probe: conclusion=${_STARTUP_PROBE_CONCLUSION}, required=${CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED}"
+fi
+
+if [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ] && \
+   [ "${_STARTUP_PROBE_CONCLUSION}" != "available" ]; then
+    _STARTUP_FAILURE_CATEGORY="$({
+        "$PYTHON_CMD" - "$STARTUP_INTERACTION_HEALTH_FILE" <<'PYEOF'
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    probes = value.get("interaction_probes", [])
+    print(probes[-1].get("failure_category", "interaction-unavailable") if probes else "interaction-unavailable")
+except (OSError, ValueError, TypeError, IndexError):
+    print("interaction-unavailable")
+PYEOF
+    } 2>/dev/null)"
+    case "$_STARTUP_FAILURE_CATEGORY" in
+        workspace-not-trusted) _STARTUP_OUTCOME="approval_blocked" ;;
+        transport|timeout) _STARTUP_OUTCOME="network_error" ;;
+        *) _STARTUP_OUTCOME="preflight_error" ;;
+    esac
+    {
+        echo "Claude dispatch preflight blocked before Builder execution."
+        echo "failure_category=${_STARTUP_FAILURE_CATEGORY}"
+        echo "interaction_conclusion=${_STARTUP_PROBE_CONCLUSION}"
+        echo "worktree=${WORKTREE_DIR}"
+        echo "Resolve workspace trust, transport, or execution-environment access, then rerun the exact dispatch."
+    } > "$STATUS_FILE"
+    if [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; then
+        "$PYTHON_CMD" "${SCRIPT_DIR}/classify-claude-attempt.py" \
+            --exit-code 75 --outcome "$_STARTUP_OUTCOME" --progress none \
+            --direction unknown --error-text-file "$STATUS_FILE" \
+            --retry-ordinal "${_RETRY_ORDINAL:-0}" \
+            > "$ATTEMPT_CLASSIFICATION_FILE" 2>/dev/null || true
+    fi
+    "$PYTHON_CMD" - "$RESULT_FILE" "$TASK_ID" "$_STARTUP_FAILURE_CATEGORY" \
+        "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" <<'PYEOF'
+import json, os, sys
+output, task_id, category, health, classification = sys.argv[1:]
+value = {
+    "schema_version": 1,
+    "task_id": task_id,
+    "dispatch_outcome": "preflight-blocked",
+    "failure_category": category,
+    "builder_started": False,
+    "interaction_health": health,
+    "attempt_classification": classification if os.path.exists(classification) else None,
+}
+with open(output, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PYEOF
+    progress_log "Dispatch preflight blocked: category=${_STARTUP_FAILURE_CATEGORY}, conclusion=${_STARTUP_PROBE_CONCLUSION}, builder_started=no"
+    monitor_event "event=terminal running=no terminal=yes exit_status=75 dispatch_outcome=preflight-blocked failure_category=${_STARTUP_FAILURE_CATEGORY}"
+    echo "Error: Claude dispatch preflight failed (${_STARTUP_FAILURE_CATEGORY})." >&2
+    echo "Evidence: ${STARTUP_INTERACTION_HEALTH_FILE}" >&2
+    exit 75
 fi
 
 set +e
@@ -3245,15 +3688,13 @@ run_claude &
 CLAUDE_PID=$!
 echo "$CLAUDE_PID" > "$PID_FILE"
 echo "$CLAUDE_PID" > "$CLAUDE_PID_FILE"
-progress_log "Claude process started: pid=${CLAUDE_PID}"
-if [ "$CLAUDE_CODE_BACKGROUND_MONITOR" = "1" ] && [ -x "$MONITOR_SCRIPT" ]; then
-    (
-        cd "$REPO_ROOT"
-        bash "$MONITOR_SCRIPT" start "$TASK_ID" --spark "$CLAUDE_CODE_MONITOR_SPARK" \
-            --interval "$CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS" \
-            >/dev/null 2>&1
-    ) || progress_log "Background monitor start failed; dispatch continues without asynchronous triage"
+if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/process-identity.py" ]; then
+    "$PYTHON_CMD" "${SCRIPT_DIR}/process-identity.py" capture \
+        --pid "$CLAUDE_PID" --task-id "$TASK_ID" --role claude \
+        --output "$CLAUDE_IDENTITY_FILE" >/dev/null 2>&1 || true
 fi
+progress_log "Claude process started: pid=${CLAUDE_PID}"
+monitor_event "event=started running=yes terminal=no"
 
 START_EPOCH="$(date +%s)"
 CLAUDE_TIMED_OUT=0
@@ -3265,17 +3706,30 @@ _LAST_APPROVAL_FP=""
 LAST_ACTIVITY_EPOCH="$START_EPOCH"
 LAST_TOTAL_BYTES=0
 LAST_WORKTREE_DIGEST="$(worktree_digest)"
+LAST_RESULT_STATUS_BYTES=0
+LAST_REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
+LAST_PROGRESS_SEMANTIC_HASH="$(progress_semantic_hash "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
 FIRST_PROGRESS_DETECTED=0
 FIRST_PROGRESS_SIGNAL=""
 FIRST_PROGRESS_ELAPSED_SECONDS=""
 FIRST_WORKTREE_CHANGE_SECONDS=""
 FIRST_PROGRESS_OBSERVATION_RECORDED=0
 BLOCKER_RECORDED=0
+EDIT_READY_DETECTED=0
+EDIT_READY_ELAPSED_SECONDS=""
+EDIT_READY_GRACE_EXPIRED=0
+LAST_PRODUCT_CHANGE_EPOCH=0
+PRODUCT_IDLE_SECONDS=0
+PRODUCT_IDLE_CONFIRMATION_COUNT=0
+PRODUCT_IDLE_STOPPED=0
+EXECUTION_ACTIVITY_STATE="context-acquisition"
 IMPLEMENTATION_COMPLETE_DETECTED=0
 IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS=""
 COMPLETION_READY_DETECTED=0
 COMPLETION_READY_ELAPSED_SECONDS=""
 VALIDATION_STARTED_ELAPSED_SECONDS=""
+VALIDATION_EVIDENCE_ACTIVE=0
+_LAST_MONITOR_MATERIAL_DIGEST=""
 _CONTINUATION_THRESHOLD_SECONDS=120
 INITIAL_PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
 # --- Two-stage execution clock ---
@@ -3328,6 +3782,15 @@ while claude_is_running; do
     WORKTREE_CHANGES="$(worktree_change_count)"
     CURRENT_WORKTREE_DIGEST="$(worktree_digest)"
     TOTAL_BYTES=$((RESULT_BYTES + STATUS_BYTES + REPORT_BYTES + CLAUDE_PROGRESS_BYTES + CLAUDE_TASK_BYTES))
+    RESULT_STATUS_BYTES=$((RESULT_BYTES + STATUS_BYTES))
+    CURRENT_REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
+    CURRENT_PROGRESS_SEMANTIC_HASH="$(progress_semantic_hash "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
+    RESULT_STATUS_CHANGED=0
+    REPORT_CHANGED=0
+    PROGRESS_SEMANTIC_CHANGED=0
+    [ "$RESULT_STATUS_BYTES" -ne "$LAST_RESULT_STATUS_BYTES" ] && RESULT_STATUS_CHANGED=1
+    [ "$CURRENT_REPORT_HASH" != "$LAST_REPORT_HASH" ] && REPORT_CHANGED=1
+    [ "$CURRENT_PROGRESS_SEMANTIC_HASH" != "$LAST_PROGRESS_SEMANTIC_HASH" ] && PROGRESS_SEMANTIC_CHANGED=1
     WORKTREE_CHANGED=0
     if [ "$CURRENT_WORKTREE_DIGEST" != "$LAST_WORKTREE_DIGEST" ]; then
         WORKTREE_CHANGED=1
@@ -3335,24 +3798,50 @@ while claude_is_running; do
         if [ -z "$FIRST_WORKTREE_CHANGE_SECONDS" ]; then
             FIRST_WORKTREE_CHANGE_SECONDS="$ELAPSED"
         fi
+        if [ "$WORKTREE_CHANGES" -gt 0 ]; then
+            LAST_PRODUCT_CHANGE_EPOCH="$NOW_EPOCH"
+            PRODUCT_IDLE_CONFIRMATION_COUNT=0
+        fi
     fi
-    if [ "$TOTAL_BYTES" -ne "$LAST_TOTAL_BYTES" ] || [ "$WORKTREE_CHANGED" -eq 1 ]; then
+    if [ "$RESULT_STATUS_BYTES" -ne "$LAST_RESULT_STATUS_BYTES" ] || \
+       [ "$CURRENT_REPORT_HASH" != "$LAST_REPORT_HASH" ] || \
+       [ "$CURRENT_PROGRESS_SEMANTIC_HASH" != "$LAST_PROGRESS_SEMANTIC_HASH" ] || \
+       [ "$WORKTREE_CHANGED" -eq 1 ]; then
         LAST_TOTAL_BYTES="$TOTAL_BYTES"
+        LAST_RESULT_STATUS_BYTES="$RESULT_STATUS_BYTES"
+        LAST_REPORT_HASH="$CURRENT_REPORT_HASH"
+        LAST_PROGRESS_SEMANTIC_HASH="$CURRENT_PROGRESS_SEMANTIC_HASH"
         LAST_ACTIVITY_EPOCH="$NOW_EPOCH"
     fi
     QUIET_SECONDS=$((NOW_EPOCH - LAST_ACTIVITY_EPOCH))
     NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" "$QUIET_SECONDS")"
-    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, first_progress_detected=${FIRST_PROGRESS_DETECTED}, ${NETWORK_SUMMARY}"
+    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, first_progress_detected=${FIRST_PROGRESS_DETECTED}, edit_ready=${EDIT_READY_DETECTED}, execution_state=${EXECUTION_ACTIVITY_STATE}, product_idle_seconds=${PRODUCT_IDLE_SECONDS}, idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT}, ${NETWORK_SUMMARY}"
 
+    VALIDATION_EVIDENCE_ACTIVE=0
     # Stage markers are Claude-authored advisory evidence. They never stop the
     # process; Completion Ready means the child should flush its report/result
     # and exit voluntarily under the prompt contract.
     if [ -s "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" ] && \
        ! file_contains "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "$SEEDED_PROGRESS_MARKER"; then
         if [ -z "$VALIDATION_STARTED_ELAPSED_SECONDS" ] && \
-           grep -Eiq '^(<!--[[:space:]]*)?-?[[:space:]]*(Execution|Current) Phase:[[:space:]]*(validation|testing|checking)' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
+           grep -Eiq '^(<!--[[:space:]]*)?-?[[:space:]]*(Execution|Current) Phase:[[:space:]]*(validation|testing|checking|contract-validation)' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
             VALIDATION_STARTED_ELAPSED_SECONDS="$ELAPSED"
             progress_log "Claude execution phase observed: phase=validation, elapsed_seconds=${ELAPSED}"
+        fi
+        if [ -n "$VALIDATION_STARTED_ELAPSED_SECONDS" ] && \
+           grep -Eiq '(validation|test|checker|command)[ _:-]*(started|running|executing)|Validation Command:[[:space:]]*[^[:space:]]' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
+            VALIDATION_EVIDENCE_ACTIVE=1
+        fi
+        if [ "$EDIT_READY_DETECTED" -eq 0 ] && \
+           [ "$_PARSED_TASK_MODE" != "checker-test" ] && \
+           [ "$CLAUDE_CODE_BUILDER_MODE" != "solution-planning" ] && \
+           grep -Eiq '(Execution|Current) Phase:[[:space:]]*(implementation|implementing|editing|writing|patching)' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null && \
+           grep -Eiq '^(-[[:space:]]*)?Context Acquisition Complete:[[:space:]]*yes([[:space:]]|$)' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null && \
+           grep -Eiq '^(-[[:space:]]*)?Planned First Write:[[:space:]]*[^[:space:]]' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
+            EDIT_READY_DETECTED=1
+            EDIT_READY_ELAPSED_SECONDS="$ELAPSED"
+            EXECUTION_ACTIVITY_STATE="implementation-ready"
+            progress_log "Claude editing readiness declared: elapsed_seconds=${ELAPSED}, durable_product_write=no, grace_seconds=${CLAUDE_CODE_EDIT_READY_GRACE_SECONDS}"
         fi
         if [ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 0 ] && \
            grep -Eiq '^-?[[:space:]]*Implementation Complete:[[:space:]]*yes([[:space:]]|$)' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
@@ -3368,11 +3857,22 @@ while claude_is_running; do
         fi
     fi
 
+    # Blocker evidence is evaluated throughout the run, not only before first
+    # progress. A late permission/semantic blocker must suppress idle-kill logic.
+    for _blocker_file in "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md"; do
+        if [ -f "$_blocker_file" ] && \
+           ! file_contains "$_blocker_file" "$SEEDED_PROGRESS_MARKER|$SEEDED_REPORT_MARKER" && \
+           grep -Eiq 'blocker|stop|split|permission|approval|waiting' "$_blocker_file" 2>/dev/null; then
+            BLOCKER_RECORDED=1
+            break
+        fi
+    done
+
     # --- First-substantive-progress detection ---
     # Builder reading/planning, acknowledgement, generic progress text, seeded
     # artifacts, and blockers are useful evidence but do not refresh the clock.
-    # Builder execution requires an implementation diff or an explicitly named
-    # editing phase. Checker execution may also start from an explicit validation
+    # Builder execution requires an implementation diff. An explicitly named
+    # editing phase is only readiness evidence. Checker execution may also start from an explicit validation
     # command/process marker. A valid Claude-owned report is substantive evidence.
     if [ "$FIRST_PROGRESS_DETECTED" -eq 0 ]; then
         _FP_SIGNAL=""
@@ -3385,32 +3885,30 @@ while claude_is_running; do
         fi
         if [ -z "$_FP_SIGNAL" ]; then
             if [ "$_PARSED_TASK_MODE" = "checker-test" ] && \
+               [ "$_CHECKER_WRITES_TESTS" -eq 0 ] && \
                [ -s "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" ] && \
                ! file_contains "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "$SEEDED_PROGRESS_MARKER" && \
                grep -Eiq '(validation|test|checker|command)[ _:-]*(started|running|executing)|Current Phase:[[:space:]]*(validation|testing|checking)' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
                 _FP_SIGNAL="checker_validation_started"
-            elif [ "$_PARSED_TASK_MODE" != "checker-test" ] && \
+            elif [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] && \
                  [ -s "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" ] && \
                  ! file_contains "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "$SEEDED_PROGRESS_MARKER" && \
-                 grep -Eiq 'Current Phase:[[:space:]]*(implementation|implementing|editing|writing|patching)|Substantive progress:[[:space:]]*yes' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
-                _FP_SIGNAL="builder_editing_started"
+                 grep -Eiq '(Execution|Current) Phase:[[:space:]]*(contract-validation|complete)|Substantive progress:[[:space:]]*yes' "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null; then
+                _FP_SIGNAL="solution_contract_substantive"
             fi
         fi
         if [ -z "$_FP_SIGNAL" ] && valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
             _FP_SIGNAL="valid_report"
         fi
-        for _fp_file in "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md"; do
-            if [ -f "$_fp_file" ] && \
-               ! file_contains "$_fp_file" "$SEEDED_PROGRESS_MARKER|$SEEDED_REPORT_MARKER" && \
-               grep -Eiq 'blocker|stop|split|permission|approval|waiting' "$_fp_file" 2>/dev/null; then
-                BLOCKER_RECORDED=1
-                break
-            fi
-        done
         if [ -n "$_FP_SIGNAL" ]; then
             FIRST_PROGRESS_DETECTED=1
             FIRST_PROGRESS_SIGNAL="$_FP_SIGNAL"
             FIRST_PROGRESS_ELAPSED_SECONDS="$ELAPSED"
+            if [ "$WORKTREE_CHANGES" -gt 0 ] && [ "$LAST_PRODUCT_CHANGE_EPOCH" -eq 0 ]; then
+                # A very fast child may create its first product file before the
+                # first sampling loop, so the initial digest already contains it.
+                LAST_PRODUCT_CHANGE_EPOCH="$NOW_EPOCH"
+            fi
             if [ "$CLAUDE_CODE_TIMEOUT_SECONDS" -gt 0 ]; then
                 ACTIVE_EXECUTION_DEADLINE=$((NOW_EPOCH + CLAUDE_CODE_TIMEOUT_SECONDS))
                 if [ "$HARD_TIMEOUT_DEADLINE" -gt 0 ] && [ "$ACTIVE_EXECUTION_DEADLINE" -gt "$HARD_TIMEOUT_DEADLINE" ]; then
@@ -3448,6 +3946,64 @@ while claude_is_running; do
                 break
             fi
         fi
+    fi
+
+    # Editing readiness prevents immediate interruption but is not durable
+    # execution evidence. It receives one short bridge window to produce a
+    # real product delta; it never refreshes the full active window by itself.
+    if [ "$EDIT_READY_DETECTED" -eq 1 ] && [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && \
+       [ "$CLAUDE_CODE_EDIT_READY_GRACE_SECONDS" -gt 0 ] && \
+       [ $((ELAPSED - EDIT_READY_ELAPSED_SECONDS)) -ge "$CLAUDE_CODE_EDIT_READY_GRACE_SECONDS" ] && \
+       [ "$BLOCKER_RECORDED" -eq 0 ]; then
+        EDIT_READY_GRACE_EXPIRED=1
+        CLAUDE_TIMED_OUT=1
+        TIMEOUT_EXTENSION_REASON="declared_editing_without_output"
+        EXECUTION_ACTIVITY_STATE="declared-editing-without-output"
+        stop_claude "editing readiness produced no durable product write within ${CLAUDE_CODE_EDIT_READY_GRACE_SECONDS}s" "$ELAPSED"
+        break
+    fi
+
+    # After the first product delta, watch actual product-content digest rather
+    # than file count. Validation, assigned tail work, and explicit blockers are
+    # distinct phases where a quiet product diff is expected.
+    if [ "$LAST_PRODUCT_CHANGE_EPOCH" -gt 0 ]; then
+        PRODUCT_IDLE_SECONDS=$((NOW_EPOCH - LAST_PRODUCT_CHANGE_EPOCH))
+        if [ "$VALIDATION_EVIDENCE_ACTIVE" -eq 1 ]; then
+            EXECUTION_ACTIVITY_STATE="validation"
+            PRODUCT_IDLE_CONFIRMATION_COUNT=0
+        elif [ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 1 ] || [ "$COMPLETION_READY_DETECTED" -eq 1 ]; then
+            EXECUTION_ACTIVITY_STATE="tail-work"
+            PRODUCT_IDLE_CONFIRMATION_COUNT=0
+        elif [ "$BLOCKER_RECORDED" -eq 1 ]; then
+            EXECUTION_ACTIVITY_STATE="blocked"
+            PRODUCT_IDLE_CONFIRMATION_COUNT=0
+        elif [ "$CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS" -gt 0 ] && \
+             [ "$PRODUCT_IDLE_SECONDS" -ge "$CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS" ]; then
+            EXECUTION_ACTIVITY_STATE="implementation-idle"
+            PRODUCT_IDLE_CONFIRMATION_COUNT=$((PRODUCT_IDLE_CONFIRMATION_COUNT + 1))
+            progress_log "Product edit idle candidate: idle_seconds=${PRODUCT_IDLE_SECONDS}, confirmation=${PRODUCT_IDLE_CONFIRMATION_COUNT}/${CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS}, validation=no, tail=no, blocker=no"
+            if [ "$PRODUCT_IDLE_CONFIRMATION_COUNT" -ge "$CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS" ]; then
+                PRODUCT_IDLE_STOPPED=1
+                CLAUDE_TIMED_OUT=1
+                TIMEOUT_EXTENSION_REASON="product_idle_confirmed"
+                stop_claude "product content unchanged for ${PRODUCT_IDLE_SECONDS}s across ${PRODUCT_IDLE_CONFIRMATION_COUNT} confirmations" "$ELAPSED"
+                break
+            fi
+        else
+            EXECUTION_ACTIVITY_STATE="implementation-active"
+            PRODUCT_IDLE_CONFIRMATION_COUNT=0
+        fi
+    elif [ "$EDIT_READY_DETECTED" -eq 1 ]; then
+        EXECUTION_ACTIVITY_STATE="implementation-ready"
+    fi
+
+    # The dispatcher already owns liveness, timeout, artifact, and worktree
+    # sampling. Publish only material changes so an observing Codex can block on
+    # this file instead of running ps/tail or starting a second polling watcher.
+    _MONITOR_MATERIAL_DIGEST="${RESULT_BYTES}|${STATUS_BYTES}|${CURRENT_REPORT_HASH}|${CURRENT_PROGRESS_SEMANTIC_HASH}|${WORKTREE_CHANGES}|${CURRENT_WORKTREE_DIGEST}|${FIRST_PROGRESS_DETECTED}|${FIRST_PROGRESS_SIGNAL}|${EDIT_READY_DETECTED}|${EXECUTION_ACTIVITY_STATE}|${PRODUCT_IDLE_CONFIRMATION_COUNT}|${BLOCKER_RECORDED}|${IMPLEMENTATION_COMPLETE_DETECTED}|${COMPLETION_READY_DETECTED}|${VALIDATION_STARTED_ELAPSED_SECONDS}"
+    if [ "$_MONITOR_MATERIAL_DIGEST" != "$_LAST_MONITOR_MATERIAL_DIGEST" ]; then
+        monitor_event "event=material-change running=yes terminal=no elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET_SECONDS} result_bytes=${RESULT_BYTES} status_bytes=${STATUS_BYTES} report_bytes=${REPORT_BYTES} progress_bytes=${CLAUDE_PROGRESS_BYTES} worktree_changes=${WORKTREE_CHANGES} first_progress=${FIRST_PROGRESS_DETECTED} first_progress_signal=${FIRST_PROGRESS_SIGNAL:-none} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} blocker=${BLOCKER_RECORDED} implementation_complete=${IMPLEMENTATION_COMPLETE_DETECTED} completion_ready=${COMPLETION_READY_DETECTED}"
+        _LAST_MONITOR_MATERIAL_DIGEST="$_MONITOR_MATERIAL_DIGEST"
     fi
 
     # --- Spec item 2: approval-blocked early convergence ---
@@ -3492,7 +4048,7 @@ while claude_is_running; do
         break
     fi
 
-    if [ "$FIRST_PROGRESS_DETECTED" -eq 0 ]; then
+    if [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && [ "$EDIT_READY_DETECTED" -eq 0 ]; then
         if [ "$CONTEXT_ACQUISITION_DEADLINE" -gt 0 ] && [ "$NOW_EPOCH" -ge "$CONTEXT_ACQUISITION_DEADLINE" ]; then
             CLAUDE_TIMED_OUT=1
             TIMEOUT_EXTENSION_REASON="context_acquisition_expired"
@@ -3520,7 +4076,7 @@ while claude_is_running; do
             EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
             EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
             EXTENSION_START_REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
-            EXTENSION_START_PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
+            EXTENSION_START_PROGRESS_HASH="$(progress_semantic_hash "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
             progress_log "Single growth extension started: active_window=${CLAUDE_CODE_TIMEOUT_SECONDS}s, extension=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s, deadline_epoch=${TIMEOUT_EXTENSION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}, recent_activity_seconds=${_RECENT_ACTIVITY_SECONDS}"
         else
             CLAUDE_TIMED_OUT=1
@@ -3542,9 +4098,25 @@ CLAUDE_STATUS=$?
 set -e
 
 # --- Spec item 4: distinct child exit detection and finalization transition ---
-# Log the moment the Claude child is detected as no longer running.
-# No extra waiting is introduced; finalization begins immediately.
-progress_log "Claude child exited: pid=${CLAUDE_PID}, exit_status=${CLAUDE_STATUS}; transitioning to finalization immediately"
+# Log the moment the Claude child is detected as no longer running, then allow
+# one bounded filesystem drain so exit-adjacent writes are included.
+progress_log "Claude child exited: pid=${CLAUDE_PID}, exit_status=${CLAUDE_STATUS}; entering bounded terminal drain"
+monitor_event "event=child-exited running=no terminal=no exit_status=${CLAUDE_STATUS}"
+
+_DRAIN_INITIAL_DIGEST="$(worktree_digest)"
+_DRAIN_FINAL_DIGEST="$_DRAIN_INITIAL_DIGEST"
+_DRAIN_CHANGED=0
+if [ "$CLAUDE_CODE_TERMINAL_DRAIN_SECONDS" -gt 0 ]; then
+    sleep "$CLAUDE_CODE_TERMINAL_DRAIN_SECONDS"
+    _DRAIN_FINAL_DIGEST="$(worktree_digest)"
+    if [ "$_DRAIN_FINAL_DIGEST" != "$_DRAIN_INITIAL_DIGEST" ]; then
+        _DRAIN_CHANGED=1
+        sleep "$CLAUDE_CODE_TERMINAL_DRAIN_SECONDS"
+        _DRAIN_FINAL_DIGEST="$(worktree_digest)"
+    fi
+fi
+progress_log "Terminal drain complete: seconds=${CLAUDE_CODE_TERMINAL_DRAIN_SECONDS}, late_change_detected=${_DRAIN_CHANGED}, final_digest=${_DRAIN_FINAL_DIGEST:-none}"
+monitor_event "event=terminal-drain running=no terminal=no late_change_detected=${_DRAIN_CHANGED}"
 
 END_EPOCH="$(date +%s)"
 ELAPSED=$((END_EPOCH - START_EPOCH))
@@ -3585,6 +4157,12 @@ fi
     printf '  "validation_seconds_observed": %s,\n' "$_PHASE_VALIDATION_SECONDS"
     printf '  "validation_phase_observed": %s,\n' "$_PHASE_VALIDATION_OBSERVED"
     printf '  "first_progress_signal": "%s",\n' "${FIRST_PROGRESS_SIGNAL:-none}"
+    printf '  "edit_ready_observed": %s,\n' "$([ "$EDIT_READY_DETECTED" -eq 1 ] && echo true || echo false)"
+    printf '  "edit_ready_elapsed_seconds": %s,\n' "${EDIT_READY_ELAPSED_SECONDS:-null}"
+    printf '  "edit_ready_grace_expired": %s,\n' "$([ "$EDIT_READY_GRACE_EXPIRED" -eq 1 ] && echo true || echo false)"
+    printf '  "final_execution_activity_state": "%s",\n' "$EXECUTION_ACTIVITY_STATE"
+    printf '  "final_product_idle_seconds": %s,\n' "$PRODUCT_IDLE_SECONDS"
+    printf '  "product_idle_stopped": %s,\n' "$([ "$PRODUCT_IDLE_STOPPED" -eq 1 ] && echo true || echo false)"
     printf '  "implementation_complete_observed": %s,\n' "$([ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 1 ] && echo true || echo false)"
     printf '  "completion_ready_observed": %s,\n' "$([ "$COMPLETION_READY_DETECTED" -eq 1 ] && echo true || echo false)"
     printf '  "completion_ready_elapsed_seconds": %s,\n' "${COMPLETION_READY_ELAPSED_SECONDS:-null}"
@@ -4222,7 +4800,7 @@ if [ "$VALID_CLAUDE_REPORT" -eq 1 ] && [ -n "$PYTHON_CMD" ] && [ -f "$_REPORT_VE
     if "$PYTHON_CMD" "$_REPORT_VERIFIER" \
         --report "${WORKTREE_DIR}/CLAUDE_REPORT.md" \
         --worktree "$WORKTREE_DIR" \
-        --base "$BASE_COMMIT" \
+        --base "$WORKTREE_START_COMMIT" \
         --output "$REPORT_CONSISTENCY_FILE"; then
         REPORT_CONSISTENCY_STATUS="$($PYTHON_CMD - "$REPORT_CONSISTENCY_FILE" <<'PYEOF' 2>/dev/null || echo error
 import json, sys
@@ -4301,6 +4879,30 @@ if [ -n "${_REVIEWED_CONTINUATION_TASK_ID:-}" ]; then
     fi
 fi
 
+# Test-writing Checker output is mechanically enforced after the model exits.
+# This turns write scope, non-empty files, syntax, and per-file validation into
+# evidence rather than relying only on prompt compliance. Transport/no-progress
+# failures retain their original classification and do not become scope errors.
+CHECKER_CONTRACT_VIOLATION=0
+if [ "$_CHECKER_WRITES_TESTS" -eq 1 ] && \
+   [ "$CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT" -eq 1 ] && \
+   { [ "$IMPLEMENTATION_CHANGES" -gt 0 ] || [ "$VALID_CLAUDE_REPORT" -eq 1 ]; }; then
+    _CHECKER_ENFORCER="${SCRIPT_DIR}/enforce-checker-contract.py"
+    if [ -z "$PYTHON_CMD" ] || [ ! -f "$_CHECKER_ENFORCER" ]; then
+        CHECKER_CONTRACT_VIOLATION=1
+        progress_log "Checker runtime enforcement unavailable: Python/helper missing"
+    elif ! "$PYTHON_CMD" "$_CHECKER_ENFORCER" \
+        --worktree "$WORKTREE_DIR" \
+        --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
+        --output "$CHECKER_CONTRACT_RECEIPT_FILE" \
+        --timeout "$CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS" >/dev/null; then
+        CHECKER_CONTRACT_VIOLATION=1
+        progress_log "Checker runtime enforcement FAILED: ${CHECKER_CONTRACT_RECEIPT_FILE}"
+    else
+        progress_log "Checker runtime enforcement PASSED: ${CHECKER_CONTRACT_RECEIPT_FILE}"
+    fi
+fi
+
 DISPATCH_EVIDENCE_STATE="$(classify_dispatch_evidence "$IMPLEMENTATION_CHANGES" "$VALID_CLAUDE_REPORT" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
 if [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ] && \
    [ "${FIRST_PROGRESS_DETECTED:-0}" -eq 0 ] && \
@@ -4324,6 +4926,8 @@ if [ "${PLANNER_OUTPUT_SCOPE_VIOLATION:-0}" -eq 1 ]; then
     DISPATCH_OUTCOME="scope_violation"
 elif [ "${PLANNER_CONTRACT_MISSING:-0}" -eq 1 ]; then
     DISPATCH_OUTCOME="missing_required_artifact"
+elif [ "${CHECKER_CONTRACT_VIOLATION:-0}" -eq 1 ]; then
+    DISPATCH_OUTCOME="checker_contract_violation"
 elif [ "${ADVISOR_POST_RUN_SCOPE_VIOLATION:-0}" -eq 1 ]; then
     # Post-run scope violation is a semantic failure; never report acceptance/merge.
     DISPATCH_OUTCOME="scope_violation"
@@ -4342,7 +4946,11 @@ elif [ "$ZERO_OUTPUT_PROBE_CONCLUSION" = "unavailable-in-current-environment" ] 
     # but it still must not count toward takeover.
     DISPATCH_OUTCOME="network_error"
 elif [ "$CLAUDE_TIMED_OUT" -eq 1 ] || [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] || [ "${CLAUDE_FIRST_PROGRESS_TIMED_OUT:-0}" -eq 1 ]; then
-    DISPATCH_OUTCOME="timeout"
+    if [ "${_STARTUP_PROBE_CONCLUSION:-not-run}" = "available" ]; then
+        DISPATCH_OUTCOME="execution_timeout"
+    else
+        DISPATCH_OUTCOME="timeout"
+    fi
 elif [ "$RESULT_FALLBACK_GENERATED" -eq 1 ]; then
     DISPATCH_OUTCOME="fallback"
 elif [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; then
@@ -4446,6 +5054,7 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; th
         --direction "$ADVISOR_DIRECTION" --error-text-file "$STATUS_FILE"
         --blocker-kind "$ADVISOR_BLOCKER_KIND"
         --delegation-mode "${AI_WORKFLOW_DELEGATION_MODE:-unknown}"
+        --retry-ordinal "${_RETRY_ORDINAL:-0}"
     )
     if [ "$ADVISOR_USED" = "true" ]; then _ATTEMPT_ARGS+=(--advisor-used); fi
     if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then _ATTEMPT_ARGS+=(--valid-report); fi
@@ -4459,6 +5068,22 @@ v=json.load(open(sys.argv[1], encoding="utf-8"))
 print("\t".join(str(v.get(k, "unknown")).lower() if isinstance(v.get(k), bool) else str(v.get(k, "unknown")) for k in ("failure_class", "counts_toward_takeover", "recommended_action", "same_worktree_retry_eligible")))
 PYEOF
         )
+    fi
+fi
+
+_TAKEOVER_PRIOR_TASK_ID="${_REVIEWED_CONTINUATION_TASK_ID:-${_ADVISOR_CONTINUE_TASK_ID:-${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}}}"
+if [ -n "$_TAKEOVER_PRIOR_TASK_ID" ] && [ -s "$ATTEMPT_CLASSIFICATION_FILE" ] && \
+   [ -s "${WORKTREE_ROOT}/${_TAKEOVER_PRIOR_TASK_ID}.attempt-classification.json" ] && \
+   [ -f "${SCRIPT_DIR}/build-takeover-receipt.py" ]; then
+    if "$PYTHON_CMD" "${SCRIPT_DIR}/build-takeover-receipt.py" \
+        --current "$ATTEMPT_CLASSIFICATION_FILE" \
+        --prior "${WORKTREE_ROOT}/${_TAKEOVER_PRIOR_TASK_ID}.attempt-classification.json" \
+        --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
+        --current-task-id "$TASK_ID" --prior-task-id "$_TAKEOVER_PRIOR_TASK_ID" \
+        --lineage-root-task-id "${_LINEAGE_ROOT_TASK_ID:-$_TAKEOVER_PRIOR_TASK_ID}" \
+        --output "$TAKEOVER_RECEIPT_FILE" >/dev/null 2>&1; then
+        ATTEMPT_RECOMMENDED_ACTION="codex-bounded-takeover"
+        progress_log "Bounded takeover receipt issued after two counted rounds: ${TAKEOVER_RECEIPT_FILE}"
     fi
 fi
 
@@ -4487,6 +5112,9 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] Zero-output API probe authoritative: ${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
     echo "[dispatch] Interaction health artifact: ${INTERACTION_HEALTH_FILE}"
     echo "[dispatch] Same-worktree retry eligible: ${ATTEMPT_SAME_WORKTREE_RETRY}"
+    if [ -s "$TAKEOVER_RECEIPT_FILE" ]; then
+        echo "[dispatch] Bounded takeover receipt: ${TAKEOVER_RECEIPT_FILE}"
+    fi
     echo "[dispatch] Route source: ${_ROUTE_SOURCE}"
     echo "[dispatch] Route mode: ${CLAUDE_CODE_PROXY_MODE}"
     echo "[dispatch] Advisor request valid: $([ "$ADVISOR_REQUEST_VALID" -eq 1 ] && echo yes || echo no)"
@@ -4858,6 +5486,8 @@ else
     } > "$REPORT_FILE"
 fi
 
+monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED}"
+
 echo "Report saved to: $REPORT_FILE"
 
 echo ""
@@ -4898,6 +5528,15 @@ echo "Raw Result:      $RAW_RESULT_FILE"
 echo "Status:          $STATUS_FILE"
 echo "Network Log:     $NETWORK_FILE"
 echo "Attempt Class:   $ATTEMPT_CLASSIFICATION_FILE"
+if [ -s "$DIRTY_SNAPSHOT_RECEIPT_FILE" ]; then
+    echo "Dirty Snapshot:  $DIRTY_SNAPSHOT_RECEIPT_FILE"
+fi
+if [ -s "$CHECKER_CONTRACT_RECEIPT_FILE" ]; then
+    echo "Checker Contract:$CHECKER_CONTRACT_RECEIPT_FILE"
+fi
+if [ -s "$TAKEOVER_RECEIPT_FILE" ]; then
+    echo "Takeover Receipt: $TAKEOVER_RECEIPT_FILE"
+fi
 echo "Startup Probe:   $STARTUP_INTERACTION_HEALTH_FILE"
 echo "API Probe:       $INTERACTION_HEALTH_FILE"
 if [ -n "$ADVISOR_CONTINUATION_AUDIT_FILE" ]; then
@@ -4917,6 +5556,7 @@ echo "Dispatcher PID:  $DISPATCHER_PID_FILE"
 echo "Claude Role PID: $CLAUDE_PID_FILE"
 echo "Checker PID:     $CHECKER_PID_FILE"
 echo "Progress Log:    $PROGRESS_FILE"
+echo "Wait for Event:  bash \"$MONITOR_SCRIPT\" wait \"$TASK_ID\" --until material"
 echo "Watch Progress:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\""
 echo "Watch Details:   bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"
 echo ""

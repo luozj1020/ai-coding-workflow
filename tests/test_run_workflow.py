@@ -174,6 +174,9 @@ class TestRunWorkflowPreview(unittest.TestCase):
                 "multi_phase_task": True,
                 "symbols": ["run_lifecycle"],
                 "constraints": ["preserve Task JSON schema"],
+                "interface_signatures": ["run_lifecycle(task_path: Path, run_dir_base: Path) -> dict"],
+                "runnable_examples": ["result = run_lifecycle(task_path=task, run_dir_base=out)"],
+                "async_contract": "synchronous function; do not await",
             }
             task_path = write_task(tmp, task)
             result = run_workflow.run_lifecycle(
@@ -196,6 +199,9 @@ class TestRunWorkflowPreview(unittest.TestCase):
             self.assertIn("## Claude Solution Planner Contract", card)
             self.assertIn("run_lifecycle", card)
             self.assertIn("preserve Task JSON schema", card)
+            self.assertIn("run_lifecycle(task_path: Path", card)
+            self.assertIn("synchronous function; do not await", card)
+            self.assertRegex(card, r"Interface evidence hash \| [0-9a-f]{64}")
             self.assertNotIn("<!-- one observable outcome -->", card)
             plan = json.loads((run_dir / "execution-plan.json").read_text())
             self.assertEqual(plan["task_card_components"], ["core", "solution-planner"])

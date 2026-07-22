@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -63,6 +64,13 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "cleanup-worktree.sh").exists())
             self.assertTrue((repo / "ai" / "pwsh-utf8.ps1").exists())
             self.assertTrue((repo / "ai" / "code-search-service.py").exists())
+            self.assertTrue((repo / "ai" / "process-identity.py").exists())
+            self.assertTrue((repo / "ai" / "dispatch-preflight.py").exists())
+            self.assertTrue((repo / "ai" / "archive-control-files.py").exists())
+            self.assertTrue((repo / "ai" / "build-takeover-receipt.py").exists())
+            self.assertTrue((repo / "ai" / "create-dirty-snapshot.py").exists())
+            self.assertTrue((repo / "ai" / "enforce-checker-contract.py").exists())
+            self.assertTrue((repo / "ai" / "compare-transfer-pilot.py").exists())
             self.assertTrue((repo / "ai" / "install_context_tools.py").exists())
             self.assertTrue((repo / "ai" / "locate-code.py").exists())
             self.assertTrue((repo / "ai" / "summarize-loop-run.py").exists())
@@ -93,6 +101,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "init-workflow-state.py").exists())
             self.assertTrue((repo / "ai" / "apply-workflow-delta.py").exists())
             self.assertTrue((repo / "ai" / "validate-workflow-state.py").exists())
+            self.assertTrue((repo / "ai" / "recover-workflow-state.py").exists())
             self.assertTrue((repo / "ai" / "render-task-card-from-state.py").exists())
             self.assertTrue((repo / "ai" / "build-handoff-delta.py").exists())
             self.assertTrue((repo / "ai" / "validate-handoff-ack.py").exists())
@@ -1026,25 +1035,106 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertEqual(snapshots, [snapshots[0]] if snapshots else [], stdout)
             self.assertEqual(len(snapshots), 1, stdout)
 
-    def test_monitor_helper_is_installed_with_background_lifecycle(self):
+    def test_monitor_helper_is_installed_for_wait_and_decision(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
             self.run_installer(repo)
             monitor = repo / "ai" / "monitor-claude.sh"
             self.assertTrue(monitor.exists())
             self.assertTrue((repo / "ai" / "claude-monitor-decision.py").exists())
-            self.assertTrue((repo / "ai" / "claude-monitor-supervisor.py").exists())
+            self.assertTrue((repo / "ai" / "codegraph-worktree-guard.py").exists())
             self.assertTrue((repo / "ai" / "parallel-task-gate.py").exists())
             text = monitor.read_text(encoding="utf-8")
-            for action in ("start)", "status)", "tail)", "decision)", "stop)"):
+            for action in ("wait)", "decision)"):
                 self.assertIn(action, text)
             self.assertIn("monitor-events.log", text)
             self.assertIn("--mode monitor-triage", text)
-            self.assertIn("claude-monitor-supervisor.py", text)
             watch = (repo / "ai" / "watch-claude.sh").read_text(encoding="utf-8")
             dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
             self.assertIn("deferred-machine-monitor", watch)
-            self.assertIn("CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS", dispatch)
+            self.assertIn('event=material-change running=yes terminal=no', dispatch)
+            self.assertIn('event=terminal running=no terminal=yes', dispatch)
+            self.assertIn('Wait for Event:', dispatch)
+            self.assertNotIn("ps -o pid,ppid,stat,etime,cmd --ppid", text + watch + dispatch)
+            self.assertNotIn("date '+%T'", text + watch + dispatch)
+
+    def test_monitor_wait_returns_existing_terminal_event_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-event-wait"
+            worktrees = repo / ".worktrees"
+            worktrees.mkdir(exist_ok=True)
+            terminal = (
+                f"monitor_event source=dispatcher task_id={task_id} "
+                "event=terminal running=no terminal=yes exit_status=0 dispatch_outcome=success\n"
+            )
+            (worktrees / f"{task_id}.monitor-events.log").write_text(terminal, encoding="utf-8")
+            result = subprocess.run(
+                [load_module()._find_bash(), str(repo / "ai" / "monitor-claude.sh"),
+                 "wait", task_id, "--until", "terminal", "--timeout", "2", "--spark", "off"],
+                cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True, timeout=10,
+            )
+            self.assertTrue(result.stdout.startswith(terminal), result.stdout)
+            self.assertIn("triage_source=local", result.stdout)
+            self.assertIn("spark_status=disabled", result.stdout)
+
+    def test_monitor_wait_blocks_until_new_material_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-material-wait"
+            worktrees = repo / ".worktrees"
+            worktrees.mkdir(exist_ok=True)
+            event_log = worktrees / f"{task_id}.monitor-events.log"
+            event_log.write_text(
+                f"monitor_event source=dispatcher task_id={task_id} event=started running=yes terminal=no\n",
+                encoding="utf-8",
+            )
+            bash_exe = load_module()._find_bash()
+            sleeper = subprocess.Popen(
+                [bash_exe, "-c", "echo $$; exec sleep 20"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8",
+            )
+            waiter = None
+            try:
+                pid = sleeper.stdout.readline().strip()
+                sleeper.stdout.close()
+                (worktrees / f"{task_id}.dispatcher.pid").write_text(pid, encoding="utf-8")
+                waiter = subprocess.Popen(
+                    [bash_exe, str(repo / "ai" / "monitor-claude.sh"), "wait", task_id,
+                     "--until", "material", "--interval", "1", "--timeout", "5",
+                     "--spark", "off"],
+                    cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                time.sleep(1.2)
+                with event_log.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        f"monitor_event source=dispatcher task_id={task_id} "
+                        "event=child-exited running=no terminal=no exit_status=0\n"
+                    )
+                time.sleep(1.2)
+                self.assertIsNone(waiter.poll(), "child exit is not a review-ready boundary")
+                material = (
+                    f"monitor_event source=dispatcher task_id={task_id} "
+                    "event=material-change running=yes terminal=no worktree_changes=1\n"
+                )
+                with event_log.open("a", encoding="utf-8") as handle:
+                    handle.write(material)
+                stdout, stderr = waiter.communicate(timeout=10)
+                self.assertEqual(waiter.returncode, 0, stderr)
+                self.assertTrue(stdout.startswith(material), stdout)
+                self.assertIn("triage_source=local", stdout)
+                self.assertIn("spark_status=disabled", stdout)
+            finally:
+                if waiter is not None and waiter.poll() is None:
+                    waiter.kill()
+                    waiter.wait(timeout=10)
+                sleeper.terminate()
+                sleeper.wait(timeout=10)
 
     def test_status_defaults_to_bounded_local_decision(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1080,7 +1170,8 @@ class InstallWorkflowTests(unittest.TestCase):
                 "  if [ \"$1\" = --brief-file ]; then cp \"$2\" \"$FAKE_CAPTURE\"; shift 2; else shift; fi\n"
                 "done\n"
                 "printf '%s\\n' 'decision=inspect' 'confidence=medium' "
-                "'reason_code=bounded-review' 'codex_review_required=yes' 'interrupt_authorized=no'\n",
+                "'reason_code=bounded-review' 'summary=compressed idle diagnosis' "
+                "'codex_review_required=yes' 'interrupt_authorized=no'\n",
                 encoding="utf-8",
             )
             fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
@@ -1095,14 +1186,55 @@ class InstallWorkflowTests(unittest.TestCase):
             packet = json.loads(capture.read_text(encoding="utf-8"))
             self.assertEqual(packet["interrupt_authorized"], "no")
             self.assertNotIn("process_listing", packet)
-            self.assertEqual(result.stdout.count("\n"), 10)
+            self.assertLess(len(json.dumps(packet)), 4096)
             self.assertIn("triage_source=spark", result.stdout)
+            self.assertIn("summary=compressed idle diagnosis", result.stdout)
+            self.assertIn("compression_source=spark", result.stdout)
+            self.assertIn("raw_evidence_forwarded=no", result.stdout)
             self.assertIn("codex_review_required=yes", result.stdout)
             self.assertIn("interrupt_authorized=no", result.stdout)
             self.assertIn("execution_phase=unknown", result.stdout)
             self.assertIn("implementation_complete=unknown", result.stdout)
             self.assertIn("completion_ready=unknown", result.stdout)
             self.assertIn("finish_recommended=no", result.stdout)
+
+    def test_monitor_wait_compresses_boundary_through_spark(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-wait-spark"
+            worktrees = self._setup_worktree(repo, task_id)
+            terminal = (
+                f"monitor_event source=dispatcher task_id={task_id} "
+                "event=terminal running=no terminal=yes exit_status=1 dispatch_outcome=timeout\n"
+            )
+            (worktrees / f"{task_id}.monitor-events.log").write_text(terminal, encoding="utf-8")
+            capture = repo / "wait-compact-input.json"
+            fake = repo / "ai" / "run-codex-spark.sh"
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "while [ $# -gt 0 ]; do\n"
+                "  if [ \"$1\" = --brief-file ]; then cp \"$2\" \"$FAKE_CAPTURE\"; shift 2; else shift; fi\n"
+                "done\n"
+                "printf '%s\\n' 'decision=inspect' 'confidence=high' "
+                "'reason_code=compressed-timeout'\n",
+                encoding="utf-8",
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+            env = os.environ.copy()
+            env["FAKE_CAPTURE"] = str(capture)
+            result = subprocess.run(
+                [load_module()._find_bash(), str(repo / "ai" / "monitor-claude.sh"),
+                 "wait", task_id, "--until", "terminal", "--spark", "on"],
+                cwd=str(repo), env=env, text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True, timeout=20,
+            )
+
+            self.assertTrue(result.stdout.startswith(terminal), result.stdout)
+            self.assertIn("triage_source=spark", result.stdout)
+            self.assertIn("reason_code=compressed-timeout", result.stdout)
+            packet = json.loads(capture.read_text(encoding="utf-8"))
+            self.assertNotIn("process_listing", packet)
 
     def test_watch_machine_line_overall_running_includes_dispatcher(self):
         """Watch machine line overall_running=yes when only dispatcher is alive."""
@@ -1641,7 +1773,8 @@ class InstallWorkflowTests(unittest.TestCase):
             dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
 
             self.assertIn("Claude child exited:", dispatch)
-            self.assertIn("transitioning to finalization immediately", dispatch)
+            self.assertIn("entering bounded terminal drain", dispatch)
+            self.assertIn("dispatcher finalizing artifacts", dispatch)
 
     def test_installed_dispatch_has_builder_mode_support(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1726,9 +1859,9 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("MCP config file not found", dispatch)
             self.assertIn("plugin path not found", dispatch)
 
-    def test_readme_docs_external_integration_gate_and_monitor_environment(self):
-        """Source English and Chinese READMEs must document the external
-        integration gate and monitoring environment caveat."""
+    def test_readme_docs_external_integration_gate_and_single_monitor_owner(self):
+        """Source and installed READMEs document the integration gate and
+        dispatcher-owned monitoring contract."""
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         readme_cn = (ROOT / "README_CN.md").read_text(encoding="utf-8")
         installed_readme = (ROOT / "assets" / "README.md").read_text(encoding="utf-8")
@@ -1741,9 +1874,7 @@ class InstallWorkflowTests(unittest.TestCase):
         self.assertIn("External integrations do not widen built-in Bash/Edit permissions", readme)
         self.assertIn("does not perform global config scan", readme)
         self.assertIn("contents and secrets are never recorded", readme)
-        self.assertIn("monitor-claude.sh start", readme)
-        self.assertIn("persistent dispatch or user-terminal environment", readme)
-        self.assertIn("visibility/environment evidence", readme)
+        self.assertIn("monitor-claude.sh wait", readme)
 
         # Chinese source README
         self.assertIn("## Claude 外部集成", readme_cn)
@@ -1751,8 +1882,7 @@ class InstallWorkflowTests(unittest.TestCase):
         self.assertIn("--bare", readme_cn)
         self.assertIn("仓库相对", readme_cn)
         self.assertIn("不会扩大内置 Bash/Edit 权限", readme_cn)
-        self.assertIn("monitor-claude.sh start", readme_cn)
-        self.assertIn("持久的 dispatch 或用户终端环境", readme_cn)
+        self.assertIn("monitor-claude.sh wait", readme_cn)
 
         # Installed README (assets/README.md)
         self.assertIn("## Claude External Integrations", installed_readme)

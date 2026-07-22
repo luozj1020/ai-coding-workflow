@@ -23,6 +23,23 @@ class ClaudeHealthcheckTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0], ["claude", "-p", "你好", "--bare", "--no-session-persistence", "--output-format", "json"])
         self.assertNotIn("HTTPS_PROXY", run.call_args.kwargs["env"])
 
+    def test_interaction_probe_classifies_workspace_trust_without_raw_output(self):
+        completed = mock.Mock(
+            returncode=1, stdout="", stderr="this workspace has not been trusted",
+        )
+        with mock.patch.object(health.subprocess, "run", return_value=completed):
+            result = health.interaction_probe("inherit", 40, "你好")
+        self.assertEqual(result["failure_category"], "workspace-not-trusted")
+        self.assertNotIn("stderr", result)
+
+    def test_interaction_probe_classifies_socket_failure(self):
+        completed = mock.Mock(
+            returncode=1, stdout="", stderr="Unable to connect to API (FailedToOpenSocket)",
+        )
+        with mock.patch.object(health.subprocess, "run", return_value=completed):
+            result = health.interaction_probe("inherit", 40, "你好")
+        self.assertEqual(result["failure_category"], "transport")
+
     def test_interaction_probe_extracts_json_usage_without_response_content(self):
         completed = mock.Mock(
             returncode=0,

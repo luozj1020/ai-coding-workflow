@@ -24,6 +24,8 @@ Use its candidate files, snippets, and suggested line reads to seed the task car
 
 Use CodeGraph for concrete files, symbols, callers, callees, dependencies, and impact radius when the query is narrow and bounded by a short timeout. Do not run repeated broad CodeGraph queries in large repositories.
 
+CodeGraph evidence is worktree-bound. Before using it, compare the current Git top level with `codegraph status . -j` fields `projectPath` and `worktreeMismatch`. A different worktree fails closed: do not quote, summarize, or place those results in a Context Packet. Fall back to LSP, `ai/locate-code.py`, targeted search, and targeted reads. In delegated execution, the dispatcher records `<task-id>.codegraph-worktree.json`; only `status=ready` permits graph use. Default `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` avoids rebuilding ephemeral indexes. Explicit `repair` may sync a current index or reindex the execution worktree when its expected value justifies the wall time.
+
 Use codegraph tools to find:
 
 - Who calls a function (callers)

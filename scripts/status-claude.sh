@@ -164,8 +164,11 @@ file_contains() {
 
 role_state() {
     local pid_file="$1"
+    local identity_file="${2:-}"
     if [ -f "$PROCESS_STATE_HELPER" ] && command -v python3 >/dev/null 2>&1; then
-        python3 "$PROCESS_STATE_HELPER" --pid-file "$pid_file" --progress-file "$PROGRESS_FILE"
+        _role_args=(--pid-file "$pid_file" --progress-file "$PROGRESS_FILE")
+        if [ -n "$identity_file" ]; then _role_args+=(--identity-file "$identity_file"); fi
+        python3 "$PROCESS_STATE_HELPER" "${_role_args[@]}"
     else
         if [ -f "$pid_file" ] && kill -0 "$(tr -d '[:space:]' < "$pid_file")" 2>/dev/null; then
             echo "running"
@@ -413,13 +416,13 @@ fi
 echo "Wait Policy: profile=${WAIT_PROFILE} startup_grace=${STARTUP_GRACE}s stale_after=${STALE_AFTER}s interrupt_after=${INTERRUPT_AFTER}s"
 
 # Spec item 3/4: role-aware PID reporting.
-DISPATCHER_STATE="$(role_state "$DISPATCHER_PID_FILE")"
-CLAUDE_ROLE_STATE="$(role_state "$CLAUDE_PID_FILE")"
-CHECKER_STATE="$(role_state "$CHECKER_PID_FILE")"
+DISPATCHER_STATE="$(role_state "$DISPATCHER_PID_FILE" "${PREFIX}.dispatcher.process.json")"
+CLAUDE_ROLE_STATE="$(role_state "$CLAUDE_PID_FILE" "${PREFIX}.claude.process.json")"
+CHECKER_STATE="$(role_state "$CHECKER_PID_FILE" "${PREFIX}.checker.process.json")"
 
 # Backward compatibility: if new PID files don't exist, fall back to legacy .pid
 if [ "$CLAUDE_ROLE_STATE" = "missing" ] && [ -f "$PID_FILE" ]; then
-    CLAUDE_ROLE_STATE="$(role_state "$PID_FILE")"
+    CLAUDE_ROLE_STATE="$(role_state "$PID_FILE" "${PREFIX}.claude.process.json")"
 fi
 
 # Backward-compatible PID display using legacy .pid file
