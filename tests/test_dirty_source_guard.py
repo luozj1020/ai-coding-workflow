@@ -15,6 +15,13 @@ DISPATCH = ROOT / "scripts" / "dispatch-to-claude.sh"
 CHECK_WORKTREE = ROOT / "scripts" / "check-worktree.sh"
 CLASSIFY_ATTEMPT = ROOT / "scripts" / "classify-claude-attempt.py"
 CLAUDE_HEALTHCHECK = ROOT / "scripts" / "claude-healthcheck.py"
+DISPATCH_PREFLIGHT = ROOT / "scripts" / "dispatch-preflight.py"
+PROCESS_IDENTITY = ROOT / "scripts" / "process-identity.py"
+CODEGRAPH_WORKTREE_GUARD = ROOT / "scripts" / "codegraph-worktree-guard.py"
+ARCHIVE_CONTROL_FILES = ROOT / "scripts" / "archive-control-files.py"
+BUILD_TAKEOVER_RECEIPT = ROOT / "scripts" / "build-takeover-receipt.py"
+CREATE_DIRTY_SNAPSHOT = ROOT / "scripts" / "create-dirty-snapshot.py"
+ENFORCE_CHECKER_CONTRACT = ROOT / "scripts" / "enforce-checker-contract.py"
 VALIDATE_ADVISOR_REQUEST = ROOT / "scripts" / "validate-advisor-request.py"
 VALIDATE_ADVISOR_RESPONSE = ROOT / "scripts" / "validate-advisor-response.py"
 WORKTREE_STATE_HASH = ROOT / "scripts" / "worktree_state_hash.py"
@@ -75,6 +82,13 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(DISPATCH, self.repo / "scripts" / "dispatch-to-claude.sh")
         shutil.copy2(CLASSIFY_ATTEMPT, self.repo / "scripts" / "classify-claude-attempt.py")
         shutil.copy2(CLAUDE_HEALTHCHECK, self.repo / "scripts" / "claude-healthcheck.py")
+        shutil.copy2(DISPATCH_PREFLIGHT, self.repo / "scripts" / "dispatch-preflight.py")
+        shutil.copy2(PROCESS_IDENTITY, self.repo / "scripts" / "process-identity.py")
+        shutil.copy2(CODEGRAPH_WORKTREE_GUARD, self.repo / "scripts" / "codegraph-worktree-guard.py")
+        shutil.copy2(ARCHIVE_CONTROL_FILES, self.repo / "scripts" / "archive-control-files.py")
+        shutil.copy2(BUILD_TAKEOVER_RECEIPT, self.repo / "scripts" / "build-takeover-receipt.py")
+        shutil.copy2(CREATE_DIRTY_SNAPSHOT, self.repo / "scripts" / "create-dirty-snapshot.py")
+        shutil.copy2(ENFORCE_CHECKER_CONTRACT, self.repo / "scripts" / "enforce-checker-contract.py")
         shutil.copy2(VALIDATE_ADVISOR_REQUEST, self.repo / "scripts" / "validate-advisor-request.py")
         shutil.copy2(VALIDATE_ADVISOR_RESPONSE, self.repo / "scripts" / "validate-advisor-response.py")
         shutil.copy2(WORKTREE_STATE_HASH, self.repo / "scripts" / "worktree_state_hash.py")
@@ -82,6 +96,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(MODEL_USAGE, self.repo / "scripts" / "model-usage.py")
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
+                   "scripts/dispatch-preflight.py", "scripts/process-identity.py",
+                   "scripts/codegraph-worktree-guard.py",
+                   "scripts/archive-control-files.py", "scripts/build-takeover-receipt.py",
+                   "scripts/create-dirty-snapshot.py", "scripts/enforce-checker-contract.py",
                    "scripts/validate-advisor-request.py", "scripts/validate-advisor-response.py",
                    "scripts/worktree_state_hash.py", "scripts/prepare-worktree-continuation.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/model-usage.py"], cwd=self.repo)
@@ -120,6 +138,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "  exit 0\n"
                 "fi\n"
                 "if [[ \"$*\" == *\"你好\"* ]]; then\n"
+                "  if [ \"${FAKE_CLAUDE_HEALTHCHECK_TRUST:-0}\" = 1 ]; then echo 'this workspace has not been trusted' >&2; exit 42; fi\n"
                 "  if [ \"${FAKE_CLAUDE_HEALTHCHECK_FAIL:-0}\" = 1 ]; then exit 42; fi\n"
                 "  printf '你好！\\n'\n"
                 "  exit 0\n"
@@ -179,7 +198,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
                 "    ;;\n"
                 "  builder-editing-phase)\n"
-                "    printf '%s\\n' 'Current Phase: implementation' 'Substantive progress: yes' > CLAUDE_PROGRESS.md\n"
+                "    printf '%s\\n' 'Current Phase: implementation' 'Context Acquisition Complete: yes' 'Planned First Write: src/example.py add implementation' > CLAUDE_PROGRESS.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
+                "    ;;\n"
+                "  worktree-change-validation)\n"
+                "    printf '# worktree change\\n' > NEW_FILE.md\n"
+                "    printf '%s\\n' 'Current Phase: validation' 'Validation command started' > CLAUDE_PROGRESS.md\n"
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
                 "    ;;\n"
                 "  checker-validation-start)\n"
@@ -231,6 +255,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
                 "    printf 'Progress update during extension.\\n' > CLAUDE_PROGRESS.md\n"
                 "    sleep \"${FAKE_CLAUDE_POST_PROGRESS_SLEEP:-4}\"\n"
+                "    ;;\n"
+                "  clock-only-progress)\n"
+                "    for i in 1 2 3 4 5; do\n"
+                "      printf '%s\\n' 'Current Phase: implementation' 'Substantive progress: yes' \"Last Update: ${i}\" > CLAUDE_PROGRESS.md\n"
+                "      sleep 1\n"
+                "    done\n"
+                "    ;;\n"
+                "  exit-adjacent-file)\n"
+                "    nohup bash -c 'sleep 0.2; printf late > LATE_FILE.py' >/dev/null 2>&1 &\n"
                 "    ;;\n"
                 "  advisor-request-valid)\n"
                 "    printf '# advisor request work\\n' > README.md\n"
@@ -295,6 +328,20 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "  \"advisor_used\": false\n"
                 "}\n"
                 "REQ_EOF\n"
+                "    ;;\n"
+                "  checker-valid)\n"
+                "    mkdir -p tests\n"
+                "    printf 'def test_ok():\\n    assert True\\n' > tests/test_fixture.py\n"
+                "    cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
+                "# Claude Modification Report\n\n"
+                "## Requirements Summary\nChecker test completed.\n\n"
+                "## Files Changed\n- tests/test_fixture.py\n\n"
+                "## Acceptance Criteria Mapping\n- test complete\n\n"
+                "## Out-of-Scope Confirmation\nNone.\n\n"
+                "## Plan Match\nfull\n\n"
+                "## Checks Run\n- single-file pytest passed\n\n"
+                "Implementation complete.\n"
+                "REPORT_EOF\n"
                 "    ;;\n"
                 "  success)\n"
                 "    cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
@@ -384,6 +431,43 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Worktree Strategy: reuse-managed", result.stdout)
         self.assertNotIn("Updating files:", result.stdout + result.stderr)
 
+    def test_test_writing_checker_gets_120_second_durable_output_deadline(self):
+        task = self._write_low_risk_checker_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Testing Responsibility\n\n| Responsibility | Owner |\n|---|---|\n"
+                "| Test writing | Claude |\n| Narrow validation | Claude |\n"
+                "\n## Scope\n\n- Write paths: tests/test_fixture.py\n"
+            )
+        result = self._dispatch("task-cards/CHECKER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
+        self.assertEqual(runtime["first_progress_timeout_seconds"], 120)
+        self.assertEqual(runtime["first_progress_action"], "stop")
+        self.assertFalse(str(runtime["task_tmpdir"]).startswith(str(self.repo)))
+        prompt = (self._artifact_path(result.stdout, "Worktree") / "CLAUDE_PROMPT.md").read_text(encoding="utf-8")
+        self.assertIn("After each test-file write", prompt)
+        self.assertIn("$TMPDIR", prompt)
+
+    def test_test_writing_checker_runtime_enforces_each_file(self):
+        task = self._write_low_risk_checker_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Testing Responsibility\n\n| Responsibility | Owner |\n|---|---|\n"
+                "| Test writing | Claude |\n| Narrow validation | Claude |\n"
+                "\n## Scope\n\n- Write paths: tests/test_fixture.py\n"
+                "\n| Runtime field | Value |\n|---|---|\n"
+                "| Per-file validation command | python -m pytest {path} -q |\n"
+            )
+        result = self._dispatch(
+            "task-cards/CHECKER.md", {"FAKE_CLAUDE_MODE": "checker-valid"}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        receipt_path = next((self.repo / ".worktrees").glob("claude-*.checker-contract.json"))
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertTrue(receipt["enforcement_passed"])
+        self.assertEqual(len(receipt["validations"]), 2)
+
     def test_missing_risk_cannot_be_replaced_by_duplicate(self):
         self._write_low_risk_checker_card(
             omit="Cross-module risk", duplicate="Security risk"
@@ -440,6 +524,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "CLAUDE_CODE_TIMEOUT_SECONDS": "30",
             "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
             "CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS": "0",
+            "CLAUDE_CODE_TERMINAL_DRAIN_SECONDS": "0",
         }
         if extra_env:
             env.update(extra_env)
@@ -535,6 +620,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Dispatch Complete", result.stdout)
         self.assertIn("Checker Report:", result.stdout)
         self.assertTrue(list((self.repo / ".worktrees").glob("claude-*.checker-report.md")))
+        event_logs = list((self.repo / ".worktrees").glob("claude-*.monitor-events.log"))
+        self.assertEqual(len(event_logs), 1)
+        events = event_logs[0].read_text(encoding="utf-8").splitlines()
+        self.assertIn("event=started", events[0])
+        self.assertIn("event=terminal", events[-1])
+        self.assertIn("terminal=yes", events[-1])
         rows = (self.repo / ".ai-workflow" / "model-usage.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(rows), 1)
         self.assertEqual(json.loads(rows[0])["role"], "claude")
@@ -797,6 +888,19 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Staged changes", result.stderr)
         self.assertIn("README.md", result.stderr)
 
+    def test_untracked_root_control_is_archived_and_does_not_block(self):
+        self._write_task_card()
+        (self.repo / "CLAUDE_PROGRESS.md").write_text("historical control\n", encoding="utf-8")
+
+        result = self._dispatch()
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        receipts = list((self.repo / ".worktrees").glob("claude-*.control-archive.json"))
+        self.assertEqual(len(receipts), 1)
+        receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+        self.assertEqual(receipt["archived_paths"], ["CLAUDE_PROGRESS.md"])
+        self.assertTrue((self.repo / "CLAUDE_PROGRESS.md").is_file())
+
     def test_allow_dirty_override_succeeds_with_warning(self):
         self._write_task_card()
         (self.repo / "scratch.txt").write_text("dirty\n", encoding="utf-8")
@@ -808,6 +912,51 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Dispatch Complete", result.stdout)
         self.assertIn("Source status saved to:", result.stdout)
         self.assertTrue(list((self.repo / ".worktrees").glob("claude-*.source-status.txt")))
+
+    def test_allow_dirty_blocks_task_relevant_untracked_module_missing_from_fresh_worktree(self):
+        card = self._write_task_card()
+        card.write_text(card.read_text(encoding="utf-8") + "\nTarget: `src/headless/`\n", encoding="utf-8")
+        (self.repo / "src/headless").mkdir(parents=True)
+        (self.repo / "src/headless/main.ts").write_text("new module\n", encoding="utf-8")
+
+        result = self._dispatch(extra_env={"CLAUDE_CODE_ALLOW_DIRTY_SOURCE": "1"})
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("dispatch preflight blocked", result.stderr)
+        evidence = list((self.repo / ".worktrees").glob("claude-*.dispatch-preflight.json"))
+        self.assertEqual(len(evidence), 1)
+        payload = json.loads(evidence[0].read_text(encoding="utf-8"))
+        self.assertEqual(payload["blocked_paths"], ["src/headless/main.ts"])
+
+    def test_dirty_snapshot_places_uncommitted_module_in_fresh_isolated_worktree(self):
+        card = self._write_task_card()
+        card.write_text(card.read_text(encoding="utf-8") + "\nTarget: `src/headless/`\n", encoding="utf-8")
+        (self.repo / "src/headless").mkdir(parents=True)
+        (self.repo / "src/headless/main.ts").write_text("new module\n", encoding="utf-8")
+        source_head = self._run(["git", "rev-parse", "HEAD"]).stdout.strip()
+
+        result = self._dispatch(extra_env={"CLAUDE_CODE_DIRTY_SOURCE_MODE": "snapshot"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        receipt_path = next((self.repo / ".worktrees").glob("claude-*.dirty-snapshot.json"))
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        runtime_path = next((self.repo / ".worktrees").glob("claude-*.runtime.json"))
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        worktree = pathlib.Path(runtime["worktree"])
+        self.assertEqual((worktree / "src/headless/main.ts").read_text(encoding="utf-8"), "new module\n")
+        self.assertEqual(runtime["base_commit"], source_head)
+        self.assertEqual(runtime["worktree_start_commit"], receipt["snapshot_commit"])
+        self.assertEqual(self._run(["git", "rev-parse", "HEAD"]).stdout.strip(), source_head)
+
+    def test_workspace_trust_preflight_stops_before_builder_window(self):
+        self._write_task_card()
+        result = self._dispatch(extra_env={"FAKE_CLAUDE_HEALTHCHECK_TRUST": "1"})
+        self.assertEqual(result.returncode, 75)
+        self.assertIn("workspace-not-trusted", result.stderr)
+        result_file = next((self.repo / ".worktrees").glob("claude-*.result.json"))
+        payload = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertEqual(payload["dispatch_outcome"], "preflight-blocked")
+        self.assertFalse(payload["builder_started"])
 
     def test_reuse_managed_worktree_requires_explicit_reset_when_existing(self):
         self._write_task_card()
@@ -954,6 +1103,18 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(pathlib.Path(runtime["source_repository"]), self.repo)
         self.assertEqual(len(runtime["base_commit"]), 40)
         self.assertEqual(runtime["strategy"], "fresh")
+        self.assertEqual(runtime["retry_ordinal"], 0)
+        self.assertEqual(runtime["lineage_root_task_id"], runtime["task_id"])
+        self.assertEqual(runtime["claude_session_mode"], "new")
+        self.assertEqual(len(runtime["claude_session_id"]), 36)
+        self.assertEqual(runtime["codegraph_policy"], "fallback")
+        self.assertEqual(runtime["codegraph_execution_status"], "not-requested")
+        self.assertFalse(runtime["codegraph_safe_to_use"])
+        codegraph_receipt = pathlib.Path(runtime["codegraph_worktree_receipt"])
+        self.assertTrue(codegraph_receipt.is_file())
+        receipt = json.loads(codegraph_receipt.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["reason"], "source-not-indexed")
+        self.assertIn("process_identity_files", runtime)
         self.assertNotIn("retry_of", runtime)
 
     def test_retry_in_place_reuses_prior_worktree_with_new_task_id(self):
@@ -972,7 +1133,46 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotEqual(first_runtime["task_id"], second_runtime["task_id"])
         self.assertEqual(second_runtime["retry_of"], prior_task_id)
         self.assertEqual(second_runtime["strategy"], "retry-in-place")
+        self.assertEqual(second_runtime["retry_ordinal"], 1)
+        self.assertEqual(second_runtime["lineage_root_task_id"], first_runtime["task_id"])
+        self.assertEqual(second_runtime["claude_session_mode"], "resume")
+        self.assertEqual(second_runtime["claude_session_resume_status"], "prior-runtime")
+        self.assertEqual(second_runtime["claude_session_id"], first_runtime["claude_session_id"])
         self.assertIn("retry-in-place", second.stdout)
+
+        third = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": second_runtime["task_id"]}
+        )
+        self.assertNotEqual(third.returncode, 0)
+        self.assertIn("retry budget exhausted", third.stderr)
+
+    def test_two_linked_execution_timeouts_issue_bounded_takeover_receipt(self):
+        task = self._write_builder_task_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write("\n## Scope\n\n- Write paths: README.md\n- Forbidden paths: deploy/\n")
+        timeout_env = {
+            "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+            "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "1",
+            "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "stop",
+            "FAKE_CLAUDE_MODE": "seed-only",
+        }
+        first = self._dispatch("task-cards/BUILDER.md", timeout_env)
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        first_runtime_path = self._artifact_path(first.stdout, "Runtime Identity")
+        first_task_id = json.loads(first_runtime_path.read_text(encoding="utf-8"))["task_id"]
+        first_attempt = json.loads(self._artifact_path(first.stdout, "Attempt Class").read_text(encoding="utf-8"))
+        self.assertEqual(first_attempt["failure_class"], "model-no-progress")
+
+        second = self._dispatch(
+            "task-cards/BUILDER.md",
+            {**timeout_env, "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": first_task_id},
+        )
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        receipt_path = self._artifact_path(second.stdout, "Takeover Receipt")
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["authorization"], "codex-bounded-takeover")
+        self.assertEqual(receipt["allowed_write_paths"], ["README.md"])
+        self.assertFalse(receipt["merge_authorized"])
 
     def test_retry_in_place_rejects_missing_runtime_json(self):
         self._write_task_card()
@@ -1038,6 +1238,13 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         sleeper, bash_pid = start_bash_sleeper()
         try:
             pid_file.write_text(bash_pid, encoding="utf-8")
+            identity_file = self.repo / ".worktrees" / f"{prior_task_id}.claude.process.json"
+            subprocess.run(
+                [sys.executable, str(self.repo / "scripts" / "process-identity.py"),
+                 "capture", "--pid", bash_pid, "--task-id", prior_task_id,
+                 "--role", "claude", "--output", str(identity_file)],
+                check=True, capture_output=True, text=True,
+            )
             result = self._dispatch(
                 extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
             )
@@ -1187,7 +1394,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("## Acceptance Criteria", claude_card)
         self.assertNotIn("execution-only view", claude_card.lower())
 
-    def test_execution_only_defaults_to_timeout_60_renders_smaller_card_with_short_prompt(self):
+    def test_execution_only_defaults_to_120_second_stop_and_compact_prompt(self):
         self._write_builder_task_card()
         capture = self.case_root / "execution-only-prompt.md"
         result = self._dispatch(
@@ -1198,8 +1405,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("First Progress:  60s observation", result.stdout)
+        self.assertIn("First Progress:  120s observation", result.stdout)
         self.assertIn("Builder Mode:    execution-only", result.stdout)
+        runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
+        self.assertEqual(runtime["first_progress_timeout_seconds"], 120)
+        self.assertEqual(runtime["first_progress_action"], "stop")
         worktree = self._artifact_path(result.stdout, "Worktree")
         claude_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
         self.assertIn("## Goal", claude_card)
@@ -1257,6 +1467,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("solution planner in a Codex/Claude Code workflow", prompt)
         self.assertIn("Do not edit product source", prompt)
         self.assertIn("Claude Solution Planner Contract", prompt)
+        self.assertIn("contract-validation", prompt)
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        progress = (worktree / "CLAUDE_PROGRESS.md").read_text(encoding="utf-8")
+        self.assertIn("Execution Phase: planning", progress)
 
     def test_batch_card_auto_selects_batch_prompt_and_minimal_tools(self):
         task = self._write_builder_task_card()
@@ -1338,7 +1552,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         result = self._dispatch("task-cards/BUILDER.md")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Builder Mode:    execution-only", result.stdout)
-        self.assertIn("First Progress:  60s observation", result.stdout)
+        self.assertIn("First Progress:  120s observation", result.stdout)
 
     def test_seed_only_stopped_at_short_deadline(self):
         self._write_builder_task_card()
@@ -1382,6 +1596,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             {
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
                 "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "0",
                 "FAKE_CLAUDE_MODE": "seed-only",
                 "FAKE_CLAUDE_HEALTHCHECK_FAIL": "1",
             },
@@ -1456,7 +1671,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("first_progress_detected=1", progress)
         self.assertIn("signal=valid_report", progress)
 
-    def test_builder_editing_phase_refreshes_active_window_once(self):
+    def test_builder_editing_readiness_does_not_count_as_durable_progress(self):
         self._write_builder_task_card()
         result = self._dispatch(
             "task-cards/BUILDER.md",
@@ -1465,14 +1680,57 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_TIMEOUT_SECONDS": "5",
                 "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "10",
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_EDIT_READY_GRACE_SECONDS": "2",
                 "FAKE_CLAUDE_MODE": "builder-editing-phase",
-                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "8",
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
-        self.assertEqual(progress.count("active_window_refreshed=yes"), 1)
-        self.assertIn("signal=builder_editing_started", progress)
+        metrics = json.loads(self._artifact_path(result.stdout, "Phase Metrics").read_text(encoding="utf-8"))
+        self.assertIn("Claude editing readiness declared", progress)
+        self.assertNotIn("signal=builder_editing_started", progress)
+        self.assertIn("editing readiness produced no durable product write", progress)
+        self.assertTrue(metrics["edit_ready_observed"])
+        self.assertTrue(metrics["edit_ready_grace_expired"])
+        self.assertEqual(metrics["first_progress_signal"], "none")
+
+    def test_product_edit_idle_requires_two_confirmations_before_stop(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS": "2",
+                "FAKE_CLAUDE_MODE": "worktree-change",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        metrics = json.loads(self._artifact_path(result.stdout, "Phase Metrics").read_text(encoding="utf-8"))
+        self.assertIn("confirmation=1/2", progress)
+        self.assertIn("confirmation=2/2", progress)
+        self.assertTrue(metrics["product_idle_stopped"])
+        self.assertEqual(metrics["final_execution_activity_state"], "implementation-idle")
+
+    def test_active_validation_exempts_product_idle_stop(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "1",
+                "CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS": "1",
+                "FAKE_CLAUDE_MODE": "worktree-change-validation",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "3",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        metrics = json.loads(self._artifact_path(result.stdout, "Phase Metrics").read_text(encoding="utf-8"))
+        self.assertFalse(metrics["product_idle_stopped"])
+        self.assertEqual(metrics["final_execution_activity_state"], "validation")
 
     def test_checker_validation_start_refreshes_active_window(self):
         self._write_low_risk_checker_card()
@@ -1705,6 +1963,38 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         # Claude finishes at 8s (4+4) before extension deadline at 10s (2+8)
         self.assertNotIn("extension expired", progress)
         self.assertIn("Dispatch outcome: success", status)
+
+    def test_clock_only_progress_rewrites_do_not_extend_window(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "4",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "5",
+                "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "0",
+                "FAKE_CLAUDE_MODE": "clock-only-progress",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertNotIn("Single growth extension started", progress)
+
+    def test_terminal_drain_captures_exit_adjacent_file(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "FAKE_CLAUDE_MODE": "exit-adjacent-file",
+                "CLAUDE_CODE_TERMINAL_DRAIN_SECONDS": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Terminal drain complete", progress)
+        untracked = self._artifact_path(result.stdout, "Untracked Files").read_text(encoding="utf-8")
+        self.assertIn("LATE_FILE.py", untracked)
 
     def test_seeded_only_no_growth_still_times_out(self):
         """No progress growth at base deadline → hard timeout, no extension."""
@@ -2399,8 +2689,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertIn("Startup interaction probe: conclusion=", progress)
 
-    def test_api_probe_mode_failure_only_skips_startup_probe(self):
-        """failure-only mode skips the startup probe but runs zero-output probe."""
+    def test_api_probe_mode_failure_only_skips_startup_probe_when_preflight_overridden(self):
+        """The diagnostic override preserves legacy failure-only probe behavior."""
         self._write_builder_task_card()
         result = self._dispatch(
             "task-cards/BUILDER.md",
@@ -2408,6 +2698,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
                 "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
                 "CLAUDE_CODE_API_PROBE_MODE": "failure-only",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "0",
                 "FAKE_CLAUDE_MODE": "seed-only",
             },
         )
@@ -2419,8 +2710,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         probe = json.loads(probe_path.read_text(encoding="utf-8"))
         self.assertIn("interaction_conclusion", probe)
 
-    def test_api_probe_mode_off_skips_all_probes(self):
-        """off mode skips all API probes; API Probe artifact is empty."""
+    def test_api_probe_mode_off_skips_all_probes_when_preflight_overridden(self):
+        """The diagnostic override lets off mode skip all API probes."""
         self._write_builder_task_card()
         result = self._dispatch(
             "task-cards/BUILDER.md",
@@ -2428,6 +2719,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
                 "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
                 "CLAUDE_CODE_API_PROBE_MODE": "off",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "0",
                 "FAKE_CLAUDE_MODE": "seed-only",
             },
         )

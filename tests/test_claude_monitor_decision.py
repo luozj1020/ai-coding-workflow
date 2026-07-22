@@ -89,6 +89,33 @@ class ClaudeMonitorDecisionTests(unittest.TestCase):
         self.assertEqual(value["finish_recommended"], "yes")
         self.assertEqual(value["interrupt_authorized"], "no")
 
+    def test_edit_ready_is_not_reported_as_durable_progress(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event event=material-change execution_state=implementation-ready "
+            "edit_ready=1 product_idle_seconds=0 idle_confirmations=0 running=yes"
+        )
+        with temporary, mock.patch.object(module, "role_state", return_value="running"):
+            value = module.snapshot(args)
+        self.assertEqual(value["decision"], "continue")
+        self.assertEqual(value["reason_code"], "editing-ready-awaiting-durable-write")
+        self.assertEqual(value["edit_ready"], "yes")
+        self.assertEqual(value["product_changes"], 0)
+
+    def test_product_idle_candidate_requests_bounded_diagnosis(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event event=material-change execution_state=implementation-idle "
+            "edit_ready=1 product_idle_seconds=190 idle_confirmations=1 "
+            "worktree_changes=2 running=yes"
+        )
+        with temporary, mock.patch.object(module, "role_state", return_value="running"):
+            value = module.snapshot(args)
+        self.assertEqual(value["decision"], "inspect")
+        self.assertEqual(value["reason_code"], "product-edit-idle-candidate")
+        self.assertEqual(value["product_idle_seconds"], 190)
+        self.assertEqual(value["idle_confirmations"], 1)
+
     def test_cli_json_is_bounded_and_machine_readable(self):
         temporary, args = self.make_case(
             "monitor_event monitor_level=L1 action=wait evidence_state=none "
@@ -103,6 +130,9 @@ class ClaudeMonitorDecisionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         value = json.loads(result.stdout)
         self.assertEqual(value["interrupt_authorized"], "no")
+        self.assertTrue(value["collected_at"])
+        self.assertTrue(value["observed_at"]["monitor_event"])
+        self.assertEqual(value["product_changes"], value["worktree_changes"])
         self.assertLess(len(result.stdout), 4096)
 
 

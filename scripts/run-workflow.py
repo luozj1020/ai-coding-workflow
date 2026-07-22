@@ -72,6 +72,13 @@ def _validation_command(value: Any) -> str:
     return str(value or "not assigned")
 
 
+def _card_cell(value: Any) -> str:
+    """Render bounded structured context safely inside a Markdown table cell."""
+    if isinstance(value, list):
+        value = "; ".join(str(item) for item in value)
+    return str(value or "not supplied").replace("|", "\\|").replace("\r", " ").replace("\n", "<br>")
+
+
 def _instantiate_delegation_card(
     template: str,
     composed: Dict[str, Any],
@@ -96,8 +103,23 @@ def _instantiate_delegation_card(
         for item in acceptance if isinstance(item, dict)
     ] or ["- [ ] Complete the observable goal inside the declared scope."]
     test_owner = "Claude" if facts.get("test_writing_required") else "Codex/local deterministic tools"
-    context_sufficient = "yes" if target_files and role != "solution-planner" else "bounded-planning"
+    interface_signatures = facts.get("interface_signatures", [])
+    runnable_examples = facts.get("runnable_examples", [])
+    async_contract = facts.get("async_contract", "")
+    interface_ready = bool(interface_signatures and runnable_examples and async_contract)
+    if facts.get("test_writing_required") and not interface_ready:
+        context_sufficient = "no — executable interface evidence missing"
+    else:
+        context_sufficient = "yes" if target_files and role != "solution-planner" else "bounded-planning"
     execution_only = "yes" if role == "execution-builder" and target_files else "no"
+    interface_material = {
+        "interface_signatures": interface_signatures,
+        "runnable_examples": runnable_examples,
+        "async_contract": async_contract,
+    }
+    interface_hash = content_hash(
+        json.dumps(interface_material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ) if any((interface_signatures, runnable_examples, async_contract)) else "not supplied"
 
     text = template.replace("<!-- stable task id -->", str(composed.get("id", facts.get("task_id", "unknown"))))
     text = text.replace("<!-- one observable outcome -->", str(composed.get("goal", "")))
@@ -121,6 +143,10 @@ def _instantiate_delegation_card(
         "| Field | Value |\n|---|---|\n"
         f"| Target files/modules | {', '.join(map(str, target_files)) or 'bounded discovery inside declared scope'} |\n"
         f"| Exact symbols/tests | {', '.join(map(str, facts.get('symbols', []))) or 'not supplied'} |\n"
+        f"| Exact interface signatures | {_card_cell(interface_signatures)} |\n"
+        f"| Runnable construction/call example | {_card_cell(runnable_examples)} |\n"
+        f"| Async/sync contract | {_card_cell(async_contract)} |\n"
+        f"| Interface evidence hash | {interface_hash} |\n"
         f"| Root-cause evidence or relevant excerpt | {facts.get('root_cause_evidence') or 'not applicable'} |\n"
         f"| Reference implementation/source of truth | {facts.get('source_of_truth_example') or 'task contract and existing repository patterns'} |\n"
         f"| Known constraints | {', '.join(map(str, facts.get('constraints', []))) or 'scope and acceptance below'} |\n"

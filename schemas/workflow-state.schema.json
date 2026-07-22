@@ -17,13 +17,13 @@
     "revision": {"type": "integer", "minimum": 0},
     "task_id": {"$ref": "#/$defs/nonempty"},
     "phase": {"enum": ["planning", "implementation", "verification", "review", "revision", "complete"]},
-    "repository_state_hash": {"$ref": "#/$defs/nonempty"},
+    "repository_state_hash": {"$ref": "#/$defs/hash"},
     "goal": {"$ref": "#/$defs/goal"},
     "constraints": {"type": "array", "items": {"$ref": "#/$defs/constraint"}},
     "accepted_decisions": {"type": "array", "items": {"$ref": "#/$defs/decision"}},
     "rejected_hypotheses": {"type": "array", "items": {"$ref": "#/$defs/rejectedHypothesis"}},
     "open_questions": {"type": "array", "items": {"$ref": "#/$defs/question"}},
-    "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true},
+    "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true},
     "acceptance_status": {
       "type": "object",
       "additionalProperties": {"$ref": "#/$defs/acceptance"}
@@ -57,7 +57,7 @@
       "properties": {
         "id": {"$ref": "#/$defs/nonempty"}, "statement": {"$ref": "#/$defs/nonempty"},
         "status": {"enum": ["accepted", "frozen"]},
-        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true}
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true}
       }
     },
     "rejectedHypothesis": {
@@ -66,7 +66,7 @@
       "properties": {
         "id": {"$ref": "#/$defs/nonempty"}, "statement": {"$ref": "#/$defs/nonempty"},
         "reason": {"$ref": "#/$defs/nonempty"},
-        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "minItems": 1, "uniqueItems": true}
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "minItems": 1, "uniqueItems": true}
       }
     },
     "question": {
@@ -80,7 +80,7 @@
       "properties": {
         "description": {"$ref": "#/$defs/nonempty"},
         "status": {"enum": ["pending", "satisfied", "failed", "blocked", "unknown"]},
-        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/nonempty"}, "uniqueItems": true}
+        "evidence_refs": {"type": "array", "items": {"$ref": "#/$defs/hash"}, "uniqueItems": true}
       }
     },
     "nextAction": {

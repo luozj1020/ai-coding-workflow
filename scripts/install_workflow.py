@@ -92,8 +92,15 @@ PYTHON_SCRIPTS = [
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
     ("claude-healthcheck.py", "ai/claude-healthcheck.py"),
     ("claude-monitor-decision.py", "ai/claude-monitor-decision.py"),
-    ("claude-monitor-supervisor.py", "ai/claude-monitor-supervisor.py"),
     ("claude-process-state.py", "ai/claude-process-state.py"),
+    ("codegraph-worktree-guard.py", "ai/codegraph-worktree-guard.py"),
+    ("process-identity.py", "ai/process-identity.py"),
+    ("dispatch-preflight.py", "ai/dispatch-preflight.py"),
+    ("archive-control-files.py", "ai/archive-control-files.py"),
+    ("build-takeover-receipt.py", "ai/build-takeover-receipt.py"),
+    ("create-dirty-snapshot.py", "ai/create-dirty-snapshot.py"),
+    ("enforce-checker-contract.py", "ai/enforce-checker-contract.py"),
+    ("compare-transfer-pilot.py", "ai/compare-transfer-pilot.py"),
     ("classify-claude-attempt.py", "ai/classify-claude-attempt.py"),
     ("verify-claude-report.py", "ai/verify-claude-report.py"),
     ("repository-scale.py", "ai/repository-scale.py"),
@@ -128,6 +135,7 @@ PYTHON_SCRIPTS = [
     ("init-workflow-state.py", "ai/init-workflow-state.py"),
     ("apply-workflow-delta.py", "ai/apply-workflow-delta.py"),
     ("validate-workflow-state.py", "ai/validate-workflow-state.py"),
+    ("recover-workflow-state.py", "ai/recover-workflow-state.py"),
     ("render-task-card-from-state.py", "ai/render-task-card-from-state.py"),
     ("build-handoff-delta.py", "ai/build-handoff-delta.py"),
     ("validate-handoff-ack.py", "ai/validate-handoff-ack.py"),
@@ -234,6 +242,10 @@ EXAMPLE_ASSETS = [
 WORKTREES_GITIGNORE_LINES = [
     "/.worktrees/*",
     "!/.worktrees/.gitkeep",
+]
+
+RETIRED_WORKFLOW_FILES = [
+    "ai/claude-monitor-supervisor.py",
 ]
 
 LOCAL_ONLY_EXCLUDE_LINES = [
@@ -729,10 +741,25 @@ def main(argv=None):
         "validated": [],
         "warned": [],
         "failed": [],
+        "removed": [],
     }
 
     if local_only:
         print("  mode: local-only control plane (.git/info/exclude, no .gitignore edits)")
+
+    # Remove retired generated helpers only when the caller explicitly opts in
+    # to refreshing managed workflow files.
+    for dest_rel in RETIRED_WORKFLOW_FILES:
+        dest = os.path.join(repo_path, dest_rel)
+        if not os.path.lexists(dest):
+            continue
+        if update_workflow_files:
+            os.unlink(dest)
+            results["removed"].append(dest_rel)
+            print(f"  removed: {dest_rel} (retired workflow helper)")
+        else:
+            results["outdated"].append(f"{dest_rel} (retired; use --update-workflow-files)")
+            print(f"  outdated: {dest_rel} (retired; use --update-workflow-files)")
 
     # --- Install AGENTS.md (managed) ---
     src = os.path.join(assets_dir, "AGENTS.md")
@@ -827,7 +854,7 @@ def main(argv=None):
 
     # --- Print summary ---
     print("\n=== Installation Summary ===")
-    for label, key in [("Created", "created"), ("Updated", "updated"), ("Outdated", "outdated"), ("Skipped", "skipped")]:
+    for label, key in [("Created", "created"), ("Updated", "updated"), ("Removed", "removed"), ("Outdated", "outdated"), ("Skipped", "skipped")]:
         print(f"  {label}:   {len(results[key])} files")
         for f in results[key]:
             print(f"    + {f}")

@@ -89,9 +89,22 @@ def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]
         )
         elapsed = round(time.monotonic() - started, 3)
         success = result.returncode == 0 and bool(result.stdout.strip())
+        diagnostic_text = (result.stderr + "\n" + result.stdout).lower()
+        if success:
+            failure_category = None
+        elif "workspace" in diagnostic_text and "trust" in diagnostic_text:
+            failure_category = "workspace-not-trusted"
+        elif any(token in diagnostic_text for token in (
+            "failedtoopensocket", "unable to connect", "connection reset",
+            "connection refused", "network", "socket", "timed out",
+        )):
+            failure_category = "transport"
+        else:
+            failure_category = "cli-error"
         probe: Dict[str, Any] = {
             "route": route, "success": success,
             "exit_code": result.returncode, "elapsed_seconds": elapsed, "timed_out": False,
+            "failure_category": failure_category,
         }
         # Extract usage/cost from JSON output when available.
         # A non-empty legacy response may still establish interaction with
@@ -134,7 +147,8 @@ def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]
     except subprocess.TimeoutExpired:
         return {"route": route, "success": False, "exit_code": None,
                 "elapsed_seconds": round(time.monotonic() - started, 3), "timed_out": True,
-                "usage_extracted": False, "cost_usd": "unavailable"}
+                "usage_extracted": False, "cost_usd": "unavailable",
+                "failure_category": "timeout"}
 
 
 def restricted_network_environment(probe_environment: str = "auto") -> bool:

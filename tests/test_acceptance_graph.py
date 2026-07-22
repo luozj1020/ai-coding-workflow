@@ -8,6 +8,7 @@ from tests._unittest_compat import load_function_tests, raises
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+REPOSITORY_HASH = "sha256:" + "a" * 64
 
 from acceptance_graph import (  # noqa: E402
     AcceptanceGraphError, build_delta_packet, build_graph, hash_document,
@@ -42,7 +43,7 @@ def make_state(acceptance, decisions=None, phase="review"):
     state = {
         "schema_version": 1, "state_id": "", "parent_state_id": None,
         "revision": 0, "task_id": "phase6-test", "phase": phase,
-        "repository_state_hash": "sha256:repository-v1",
+        "repository_state_hash": REPOSITORY_HASH,
         "goal": {"id": "G-1", "statement": "prove acceptance", "acceptance_ids": sorted(acceptance)},
         "constraints": [], "accepted_decisions": decisions or [],
         "rejected_hypotheses": [], "open_questions": [],
@@ -239,7 +240,7 @@ def test_acceptance_ref_must_also_be_declared_in_state_evidence_refs(tmp_path):
     state = make_state({"AC-1": {"description": "works", "status": "satisfied", "evidence_refs": [ref]}})
     state["evidence_refs"] = []
     state["state_id"] = state_id_for(state)
-    with raises(AcceptanceGraphError, match="absent from Workflow State"):
+    with raises(AcceptanceGraphError, match="absent from state.evidence_refs"):
         build_graph(state, tmp_path / "objects")
 
 

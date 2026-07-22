@@ -74,6 +74,8 @@ ai-coding-workflow bootstraps repositories with:
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
 - Opt-in Spark structured routing/monitoring with direct short output; long preflight remains diagnostic-only
+- Two-stage Claude progress semantics: edit readiness is advisory, while durable product writes drive active/idle decisions
+- Worktree-aware CodeGraph receipts that reject stale or different-worktree graph evidence
 - Execution profiles for token-saving balanced dispatch, safe full-context dispatch, and explicit fast large-repository dispatch
 - Large-repository dispatch options for managed worktree reuse and reduced expensive untracked-file scans
 - Local-validation gates and task-card validation command extraction
@@ -98,7 +100,7 @@ flowchart TD
     C --> D[Claude Exploratory/Batch/Execution Builder · isolated work]
     R -. explicit uncertain candidate .-> S0[Spark · short structured estimator]
     S0 --> R
-    D -. heartbeat / progress / diff .-> MON[Local monitor · persist material L0–L3 transitions]
+    D -. material / terminal events .-> MON[Dispatcher event log · single sampling owner]
     MON -. review-boundary event tail .-> CR
     D --> Q{Useful progress + semantic blocker?}
     Q -- No --> SP[Spark · mechanical postflight]
@@ -219,7 +221,7 @@ ai-coding-workflow/
     run-loop.sh          -> Optional loop runner (dispatch + review)
     status-claude.sh     -> Inspect Claude dispatch status and artifacts
     watch-claude.sh      -> Show CLI progress panel for running dispatches
-    monitor-claude.sh    -> Persist material layered-monitor transitions in background
+    monitor-claude.sh    -> Block on dispatcher events or request one decision
     kill-claude.sh       -> Stop a recorded Claude dispatch process
     cleanup-worktree.sh  -> Remove stopped worktrees while preserving evidence
     pwsh-utf8.ps1        -> Configure PowerShell UTF-8 sessions
@@ -997,13 +999,17 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.usage.txt` | Claude token/cost usage summary |
 | `*.report.md` | Claude modification report for human/Codex review |
 | `*.claude-progress.md` | Claude self-reported milestone progress for status display and review evidence |
+| `*.monitor-events.log` | Material and terminal boundaries consumed by the blocking monitor |
+| `*.phase-metrics.json` | Context, implementation, validation, tail, edit-ready, and product-idle timing |
+| `*.codegraph-worktree.json` | CodeGraph project/worktree identity, pending state, repair action, and safe-use decision |
+| `*.runtime.json` | Worktree, session, timeout, process identity, and guard configuration |
 | `*.pid` | Claude subprocess PID for status/kill helpers |
 | `*.progress.log` | Dispatch heartbeat, timeout, and completion log |
 | `*.review.txt` | Persisted Codex review output |
 | `*.codex-events.jsonl` | Raw Codex JSON events when available |
 | `*.codex-usage.txt` | Codex review token/cost usage summary when available |
 
-While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
+While Claude is running, the dispatcher distinguishes self-reported edit readiness from durable product-content changes. Agent controllers block on `monitor-claude.sh wait` and review bounded diff/decision evidence only when a material or terminal boundary arrives. `watch-claude.sh` and `status-claude.sh` remain manual diagnostics; they are not polling instructions. Interruption still requires corroborated deviation or confirmed no-progress evidence.
 
 If Direction / Boundary Acknowledgement is required, Claude should write the acknowledgement before editing. When blocking approval is required, Codex gives one final decision before Claude proceeds. After `proceed`, Claude must continue the assigned task instead of repeatedly asking for the same confirmation.
 
@@ -1150,7 +1156,9 @@ For a direct-arm call, save Codex JSONL events and normalize them with `python a
 
 **Append-only loop events:** `ai/run-loop.sh` writes `.worktrees/loop-<timestamp>/loop-events.jsonl`, an append-only event stream for run start, iteration start, dispatch completion, review completion, decisions, revision task creation, and stop reasons. This preserves recovery context without rewriting prior observations.
 
-**Structured progress memory and active exit:** Claude maintains `CLAUDE_PROGRESS.md` with Goal, Current Phase, Next Check, Blocker, Last Update, Execution Phase, Implementation Complete, Assigned Tail Work, Tail Work Complete, and Completion Ready. Builder cards default to changed-file self-review, with validation/documentation/long validation disabled until Codex assigns exact work. Once implementation is done, Claude performs only that bounded tail, marks completion ready, and exits normally without waiting for dispatcher acknowledgement. Compact monitor events expose the phase and finish recommendation but never authorize a kill. Each dispatch writes approximate context/implementation/validation/tail timing to `<task-id>.phase-metrics.json`.
+**Structured progress memory and active exit:** Claude maintains `CLAUDE_PROGRESS.md` with Goal, Current Phase, Next Check, Blocker, Last Update, Execution Phase, Context Acquisition Complete, Planned First Write, Implementation Complete, Assigned Tail Work, Tail Work Complete, and Completion Ready. Declaring implementation means edit readiness, not durable output; only a product-content change or valid owned report refreshes the full active window. After the first write, the dispatcher detects an unchanged product digest with two-confirmation idle handling while exempting active validation, explicit blockers, and assigned tail work. Builder cards default to changed-file self-review, with validation/documentation/long validation disabled until Codex assigns exact work. Once implementation is done, Claude performs only that bounded tail, marks completion ready, and exits normally without waiting for dispatcher acknowledgement. Compact monitor events expose the phase and finish recommendation but never authorize a kill. Each dispatch writes approximate context/implementation/validation/tail timing to `<task-id>.phase-metrics.json`.
+
+**Worktree-aware CodeGraph:** each dispatch writes `<task-id>.codegraph-worktree.json` after the execution worktree exists. The default `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` rejects a different-worktree or pending index and directs execution to LSP, locator, and targeted reads. Explicit `repair` syncs a matching index or reindexes the execution worktree; `off` disables graph probing. Only `status=ready` permits live CodeGraph use, and warning-bearing graph output must not enter a Context Packet.
 
 ---
 
@@ -1204,17 +1212,20 @@ While Claude Code is running, `dispatch-to-claude.sh` now writes a PID artifact 
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` is the absolute process cap, default `1500` seconds. It always wins; set a timeout to `0` only when intentionally disabling that boundary.
 - `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` optionally stops Claude when result/status/report/progress artifacts do not change. Default is `0` disabled; set a positive value only when you want fast-fail behavior.
 - `CLAUDE_CODE_WORKTREE_PROGRESS` controls worktree progress verbosity. Default `quiet` shows compact timing and path; `verbose` shows detailed worktree state.
+- `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS` gives a Builder that has completed context acquisition and declared an exact first write a short bridge to produce durable output; default is `120`. The declaration never refreshes the full active window.
+- `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` marks an unchanged product-content digest as an idle candidate after `180` seconds by default. `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` defaults to `2`; both observations are required before stopping. Active validation, explicit blockers, and assigned tail work are exempt.
+- `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` rejects pending or different-worktree CodeGraph evidence without paying reindex cost. Use `repair` to sync/reindex the execution worktree explicitly, or `off` to skip probing.
 - `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE` enables conservative approval-blocked early convergence. Default `1` (enabled); set to `0` to disable. When enabled, if a valid complete report exists, changes are test-only scoped, an exact validation approval blocker is present, and two stable heartbeats have been observed, the dispatcher triggers the checker helper. This is not validation success or acceptance — it is an early evidence-gathering path.
 
-Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones. The dispatcher reports its size in heartbeats and copies it to `.worktrees/claude-<id>.claude-progress.md`; Codex only spends tokens on it when review/status output is explicitly read.
+Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones. `Execution Phase: implementation` counts only as edit readiness when accompanied by `Context Acquisition Complete: yes` and a non-empty `Planned First Write`; a product-content delta or valid owned report is durable progress. Semantic digests ignore clock-only rewrites. The dispatcher copies progress to `.worktrees/claude-<id>.claude-progress.md`; Codex reads it only at a review boundary.
 
-`dispatch-to-claude.sh` prints copy-paste `Watch Progress` and `Watch Details` commands immediately after it starts Claude and again in the completion summary, so users can check progress directly from Codex CLI without opening docs or artifact files.
+`dispatch-to-claude.sh` prints a copy-paste `monitor-claude.sh wait` command. Agent controllers use this single blocking wait instead of repeated status, process, log-tail, or clock calls.
 
 `watch-claude.sh` defaults to a low-cost status panel: running state, elapsed/quiet seconds, a checklist-derived progress bar, the latest milestone, artifact sizes, and a short stuck-run analysis. It prints full progress/status/network tails only when `--details` is explicit. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, do not wake Codex on every heartbeat. The dispatcher starts `monitor-claude.sh` by default; its local supervisor writes only material transitions while Claude keeps running. Machine mode reuses heartbeat fields and defers diff/status scans until a decision boundary; its interval follows `CLAUDE_CODE_HEARTBEAT_SECONDS` unless `CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS` overrides it. Stable `continue`/`terminal` decisions use no model call. Only `inspect` or `interrupt-candidate` may asynchronously invoke rate-limited Spark `monitor-triage`, and Spark receives compact JSON rather than raw `ps`, full progress/status logs, network tails, or source diffs. Set `CLAUDE_CODE_BACKGROUND_MONITOR=0` to disable the supervisor, `CLAUDE_CODE_MONITOR_SPARK=off` for local-only monitoring, or tune the default 120-second Spark interval with `CLAUDE_MONITOR_SPARK_MIN_INTERVAL_SECONDS`. Codex reviews only unresolved or possible-interrupt results. No helper authorizes or performs interruption.
+For agent-driven runs, the dispatcher is the only sampling owner and writes material/finalized terminal boundaries to `*.monitor-events.log`. Codex should make one blocking `monitor-claude.sh wait <task-id> --until material|terminal` call; repeated `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On a boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` only for ambiguous `inspect` or `interrupt-candidate` evidence. Spark receives bounded JSON, returns a summary capped at 240 characters plus fixed decision fields, and never receives raw process listings, full logs, network tails, or source diffs. No helper authorizes interruption.
 
 Spark routing, Claude monitoring, failure triage, and parallel planning now use
 one strict control protocol. Successful direct calls emit
@@ -1267,8 +1278,6 @@ When integrations are allowed:
 - **Evidence recording** stores only the selected relative paths and any rejection category; MCP/plugin file contents and secrets are never recorded.
 - **External integrations do not widen built-in Bash/Edit permissions.** The tool profile and allowed tool set remain unchanged.
 
-**Monitoring environment:** `monitor-claude.sh start` must run in a persistent dispatch or user-terminal environment. Some Codex sandbox tool sessions reap detached children; an empty event log there is visibility/environment evidence, not Claude zero progress. Fall back to one boundary status/diff read, never duplicate dispatch.
-
 ---
 
 ## Control-Plane Exception
@@ -1288,11 +1297,11 @@ bash ai/status-claude.sh claude-20260701-093934
 # Stream progress in a terminal while Claude is running
 bash ai/watch-claude.sh claude-20260701-093934
 
-# Preferred for agent runs: monitor locally in the background without Codex polling
-bash ai/monitor-claude.sh start claude-20260701-093934
-bash ai/monitor-claude.sh status claude-20260701-093934
+# Preferred for agent runs: one blocking wait, no repeated ps/tail/status calls
+bash ai/monitor-claude.sh wait claude-20260701-093934 --until material
+bash ai/monitor-claude.sh wait claude-20260701-093934 --until terminal
+# Optional one-shot local/Spark triage at a review boundary
 bash ai/monitor-claude.sh decision claude-20260701-093934
-bash ai/monitor-claude.sh tail claude-20260701-093934 --lines 3
 # Exceptional manual diagnosis only:
 bash ai/status-claude.sh claude-20260701-093934 --details
 

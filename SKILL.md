@@ -15,14 +15,14 @@ features, batches, assigned tests, or long validation.
 
 For tiny/urgent edits, code questions, read-only or interactive debugging, or
 unreliable Claude/isolation/evidence, record `workflow bypassed: <reason>` and
-use ordinary Codex/local tools. Do not compose a card or invoke Spark for bypass.
+use ordinary Codex/local tools.
 
 ## Default Loop
 
 Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 
 1. Gather bounded local evidence with LSP, `ai/locate-code.py`, targeted reads,
-   initialized CodeGraph, or MCP. Avoid broad reads and unsolicited web search.
+   worktree-matched CodeGraph, or MCP. Avoid broad reads and unsolicited web search.
 2. ROUTE from bounded facts before writing an execution artifact. The default
    profile is `claude-first`: Claude owns implementation while Codex spends one
    bounded turn freezing intent and one bounded semantic review. Use
@@ -49,15 +49,16 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 - Spark is structured and advisory. Use it to replace Codex estimation,
   task-card shaping, or monitor interpretation. It has no implicit strong-model
   fallback and cannot satisfy acceptance, interrupt, approve, or merge.
-- Checker/Test is conditional. Skip model dispatch when deterministic local
-  evidence closes acceptance and no test changes are required.
+- Checker/Test is conditional. Bind runnable interface evidence, validate each
+  test file immediately, or prefer deterministic checks.
 - One Claude failure is not takeover authority. Classify it, preserve useful
   evidence, and tighten once. Transport/approval/dirty-base conditions are not
   model failures. Explicit human takeover remains authoritative.
-- Do not poll unchanged Claude heartbeats with Codex turns. Use persistent local
-  monitoring and bounded terminal/review summaries.
-- Dirty source/stale HEAD blocks reliable delegation; restore or obtain explicit
-  authority. Prefer reviewed same-worktree Claude continuation over Codex edits.
+- Never poll Claude with `ps`, `tail`, clocks, or Codex turns. Block on
+  `monitor-claude.sh wait`. Implementation claims are readiness, not writes;
+  Spark compresses ambiguous idle JSON while raw logs stay file-backed.
+- Dirty source requires clean restoration or an explicit hash-bound snapshot;
+  stale HEAD blocks. Prefer reviewed same-worktree Claude continuation.
 - The Skill never coordinates portfolio concurrency. Run one repository workflow
   per user-managed terminal; do not create a cross-project DAG or scheduler.
 - Treat Claude wall time as advisory in `claude-first`. Measure accepted output

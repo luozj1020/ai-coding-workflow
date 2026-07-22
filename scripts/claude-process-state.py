@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 from pathlib import Path
+from typing import Optional
 
 TERMINAL_MARKERS = ("Final dispatch outcome:", "Dispatch Complete")
 
@@ -25,13 +27,43 @@ def restricted_environment(mode: str) -> bool:
     return os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED", "").lower() in {"1", "true", "yes"}
 
 
-def classify(pid_file: Path, progress_file: Path, mode: str = "auto") -> str:
+def _identity_state(identity_file: Optional[Path]) -> Optional[str]:
+    if identity_file is None or not identity_file.is_file():
+        return None
+    helper = Path(__file__).resolve().with_name("process-identity.py")
+    if not helper.is_file():
+        return "visibility-unknown"
+    spec = importlib.util.spec_from_file_location("process_identity", helper)
+    if spec is None or spec.loader is None:
+        return "visibility-unknown"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        import json
+        identity = json.loads(identity_file.read_text(encoding="utf-8"))
+        status, _ = module.check(identity)
+    except (OSError, ValueError, TypeError):
+        return "visibility-unknown"
+    return {
+        "running-same-process": "running",
+        "not-running": "not-running",
+        "pid-reused-or-foreign": "not-running",
+    }.get(status, "visibility-unknown")
+
+
+def classify(
+    pid_file: Path, progress_file: Path, mode: str = "auto",
+    identity_file: Optional[Path] = None,
+) -> str:
     if not pid_file.is_file():
         return "missing"
     try:
         pid = int(pid_file.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return "missing"
+    identity = _identity_state(identity_file)
+    if identity is not None:
+        return identity
     if pid_alive(pid):
         return "running"
     if not restricted_environment(mode):
@@ -49,10 +81,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pid-file", type=Path, required=True)
     parser.add_argument("--progress-file", type=Path, required=True)
+    parser.add_argument("--identity-file", type=Path)
     parser.add_argument("--visibility-mode", choices=("auto", "normal", "restricted"),
                         default=os.environ.get("CLAUDE_CODE_PROCESS_VISIBILITY", "auto"))
     args = parser.parse_args()
-    print(classify(args.pid_file, args.progress_file, args.visibility_mode))
+    print(classify(args.pid_file, args.progress_file, args.visibility_mode, args.identity_file))
     return 0
 
 

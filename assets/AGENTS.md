@@ -11,7 +11,7 @@ implementation, revision, assigned tests, and long validation; Spark supplies
 optional bounded advice; humans own merge and destructive/high-impact approval.
 
 Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
-Prefer LSP, `ai/locate-code.py`, targeted reads, initialized CodeGraph, and local
+Prefer LSP, `ai/locate-code.py`, targeted reads, worktree-matched CodeGraph, and local
 deterministic tools over broad reads. Do not browse the web for local repository
 failures unless the user explicitly requests external/current information.
 
@@ -74,8 +74,10 @@ cards bind accepted evidence and describe only the delta.
 
 ## Recovery and Intervention
 
-Do not spend Codex turns polling unchanged processes. Use compact machine fields
-and the persistent monitor; inspect a bounded diff only at review/terminal events.
+Do not spend Codex turns polling unchanged processes, and never use `ps`,
+`tail`, or clock-only commands for liveness. Block once on
+`monitor-claude.sh wait`; inspect compact
+material/terminal events and bounded diffs only at review boundaries.
 Useful on-plan diff/report/progress favors waiting or reviewed same-worktree
 continuation. Interrupt only for corroborated no-progress or confirmed deviation.
 
@@ -106,6 +108,12 @@ override observed facts, a valid lease, or explicit human ownership.
 
 ## Context and Safety
 
+- Before accepting CodeGraph output, verify `codegraph status . -j` identifies
+  the current Git worktree with no mismatch or pending changes. Discard
+  warning-bearing results and never put them in a Context Packet. During
+  delegation only a `*.codegraph-worktree.json` receipt with `status=ready`
+  permits graph use; `CLAUDE_CODE_CODEGRAPH_POLICY=repair` explicitly opts into
+  sync/reindex cost.
 - Keep artifacts file-backed under `.worktrees/` or `ai/plans/<task-id>/`; return
   compact summaries and paths, not full logs.
 - Spark is advisory, normally direct-output, and cannot satisfy acceptance,

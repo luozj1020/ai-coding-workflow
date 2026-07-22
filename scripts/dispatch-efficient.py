@@ -121,6 +121,18 @@ def _render_context_packet_md(context_packet: dict) -> str:
                 lines.append(f"- {c}")
             lines.append("")
 
+    interface = context_packet.get("interface_contract", {})
+    if isinstance(interface, dict) and any(interface.get(key) for key in ("signatures", "runnable_examples", "async_contract")):
+        lines.extend(["## Executable Interface Contract", ""])
+        for signature in interface.get("signatures", []):
+            lines.append(f"- Signature: `{signature}`")
+        for example in interface.get("runnable_examples", []):
+            lines.extend(["", "```python", str(example), "```"])
+        if interface.get("async_contract"):
+            lines.extend(["", f"Async/sync contract: {interface['async_contract']}"])
+        material = json.dumps(interface, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        lines.extend(["", f"Evidence hash: `{_content_hash(material)}`", ""])
+
     # L2: Full files (only when enabled)
     l2 = context_packet.get("L2", {})
     if l2.get("enabled") and l2.get("full_files"):

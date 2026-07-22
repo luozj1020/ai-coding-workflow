@@ -752,9 +752,9 @@ print_snapshot() {
     worktree_changes="$(field_from_line "$last_line" "worktree_changes")"
     worktree_changes="${worktree_changes:-$(worktree_change_count)}"
     if [ "$MACHINE" -eq 1 ]; then
-        # The persistent supervisor consumes dispatcher heartbeat fields. Avoid
-        # a second diff/status scan on every monitor tick in large repositories;
-        # bounded path/risk inspection remains available at a decision boundary.
+        # Machine output stays cheap for one-shot diagnostic consumers. Avoid
+        # a second diff/status scan; bounded path/risk inspection remains
+        # available at a decision boundary.
         partial_summary="deferred-machine-monitor"
         risk_summary="deferred-machine-monitor"
     else

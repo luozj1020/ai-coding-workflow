@@ -140,6 +140,32 @@ def _string_list(value: Any, path: str, errors: List[str], *, require_item: bool
         errors.append(f"{path} must not contain duplicates")
 
 
+def _evidence_ref_list(value: Any, path: str, errors: List[str], *, require_item: bool = False) -> None:
+    before = len(errors)
+    _string_list(value, path, errors, require_item=require_item)
+    if len(errors) != before or not isinstance(value, list):
+        return
+    for index, ref in enumerate(value):
+        if not STATE_ID_RE.fullmatch(ref):
+            errors.append(f"{path}[{index}] must be a sha256: digest")
+
+
+def _mutation_evidence_refs(
+    state: Dict[str, Any], value: Any, *, require_item: bool = False,
+) -> List[str]:
+    errors: List[str] = []
+    _evidence_ref_list(value, "evidence_refs", errors, require_item=require_item)
+    if errors:
+        raise WorkflowStateError("; ".join(errors))
+    refs = list(value)
+    missing = sorted(set(refs) - set(state.get("evidence_refs", [])))
+    if missing:
+        raise WorkflowStateError(
+            "evidence_refs are not registered in state.evidence_refs: " + ", ".join(missing)
+        )
+    return refs
+
+
 def is_safe_repo_path_pattern(value: Any) -> bool:
     """Return whether a path/glob is repository-relative on Unix and Windows."""
     if not isinstance(value, str) or not value:
@@ -181,7 +207,9 @@ def validate_state(state: Any, *, verify_hash: bool = True) -> List[str]:
     _nonempty(state.get("task_id"), "task_id", errors)
     if state.get("phase") not in VALID_PHASES:
         errors.append("phase must be one of " + ", ".join(VALID_PHASES))
-    _nonempty(state.get("repository_state_hash"), "repository_state_hash", errors)
+    repository_hash = state.get("repository_state_hash")
+    if not isinstance(repository_hash, str) or not STATE_ID_RE.fullmatch(repository_hash):
+        errors.append("repository_state_hash must be a sha256: digest")
     goal = state.get("goal")
     if not isinstance(goal, dict) or set(goal) != {"id", "statement", "acceptance_ids"}:
         errors.append("goal must contain exactly id, statement, and acceptance_ids")
@@ -212,7 +240,7 @@ def validate_state(state: Any, *, verify_hash: bool = True) -> List[str]:
             _nonempty(item.get("statement"), path + ".statement", errors)
             if item.get("status") not in VALID_DECISION_STATUS:
                 errors.append(path + ".status must be accepted or frozen")
-            _string_list(item.get("evidence_refs"), path + ".evidence_refs", errors)
+            _evidence_ref_list(item.get("evidence_refs"), path + ".evidence_refs", errors)
     rejected = state.get("rejected_hypotheses")
     if isinstance(rejected, list):
         for index, item in enumerate(rejected):
@@ -222,7 +250,7 @@ def validate_state(state: Any, *, verify_hash: bool = True) -> List[str]:
             _exact_fields(item, {"id", "statement", "reason", "evidence_refs"}, path, errors)
             _nonempty(item.get("statement"), path + ".statement", errors)
             _nonempty(item.get("reason"), path + ".reason", errors)
-            _string_list(item.get("evidence_refs"), path + ".evidence_refs", errors, require_item=True)
+            _evidence_ref_list(item.get("evidence_refs"), path + ".evidence_refs", errors, require_item=True)
     questions = state.get("open_questions")
     if isinstance(questions, list):
         for index, item in enumerate(questions):
@@ -232,10 +260,7 @@ def validate_state(state: Any, *, verify_hash: bool = True) -> List[str]:
             _exact_fields(item, {"id", "question"}, path, errors)
             _nonempty(item.get("question"), path + ".question", errors)
     refs = state.get("evidence_refs")
-    if not isinstance(refs, list) or not all(isinstance(item, str) and item for item in refs):
-        errors.append("evidence_refs must be an array of non-empty strings")
-    elif len(refs) != len(set(refs)):
-        errors.append("evidence_refs must not contain duplicates")
+    _evidence_ref_list(refs, "evidence_refs", errors)
     acceptance = state.get("acceptance_status")
     if not isinstance(acceptance, dict):
         errors.append("acceptance_status must be an object")
@@ -249,7 +274,33 @@ def validate_state(state: Any, *, verify_hash: bool = True) -> List[str]:
                 errors.append(f"acceptance_status.{acceptance_id}.status is invalid")
             else:
                 _nonempty(value.get("description"), f"acceptance_status.{acceptance_id}.description", errors)
-                _string_list(value.get("evidence_refs"), f"acceptance_status.{acceptance_id}.evidence_refs", errors)
+                _evidence_ref_list(value.get("evidence_refs"), f"acceptance_status.{acceptance_id}.evidence_refs", errors)
+    if isinstance(refs, list):
+        registered = set(refs)
+        nested = []
+        if isinstance(decisions, list):
+            nested.extend(
+                (f"accepted_decisions[{index}].evidence_refs", item.get("evidence_refs"))
+                for index, item in enumerate(decisions) if isinstance(item, dict)
+            )
+        if isinstance(rejected, list):
+            nested.extend(
+                (f"rejected_hypotheses[{index}].evidence_refs", item.get("evidence_refs"))
+                for index, item in enumerate(rejected) if isinstance(item, dict)
+            )
+        if isinstance(acceptance, dict):
+            nested.extend(
+                (f"acceptance_status.{item_id}.evidence_refs", item.get("evidence_refs"))
+                for item_id, item in acceptance.items() if isinstance(item, dict)
+            )
+        for path, nested_refs in nested:
+            if isinstance(nested_refs, list):
+                missing_refs = sorted(set(nested_refs) - registered)
+                if missing_refs:
+                    errors.append(
+                        f"{path} contains refs absent from state.evidence_refs: "
+                        + ", ".join(missing_refs)
+                    )
     action = state.get("next_action")
     if not isinstance(action, dict) or set(action) != {"owner", "operation", "allowed_paths"}:
         errors.append("next_action must contain exactly owner, operation, and allowed_paths")
@@ -339,9 +390,7 @@ def apply_mutation(state: Dict[str, Any], event_type: str, payload: Dict[str, An
         _require_payload(payload, ("id", "statement"))
         _nonempty_or_raise(payload["id"], "id")
         _nonempty_or_raise(payload["statement"], "statement")
-        refs = payload.get("evidence_refs", [])
-        if not isinstance(refs, list) or not all(isinstance(ref, str) and ref for ref in refs):
-            raise WorkflowStateError("evidence_refs must be an array of non-empty strings")
+        refs = _mutation_evidence_refs(result, payload.get("evidence_refs", []))
         index, existing = _find(result["accepted_decisions"], payload["id"])
         if existing is not None:
             if existing.get("status") == "frozen" and existing.get("statement") != payload["statement"]:
@@ -361,28 +410,27 @@ def apply_mutation(state: Dict[str, Any], event_type: str, payload: Dict[str, An
         index, existing = _find(result["accepted_decisions"], payload["id"])
         if existing is None:
             raise WorkflowStateError(f"decision {payload['id']} does not exist")
-        if not isinstance(payload["reason"], str) or not payload["reason"] or not isinstance(payload["evidence_refs"], list) or not payload["evidence_refs"] or not all(isinstance(ref, str) and ref for ref in payload["evidence_refs"]):
-            raise WorkflowStateError("decision invalidation requires reason and evidence_refs")
+        _nonempty_or_raise(payload["reason"], "reason")
+        _mutation_evidence_refs(result, payload["evidence_refs"], require_item=True)
         del result["accepted_decisions"][index]
     elif event_type == "hypothesis-rejected":
         _require_payload(payload, ("id", "statement", "reason", "evidence_refs"))
         for field in ("id", "statement", "reason"):
             _nonempty_or_raise(payload[field], field)
-        if not isinstance(payload["evidence_refs"], list) or not payload["evidence_refs"] or not all(isinstance(ref, str) and ref for ref in payload["evidence_refs"]):
-            raise WorkflowStateError("evidence_refs must be a non-empty array of strings")
+        refs = _mutation_evidence_refs(result, payload["evidence_refs"], require_item=True)
         if _find(result["rejected_hypotheses"], payload["id"])[1] is not None:
             raise WorkflowStateError(f"hypothesis {payload['id']} already rejected")
-        result["rejected_hypotheses"].append({key: deepcopy(payload[key]) for key in ("id", "statement", "reason", "evidence_refs")})
+        result["rejected_hypotheses"].append({
+            "id": payload["id"], "statement": payload["statement"],
+            "reason": payload["reason"], "evidence_refs": refs,
+        })
     elif event_type == "hypothesis-reopened":
         _require_payload(payload, ("id", "reason", "evidence_refs"))
         index, existing = _find(result["rejected_hypotheses"], payload["id"])
         if existing is None:
             raise WorkflowStateError(f"hypothesis {payload['id']} is not rejected")
         _nonempty_or_raise(payload["reason"], "reason")
-        if not isinstance(payload["evidence_refs"], list) or not payload["evidence_refs"] or not all(
-            isinstance(ref, str) and ref for ref in payload["evidence_refs"]
-        ):
-            raise WorkflowStateError("hypothesis reopen requires non-empty evidence_refs")
+        _mutation_evidence_refs(result, payload["evidence_refs"], require_item=True)
         del result["rejected_hypotheses"][index]
     elif event_type == "question-opened":
         _require_payload(payload, ("id", "question"))
@@ -400,7 +448,8 @@ def apply_mutation(state: Dict[str, Any], event_type: str, payload: Dict[str, An
         del result["open_questions"][index]
     elif event_type == "evidence-added":
         _require_payload(payload, ("ref",))
-        _nonempty_or_raise(payload["ref"], "ref")
+        if not isinstance(payload["ref"], str) or not STATE_ID_RE.fullmatch(payload["ref"]):
+            raise WorkflowStateError("ref must be a sha256: digest")
         if payload["ref"] in result["evidence_refs"]:
             raise WorkflowStateError(f"evidence ref {payload['ref']} already exists")
         result["evidence_refs"].append(payload["ref"])
@@ -410,10 +459,9 @@ def apply_mutation(state: Dict[str, Any], event_type: str, payload: Dict[str, An
             raise WorkflowStateError(f"acceptance {payload['id']} does not exist")
         if payload["status"] not in VALID_ACCEPTANCE_STATUS:
             raise WorkflowStateError(f"invalid acceptance status: {payload['status']}")
-        if not isinstance(payload["evidence_refs"], list) or not all(isinstance(ref, str) and ref for ref in payload["evidence_refs"]):
-            raise WorkflowStateError("evidence_refs must be an array of non-empty strings")
+        refs = _mutation_evidence_refs(result, payload["evidence_refs"])
         result["acceptance_status"][payload["id"]]["status"] = payload["status"]
-        result["acceptance_status"][payload["id"]]["evidence_refs"] = list(payload["evidence_refs"])
+        result["acceptance_status"][payload["id"]]["evidence_refs"] = refs
     elif event_type == "next-action-updated":
         _require_payload(payload, ("owner", "operation", "allowed_paths"))
         _nonempty_or_raise(payload["owner"], "owner")
@@ -423,7 +471,8 @@ def apply_mutation(state: Dict[str, Any], event_type: str, payload: Dict[str, An
         result["next_action"] = {key: deepcopy(payload[key]) for key in ("owner", "operation", "allowed_paths")}
     elif event_type == "repository-state-updated":
         _require_payload(payload, ("repository_state_hash",))
-        _nonempty_or_raise(payload["repository_state_hash"], "repository_state_hash")
+        if not isinstance(payload["repository_state_hash"], str) or not STATE_ID_RE.fullmatch(payload["repository_state_hash"]):
+            raise WorkflowStateError("repository_state_hash must be a sha256: digest")
         result["repository_state_hash"] = payload["repository_state_hash"]
     elif event_type == "phase-changed":
         _require_payload(payload, ("phase",))
@@ -463,6 +512,47 @@ def finalize_transition(previous: Dict[str, Any], mutated: Dict[str, Any], *, ac
     event_seed["new_state_id"] = result["state_id"]
     event_seed["event_id"] = event_id_for(event_seed)
     return result, event_seed
+
+
+def replay_events(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Reconstruct the authoritative state from one complete event chain."""
+    if not events:
+        raise WorkflowStateError("event log is empty")
+    first = events[0]
+    if first.get("event_type") != "state-initialized" or first.get("base_state_id") is not None:
+        raise WorkflowStateError(
+            "first event must be state-initialized with null base_state_id"
+        )
+    material = first.get("payload", {}).get("initial_state")
+    if not isinstance(material, dict):
+        raise WorkflowStateError("initial event must contain payload.initial_state")
+    current = deepcopy(material)
+    current["state_id"] = state_id_for(current)
+    if current["state_id"] != first.get("new_state_id"):
+        raise WorkflowStateError(
+            "initial event new_state_id does not match replayed state"
+        )
+    initial_errors = validate_state(current)
+    if initial_errors:
+        raise WorkflowStateError("invalid initial replay state: " + "; ".join(initial_errors))
+    for index, event in enumerate(events[1:], 2):
+        if event.get("base_state_id") != current["state_id"]:
+            raise WorkflowStateError(f"event {index} base_state_id breaks the state chain")
+        mutated = apply_mutation(current, event["event_type"], event["payload"])
+        mutated["parent_state_id"] = current["state_id"]
+        mutated["revision"] = current["revision"] + 1
+        mutated["state_id"] = state_id_for(mutated)
+        if mutated["state_id"] != event.get("new_state_id"):
+            raise WorkflowStateError(
+                f"event {index} new_state_id does not match replayed state"
+            )
+        state_errors = validate_state(mutated)
+        if state_errors:
+            raise WorkflowStateError(
+                f"event {index} produces invalid state: " + "; ".join(state_errors)
+            )
+        current = mutated
+    return current
 
 
 def validate_transition_event(event: Dict[str, Any]) -> List[str]:

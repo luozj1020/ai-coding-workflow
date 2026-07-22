@@ -26,6 +26,8 @@ Responsibilities:
 
 Checker/Test Claude owns mechanical validation evidence. It does not make architectural judgments and should not perform broad implementation rewrites.
 
+For test-writing Checker cards, declare exact Write paths and a shell-free `Per-file validation command` containing `{path}`. Runtime enforcement rejects empty or out-of-scope files, compiles each Python file, and runs the per-file command before acceptance evidence is considered. Python test files without an explicit command fall back to single-file pytest. The receipt is `*.checker-contract.json`; a violation is isolated and cannot authorize merge.
+
 Checker dispatch is conditional. Use local deterministic validation without a
 model when it closes acceptance and no test changes are required. Dispatch
 Checker/Test Claude only for assigned test writing, long-running validation,
@@ -133,6 +135,12 @@ Codex may directly edit implementation files only when at least one condition is
 - The human explicitly asks Codex to take over.
 
 Before editing, Codex must state the failed attempts, why another Claude revision is unlikely to help, the files/modules it will touch, and the validation it will run. The edit should be narrow and should not bypass safety approvals.
+
+When two directly linked attempts both have counted classifications, the
+dispatcher may issue `*.takeover-receipt.json`. Codex must stay inside its
+hash-bound `allowed_write_paths` and run the bound narrow validation. The
+receipt authorizes only bounded salvage; it never authorizes merge or expands
+human approval for destructive/high-impact actions.
 
 No-progress evidence, an early Claude exit, invalid result JSON, missing report, or a single failed implementation does not by itself satisfy the threshold. In those cases Codex should produce a smaller revision task with clearer acceptance criteria, stronger stop conditions, and required evidence for Claude.
 

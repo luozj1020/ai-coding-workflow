@@ -114,7 +114,7 @@ When Claude appears stuck, first classify the cause before blaming execution: ta
 
 Permission or approval blockers include sandbox write denial, forbidden files, missing CLI authentication, network-restricted commands, commands that need human approval, and configured "do not read or modify" paths. These should be recorded in progress/report artifacts and handled as environment or orchestration blockers unless Claude ignored an available allowed path.
 
-Dirty source or stale HEAD is handled the same way: it blocks reliable delegation, but it is not by itself permission for Codex to take over implementation. First restore the delegation path by committing an accepted phase, stashing or patching source changes, refreshing workflow files, re-dispatching from updated HEAD, requesting explicit dirty-source approval, or stopping for human input.
+Dirty source or stale HEAD is handled the same way: it blocks reliable delegation, but it is not by itself permission for Codex to take over implementation. Prefer a clean accepted base. When the uncommitted tracked/untracked state is intentionally the baseline, `CLAUDE_CODE_DIRTY_SOURCE_MODE=snapshot` creates a hash-bound ephemeral commit through a temporary index, leaves source HEAD/index untouched, and records a receipt before starting a fresh isolated worktree.
 
 ## Directory Structure
 
@@ -139,7 +139,7 @@ ai/
   run-loop.sh                 # Optional loop runner (dispatch + review)
   status-claude.sh            # Inspect Claude dispatch progress/artifacts
   watch-claude.sh             # Stream Claude progress in a terminal
-  monitor-claude.sh           # Persist material layered-monitor transitions in background
+  monitor-claude.sh           # Block on dispatcher events or request one decision
   kill-claude.sh              # Stop a Claude dispatch by PID artifact
   cleanup-worktree.sh         # Remove stopped Claude worktrees safely
   pwsh-utf8.ps1                # Configure PowerShell UTF-8 session defaults
@@ -218,6 +218,29 @@ envelope containing `schema_version`, the exact `base_state_id`, and one or
 more `{event_type, payload}` entries. A stale base, illegal phase transition,
 or silent overwrite of a frozen decision fails closed. The validator recomputes
 the state hash and replays the full event log before accepting the artifact.
+`repository_state_hash` and every evidence reference must be a canonical
+`sha256:<64 lowercase hex>` identifier. Evidence attached to a decision,
+rejected hypothesis, or acceptance item must already be registered in the
+top-level `state.evidence_refs` collection.
+
+State updates persist the event log before the derived state file. If a process
+stops between those writes, preview and recover the state only from the validated
+event chain:
+
+```bash
+python ai/recover-workflow-state.py \
+  --state .ai-workflow/runs/T-17/WORKFLOW_STATE.json \
+  --events .ai-workflow/runs/T-17/WORKFLOW_EVENTS.jsonl \
+  --preview
+python ai/recover-workflow-state.py \
+  --state .ai-workflow/runs/T-17/WORKFLOW_STATE.json \
+  --events .ai-workflow/runs/T-17/WORKFLOW_EVENTS.jsonl \
+  --apply
+```
+
+Only a missing state or a state behind a valid event tail is recoverable.
+State-ahead and diverged histories fail closed. Apply mode atomically replaces
+the derived state and writes `WORKFLOW_RECOVERY_RECEIPT.json`.
 
 Build and validate a Phase 2 cross-model handoff after the target state changes:
 
@@ -881,7 +904,7 @@ Classify a completed or failed round before counting it toward takeover:
 python ai/classify-claude-attempt.py --exit-code 1 --outcome api_error --error-text-file .worktrees/<task>.status.txt
 ```
 
-Transport failure before interaction may retry the same worktree once and does not count as Claude no-progress. Acknowledgement-only, clean exit without progress, and confirmed direction deviation do count. Approval or sandbox blockers remain external blockers.
+Transport failure before interaction may retry the same worktree once and does not count as Claude no-progress. Runtime lineage records the retry ordinal, so a repeated transport failure returns fallback/reroute instead of offering an infinite retry. An execution timeout after successful startup preflight is model no-progress. Two directly linked counted rounds may issue a hash-bound `*.takeover-receipt.json`; it limits Codex to the declared Write paths and never authorizes merge. Approval, workspace trust, or sandbox blockers remain external blockers.
 
 ### Missing `ai/` After Installing the Skill
 
@@ -940,7 +963,12 @@ The installer treats a missing or broken `bash` as `WARN_SKIPPED`, not as a hard
 While Claude Code is running, `dispatch-to-claude.sh` now writes a PID artifact and heartbeat log under `.worktrees/`:
 
 - `.worktrees/claude-<id>.pid` records the Claude subprocess PID.
+- `.worktrees/claude-<id>.<role>.process.json` binds that PID to start time, command line, PID namespace, task, and role so retry checks do not confuse reused or container/host PIDs.
 - `.worktrees/claude-<id>.progress.log` records start, heartbeat, timeout, and completion events.
+- `.worktrees/claude-<id>.dispatch-preflight.json` proves task-relevant dirty paths are present and byte-identical in the execution worktree; stale or missing inputs stop dispatch.
+- `.worktrees/claude-<id>.control-archive.json` records hash-bound copies of recognized untracked root control files. Originals remain in place; arbitrary user files are not ignored.
+- `.worktrees/claude-<id>.dirty-snapshot.json` binds an explicitly requested dirty baseline to its source commit, ephemeral commit, tree, paths, and content hashes.
+- `.worktrees/claude-<id>.checker-contract.json` records Checker write-scope, non-empty-file, syntax, and per-file validation enforcement.
 - Machine-readable status fields after finalization: `overall_running=yes`, `running=no`, `claude=not-running`. Only the dispatcher sets these fields; Claude does not finalize its own status.
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` controls heartbeat frequency; default is `30`.
 - `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` bounds orientation before execution evidence; it defaults to the active window, or `420` seconds for `fast-large-repo`.
@@ -951,17 +979,25 @@ While Claude Code is running, `dispatch-to-claude.sh` now writes a PID artifact 
 - `CLAUDE_CODE_WORKTREE_PROGRESS` controls worktree progress verbosity. Default `quiet` shows compact timing and path; `verbose` shows detailed worktree state.
 - `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE` enables conservative approval-blocked early convergence. Default `1` (enabled); set to `0` to disable. When enabled, if a valid complete report exists, changes are test-only scoped, an exact validation approval blocker is present, and two stable heartbeats have been observed, the dispatcher triggers the checker helper. This is not validation success or acceptance — it is an early evidence-gathering path.
 
-Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones. The dispatcher reports its size in heartbeats and copies it to `.worktrees/claude-<id>.claude-progress.md`; Codex only spends tokens on it when review/status output is explicitly read.
+Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones. Extension and material-change decisions use a semantic digest that ignores clock-only timestamp fields, so repeatedly rewriting the same milestone cannot manufacture progress. The dispatcher copies the file to `.worktrees/claude-<id>.claude-progress.md`; Codex only spends tokens on it when review/status output is explicitly read.
 
-`dispatch-to-claude.sh` prints copy-paste `Watch Progress` and `Watch Details` commands immediately after it starts Claude and again in the completion summary, so users can check progress directly from Codex CLI without opening docs or artifact files.
+Execution-only, batch, and test-writing Checker tasks default to a 120-second durable-output deadline with stop action. Checker Context Packets should bind exact interface signatures, a runnable construction/call example, and the async/sync rule. Each written test file is syntax/import checked and run narrowly before the next file. Claude receives a task-scoped `$TMPDIR` outside the repository; repository-root scratch helpers remain scope violations.
+
+After child exit, the dispatcher performs one bounded terminal drain and a second sample only when the worktree changes, preventing exit-adjacent files from being omitted from final evidence.
+
+`dispatch-to-claude.sh` prints a copy-paste `Wait for Event` command in its completion summary. Agent controllers should use that single blocking call instead of repeated status/process/log checks.
 
 `watch-claude.sh` defaults to a low-cost status panel and prints full progress/status/network tails only when `--details` is explicit. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
 
-`watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Watch events additionally expose `execution_phase`, `implementation_complete`, `completion_ready`, and `finish_recommended`. Codex should prefer these low-token fields before reading full status, progress, or network tails.
+`watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Compact snapshots include `collected_at` plus per-source `observed_at` timestamps and separate process, report, result, and product-diff evidence, so cached fields are not presented as one fresh observation. Watch events additionally expose `execution_phase`, `implementation_complete`, `completion_ready`, and `finish_recommended`. Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, the dispatcher starts `monitor-claude.sh` automatically unless `CLAUDE_CODE_BACKGROUND_MONITOR=0`. A local supervisor evaluates only material transitions while Claude continues; machine mode reuses dispatcher heartbeat fields and avoids repeated diff/status scans. Its interval follows `CLAUDE_CODE_HEARTBEAT_SECONDS` unless overridden by `CLAUDE_CODE_BACKGROUND_MONITOR_INTERVAL_SECONDS`. Stable states remain zero-model, and only ambiguous or candidate-interrupt compact JSON may asynchronously go to rate-limited Spark `monitor-triage`. Use `CLAUDE_CODE_MONITOR_SPARK=off` for local-only monitoring. Manual `monitor-claude.sh decision <task-id>` remains available at review boundaries. Neither helper authorizes interruption.
+For agent-driven runs, the dispatcher is the only sampling owner and appends material/final terminal boundaries to `*.monitor-events.log`. Use one blocking `monitor-claude.sh wait <task-id> --until material|terminal` call; repeated `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On a boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` to compress ambiguous `inspect` or `interrupt-candidate` evidence before Codex sees it. Spark receives only bounded JSON and returns a summary capped at 240 characters plus fixed decision fields; raw evidence stays file-backed. Neither helper authorizes interruption.
+
+`Execution Phase: implementation` is only edit readiness and must include `Context Acquisition Complete: yes` plus a non-empty `Planned First Write`. It does not refresh the full active window. A product diff or valid owned report is durable progress. After the first product change, an unchanged product digest defaults to an idle candidate at 180 seconds and stops only after two consecutive confirmations; active validation, declared tail work, and explicit blockers are exempt. Configure these bounds with `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS`, and `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS`.
 
 Builder cards use conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation remain disabled until assigned precisely. After that bounded tail, Claude sets `Completion Ready: yes`, writes its final report/result, and exits normally. The dispatcher writes `<task-id>.phase-metrics.json`; when `AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE` is exported by an experiment run, it also copies the same diagnostic metrics into that run directory automatically.
+
+CodeGraph is guarded per execution worktree. The default `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` rejects graph results whose `projectPath`/`worktreeMismatch` or pending state does not match the isolated worktree, writes `<task-id>.codegraph-worktree.json`, and directs Claude to LSP/locator/targeted reads. Use `repair` to sync or reindex that execution worktree explicitly, or `off` to disable graph use without probing.
 
 Monitoring priority is intentionally conservative to avoid false kills:
 
@@ -1006,8 +1042,6 @@ When integrations are allowed:
 - **Evidence recording** stores only the selected relative paths and any rejection category; MCP/plugin file contents and secrets are never recorded.
 - **External integrations do not widen built-in Bash/Edit permissions.** The tool profile and allowed tool set remain unchanged.
 
-**Monitoring environment:** `monitor-claude.sh start` must run in a persistent dispatch or user-terminal environment. Some Codex sandbox tool sessions reap detached children; an empty event log there is visibility/environment evidence, not Claude zero progress. Fall back to one boundary status/diff read, never duplicate dispatch.
-
 ---
 
 ## Control-Plane Exception
@@ -1027,9 +1061,12 @@ bash ai/status-claude.sh claude-20260701-093934
 # Stream progress in a terminal while Claude is running
 bash ai/watch-claude.sh claude-20260701-093934
 
-# Monitor locally in the background; read compact material events later
-bash ai/monitor-claude.sh start claude-20260701-093934
-bash ai/monitor-claude.sh tail claude-20260701-093934 --lines 30
+# Preferred agent path: block once for a material or terminal event
+bash ai/monitor-claude.sh wait claude-20260701-093934 --until material
+bash ai/monitor-claude.sh wait claude-20260701-093934 --until terminal
+
+# Optional one-shot local/Spark triage at a review boundary
+bash ai/monitor-claude.sh decision claude-20260701-093934
 
 # Expand full progress tails only when needed
 bash ai/watch-claude.sh claude-20260701-093934 --details
