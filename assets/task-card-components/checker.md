@@ -21,3 +21,7 @@
 - Acceptance criteria covered and uncovered
 - Failure evidence with exact file/symbol/test
 - Recommended accept / revise / split
+- End with exact file/count/cleanliness claims. When tests are assigned, include
+  `claimed_test_count=<n>`; when validation is assigned, include
+  `claimed_validation_command=<exact command>` and
+  `claimed_validation_exit_code=<code>`.

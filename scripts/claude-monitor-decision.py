@@ -62,6 +62,14 @@ def observed_at(path: Path) -> str:
         return ""
 
 
+def read_json_object(path: Path) -> Dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def fields(line: str) -> Dict[str, str]:
     return {match.group(1): match.group(2) or match.group(3) or "" for match in FIELD_RE.finditer(line)}
 
@@ -273,6 +281,8 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     monitor_event_file = worktrees / f"{task_id}.monitor-events.log"
     status_file = worktrees / f"{task_id}.status.txt"
     result_file = worktrees / f"{task_id}.result.json"
+    outcome_file = worktrees / f"{task_id}.outcome.json"
+    outcome = read_json_object(outcome_file)
     worktree, conflicts = runtime_worktree(worktrees, task_id)
     progress_tail = bounded_tail(progress_file)
     status_tail = bounded_tail(status_file)
@@ -296,6 +306,13 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     visibility = any(value == "visibility-unknown" for value in states.values())
     running = states["claude"] == "running" or states["checker"] == "running"
     overall_running = any(value == "running" for value in states.values())
+    # In container/host PID namespace splits the external identity helper may be
+    # unable to see the child even though the dispatcher has just observed it.
+    # The dispatcher's persisted event is useful liveness evidence, but it never
+    # grants interruption authority and terminal evidence still wins.
+    dispatcher_observed_running = event.get("running") == "yes" and not terminal
+    effective_running = running or dispatcher_observed_running
+    effective_overall_running = overall_running or dispatcher_observed_running
     elapsed = integer(event.get("elapsed_seconds") or dispatch_fields.get("elapsed_seconds"))
     quiet = integer(event.get("quiet_seconds") or dispatch_fields.get("quiet_seconds"))
     suspect = integer(event.get("suspect_count"))
@@ -332,28 +349,34 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         and progress["next_check"].strip().lower() == "exit"
     )
 
-    if visibility and not terminal:
+    if visibility and not terminal and not dispatcher_observed_running:
         decision, confidence, reason = "visibility-unknown", "high", "process-visibility-restricted"
     elif terminal and not overall_running:
         decision, confidence, reason = "terminal", "high", "terminal-evidence"
-    elif running and finish_expected:
+    elif effective_running and finish_expected:
         # Completion is a voluntary-exit signal, never an interruption grant.
         # Keep waiting for the child to flush its report/result and exit itself.
         decision, confidence, reason = "continue", "high", "completion-ready-awaiting-voluntary-exit"
     elif direction_deviation:
         decision, confidence, reason = "interrupt-candidate", "high", "explicit-direction-deviation"
-    elif running and execution_state == "implementation-ready":
+    elif effective_running and execution_state == "external-blocked":
+        decision, confidence, reason = "inspect", "high", "confirmed-external-blocker"
+    elif effective_running and execution_state == "semantic-blocked":
+        decision, confidence, reason = "inspect", "high", "reported-semantic-blocker"
+    elif effective_running and execution_state == "waiting-tool":
+        decision, confidence, reason = "continue", "medium", "named-tool-wait"
+    elif effective_running and execution_state == "implementation-ready":
         decision, confidence, reason = "continue", "high", "editing-ready-awaiting-durable-write"
-    elif running and execution_state == "implementation-idle":
+    elif effective_running and execution_state == "implementation-idle":
         decision, confidence, reason = "inspect", "high", "product-edit-idle-candidate"
-    elif running and level == "L3" and quiet >= args.interrupt_after and suspect >= args.confirmations and growth != "yes":
+    elif effective_running and level == "L3" and quiet >= args.interrupt_after and suspect >= args.confirmations and growth != "yes":
         decision, confidence, reason = "interrupt-candidate", "medium", "corroborated-l3-stall"
     elif conflicts or errors or (
-        running and level in {"L1", "L2", "L3"}
+        effective_running and level in {"L1", "L2", "L3"}
         and quiet >= args.stale_after and growth != "yes"
     ):
         decision, confidence, reason = "inspect", "medium", "bounded-review-needed"
-    elif running:
+    elif effective_running:
         decision, confidence, reason = "continue", "high", "recent-or-insufficient-stop-evidence"
     elif result_size or changes or report_text:
         decision, confidence, reason = "terminal", "medium", "stopped-with-evidence"
@@ -362,7 +385,7 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
 
     codex_review = decision in {"inspect", "interrupt-candidate"} or direction_deviation or bool(conflicts)
     summary = clean(
-        f"{decision}: {reason}; level={level}; running={'yes' if running else 'no'}; "
+        f"{decision}: {reason}; level={level}; running={'yes' if effective_running else 'no'}; "
         f"elapsed={elapsed}s quiet={quiet}s changes={changes}; state={execution_state}; "
         f"product_idle={product_idle_seconds}s confirmations={idle_confirmations}; evidence={evidence}",
         args.max_summary_chars,
@@ -375,6 +398,7 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
             "monitor_event": observed_at(monitor_event_file),
             "status": observed_at(status_file),
             "result": observed_at(result_file),
+            "outcome": observed_at(outcome_file),
             "report": observed_at(report_path),
             "worktree": collected_at,
         },
@@ -383,9 +407,12 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         "codex_review_required": "yes" if codex_review else "no",
         "interrupt_authorized": "no", "monitor_level": level,
         "finish_expected": "yes" if finish_expected else "no",
-        "finish_recommended": "yes" if finish_expected and running else "no",
-        "monitor_action": monitor_action, "running": "yes" if running else ("unknown" if visibility else "no"),
-        "overall_running": "yes" if overall_running else ("unknown" if visibility else "no"),
+        "finish_recommended": "yes" if finish_expected and effective_running else "no",
+        "monitor_action": monitor_action,
+        "running": "yes" if effective_running else ("unknown" if visibility else "no"),
+        "overall_running": "yes" if effective_overall_running else ("unknown" if visibility else "no"),
+        "dispatcher_observed_running": "yes" if dispatcher_observed_running else "no",
+        "process_visibility": "restricted" if visibility else "direct",
         "dispatcher": states["dispatcher"], "claude": states["claude"], "checker": states["checker"],
         "elapsed_seconds": elapsed, "quiet_seconds": quiet, "suspect_count": suspect,
         "execution_activity_state": execution_state,
@@ -393,6 +420,11 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         "product_idle_seconds": product_idle_seconds,
         "idle_confirmations": idle_confirmations,
         "evidence_state": evidence, "artifact_growth": growth,
+        "dispatch_success": outcome.get("dispatch_success"),
+        "artifact_valid": outcome.get("artifact_valid"),
+        "validation_success": outcome.get("validation_success", "unknown"),
+        "semantic_acceptance": outcome.get("semantic_acceptance", "pending-codex-review"),
+        "completion_state": outcome.get("completion_state", "unknown"),
         "worktree_changes": changes, "product_changes": changes,
         "changed_paths": paths, "diffstat": diffstat,
         "phase": progress["phase"], "execution_phase": progress["execution_phase"],
@@ -412,6 +444,7 @@ def render_text(value: Dict[str, Any]) -> str:
             "interrupt_authorized", "finish_expected", "finish_recommended",
             "execution_phase", "implementation_complete", "completion_ready",
             "execution_activity_state", "edit_ready", "product_idle_seconds", "idle_confirmations",
+            "dispatch_success", "artifact_valid", "validation_success", "semantic_acceptance", "completion_state",
             "monitor_level", "running", "collected_at", "elapsed_seconds",
             "quiet_seconds", "suspect_count", "artifact_growth", "worktree_changes", "summary")
     return "\n".join(f"{key}={clean(value.get(key), 240)}" for key in keys) + "\n"

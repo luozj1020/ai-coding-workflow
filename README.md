@@ -394,6 +394,13 @@ python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 
 `python scripts/update_skill.py` updates only the user-level Codex Skill. `--bootstrap-current` and `--bootstrap-repo` additionally refresh the target repository's local workflow files with `--update-workflow-files`, so existing projects receive new dispatcher, review prompt, template, and helper behavior.
 
+Updates are fail-safe at both boundaries. The user-level Skill is copied into a
+validated sibling staging directory and atomically activated; activation
+failure restores the previous install. Before project bootstrap changes any
+file, it validates the complete install manifest, then refreshes each managed
+file with a same-directory atomic replacement. Guided setup still finishes
+with `doctor_workflow.py` as the cross-file consistency check.
+
 ### Guided setup (one-command workflow)
 
 The guided setup coordinates all steps in a single command: skill update, workflow bootstrap/refresh, environment-aware tool configuration (LSP, CodeGraph, Zoekt), and a final readiness check. Preview mode is the default — it prints the plan without making any changes:
@@ -742,9 +749,21 @@ Explicit diagnostic modes such as `task-size-classifier` and `preflight-bundle`
 run from the Spark artifact directory with a writable helper workspace while
 the source remains read-only. They are compatibility/debug tools.
 
+Available Spark quota is used by default for non-Express Claude delegation. If
+ownership economics remain unresolved, Spark runs `execution-cost-estimator`;
+otherwise it runs one bounded `task-card-audit`. The audit is attached as an
+advisory-only appendix and cannot expand frozen scope or acceptance. Set
+`AI_WORKFLOW_SPARK_GATE=off` for a task-local opt-out. Express and zero-budget
+routes still skip Spark.
+
 The estimator now records repository scale, historical worktree cost, `task_role`, `context_reacquisition_cost`, `codex_semantic_rereview`, `solution_clarity`, and `semantic_concentration`. `python ai/repository-scale.py --format json` exposes the deterministic facts without a model call. `--fast-path-max-diff-lines` / `CODEX_FAST_PATH_MAX_DIFF_LINES` and `--concentrated-fast-path-max-diff-lines` / `CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES` explicitly override the auto-selected line ceilings. The 1.5x/2.0 calibration still applies. Actual edits may exceed the estimate while scope, solution, and context stay stable.
 
-After Claude exits with a valid report, the dispatcher runs a deterministic report/diff consistency check and writes `<task-id>.report-consistency.json`. Reports should end with one `claimed_file=<path>` per implementation file, `claimed_changed_file_count=<n>`, optional `claimed_symbol=<name>`, and `claimed_no_unexpected_files=yes|no`. This catches mismatched file/symbol claims before semantic review; it never proves acceptance.
+After Claude exits, the dispatcher writes `<task-id>.report-consistency.json` and `<task-id>.outcome.json`. Reports must end with exact changed-file/count/cleanliness claims. Assigned tests also require `claimed_test_count=<n>` and a matching test diff; assigned validation requires `claimed_validation_command=<command>` and `claimed_validation_exit_code=<code>`. Revision findings use `resolved_finding=<id>|file=<path>|symbol=<symbol>|test=<name or not-required>`. The verifier compares file lists, detected added test declarations, and finding evidence. Missing or contradictory claims set `completion_state=needs-review`. `dispatch_success`, `artifact_valid`, `validation_success`, and `semantic_acceptance` remain separate; only Codex review can establish semantic acceptance.
+
+Dirty-snapshot runtime evidence separates the original `source_base_commit`
+from the synthetic `execution_base_commit`. Same-worktree retry validates each
+against the corresponding repository/worktree HEAD and inherits the snapshot
+baseline without re-snapshotting the still-dirty source worktree.
 
 When a Claude diff is useful but incomplete, preserve the dirty isolated worktree. If Codex accepts its direction and there is one bounded semantic blocker, use `aiwf advisor-continuation` and continue in the same worktree with state-hash, allowlist, forbidden-path, and once-only guards. Do not pay for a fresh checkout and full reimplementation merely to recover prose evidence.
 

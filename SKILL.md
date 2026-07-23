@@ -46,9 +46,9 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 
 ## Hard Rules
 
-- Spark is structured and advisory. Use it to replace Codex estimation,
-  task-card shaping, or monitor interpretation. It has no implicit strong-model
-  fallback and cannot satisfy acceptance, interrupt, approve, or merge.
+- Spend one available Spark call per non-Express Claude delegation: unresolved
+  owner economics use `execution-cost-estimator`; otherwise use
+  `task-card-audit`. Spark cannot expand scope, accept, interrupt, or merge.
 - Checker/Test is conditional. Bind runnable interface evidence, validate each
   test file immediately, or prefer deterministic checks.
 - One Claude failure is not takeover authority. Classify it, preserve useful

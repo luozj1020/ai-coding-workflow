@@ -661,6 +661,27 @@ def phase_plan(ctx: RunContext) -> None:
         },
         "context_packet": None,
         "context_delivery": "inline-delegation-task-card" if delegation_card else "none",
+        "spark": {
+            "invoke": bool(
+                delegation_card
+                and lane != "express"
+                and budget.get("spark_calls", 0) > 0
+                and os.environ.get("AI_WORKFLOW_SPARK_GATE", "auto").lower() != "off"
+            ),
+            "stage": "pre-dispatch",
+            "mode": (
+                "execution-cost-estimator"
+                if ctx.routing.get("precard_estimator", {}).get("spark_action") == "estimate"
+                else "task-card-audit"
+            ),
+            "advisory_only": True,
+            "max_calls": 1,
+            "skip_reason": (
+                None if delegation_card and lane != "express" and budget.get("spark_calls", 0) > 0
+                and os.environ.get("AI_WORKFLOW_SPARK_GATE", "auto").lower() != "off"
+                else "skip.no-budget-or-express-or-disabled"
+            ),
+        },
         "composed_task": str(ctx.run_dir / "composed-task.json"),
         "delegation_task_card": str(delegation_card) if delegation_card else None,
         "task_card_components": selected_components,
@@ -738,6 +759,68 @@ def phase_dispatch(ctx: RunContext) -> None:
         text += "\n## Mixed Exception\nExpress Lane authorizes implementation plus exact narrow validation only.\n"
         dispatch_card = ctx.run_dir / "single-pass-task-card.md"
         dispatch_card.write_text(text, encoding="utf-8")
+
+    spark_policy = ctx.execution_plan.get("spark", {})
+    if spark_policy.get("invoke"):
+        spark_stdout = ctx.run_dir / "spark-preflight.stdout"
+        spark_stderr = ctx.run_dir / "spark-preflight.stderr"
+        spark_record_path = ctx.run_dir / "spark-dispatch.json"
+        spark_helper = HERE / "run-codex-spark.sh"
+        spark_exit = 127
+        if spark_helper.is_file():
+            with spark_stdout.open("wb") as out_f, spark_stderr.open("wb") as err_f:
+                spark_proc = subprocess.run(
+                    [
+                        "bash", str(spark_helper), str(dispatch_card),
+                        "--mode", str(spark_policy.get("mode", "task-card-audit")),
+                        "--result-mode", "direct", "--diagnostics", "failure",
+                    ],
+                    stdout=out_f,
+                    stderr=err_f,
+                    cwd=str(ctx.repo),
+                )
+            spark_exit = spark_proc.returncode
+        spark_text = (
+            spark_stdout.read_text(encoding="utf-8", errors="replace")
+            if spark_stdout.is_file() else ""
+        )
+        spark_success = spark_exit == 0 and "spark_status=success" in spark_text
+        spark_record = {
+            "schema_version": 1,
+            "attempted": True,
+            "invoked": spark_success,
+            "advisory_only": True,
+            "mode": spark_policy.get("mode", "task-card-audit"),
+            "exit_code": spark_exit,
+            "continued_to_claude": True,
+            "skip_reason": None if spark_success else "skip.spark-unavailable-or-failed",
+        }
+        write_artifact(spark_record_path, spark_record)
+        ctx.record_artifact(spark_record_path)
+        if spark_stdout.is_file():
+            ctx.record_artifact(spark_stdout, is_json=False)
+        if spark_stderr.is_file():
+            ctx.record_artifact(spark_stderr, is_json=False)
+        if spark_success:
+            ctx.model_calls.append({
+                "role": "spark",
+                "stage": spark_policy.get("mode", "task-card-audit"),
+                "exit_code": spark_exit,
+                "stdout": str(spark_stdout),
+                "stderr": str(spark_stderr),
+            })
+            advisory = spark_text[-8192:].replace("```", "'''")
+            audited_card = ctx.run_dir / "spark-audited-task-card.md"
+            audited_card.write_text(
+                dispatch_card.read_text(encoding="utf-8")
+                + "\n\n## Spark Advisory Audit\n\n"
+                + "This bounded audit is advisory only. It cannot expand scope, change acceptance, "
+                + "or override this task card. Use it only to notice omissions or likely stalls.\n\n"
+                + "```text\n" + advisory + "\n```\n",
+                encoding="utf-8",
+            )
+            dispatch_card = audited_card
+            ctx.record_artifact(audited_card, is_json=False)
 
     # Write dispatch preview for audit
     preview = {

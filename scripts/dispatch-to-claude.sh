@@ -88,11 +88,12 @@ case "$CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) echo "Error: 
 CLAUDE_CODE_EDIT_READY_GRACE_SECONDS="${CLAUDE_CODE_EDIT_READY_GRACE_SECONDS:-120}"
 CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS="${CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS:-180}"
 CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS="${CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS:-2}"
+CLAUDE_CODE_TAIL_TIMEOUT_SECONDS="${CLAUDE_CODE_TAIL_TIMEOUT_SECONDS:-90}"
 CLAUDE_CODE_CODEGRAPH_POLICY="${CLAUDE_CODE_CODEGRAPH_POLICY:-fallback}"
 CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS="${CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS:-180}"
 case "$CLAUDE_CODE_CODEGRAPH_POLICY" in fallback|repair|off) ;; *) echo "Error: CLAUDE_CODE_CODEGRAPH_POLICY must be fallback, repair, or off." >&2; exit 1 ;; esac
 case "$CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS must be a positive integer." >&2; exit 1 ;; esac
-for _idle_name in CLAUDE_CODE_EDIT_READY_GRACE_SECONDS CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS; do
+for _idle_name in CLAUDE_CODE_EDIT_READY_GRACE_SECONDS CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS CLAUDE_CODE_TAIL_TIMEOUT_SECONDS; do
     _idle_value="${!_idle_name}"
     case "$_idle_value" in ''|*[!0-9]*) echo "Error: ${_idle_name} must be a non-negative integer." >&2; exit 1 ;; esac
 done
@@ -605,18 +606,26 @@ validate_retry_in_place() {
         exit 1
     fi
 
-    local wt source_repo base_commit strategy retry_ordinal
+    local wt source_repo source_base_commit execution_base_commit strategy retry_ordinal
+    local prior_snapshot_commit prior_snapshot_tree prior_snapshot_receipt
     wt="$(sed -n 's/.*"worktree"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
     source_repo="$(sed -n 's/.*"source_repository"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
-    base_commit="$(sed -n 's/.*"base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    source_base_commit="$(sed -n 's/.*"source_base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    [ -n "$source_base_commit" ] || source_base_commit="$(sed -n 's/.*"base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    execution_base_commit="$(sed -n 's/.*"execution_base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    [ -n "$execution_base_commit" ] || execution_base_commit="$(sed -n 's/.*"worktree_start_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    [ -n "$execution_base_commit" ] || execution_base_commit="$source_base_commit"
+    prior_snapshot_commit="$(sed -n 's/.*"dirty_snapshot_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    prior_snapshot_tree="$(sed -n 's/.*"dirty_snapshot_tree"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    prior_snapshot_receipt="$(sed -n 's/.*"dirty_snapshot_receipt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
     strategy="$(sed -n 's/.*"strategy"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
     retry_ordinal="$(sed -n 's/.*"retry_ordinal"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$prior_runtime" | head -1)"
     [ -n "$retry_ordinal" ] || retry_ordinal=0
     _RETRY_BRANCH="$(sed -n 's/.*"branch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
 
     # Validate required fields
-    if [ -z "$wt" ] || [ -z "$source_repo" ] || [ -z "$base_commit" ]; then
-        echo "Error: retry-in-place: prior runtime.json is malformed (missing worktree, source_repository, or base_commit)." >&2
+    if [ -z "$wt" ] || [ -z "$source_repo" ] || [ -z "$source_base_commit" ] || [ -z "$execution_base_commit" ]; then
+        echo "Error: retry-in-place: prior runtime.json is malformed (missing worktree, source repository, or baseline commit)." >&2
         exit 1
     fi
 
@@ -727,16 +736,21 @@ validate_retry_in_place() {
     fi
 
     # Recorded base commit must match current source HEAD
-    if [ "$base_commit" != "$BASE_COMMIT" ]; then
-        echo "Error: retry-in-place: recorded base commit does not match current HEAD: recorded=${base_commit} current=${BASE_COMMIT}" >&2
+    if [ "$source_base_commit" != "$BASE_COMMIT" ]; then
+        echo "Error: retry-in-place: recorded source base does not match current HEAD: recorded=${source_base_commit} current=${BASE_COMMIT}" >&2
         exit 1
     fi
 
-    # Worktree HEAD must equal recorded base
+    # Worktree HEAD binds the execution baseline. In dirty-snapshot mode this
+    # intentionally differs from the source repository's original HEAD.
     local wt_head
     wt_head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
-    if [ "$wt_head" != "$base_commit" ]; then
-        echo "Error: retry-in-place: worktree HEAD does not match recorded base: worktree=${wt_head} base=${base_commit}" >&2
+    if [ "$wt_head" != "$execution_base_commit" ]; then
+        echo "Error: retry-in-place: worktree HEAD does not match recorded execution base: worktree=${wt_head} execution_base=${execution_base_commit}" >&2
+        exit 1
+    fi
+    if [ -n "$prior_snapshot_commit" ] && [ "$prior_snapshot_commit" != "$execution_base_commit" ]; then
+        echo "Error: retry-in-place: dirty snapshot provenance does not match recorded execution base." >&2
         exit 1
     fi
 
@@ -745,6 +759,13 @@ validate_retry_in_place() {
     [ -n "$_RETRY_ROOT_TASK_ID" ] || _RETRY_ROOT_TASK_ID="$prior_task_id"
     _RETRY_ORDINAL=$((retry_ordinal + 1))
     _RETRY_WORKTREE_DIR="$wt"
+    _RETRY_SOURCE_BASE_COMMIT="$source_base_commit"
+    _RETRY_EXECUTION_BASE_COMMIT="$execution_base_commit"
+    if [ -n "$prior_snapshot_commit" ]; then
+        DIRTY_SNAPSHOT_COMMIT="$prior_snapshot_commit"
+        DIRTY_SNAPSHOT_TREE="$prior_snapshot_tree"
+        _INHERITED_DIRTY_SNAPSHOT_RECEIPT="$prior_snapshot_receipt"
+    fi
     [ -n "$_RETRY_BRANCH" ] || _RETRY_BRANCH="claude-task-retry-${prior_task_id}"
 }
 
@@ -770,13 +791,21 @@ validate_advisor_continuation() {
         exit 1
     fi
 
-    local wt source_repo base_commit strategy
+    local wt source_repo source_base_commit execution_base_commit strategy
+    local prior_snapshot_commit prior_snapshot_tree prior_snapshot_receipt
     wt="$(sed -n 's/.*"worktree"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
     source_repo="$(sed -n 's/.*"source_repository"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
-    base_commit="$(sed -n 's/.*"base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    source_base_commit="$(sed -n 's/.*"source_base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    [ -n "$source_base_commit" ] || source_base_commit="$(sed -n 's/.*"base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    execution_base_commit="$(sed -n 's/.*"execution_base_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    [ -n "$execution_base_commit" ] || execution_base_commit="$(sed -n 's/.*"worktree_start_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    [ -n "$execution_base_commit" ] || execution_base_commit="$source_base_commit"
+    prior_snapshot_commit="$(sed -n 's/.*"dirty_snapshot_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    prior_snapshot_tree="$(sed -n 's/.*"dirty_snapshot_tree"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
+    prior_snapshot_receipt="$(sed -n 's/.*"dirty_snapshot_receipt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
     _ADVISOR_CONTINUE_BRANCH="$(sed -n 's/.*"branch"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$prior_runtime" | head -1)"
 
-    if [ -z "$wt" ] || [ -z "$source_repo" ] || [ -z "$base_commit" ]; then
+    if [ -z "$wt" ] || [ -z "$source_repo" ] || [ -z "$source_base_commit" ] || [ -z "$execution_base_commit" ]; then
         echo "Error: advisor-continuation: prior runtime.json is malformed." >&2
         exit 1
     fi
@@ -819,17 +848,29 @@ validate_advisor_continuation() {
     done
 
     # --- 5. Base commit must match exactly ---
-    if [ "$base_commit" != "$BASE_COMMIT" ]; then
-        echo "Error: advisor-continuation: recorded base commit does not match current HEAD: recorded=${base_commit} current=${BASE_COMMIT}" >&2
+    if [ "$source_base_commit" != "$BASE_COMMIT" ]; then
+        echo "Error: advisor-continuation: recorded source base does not match current HEAD: recorded=${source_base_commit} current=${BASE_COMMIT}" >&2
         exit 1
     fi
 
-    # Worktree HEAD must equal recorded base
+    # Worktree HEAD must equal the execution baseline, which may be a dirty
+    # snapshot commit rather than the source repository HEAD.
     local wt_head
     wt_head="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
-    if [ "$wt_head" != "$base_commit" ]; then
-        echo "Error: advisor-continuation: worktree HEAD does not match recorded base: worktree=${wt_head} base=${base_commit}" >&2
+    if [ "$wt_head" != "$execution_base_commit" ]; then
+        echo "Error: advisor-continuation: worktree HEAD does not match recorded execution base: worktree=${wt_head} execution_base=${execution_base_commit}" >&2
         exit 1
+    fi
+    if [ -n "$prior_snapshot_commit" ] && [ "$prior_snapshot_commit" != "$execution_base_commit" ]; then
+        echo "Error: advisor-continuation: dirty snapshot provenance does not match recorded execution base." >&2
+        exit 1
+    fi
+    _ADVISOR_SOURCE_BASE_COMMIT="$source_base_commit"
+    _ADVISOR_EXECUTION_BASE_COMMIT="$execution_base_commit"
+    if [ -n "$prior_snapshot_commit" ]; then
+        DIRTY_SNAPSHOT_COMMIT="$prior_snapshot_commit"
+        DIRTY_SNAPSHOT_TREE="$prior_snapshot_tree"
+        _INHERITED_DIRTY_SNAPSHOT_RECEIPT="$prior_snapshot_receipt"
     fi
 
     # --- 6. Resolve advisor packet and validated response ---
@@ -1277,12 +1318,15 @@ BASE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 WORKTREE_START_COMMIT="$BASE_COMMIT"
 DIRTY_SNAPSHOT_COMMIT=""
 DIRTY_SNAPSHOT_TREE=""
+_INHERITED_DIRTY_SNAPSHOT_RECEIPT=""
 
 _RETRY_TASK_ID=""
 _RETRY_WORKTREE_DIR=""
 _RETRY_BRANCH=""
 _RETRY_ROOT_TASK_ID=""
 _RETRY_ORDINAL=0
+_RETRY_SOURCE_BASE_COMMIT=""
+_RETRY_EXECUTION_BASE_COMMIT=""
 _REVIEWED_CONTINUATION_TASK_ID=""
 _REVIEWED_CONTINUATION_WORKTREE_DIR=""
 _REVIEWED_CONTINUATION_APPROVAL=""
@@ -1345,6 +1389,7 @@ PYEOF
     TASK_ID="claude-reviewed-${TIMESTAMP}-${RAND_SUFFIX}"
     WORKTREE_DIR="$_REVIEWED_CONTINUATION_WORKTREE_DIR"
     BRANCH_NAME="$(git -C "$WORKTREE_DIR" symbolic-ref --short HEAD 2>/dev/null || true)"
+    WORKTREE_START_COMMIT="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || true)"
     echo "Worktree reuse (reviewed-continuation): $WORKTREE_DIR (prior task: $_REVIEWED_CONTINUATION_TASK_ID, new task: $TASK_ID)"
 elif [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
     validate_retry_in_place "$CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID"
@@ -1352,6 +1397,7 @@ elif [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
     TASK_ID="claude-retry-${TIMESTAMP}-${RAND_SUFFIX}"
     WORKTREE_DIR="$_RETRY_WORKTREE_DIR"
     BRANCH_NAME="$_RETRY_BRANCH"
+    WORKTREE_START_COMMIT="$_RETRY_EXECUTION_BASE_COMMIT"
     # Atomic reservation: prevent concurrent claim of the same retry target.
     _RETRY_RESERVATION_DIR="${WORKTREE_ROOT}/.retry-lock-${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID}"
     if ! mkdir "$_RETRY_RESERVATION_DIR" 2>/dev/null; then
@@ -1379,6 +1425,7 @@ elif [ -n "${CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID:-}" ]; then
     TASK_ID="claude-advisor-${TIMESTAMP}-${RAND_SUFFIX}"
     WORKTREE_DIR="$_ADVISOR_CONTINUE_WORKTREE_DIR"
     BRANCH_NAME="$_ADVISOR_CONTINUE_BRANCH"
+    WORKTREE_START_COMMIT="$_ADVISOR_EXECUTION_BASE_COMMIT"
     echo "Worktree reuse (advisor-continuation): $WORKTREE_DIR (prior task: $_ADVISOR_CONTINUE_TASK_ID, new task: $TASK_ID)"
 else
     # --- Normal worktree setup (fresh or reuse-managed) ---
@@ -1410,6 +1457,10 @@ UNTRACKED_FILE="${WORKTREE_ROOT}/${TASK_ID}.untracked.txt"
 USAGE_FILE="${WORKTREE_ROOT}/${TASK_ID}.usage.txt"
 REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
 REPORT_CONSISTENCY_FILE="${WORKTREE_ROOT}/${TASK_ID}.report-consistency.json"
+OUTCOME_FILE="${WORKTREE_ROOT}/${TASK_ID}.outcome.json"
+RECOVERED_COMPLETION_FILE="${WORKTREE_ROOT}/${TASK_ID}.recovered-completion.json"
+VALIDATION_CAPABILITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.validation-capability.json"
+REVISION_CARD_VALIDATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.revision-card-validation.json"
 CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
 PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
 DISPATCHER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.pid"
@@ -1496,7 +1547,9 @@ else
 fi
 
 if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_STAGED" ] || [ -n "$DIRTY_UNTRACKED" ]; then
-    if [ "$CLAUDE_CODE_DIRTY_SOURCE_MODE" = "snapshot" ]; then
+    if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}${CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID:-}${CLAUDE_CODE_REVIEWED_CONTINUATION:-}" ]; then
+        echo "Source worktree remains dirty; validated continuation reuses its recorded execution baseline ${WORKTREE_START_COMMIT} without re-snapshotting source state."
+    elif [ "$CLAUDE_CODE_DIRTY_SOURCE_MODE" = "snapshot" ]; then
         if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" != "fresh" ] || \
            [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}${CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID:-}${CLAUDE_CODE_REVIEWED_CONTINUATION:-}" ] || \
            [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
@@ -2094,11 +2147,13 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "branch": "%s",\n' "$BRANCH_NAME"
     printf '  "base_commit": "%s",\n' "$BASE_COMMIT"
     printf '  "worktree_start_commit": "%s",\n' "$WORKTREE_START_COMMIT"
+    printf '  "source_base_commit": "%s",\n' "$BASE_COMMIT"
+    printf '  "execution_base_commit": "%s",\n' "$WORKTREE_START_COMMIT"
     printf '  "dirty_source_mode": "%s",\n' "$CLAUDE_CODE_DIRTY_SOURCE_MODE"
     if [ -n "$DIRTY_SNAPSHOT_COMMIT" ]; then
         printf '  "dirty_snapshot_commit": "%s",\n' "$DIRTY_SNAPSHOT_COMMIT"
         printf '  "dirty_snapshot_tree": "%s",\n' "$DIRTY_SNAPSHOT_TREE"
-        printf '  "dirty_snapshot_receipt": "%s",\n' "$DIRTY_SNAPSHOT_RECEIPT_FILE"
+        printf '  "dirty_snapshot_receipt": "%s",\n' "${_INHERITED_DIRTY_SNAPSHOT_RECEIPT:-$DIRTY_SNAPSHOT_RECEIPT_FILE}"
     fi
     printf '  "source_repository": "%s",\n' "$REPO_ROOT"
     printf '  "lineage_root_task_id": "%s",\n' "$_LINEAGE_ROOT_TASK_ID"
@@ -2483,6 +2538,17 @@ PYEOF
 
     if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
         echo "Advisor continuation card rendered to: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+    fi
+fi
+
+# Revision receivers must get exact findings inline. An external review path is
+# audit metadata, not executable context, and cannot replace finding contents.
+_REVISION_VALIDATOR="${SCRIPT_DIR}/validate-revision-card.py"
+if [ -n "$PYTHON_CMD" ] && [ -f "$_REVISION_VALIDATOR" ]; then
+    if ! "$PYTHON_CMD" "$_REVISION_VALIDATOR" "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md" \
+        --output "$REVISION_CARD_VALIDATION_FILE"; then
+        echo "Error: revision task card lacks concrete inline review findings. See ${REVISION_CARD_VALIDATION_FILE}" >&2
+        exit 1
     fi
 fi
 
@@ -3573,7 +3639,7 @@ if [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && [ "$CLAUDE_CODE_TOOL_PROFILE" != "def
     _TOOL_PROFILE_ALLOWLIST_UNSAFE=0
     _TOOL_PROFILE_ALLOWLIST_OVERSIZED=0
     _TOOL_PROFILE_ALLOWLIST_OVERFLOW=0
-    if [ "$CLAUDE_CODE_TOOL_PROFILE" = "checker" ] && [ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" = "1" ]; then
+    if [[ "${_TOOL_PROFILE_AVAILABLE_TOOLS}" == *Bash* ]] && [ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" = "1" ]; then
         _TASK_CARD_FILE="${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
         if [ -f "$_TASK_CARD_FILE" ] && [ -n "$PYTHON_CMD" ]; then
             _VALIDATION_SUMMARY_FILE="$(mktemp 2>/dev/null || echo "")"
@@ -3612,6 +3678,21 @@ for block in blocks:
         if len(commands) >= MAX_COMMANDS:
             overflow_count += 1
             continue
+        commands.append(line)
+
+# Also accept the canonical single-line Validation Contract field. It remains
+# subject to the same shell-composition and size checks as fenced commands.
+for match in re.finditer(r'(?im)^\s*-\s*Exact narrow command:\s*`?([^`\n]+?)`?\s*$', text):
+    line = match.group(1).strip()
+    if not line or line.lower() in {"none", "not-required", "not required", "tbd"}:
+        continue
+    if UNSAFE_RE.search(line):
+        unsafe_count += 1
+    elif len(line) > MAX_CMD_LEN:
+        oversized_count += 1
+    elif len(commands) >= MAX_COMMANDS:
+        overflow_count += 1
+    elif line not in commands:
         commands.append(line)
 
 for cmd in commands:
@@ -3660,6 +3741,56 @@ PYEOF
 fi
 
 progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}"
+
+# Verify only the launcher/capability, never run the assigned test suite twice.
+# This gives Claude concrete evidence that Python/pytest is executable in the
+# dispatch environment without introducing product-side effects.
+if [ -n "$PYTHON_CMD" ]; then
+    _CAPABILITY_COMMAND="$(printf '%s\n' "${_VALIDATION_CMDS:-}" | sed -n '1p')"
+    "$PYTHON_CMD" - "$VALIDATION_CAPABILITY_FILE" "$_CAPABILITY_COMMAND" \
+        "${_TOOL_PROFILE_ALLOWLIST_COUNT:-0}" <<'PYEOF'
+import json, os, shlex, shutil, subprocess, sys, tempfile
+output, command, allowlisted = sys.argv[1:]
+tokens = shlex.split(command) if command else []
+launcher = tokens[0] if tokens else ""
+resolved = shutil.which(launcher) if launcher else None
+probe = "not-assigned"
+exit_code = None
+if resolved:
+    argv = [resolved, "--version"]
+    if os.path.basename(resolved).lower().startswith("python"):
+        argv = [resolved, "-c", "import sys; print(sys.executable)"]
+    try:
+        result = subprocess.run(argv, capture_output=True, timeout=10)
+        exit_code = result.returncode
+        probe = "available" if result.returncode == 0 else "launcher-failed"
+    except (OSError, subprocess.TimeoutExpired):
+        probe = "launcher-failed"
+value = {
+    "schema_version": 1, "exact_command": command or None,
+    "launcher": launcher or None, "resolved_launcher": resolved,
+    "allowlisted_command_count": int(allowlisted),
+    "capability_status": probe, "probe_exit_code": exit_code,
+    "scope": "launcher-only-no-assigned-tests-executed",
+}
+directory = os.path.dirname(output) or "."
+fd, temporary = tempfile.mkstemp(prefix=".validation-capability-", dir=directory)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, indent=2, sort_keys=True); handle.write("\n")
+os.replace(temporary, output)
+PYEOF
+    _CAPABILITY_STATUS="$($PYTHON_CMD -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["capability_status"])' "$VALIDATION_CAPABILITY_FILE" 2>/dev/null || echo unknown)"
+    {
+        echo ""
+        echo "## Validation Capability Receipt"
+        echo ""
+        echo "- Launcher capability: ${_CAPABILITY_STATUS}"
+        echo "- Exact assigned commands allowlisted: ${_TOOL_PROFILE_ALLOWLIST_COUNT:-0}"
+        echo "- Receipt: ${VALIDATION_CAPABILITY_FILE}"
+        echo "- This proves launcher availability only; execute assigned validation and report its real exit code."
+    } >> "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+    progress_log "Validation capability recorded: status=${_CAPABILITY_STATUS}, artifact=${VALIDATION_CAPABILITY_FILE}"
+fi
 
 # --- Unified interaction probe: startup phase ---
 # Adaptive mode accepts a recent success bound to this repository, route,
@@ -3769,6 +3900,7 @@ FIRST_PROGRESS_ELAPSED_SECONDS=""
 FIRST_WORKTREE_CHANGE_SECONDS=""
 FIRST_PROGRESS_OBSERVATION_RECORDED=0
 BLOCKER_RECORDED=0
+BLOCKER_ACTIVITY_STATE=""
 EDIT_READY_DETECTED=0
 EDIT_READY_ELAPSED_SECONDS=""
 EDIT_READY_GRACE_EXPIRED=0
@@ -3776,6 +3908,7 @@ LAST_PRODUCT_CHANGE_EPOCH=0
 PRODUCT_IDLE_SECONDS=0
 PRODUCT_IDLE_CONFIRMATION_COUNT=0
 PRODUCT_IDLE_STOPPED=0
+TAIL_TIMEOUT_STOPPED=0
 EXECUTION_ACTIVITY_STATE="context-acquisition"
 IMPLEMENTATION_COMPLETE_DETECTED=0
 IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS=""
@@ -3911,15 +4044,30 @@ while claude_is_running; do
         fi
     fi
 
-    # Blocker evidence is evaluated throughout the run, not only before first
-    # progress. A late permission/semantic blocker must suppress idle-kill logic.
+    # Recompute current blocker evidence. Generic words such as `Blocker: none`
+    # or a historical mention of "blocked" must not turn normal editing into a
+    # blocked execution state.
+    BLOCKER_RECORDED=0
+    BLOCKER_ACTIVITY_STATE=""
     for _blocker_file in "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md"; do
-        if [ -f "$_blocker_file" ] && \
-           ! file_contains "$_blocker_file" "$SEEDED_PROGRESS_MARKER|$SEEDED_REPORT_MARKER" && \
-           grep -Eiq 'blocker|stop|split|permission|approval|waiting' "$_blocker_file" 2>/dev/null; then
-            BLOCKER_RECORDED=1
-            break
+        [ -f "$_blocker_file" ] || continue
+        file_contains "$_blocker_file" "$SEEDED_PROGRESS_MARKER|$SEEDED_REPORT_MARKER" && continue
+        _BLOCKER_TEXT="$(
+            grep -Ei '^-?[[:space:]]*Blocker:[[:space:]]*.+$|blocked by (approval|permission|sandbox|network|dependency|authentication)|workspace (is )?not trusted|unable to connect|waiting for (tool|command|process|approval|permission)' \
+                "$_blocker_file" 2>/dev/null \
+            | grep -Eiv 'Blocker:[[:space:]]*(none|no|n/?a|not blocked|none reported yet)([[:space:]]|$)' \
+            || true
+        )"
+        [ -n "$_BLOCKER_TEXT" ] || continue
+        BLOCKER_RECORDED=1
+        if printf '%s\n' "$_BLOCKER_TEXT" | grep -Eiq 'approval|permission|sandbox|network|dependency|authentication|not trusted|unable to connect'; then
+            BLOCKER_ACTIVITY_STATE="external-blocked"
+        elif printf '%s\n' "$_BLOCKER_TEXT" | grep -Eiq 'waiting for (tool|command|process)'; then
+            BLOCKER_ACTIVITY_STATE="waiting-tool"
+        else
+            BLOCKER_ACTIVITY_STATE="semantic-blocked"
         fi
+        break
     done
 
     # --- First-substantive-progress detection ---
@@ -4029,7 +4177,7 @@ while claude_is_running; do
             EXECUTION_ACTIVITY_STATE="tail-work"
             PRODUCT_IDLE_CONFIRMATION_COUNT=0
         elif [ "$BLOCKER_RECORDED" -eq 1 ]; then
-            EXECUTION_ACTIVITY_STATE="blocked"
+            EXECUTION_ACTIVITY_STATE="${BLOCKER_ACTIVITY_STATE:-semantic-blocked}"
             PRODUCT_IDLE_CONFIRMATION_COUNT=0
         elif [ "$CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS" -gt 0 ] && \
              [ "$PRODUCT_IDLE_SECONDS" -ge "$CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS" ]; then
@@ -4049,6 +4197,18 @@ while claude_is_running; do
         fi
     elif [ "$EDIT_READY_DETECTED" -eq 1 ]; then
         EXECUTION_ACTIVITY_STATE="implementation-ready"
+    fi
+
+    # Bound report formatting independently from productive implementation.
+    if [ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 1 ] && \
+       [ "$CLAUDE_CODE_TAIL_TIMEOUT_SECONDS" -gt 0 ] && \
+       [ $((ELAPSED - IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS)) -ge "$CLAUDE_CODE_TAIL_TIMEOUT_SECONDS" ]; then
+        TAIL_TIMEOUT_STOPPED=1
+        CLAUDE_TIMED_OUT=1
+        TIMEOUT_EXTENSION_REASON="tail_report_timeout"
+        EXECUTION_ACTIVITY_STATE="tail-timeout"
+        stop_claude "tail/report timeout after ${CLAUDE_CODE_TAIL_TIMEOUT_SECONDS}s" "$ELAPSED"
+        break
     fi
 
     # The dispatcher already owns liveness, timeout, artifact, and worktree
@@ -4217,6 +4377,8 @@ fi
     printf '  "final_execution_activity_state": "%s",\n' "$EXECUTION_ACTIVITY_STATE"
     printf '  "final_product_idle_seconds": %s,\n' "$PRODUCT_IDLE_SECONDS"
     printf '  "product_idle_stopped": %s,\n' "$([ "$PRODUCT_IDLE_STOPPED" -eq 1 ] && echo true || echo false)"
+    printf '  "tail_timeout_seconds": %s,\n' "$CLAUDE_CODE_TAIL_TIMEOUT_SECONDS"
+    printf '  "tail_timeout_stopped": %s,\n' "$([ "$TAIL_TIMEOUT_STOPPED" -eq 1 ] && echo true || echo false)"
     printf '  "implementation_complete_observed": %s,\n' "$([ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 1 ] && echo true || echo false)"
     printf '  "completion_ready_observed": %s,\n' "$([ "$COMPLETION_READY_DETECTED" -eq 1 ] && echo true || echo false)"
     printf '  "completion_ready_elapsed_seconds": %s,\n' "${COMPLETION_READY_ELAPSED_SECONDS:-null}"
@@ -4845,22 +5007,33 @@ if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
 fi
 
 # Verify cheap mechanical report claims before semantic Codex review.  This is
-# advisory evidence: conflicts never become acceptance and never rewrite the
-# implementation.  Older reports without machine-readable claims remain usable
-# but are marked insufficient-claims.
+# evidence: conflicts never become acceptance and never rewrite the
+# implementation. Reports without the required machine-readable claims remain
+# reviewable, but their completion state is downgraded to needs-review.
 REPORT_CONSISTENCY_STATUS="not-run"
+ARTIFACT_VALID="no"
+VALIDATION_STATUS="unknown"
+COMPLETION_STATE="needs-review"
 _REPORT_VERIFIER="${SCRIPT_DIR}/verify-claude-report.py"
 if [ "$VALID_CLAUDE_REPORT" -eq 1 ] && [ -n "$PYTHON_CMD" ] && [ -f "$_REPORT_VERIFIER" ]; then
     if "$PYTHON_CMD" "$_REPORT_VERIFIER" \
         --report "${WORKTREE_DIR}/CLAUDE_REPORT.md" \
         --worktree "$WORKTREE_DIR" \
         --base "$WORKTREE_START_COMMIT" \
+        --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
         --output "$REPORT_CONSISTENCY_FILE"; then
-        REPORT_CONSISTENCY_STATUS="$($PYTHON_CMD - "$REPORT_CONSISTENCY_FILE" <<'PYEOF' 2>/dev/null || echo error
+        IFS=$'\t' read -r REPORT_CONSISTENCY_STATUS ARTIFACT_VALID VALIDATION_STATUS COMPLETION_STATE < <(
+            "$PYTHON_CMD" - "$REPORT_CONSISTENCY_FILE" <<'PYEOF' 2>/dev/null || printf 'error\tno\tunknown\tneeds-review\n'
 import json, sys
-print(json.load(open(sys.argv[1], encoding="utf-8")).get("status", "error"))
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print("\t".join((
+    str(value.get("status", "error")),
+    "yes" if value.get("artifact_valid") else "no",
+    str(value.get("validation_status", "unknown")),
+    str(value.get("completion_state", "needs-review")),
+)))
 PYEOF
-)"
+        )
         progress_log "Claude report/diff consistency: status=${REPORT_CONSISTENCY_STATUS}, artifact=${REPORT_CONSISTENCY_FILE}"
     else
         REPORT_CONSISTENCY_STATUS="error"
@@ -4954,6 +5127,7 @@ if [ "$_CHECKER_WRITES_TESTS" -eq 1 ] && \
         progress_log "Checker runtime enforcement FAILED: ${CHECKER_CONTRACT_RECEIPT_FILE}"
     else
         progress_log "Checker runtime enforcement PASSED: ${CHECKER_CONTRACT_RECEIPT_FILE}"
+        VALIDATION_STATUS="verified"
     fi
 fi
 
@@ -5009,6 +5183,105 @@ elif [ "$RESULT_FALLBACK_GENERATED" -eq 1 ]; then
     DISPATCH_OUTCOME="fallback"
 elif [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; then
     DISPATCH_OUTCOME="no_useful_progress"
+fi
+
+# Keep transport/process completion separate from artifact validity, validation,
+# and semantic acceptance. A normal child exit with an inconsistent report is a
+# successful dispatch process, but never a completed task.
+DISPATCH_SUCCESS="no"
+SEMANTIC_ACCEPTANCE="pending-codex-review"
+if [ "$DISPATCH_OUTCOME" = "success" ]; then
+    DISPATCH_SUCCESS="yes"
+    if [ "$ARTIFACT_VALID" != "yes" ] || \
+       [ "$VALIDATION_STATUS" = "missing-evidence" ] || \
+       [ "$VALIDATION_STATUS" = "claimed-unverified" ] || \
+       [ "$VALIDATION_STATUS" = "failed" ] || \
+       [ "$VALIDATION_STATUS" = "unknown" ]; then
+        COMPLETION_STATE="needs-review"
+    else
+        COMPLETION_STATE="semantic-review-required"
+    fi
+else
+    case "$DISPATCH_OUTCOME" in
+        approval_blocked|network_error|preflight_error) COMPLETION_STATE="external-blocked" ;;
+        scope_violation|checker_contract_violation) COMPLETION_STATE="needs-revision" ;;
+        *) COMPLETION_STATE="incomplete" ;;
+    esac
+fi
+
+if [ -n "$PYTHON_CMD" ]; then
+    "$PYTHON_CMD" - "$OUTCOME_FILE" "$TASK_ID" "$DISPATCH_OUTCOME" "$DISPATCH_SUCCESS" \
+        "$REPORT_CONSISTENCY_STATUS" "$ARTIFACT_VALID" "$VALIDATION_STATUS" \
+        "$SEMANTIC_ACCEPTANCE" "$COMPLETION_STATE" <<'PYEOF'
+import json, os, sys, tempfile
+(
+    output, task_id, dispatch_outcome, dispatch_success, report_consistency,
+    artifact_valid, validation_success, semantic_acceptance, completion_state,
+) = sys.argv[1:]
+value = {
+    "schema_version": 1,
+    "task_id": task_id,
+    "dispatch_outcome": dispatch_outcome,
+    "dispatch_success": dispatch_success == "yes",
+    "artifact_valid": artifact_valid == "yes",
+    "report_consistency": report_consistency,
+    "validation_success": validation_success,
+    "semantic_acceptance": semantic_acceptance,
+    "completion_state": completion_state,
+}
+directory = os.path.dirname(output) or "."
+fd, temporary = tempfile.mkstemp(prefix=".outcome-", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, output)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except OSError:
+        pass
+    raise
+PYEOF
+fi
+
+# Missing prose is recoverable when a useful diff exists. Emit a deterministic
+# receipt so Codex can review the bounded tail without reconstructing it.
+if [ -n "$PYTHON_CMD" ] && [ "$IMPLEMENTATION_CHANGES" -gt 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; then
+    "$PYTHON_CMD" - "$RECOVERED_COMPLETION_FILE" "$TASK_ID" "$WORKTREE_DIR" \
+        "$DIFF_FILE" "$VALIDATION_STATUS" "$TAIL_TIMEOUT_STOPPED" "$COMPLETION_STATE" <<'PYEOF'
+import hashlib, json, os, subprocess, sys, tempfile
+output, task_id, worktree, diff_path, validation, tail_timeout, completion = sys.argv[1:]
+status = subprocess.run(
+    ["git", "-C", worktree, "status", "--porcelain"], capture_output=True,
+    text=True, encoding="utf-8", errors="replace",
+).stdout.splitlines()
+paths = sorted({line[3:].strip() for line in status if len(line) > 3 and line[3:].strip()})
+try:
+    diff_bytes = open(diff_path, "rb").read()
+except OSError:
+    diff_bytes = b""
+value = {
+    "schema_version": 1, "task_id": task_id,
+    "recovery_reason": "missing-claude-report", "changed_files": paths,
+    "diff_sha256": "sha256:" + hashlib.sha256(diff_bytes).hexdigest(),
+    "validation_status": validation, "claude_report_complete": False,
+    "tail_timeout_stopped": tail_timeout == "1", "completion_state": completion,
+    "codex_bounded_tail_takeover_eligible": completion == "needs-review",
+    "authority": "codex-review-required",
+}
+directory = os.path.dirname(output) or "."
+fd, temporary = tempfile.mkstemp(prefix=".recovered-completion-", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True); handle.write("\n")
+    os.replace(temporary, output)
+except BaseException:
+    try: os.unlink(temporary)
+    except OSError: pass
+    raise
+PYEOF
+    progress_log "Recovered completion receipt saved: ${RECOVERED_COMPLETION_FILE}"
 fi
 
 # Record exactly one cross-model handoff after terminal evidence is available.
@@ -5142,6 +5415,7 @@ if [ -n "$_TAKEOVER_PRIOR_TASK_ID" ] && [ -s "$ATTEMPT_CLASSIFICATION_FILE" ] &&
 fi
 
 progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no), probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, observation_probe_ran=$([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"
+progress_log "Outcome gates: dispatch_success=${DISPATCH_SUCCESS}, artifact_valid=${ARTIFACT_VALID}, report_consistency=${REPORT_CONSISTENCY_STATUS}, validation_success=${VALIDATION_STATUS}, semantic_acceptance=${SEMANTIC_ACCEPTANCE}, completion_state=${COMPLETION_STATE}, artifact=${OUTCOME_FILE}"
 progress_log "API attribution: startup_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}, startup_source=${_STARTUP_PROBE_SOURCE:-not-run}, zero_output_conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
 # Authoritative final outcome — emitted exactly once, after semantic validation.
 progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELAPSED}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
@@ -5151,6 +5425,13 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] Implementation changes: ${IMPLEMENTATION_CHANGES}"
     echo "[dispatch] Valid Claude-owned report: $([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no)"
     echo "[dispatch] Dispatch outcome: ${DISPATCH_OUTCOME}"
+    echo "[dispatch] Dispatch success: ${DISPATCH_SUCCESS}"
+    echo "[dispatch] Artifact valid: ${ARTIFACT_VALID}"
+    echo "[dispatch] Report consistency: ${REPORT_CONSISTENCY_STATUS}"
+    echo "[dispatch] Validation success: ${VALIDATION_STATUS}"
+    echo "[dispatch] Semantic acceptance: ${SEMANTIC_ACCEPTANCE}"
+    echo "[dispatch] Completion state: ${COMPLETION_STATE}"
+    echo "[dispatch] Outcome artifact: ${OUTCOME_FILE}"
     echo "[dispatch] Semantic result error: $([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no)"
     echo "[dispatch] Attempt failure class: ${ATTEMPT_FAILURE_CLASS}"
     echo "[dispatch] Counts toward takeover: ${ATTEMPT_COUNTS_TOWARD_TAKEOVER}"
@@ -5551,12 +5832,12 @@ else
     } > "$REPORT_FILE"
 fi
 
-monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED}"
+monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} dispatch_success=${DISPATCH_SUCCESS} artifact_valid=${ARTIFACT_VALID} validation_success=${VALIDATION_STATUS} semantic_acceptance=${SEMANTIC_ACCEPTANCE} completion_state=${COMPLETION_STATE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED}"
 
 echo "Report saved to: $REPORT_FILE"
 
 echo ""
-echo "=== Dispatch Complete ==="
+echo "=== Dispatch Process Complete ==="
 echo "Worktree:        $WORKTREE_DIR"
 echo "Execution Profile: $CLAUDE_CODE_EXECUTION_PROFILE"
 echo "External Integrations: ${_EXTERNAL_INTEGRATIONS_ALLOWED}"
@@ -5586,6 +5867,8 @@ echo "Active Window:   ${CLAUDE_CODE_TIMEOUT_SECONDS}s (one refresh)"
 echo "Growth Ext:      ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s (max one)"
 echo "Hard Cap:        ${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}s"
 echo "Dispatch Outcome:${DISPATCH_OUTCOME}"
+echo "Completion State:${COMPLETION_STATE}"
+echo "Outcome Gates:   $OUTCOME_FILE"
 echo "Task Card Full:  ${WORKTREE_DIR}/TASK_CARD_FULL.md"
 echo "Claude Task:     ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
 echo "Result:          $RESULT_FILE"

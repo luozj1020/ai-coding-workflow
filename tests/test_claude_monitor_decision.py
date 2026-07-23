@@ -116,6 +116,75 @@ class ClaudeMonitorDecisionTests(unittest.TestCase):
         self.assertEqual(value["product_idle_seconds"], 190)
         self.assertEqual(value["idle_confirmations"], 1)
 
+    def test_dispatcher_event_resolves_pid_namespace_visibility_for_diagnosis(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event event=material-change execution_state=implementation-idle "
+            "edit_ready=1 product_idle_seconds=190 idle_confirmations=1 "
+            "worktree_changes=2 running=yes"
+        )
+        with temporary, mock.patch.object(module, "role_state", return_value="visibility-unknown"):
+            value = module.snapshot(args)
+        self.assertEqual(value["decision"], "inspect")
+        self.assertEqual(value["reason_code"], "product-edit-idle-candidate")
+        self.assertEqual(value["running"], "yes")
+        self.assertEqual(value["dispatcher_observed_running"], "yes")
+        self.assertEqual(value["process_visibility"], "restricted")
+        self.assertEqual(value["interrupt_authorized"], "no")
+
+    def test_visibility_remains_unknown_without_dispatcher_liveness_evidence(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event event=material-change execution_state=implementation-idle "
+            "product_idle_seconds=190 running=unknown"
+        )
+        with temporary, mock.patch.object(module, "role_state", return_value="visibility-unknown"):
+            value = module.snapshot(args)
+        self.assertEqual(value["decision"], "visibility-unknown")
+        self.assertEqual(value["running"], "unknown")
+        self.assertEqual(value["dispatcher_observed_running"], "no")
+
+    def test_external_blocker_and_named_tool_wait_are_distinct(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event event=material-change execution_state=external-blocked running=yes"
+        )
+        with temporary, mock.patch.object(module, "role_state", return_value="running"):
+            value = module.snapshot(args)
+            self.assertEqual(value["decision"], "inspect")
+            self.assertEqual(value["reason_code"], "confirmed-external-blocker")
+            monitor = args.repo_root / ".worktrees" / f"{args.task_id}.monitor-events.log"
+            monitor.write_text(
+                "monitor_event event=material-change execution_state=waiting-tool running=yes\n",
+                encoding="utf-8",
+            )
+            value = module.snapshot(args)
+        self.assertEqual(value["decision"], "continue")
+        self.assertEqual(value["reason_code"], "named-tool-wait")
+
+    def test_terminal_snapshot_exposes_separate_outcome_gates(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event event=terminal execution_state=tail-work running=no terminal=yes"
+        )
+        outcome = args.repo_root / ".worktrees" / f"{args.task_id}.outcome.json"
+        outcome.write_text(json.dumps({
+            "dispatch_success": True,
+            "artifact_valid": False,
+            "validation_success": "missing-evidence",
+            "semantic_acceptance": "pending-codex-review",
+            "completion_state": "needs-review",
+        }), encoding="utf-8")
+        (args.repo_root / ".worktrees" / f"{args.task_id}.progress.log").write_text(
+            "Final dispatch outcome: success\n", encoding="utf-8",
+        )
+        with temporary, mock.patch.object(module, "role_state", return_value="not-running"):
+            value = module.snapshot(args)
+        self.assertEqual(value["decision"], "terminal")
+        self.assertTrue(value["dispatch_success"])
+        self.assertFalse(value["artifact_valid"])
+        self.assertEqual(value["completion_state"], "needs-review")
+
     def test_cli_json_is_bounded_and_machine_readable(self):
         temporary, args = self.make_case(
             "monitor_event monitor_level=L1 action=wait evidence_state=none "

@@ -6,6 +6,15 @@ Load this reference for dirty-source restoration, large-repository worktree perf
 
 Dirty source or stale HEAD blocks reliable delegation but is not a Codex takeover trigger. Prefer a clean accepted base. When the current tracked/untracked working state is intentionally the execution baseline, explicitly set `CLAUDE_CODE_DIRTY_SOURCE_MODE=snapshot`. The dispatcher builds a commit from a temporary Git index, never changes source index/HEAD, excludes untracked task/control inputs, creates the fresh isolated worktree from that commit, and writes `*.dirty-snapshot.json` with base/tree/commit/path hashes. Snapshot mode is limited to one fresh non-DAG dispatch and never authorizes merge. Legacy `CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1` retains hash comparison through `dispatch-preflight.py` and still blocks missing/different task-relevant paths. Reading dirty source by absolute path while writing to a stale fresh worktree remains forbidden.
 
+Runtime identity keeps `source_base_commit` separate from
+`execution_base_commit`. They are equal for a clean fresh run; a dirty snapshot
+uses the original source HEAD for the former and the synthetic snapshot commit
+for the latter. Retry-in-place and advisor continuation require the current
+source HEAD to match `source_base_commit`, require worktree HEAD to match
+`execution_base_commit`, and inherit that execution baseline without creating a
+second snapshot. Source working-copy dirty state after the initial snapshot is not
+silently imported into the continuation.
+
 Default to complete evidence. For large repositories, explicitly select `fast-large-repo`, `reuse-managed`, `CLAUDE_CODE_LARGE_REPO_MODE=1`, or summary evidence only after recording the tradeoff. `reuse-managed` may reuse only `.worktrees/reuse/claude-managed`; reset it only with `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` after preserving or reviewing evidence. Never reset the source repository.
 
 CodeGraph indexes and results from the source worktree do not automatically transfer to a fresh execution worktree. After worktree creation the dispatcher writes a CodeGraph identity receipt. A mismatch or pending index defaults to deterministic local fallback and graph output is excluded from execution evidence. Set `CLAUDE_CODE_CODEGRAPH_POLICY=repair` only when explicitly accepting the index/sync cost; continuation may reuse a `ready` index in the same worktree.

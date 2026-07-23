@@ -34,6 +34,22 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py . --local-
 
 Refresh an already-bootstrapped repository with `--update-workflow-files`. Without it, the installer reports outdated plain `ai/*` files but does not overwrite them. Managed blocks in `AGENTS.md` and `CLAUDE.md` preserve user-owned content outside their markers.
 
+Before changing the target repository, the project installer validates that
+every required asset, helper, schema, profile, and example exists and that no
+two sources target the same path. A broken source package therefore fails
+before creating or updating project files. Each individual file refresh uses a
+same-directory atomic replacement and preserves the existing permission mode,
+so an interrupted write cannot leave a truncated managed file. This is
+per-file atomicity, not a repository-wide rollback; the final doctor phase is
+still the cross-file consistency gate for guided setup.
+
+The user-level Skill update follows the same fail-safe principle at directory
+scope: it copies into a sibling staging directory, validates the minimum
+executable Skill surface, then atomically switches the installed directory. If
+activation fails after the previous directory is moved aside, the previous
+Skill is restored before the command returns an error. Repository bootstrap
+starts only after that Skill activation succeeds.
+
 ## Environment-Aware Setup
 
 Preview or apply language/tool detection:

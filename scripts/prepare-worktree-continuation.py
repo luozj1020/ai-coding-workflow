@@ -186,9 +186,21 @@ def validate_runtime(root: Path, task_id: str) -> tuple[Dict[str, Any], Path, Pa
             raise ContinuationError(f"recorded process is still live: {raw}")
     source_head = git(root, "rev-parse", "HEAD").strip()
     worktree_head = git(worktree, "rev-parse", "HEAD").strip()
-    base = str(runtime.get("base_commit", ""))
-    if not base or source_head != base or worktree_head != base:
-        raise ContinuationError("source HEAD, worktree HEAD, and recorded base must match")
+    source_base = str(runtime.get("source_base_commit") or runtime.get("base_commit") or "")
+    execution_base = str(
+        runtime.get("execution_base_commit")
+        or runtime.get("worktree_start_commit")
+        or source_base
+    )
+    if not source_base or not execution_base:
+        raise ContinuationError("runtime baseline identity is missing")
+    if source_head != source_base:
+        raise ContinuationError("source HEAD does not match recorded source base")
+    if worktree_head != execution_base:
+        raise ContinuationError("worktree HEAD does not match recorded execution base")
+    snapshot = str(runtime.get("dirty_snapshot_commit") or "")
+    if snapshot and snapshot != execution_base:
+        raise ContinuationError("dirty snapshot provenance does not match execution base")
     return runtime, runtime_path, worktree
 
 
@@ -258,6 +270,10 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
         "source_repository": str(root),
         "worktree": str(worktree),
         "base_commit": runtime["base_commit"],
+        "source_base_commit": runtime.get("source_base_commit", runtime["base_commit"]),
+        "execution_base_commit": runtime.get(
+            "execution_base_commit", runtime.get("worktree_start_commit", runtime["base_commit"])
+        ),
         "source_head": source_head,
         "worktree_head": git(worktree, "rev-parse", "HEAD").strip(),
         "next_task_card": str(card),
@@ -286,6 +302,10 @@ def validate_common(approval_path: Path, card: Path) -> tuple[Dict[str, Any], Pa
         "source_repository": str(root),
         "worktree": str(worktree),
         "base_commit": runtime.get("base_commit"),
+        "source_base_commit": runtime.get("source_base_commit", runtime.get("base_commit")),
+        "execution_base_commit": runtime.get(
+            "execution_base_commit", runtime.get("worktree_start_commit", runtime.get("base_commit"))
+        ),
         "source_head": git(root, "rev-parse", "HEAD").strip(),
         "worktree_head": git(worktree, "rev-parse", "HEAD").strip(),
         "next_task_card": str(card),

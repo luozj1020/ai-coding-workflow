@@ -9,11 +9,13 @@
       "test_install_for_codex.py",
       "test_install_workflow.py",
       "test_run_codex_spark.py",
-      "test_run_parallel_loop.py"
+      "test_run_parallel_loop.py",
+      "test_spark_engagement.py"
     ],
     "slow": [
       "test_dirty_source_guard.py",
-      "test_install_workflow.py"
+      "test_install_workflow.py",
+      "test_spark_engagement.py"
     ]
   },
   "tiers": {

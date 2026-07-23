@@ -45,11 +45,13 @@ class InstallForCodexTests(unittest.TestCase):
             (src / "ref").mkdir()
             (src / "ai").mkdir()
             (src / "README.md").write_text("ok\n", encoding="utf-8")
+            (src / "SKILL.md").write_text("skill\n", encoding="utf-8")
             (src / "AGENTS.md").write_text("generated\n", encoding="utf-8")
             (src / "CLAUDE.md").write_text("generated\n", encoding="utf-8")
             (src / "assets" / "AGENTS.md").write_text("template\n", encoding="utf-8")
             (src / "assets" / "CLAUDE.md").write_text("template\n", encoding="utf-8")
             (src / "scripts" / "update_skill.py").write_text("ok\n", encoding="utf-8")
+            (src / "scripts" / "install_workflow.py").write_text("ok\n", encoding="utf-8")
             (src / "scripts" / "tool.pyc").write_text("compiled\n", encoding="utf-8")
             (src / "__pycache__" / "x.pyc").write_text("compiled\n", encoding="utf-8")
             (src / ".worktrees" / "artifact.txt").write_text("artifact\n", encoding="utf-8")
@@ -73,6 +75,41 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertFalse((dest / "ai").exists())
             self.assertFalse((dest / "task-cards").exists())
             self.assertFalse((dest / "tmp-smoke").exists())
+
+    def test_copy_skill_activation_failure_restores_previous_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = pathlib.Path(tmp) / "src"
+            dest = pathlib.Path(tmp) / "skills" / "ai-coding-workflow"
+            (src / "assets").mkdir(parents=True)
+            (src / "scripts").mkdir()
+            (src / "SKILL.md").write_text("new\n", encoding="utf-8")
+            (src / "assets" / "AGENTS.md").write_text("agents\n", encoding="utf-8")
+            (src / "assets" / "CLAUDE.md").write_text("claude\n", encoding="utf-8")
+            (src / "scripts" / "install_workflow.py").write_text("install\n", encoding="utf-8")
+            (src / "scripts" / "update_skill.py").write_text("update\n", encoding="utf-8")
+            dest.mkdir(parents=True)
+            (dest / "SKILL.md").write_text("old\n", encoding="utf-8")
+            real_replace = self.module.os.replace
+            calls = 0
+
+            def fail_activation(source, target):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("injected activation failure")
+                return real_replace(source, target)
+
+            with patch.object(self.module.os, "replace", side_effect=fail_activation):
+                with self.assertRaisesRegex(OSError, "injected activation failure"):
+                    self.module.copy_skill(str(src), str(dest))
+
+            self.assertEqual((dest / "SKILL.md").read_text(encoding="utf-8"), "old\n")
+            self.assertEqual(
+                list(dest.parent.glob(".ai-coding-workflow-staging-*")), []
+            )
+            self.assertEqual(
+                list(dest.parent.glob(".ai-coding-workflow-backup-*")), []
+            )
 
     def test_copy_skill_noops_when_source_is_destination(self):
         with tempfile.TemporaryDirectory() as tmp:

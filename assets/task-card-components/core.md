@@ -60,12 +60,10 @@
 
 ## Validation Contract
 
-- Local validation allowed: yes/no
+- Local validation allowed: yes/no; validation required: yes/no
 - Exact narrow command:
 - Required evidence:
-
-## Temporary File Policy
-
+- Small isolated task: prefer the smallest reusable implementation or fixture; target <=30 changed lines or explain why the frozen contract requires more.
 - Use `$TMPDIR` for scratch/generated validation helpers; repository-local scratch is forbidden unless listed in Write paths.
 
 ## Execution Progress

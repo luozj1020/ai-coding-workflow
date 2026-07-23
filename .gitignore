@@ -9,5 +9,13 @@ Thumbs.db
 task-cards/
 tmp-*/
 
-/.worktrees/*
-!/.worktrees/.gitkeep
+# Repository-local workflow bootstrap, runtime, indexes, and planning inputs.
+/AGENTS.md
+/CLAUDE.md
+/ai/
+/.ai-workflow/
+/.codegraph/
+/.worktrees/
+/ref/
+/AI Coding Workflow 跨模型信息传递优化规划.*
+/*.docx
