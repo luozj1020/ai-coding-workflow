@@ -2992,6 +2992,43 @@ class SparkExecutionEnvTests(unittest.TestCase):
             self.assertIn("| Execution environment resolved | auto-unrestricted |", report)
             self.assertIn("| Spark calls used | 1 |", report)
 
+    def test_runtime_socket_failure_requests_host_handoff(self):
+        """A real sandbox-style socket failure is promoted to host retry."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path,
+                output_text="",
+                exit_code=1,
+                stderr_text="Unable to connect to API: FailedToOpenSocket",
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["AI_CODING_WORKFLOW_BYPASS_BROKER"] = "1"
+            env.pop("CODEX_SANDBOX_NETWORK_DISABLED", None)
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                    "--execution-env", "auto",
+                    "--result-mode", "direct",
+                    "--diagnostics", "failure",
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("spark_status=unavailable", result.stdout)
+            self.assertIn("needs_host_execution=true", result.stderr)
+            self.assertIn("host_handoff_required=true", result.stderr)
+            self.assertIn("execution_env_resolved=auto-unrestricted", result.stderr)
+
     def test_compact_diagnostic_under_explicit_sandbox_persists_redacted(self):
         """Compact diagnostic under explicit sandbox/direct mode persists head+tail
         redacted diagnostic with credential sentinel absent."""

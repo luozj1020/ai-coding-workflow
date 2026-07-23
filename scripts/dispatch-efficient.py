@@ -14,10 +14,27 @@ HERE = Path(__file__).resolve().parent
 SPARK_HELPER = HERE / "run-codex-spark.sh"
 sys.path.insert(0, str(HERE))
 from evidence_hash import content_hash as _content_hash, evidence_hash as _evidence_hash
+import spark_execution_availability
 
 
 def rows(path):
     return [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()] if path.exists() else []
+
+
+def _repository_for(path: Path) -> Path:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path.resolve().parent), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return Path(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return path.resolve().parent
 
 
 def _render_context_packet_md(context_packet: dict) -> str:
@@ -363,7 +380,9 @@ def _run_host_retry_with_timeout(cmd, timeout, stdout_path: Path, stderr_path: P
             return -1, True
 
 
-def _run_spark_preflight(plan: dict, card: Path, out: Path) -> dict:
+def _run_spark_preflight(
+    plan: dict, card: Path, out: Path, execution_env: str = "auto"
+) -> dict:
     policy = plan.get("spark", {})
     record = {
         "schema_version": 1,
@@ -392,6 +411,7 @@ def _run_spark_preflight(plan: dict, card: Path, out: Path) -> dict:
         "--mode", record["mode"],
         "--result-mode", "minimal",
         "--output", str(spark_out),
+        "--execution-env", execution_env,
     ]
     exit_code = _tee_subprocess(
         cmd,
@@ -399,6 +419,7 @@ def _run_spark_preflight(plan: dict, card: Path, out: Path) -> dict:
         stderr_path=str(out / "spark-preflight.stderr"),
     )
     record["exit_code"] = exit_code
+    record["execution_env"] = execution_env
     report_auto_disabled = _spark_auto_disabled(spark_out / "codex-spark.report.md")
     record["recommended_owner"] = _spark_recommended_owner(
         spark_out / "codex-spark.report.md"
@@ -551,7 +572,51 @@ def main(argv=None):
         print(json.dumps(decision, sort_keys=True))
         return 0
 
-    spark_record = _run_spark_preflight(plan, dispatch_card, out)
+    spark_repo = _repository_for(dispatch_card)
+    spark_cache = spark_execution_availability.preference(spark_repo)
+    cached_host = (
+        spark_cache.get("cache_valid")
+        and spark_cache.get("preferred_execution_env") == "host"
+    )
+    initial_execution_env = "host" if cached_host and a.host_authority else "auto"
+
+    if cached_host and not a.host_authority:
+        spark_record = {
+            "schema_version": 1,
+            "attempted": False,
+            "invoked": False,
+            "stage": plan.get("spark", {}).get("stage", "preflight"),
+            "mode": plan.get("spark", {}).get("mode", "execution-cost-estimator"),
+            "exit_code": None,
+            "auto_disabled": False,
+            "continued_to_claude": False,
+            "skip_reason": "skip.needs_host_execution",
+            "needs_host_execution": True,
+            "host_authority_present": False,
+            "host_retry_attempted": False,
+            "host_retry_exit_code": None,
+            "host_retry_timed_out": False,
+            "host_retry_auto_disabled": None,
+            "host_handoff_action": (
+                "rerun-current-dispatch-from-authorized-host-with---host-authority"
+            ),
+            "final_state": "needs_host_execution",
+            "execution_environment_cache": spark_cache,
+        }
+        (out / "spark-dispatch.json").write_text(
+            json.dumps(spark_record, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "Spark requires host network execution; rerun this dispatch with "
+            "--host-authority from an authorized host boundary.",
+            file=sys.stderr,
+        )
+        return 75
+
+    spark_record = _run_spark_preflight(
+        plan, dispatch_card, out, execution_env=initial_execution_env
+    )
     initial_exit_code = spark_record.get("exit_code")
     initial_invoked = bool(spark_record.get("invoked"))
     initial_auto_disabled = bool(spark_record.get("auto_disabled"))
@@ -574,10 +639,17 @@ def main(argv=None):
                 if handoff_needed and not a.host_authority
                 else None
             ),
+            "execution_environment_cache": spark_cache,
         }
     )
 
     if handoff_needed:
+        spark_execution_availability.record(
+            spark_repo,
+            "host-required",
+            "spark-sandbox-network-handoff",
+            {"task_id": plan["task_id"], "initial_exit_code": initial_exit_code},
+        )
         spark_record["invoked"] = False
         spark_record["auto_disabled"] = True
         spark_record["skip_reason"] = "skip.needs_host_execution"
@@ -640,11 +712,41 @@ def main(argv=None):
         else:
             spark_record["skip_reason"] = None
             spark_record["final_state"] = "invoked"
+            spark_record["execution_environment_cache"] = (
+                spark_execution_availability.record(
+                    spark_repo,
+                    "host-available",
+                    "spark-host-retry-success",
+                    {"task_id": plan["task_id"]},
+                )
+            )
+
+    if initial_execution_env == "host" and not handoff_needed:
+        state = "host-available" if spark_record.get("invoked") else "host-suspected-unavailable"
+        spark_record["execution_environment_cache"] = spark_execution_availability.record(
+            spark_repo,
+            state,
+            "spark-cached-host-execution",
+            {"task_id": plan["task_id"], "exit_code": initial_exit_code},
+        )
 
     (out / "spark-dispatch.json").write_text(
         json.dumps(spark_record, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+
+    if handoff_needed and not a.host_authority:
+        spark_record["continued_to_claude"] = False
+        (out / "spark-dispatch.json").write_text(
+            json.dumps(spark_record, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "Spark sandbox networking is restricted. Host retry is required before "
+            "Claude dispatch; rerun with --host-authority outside the sandbox.",
+            file=sys.stderr,
+        )
+        return 75
 
     if (
         spark_record.get("invoked")

@@ -438,10 +438,10 @@ class HostHandoffTests(unittest.TestCase):
 
             with mock.patch.object(dispatch, "_tee_subprocess", side_effect=fake_tee), \
                     mock.patch.object(dispatch, "_run_host_retry_with_timeout") as retry:
-                self.assertEqual(dispatch.main(args), 0)
+                self.assertEqual(dispatch.main(args), 75)
 
             retry.assert_not_called()
-            self.assertEqual(calls, ["run-codex-spark.sh", "dispatch-to-claude.sh"])
+            self.assertEqual(calls, ["run-codex-spark.sh"])
             record = json.loads((output / "spark-dispatch.json").read_text(encoding="utf-8"))
             self.assertFalse(record["initial_invoked"])
             self.assertTrue(record["needs_host_execution"])
@@ -449,6 +449,7 @@ class HostHandoffTests(unittest.TestCase):
             self.assertFalse(record["invoked"])
             self.assertEqual(record["final_state"], "needs_host_execution")
             self.assertEqual(record["skip_reason"], "skip.needs_host_execution")
+            self.assertFalse(record["continued_to_claude"])
 
     def test_uppercase_host_authority_retries_once_and_succeeds(self):
         with tempfile.TemporaryDirectory() as tmp:

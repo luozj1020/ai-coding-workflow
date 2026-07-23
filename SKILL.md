@@ -46,9 +46,9 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 
 ## Hard Rules
 
-- Spend one available Spark call per non-Express Claude delegation: unresolved
-  owner economics use `execution-cost-estimator`; otherwise use
-  `task-card-audit`. Spark cannot expand scope, accept, interrupt, or merge.
+- Use one Spark call per non-Express Claude delegation: estimate unresolved
+  ownership, otherwise audit the card. A network handoff stops before Claude;
+  retry once at an authorized host, cache that route, and never strong-fallback.
 - Checker/Test is conditional. Bind runnable interface evidence, validate each
   test file immediately, or prefer deterministic checks.
 - One Claude failure is not takeover authority. Classify it, preserve useful

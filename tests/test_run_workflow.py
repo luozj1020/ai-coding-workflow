@@ -23,6 +23,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -361,6 +362,55 @@ class TestRunWorkflowStandardLane(unittest.TestCase):
             plan = json.loads((Path(result["run_dir"]) / "execution-plan.json").read_text())
             self.assertTrue(plan["spark"]["invoke"])
             self.assertEqual(plan["spark"]["mode"], "task-card-audit")
+
+
+class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
+    def test_sandbox_handoff_stops_before_claude_and_persists_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_path = write_task(root, make_task())
+            state = root / "spark-state.json"
+
+            def fake_spark(
+                _helper, _card, _mode, _execution_env,
+                stdout_path, stderr_path, _repo, _timeout,
+            ):
+                stdout_path.write_text(
+                    "spark_status=unavailable\nneeds_host_execution=true\n",
+                    encoding="utf-8",
+                )
+                stderr_path.write_text(
+                    "host_handoff_required=true\n", encoding="utf-8"
+                )
+                return 0, False
+
+            with mock.patch.dict(
+                os.environ,
+                {"CODEX_SPARK_EXECUTION_STATE_FILE": str(state)},
+                clear=False,
+            ), mock.patch.object(
+                run_workflow, "_run_spark_attempt", side_effect=fake_spark
+            ):
+                result = run_workflow.run_lifecycle(
+                    task_path=task_path,
+                    execute=True,
+                    run_dir_base=root,
+                    repo=ROOT,
+                    profiles_dir=PROFILES,
+                )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["failed_phase"], "dispatch")
+            self.assertEqual(result["failure_status"], "needs-host-execution")
+            self.assertIn("needs-host-execution", result["error"])
+            record = json.loads(
+                (Path(result["run_dir"]) / "spark-dispatch.json").read_text()
+            )
+            self.assertTrue(record["needs_host_execution"])
+            self.assertFalse(record["continued_to_claude"])
+            self.assertEqual(
+                json.loads(state.read_text())["status"], "host-required"
+            )
 
 
 class TestRunWorkflowFailure(unittest.TestCase):

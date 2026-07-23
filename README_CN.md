@@ -675,9 +675,10 @@ bash ai/run-codex-spark.sh \
 
 ```bash
 python ai/dispatch-efficient.py ... --execute --host-authority --host-retry-timeout 120
+python ai/run-workflow.py task.json --execute --spark-host-authority --spark-host-retry-timeout 120
 ```
 
-也可以使用 `CODEX_SPARK_HOST_AUTHORITY=1` 明确授权，并用 `CODEX_SPARK_HOST_RETRY_TIMEOUT` 设置正数超时。`spark-dispatch.json` 会分别记录初始沙箱尝试、交接判断、宿主重试、超时和最终状态。重试超时会终止隔离的重试进程树，随后继续 Claude，不进行第二次重试，也不回退到强模型。没有明确宿主权限时，调度器只记录 `needs_host_execution` 并安全继续。仅在仍受限的沙箱内取消变量不能恢复网络，也不构成宿主权限。需要有意保留标记时使用 `--execution-env sandbox`。持久化报告会记录请求和解析后的执行环境，紧凑失败诊断会保留经过脱敏的 stderr 头尾。
+也可以使用 `CODEX_SPARK_HOST_AUTHORITY=1` 明确授权，并用 `CODEX_SPARK_HOST_RETRY_TIMEOUT` 设置正数超时。`spark-dispatch.json` 会分别记录初始沙箱尝试、交接判断、宿主重试、超时和最终状态。没有明确宿主权限时，调度会在 Claude 启动前停止并返回机器可读的 `needs_host_execution`，由外层在已授权的宿主边界原样重试一次。宿主执行成功后，会把上下文绑定的执行环境偏好固化到 `.ai-workflow/spark-execution-availability.json`；默认 24 小时 TTL 内，后续已授权调度直接走宿主，不再重复撞已知受限的沙箱。宿主超时或失败不会回退到其他强模型，也不会退回受限沙箱。TTL 可用 `CODEX_SPARK_EXECUTION_STATE_TTL_SECONDS` 调整。仅在仍受限的沙箱内取消变量不能恢复网络，也不构成宿主权限。
 
 revision、收窄、重试、重派、拆分子任务或下一阶段卡必须重复此步骤，并改用对应的 `--routing-event`。只有 Spark 经济建议和确定性 owner gate 都倾向 Codex 时，才直接编辑并省略完整任务卡；否则再编写面向下游的精简执行卡。
 - `review-only`：快速只读审查任务卡或实现方向。
