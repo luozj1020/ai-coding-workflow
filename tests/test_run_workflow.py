@@ -358,6 +358,9 @@ class TestRunWorkflowStandardLane(unittest.TestCase):
             self.assertIn(result["lane"], ("standard", "express"))
             # Acceptance should be deterministic
             self.assertIsNone(result["acceptance_status"])
+            plan = json.loads((Path(result["run_dir"]) / "execution-plan.json").read_text())
+            self.assertTrue(plan["spark"]["invoke"])
+            self.assertEqual(plan["spark"]["mode"], "task-card-audit")
 
 
 class TestRunWorkflowFailure(unittest.TestCase):

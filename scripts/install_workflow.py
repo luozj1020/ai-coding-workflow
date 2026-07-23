@@ -20,9 +20,11 @@ Uses only the Python standard library.
 """
 
 import os
+import stat
 import subprocess
 import sys
 import argparse
+import tempfile
 
 
 def _to_bash_path(path):
@@ -103,6 +105,7 @@ PYTHON_SCRIPTS = [
     ("compare-transfer-pilot.py", "ai/compare-transfer-pilot.py"),
     ("classify-claude-attempt.py", "ai/classify-claude-attempt.py"),
     ("verify-claude-report.py", "ai/verify-claude-report.py"),
+    ("validate-revision-card.py", "ai/validate-revision-card.py"),
     ("repository-scale.py", "ai/repository-scale.py"),
     ("prepare-advisor-continuation.py", "ai/prepare-advisor-continuation.py"),
     ("prepare-worktree-continuation.py", "ai/prepare-worktree-continuation.py"),
@@ -276,12 +279,87 @@ def read_file(path):
 
 
 def write_file(path, content):
-    """Write content to a file, creating directories as needed.
-    Normalizes to LF line endings and single trailing newline."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    """Atomically write normalized content, preserving an existing file mode."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
     normalized = normalize_text(content)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(normalized)
+    existing_mode = None
+    try:
+        existing_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        pass
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=directory,
+            prefix=".aiwf-update-",
+            delete=False,
+        ) as f:
+            temp_path = f.name
+            f.write(normalized)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(temp_path, existing_mode if existing_mode is not None else 0o644)
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+
+def build_install_manifest(assets_dir, scripts_dir):
+    """Return required (source, destination) pairs for one project install."""
+    repo_root = os.path.dirname(assets_dir)
+    entries = [
+        (os.path.join(assets_dir, "AGENTS.md"), "AGENTS.md"),
+        (os.path.join(assets_dir, "CLAUDE.md"), "CLAUDE.md"),
+    ]
+    entries.extend(
+        (os.path.join(assets_dir, src_name), dest_rel)
+        for src_name, dest_rel in DIRECT_COPY
+    )
+    entries.extend(
+        (os.path.join(scripts_dir, src_name), dest_rel)
+        for src_name, dest_rel in SCRIPTS + POWERSHELL_SCRIPTS + PYTHON_SCRIPTS
+    )
+    entries.extend(
+        (os.path.join(repo_root, src_rel), dest_rel)
+        for src_rel, dest_rel in SCHEMA_ASSETS + PROFILE_ASSETS + EXAMPLE_ASSETS
+    )
+    return entries
+
+
+def validate_install_manifest(assets_dir, scripts_dir):
+    """Fail before destination mutation when the source package is incomplete."""
+    entries = build_install_manifest(assets_dir, scripts_dir)
+    missing = [source for source, _ in entries if not os.path.isfile(source)]
+    unreadable = []
+    for source, _ in entries:
+        if source in missing:
+            continue
+        try:
+            read_file(source)
+        except (OSError, UnicodeError) as exc:
+            unreadable.append("{} ({})".format(source, exc))
+    destinations = [dest for _, dest in entries]
+    duplicates = sorted({dest for dest in destinations if destinations.count(dest) > 1})
+    problems = []
+    if missing:
+        problems.append("missing required source files:\n  " + "\n  ".join(sorted(missing)))
+    if unreadable:
+        problems.append("unreadable required source files:\n  " + "\n  ".join(unreadable))
+    if duplicates:
+        problems.append("duplicate install destinations:\n  " + "\n  ".join(duplicates))
+    if problems:
+        raise ValueError("invalid workflow install manifest: " + "\n".join(problems))
+    return entries
 
 
 def normalize_text(text):
@@ -730,7 +808,13 @@ def main(argv=None):
 
     if not os.path.isdir(assets_dir):
         print(f"Error: Assets directory not found: {assets_dir}")
-        sys.exit(1)
+        return 1
+
+    try:
+        validate_install_manifest(assets_dir, scripts_dir)
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
 
     os.makedirs(repo_path, exist_ok=True)
 
@@ -824,10 +908,6 @@ def main(argv=None):
     for src_rel, dest_rel in SCHEMA_ASSETS + PROFILE_ASSETS + EXAMPLE_ASSETS:
         src = os.path.join(repo_root, src_rel)
         dest = os.path.join(repo_path, dest_rel)
-        if not os.path.isfile(src):
-            results["warned"].append(f"{src_rel} (source missing)")
-            print(f"  warned: {src_rel} (source missing)")
-            continue
         status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
         print(f"  {status}: {dest_rel}")
@@ -877,4 +957,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

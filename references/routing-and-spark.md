@@ -12,8 +12,11 @@ total model usage. Invoke Spark `execution-cost-estimator` when structured
 estimation can replace Codex analysis. `preflight-bundle` is diagnostic.
 
 Run `aiwf route` before Spark when deterministic facts are already available.
-Its `precard_estimator.spark_action=skip` is valid for an explicitly bound owner
-or a complete deterministic Claude-first role decision.
+Its `precard_estimator.spark_action=skip` means owner estimation is complete; it
+does not require wasting an available Spark budget. For a non-Express Claude
+route, use that call as `task-card-audit`. Express, zero-budget, explicit
+`spark_gate=off`, unavailable Spark, or an audit already bound to the same card
+hash may skip it.
 Recovery always re-routes from fresh current facts and never inherits an earlier
 estimate. An explicit deterministic owner may still skip Spark; otherwise a
 concrete uncertain Claude candidate can request one bounded estimate.
@@ -139,7 +142,10 @@ Spark is advisory. It cannot satisfy acceptance, approve final review, authorize
 merge, or silently fall back to a stronger model. Use it for structured route,
 card-field, monitoring, and terminal-evidence compression when that avoids a
 Codex read. Every revised card starts with deterministic ROUTE; invoke Spark only
-when its structured answer replaces work Codex would otherwise perform.
+when its structured answer replaces work Codex would otherwise perform. The
+default available-quota policy performs one `task-card-audit` for each
+non-Express initial or revision card. Pass only a bounded advisory to Claude;
+it cannot alter scope, acceptance, ownership, or authority.
 Observed Handoff Tax and a valid Owner Lease make continuity deterministic, so
 Spark is skipped even when requested. With insufficient history, Spark may
 advise task shape only; it is never an authoritative Handoff Tax source.

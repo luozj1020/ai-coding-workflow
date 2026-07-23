@@ -24,6 +24,12 @@ Responsibilities:
 - Produce evidence packets with diffstat, test results, and report paths
 - Make only concrete small fixes explicitly allowed by the task card when validation exposes a clear defect
 
+Report evidence is claim-bound, not trust-based. The changed-file manifest must
+match the diff; claimed test counts must match detected test declarations and
+test paths; validation commands require exit-code receipts. Every revision
+finding reported `RESOLVED` must name its finding ID, changed file, symbol, and
+test. Missing or contradictory evidence is `needs-review`, never acceptance.
+
 Checker/Test Claude owns mechanical validation evidence. It does not make architectural judgments and should not perform broad implementation rewrites.
 
 For test-writing Checker cards, declare exact Write paths and a shell-free `Per-file validation command` containing `{path}`. Runtime enforcement rejects empty or out-of-scope files, compiles each Python file, and runs the per-file command before acceptance evidence is considered. Python test files without an explicit command fall back to single-file pytest. The receipt is `*.checker-contract.json`; a violation is isolated and cannot authorize merge.
@@ -238,6 +244,11 @@ For **revise**: provide specific, actionable revision instructions. These instru
 - What needs to change and why
 - Which files or modules are affected
 - What evidence the next iteration should produce
+
+Inline the exact structured findings in the revision card. Do not rely on a
+path outside the execution worktree as the only source. Preserve finding IDs,
+original evidence, bounded required change, and exact acceptance check so the
+receiver does not reconstruct the review from memory.
 
 For **split**: decompose the task into smaller child task cards. For each child, provide:
 - A goal

@@ -60,6 +60,8 @@ class TaskCardComponentTests(unittest.TestCase):
         text, selected = module.compose(root, module.load_catalog(root), "revision", [])
         self.assertEqual(selected, ["core", "revision"])
         self.assertIn("## Revision Delta", text)
+        self.assertIn("Review findings inline", text)
+        self.assertIn("resolved_finding=F-01", text)
         self.assertNotIn("## Builder Contract", text)
 
     def test_batch_builder_has_mechanical_positive_gate(self):

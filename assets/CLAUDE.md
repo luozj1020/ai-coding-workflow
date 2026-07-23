@@ -34,7 +34,7 @@ evidence first.
 17. Run only the checks assigned to this task mode; Builder tasks avoid broad acceptance tests unless explicitly allowed.
 18. Run exact assigned checks when available; prefer `bash ai/check-worktree.sh --task-card CLAUDE_TASK_CARD.md --no-discover --command 'label=command'` over broad discovery unless the task card explicitly allows discovery.
 19. If the task card says `Local validation allowed?` is `no`, do not run local validation. Provide exact commands for Codex, a human, or CI to run instead.
-20. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions. End it with one `claimed_file=<path>` per implementation file, `claimed_changed_file_count=<n>`, optional `claimed_symbol=<name>`, and `claimed_no_unexpected_files=yes|no` so the dispatcher can mechanically compare it with the diff.
+20. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions. End it with one `claimed_file=<path>` per changed file, `claimed_changed_file_count=<n>`, optional `claimed_symbol=<name>`, and `claimed_no_unexpected_files=yes|no`. When assigned tests, add `claimed_test_count=<n>`; when assigned validation, add `claimed_validation_command=<exact command>` and `claimed_validation_exit_code=<code>`. For each revision finding claimed resolved, add `resolved_finding=<id>|file=<path>|symbol=<symbol>|test=<test name or not-required>`. The dispatcher compares these claims with the diff and receipts; prose is not evidence.
 21. Do not merge changes.
 
 ### Direction and boundary acknowledgement

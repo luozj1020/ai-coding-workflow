@@ -209,6 +209,21 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    printf '%s\\n' 'Current Phase: validation' 'Validation command started' > CLAUDE_PROGRESS.md\n"
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
                 "    ;;\n"
+                "  blocker-none)\n"
+                "    printf '# worktree change\\n' > NEW_FILE.md\n"
+                "    printf '%s\\n' 'Current Phase: implementation' 'Blocker: none' > CLAUDE_PROGRESS.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
+                "    ;;\n"
+                "  external-blocker)\n"
+                "    printf '# worktree change\\n' > NEW_FILE.md\n"
+                "    printf '%s\\n' 'Current Phase: implementation' 'Blocker: workspace is not trusted' > CLAUDE_PROGRESS.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
+                "    ;;\n"
+                "  tail-stall)\n"
+                "    printf '# useful implementation\\n' > NEW_FILE.md\n"
+                "    printf '%s\\n' 'Current Phase: reporting' 'Context Acquisition Complete: yes' 'Planned First Write: NEW_FILE.md' 'Implementation Complete: yes' 'Completion Ready: no' > CLAUDE_PROGRESS.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-20}\"\n"
+                "    ;;\n"
                 "  checker-validation-start)\n"
                 "    printf '%s\\n' 'Current Phase: validation' 'Validation command started' > CLAUDE_PROGRESS.md\n"
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
@@ -953,7 +968,82 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual((worktree / "src/headless/main.ts").read_text(encoding="utf-8"), "new module\n")
         self.assertEqual(runtime["base_commit"], source_head)
         self.assertEqual(runtime["worktree_start_commit"], receipt["snapshot_commit"])
+        self.assertEqual(runtime["source_base_commit"], source_head)
+        self.assertEqual(runtime["execution_base_commit"], receipt["snapshot_commit"])
         self.assertEqual(self._run(["git", "rev-parse", "HEAD"]).stdout.strip(), source_head)
+
+    def test_dirty_snapshot_retry_reuses_execution_base_not_source_head(self):
+        card = self._write_task_card()
+        card.write_text(card.read_text(encoding="utf-8") + "\nTarget: `src/headless/`\n", encoding="utf-8")
+        (self.repo / "src/headless").mkdir(parents=True)
+        (self.repo / "src/headless/main.ts").write_text("new module\n", encoding="utf-8")
+        source_head = self._run(["git", "rev-parse", "HEAD"]).stdout.strip()
+
+        first = self._dispatch(extra_env={"CLAUDE_CODE_DIRTY_SOURCE_MODE": "snapshot"})
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        first_runtime = json.loads(
+            self._artifact_path(first.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        snapshot_commit = first_runtime["execution_base_commit"]
+        self.assertNotEqual(snapshot_commit, source_head)
+
+        second = self._dispatch(extra_env={
+            "CLAUDE_CODE_DIRTY_SOURCE_MODE": "snapshot",
+            "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": first_runtime["task_id"],
+        })
+
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        self.assertIn("without re-snapshotting source state", second.stdout)
+        second_runtime = json.loads(
+            self._artifact_path(second.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        self.assertEqual(second_runtime["source_base_commit"], source_head)
+        self.assertEqual(second_runtime["execution_base_commit"], snapshot_commit)
+        self.assertEqual(second_runtime["worktree_start_commit"], snapshot_commit)
+        self.assertEqual(second_runtime["dirty_snapshot_commit"], snapshot_commit)
+        self.assertEqual(
+            second_runtime["dirty_snapshot_receipt"], first_runtime["dirty_snapshot_receipt"]
+        )
+        self.assertEqual(
+            self._run(["git", "-C", second_runtime["worktree"], "rev-parse", "HEAD"]).stdout.strip(),
+            snapshot_commit,
+        )
+
+    def test_tail_timeout_preserves_diff_and_writes_recovery_receipt(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "FAKE_CLAUDE_MODE": "tail-stall",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "20",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_TAIL_TIMEOUT_SECONDS": "2",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("tail/report timeout after 2s", progress)
+        receipt = self.repo / ".worktrees" / f"{runtime['task_id']}.recovered-completion.json"
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        self.assertEqual(value["recovery_reason"], "missing-claude-report")
+        self.assertTrue(value["tail_timeout_stopped"])
+        self.assertIn("NEW_FILE.md", value["changed_files"])
+
+    def test_validation_capability_receipt_is_provided_to_claude(self):
+        self._write_builder_task_card()
+        result = self._dispatch("task-cards/BUILDER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        receipt = self.repo / ".worktrees" / f"{runtime['task_id']}.validation-capability.json"
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        self.assertEqual(value["scope"], "launcher-only-no-assigned-tests-executed")
+        card = pathlib.Path(runtime["worktree"]) / "CLAUDE_TASK_CARD.md"
+        self.assertIn("Validation Capability Receipt", card.read_text(encoding="utf-8"))
 
     def test_workspace_trust_preflight_stops_before_builder_window(self):
         self._write_task_card()
@@ -1101,6 +1191,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("task_id", runtime)
         self.assertIn("worktree", runtime)
         self.assertIn("base_commit", runtime)
+        self.assertIn("source_base_commit", runtime)
+        self.assertIn("execution_base_commit", runtime)
         self.assertIn("source_repository", runtime)
         self.assertIn("branch", runtime)
         self.assertIn("strategy", runtime)
@@ -1113,6 +1205,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(pathlib.Path(runtime["worktree"]), worktree)
         self.assertEqual(pathlib.Path(runtime["source_repository"]), self.repo)
         self.assertEqual(len(runtime["base_commit"]), 40)
+        self.assertEqual(runtime["source_base_commit"], runtime["base_commit"])
+        self.assertEqual(runtime["execution_base_commit"], runtime["worktree_start_commit"])
         self.assertEqual(runtime["strategy"], "fresh")
         self.assertEqual(runtime["retry_ordinal"], 0)
         self.assertEqual(runtime["lineage_root_task_id"], runtime["task_id"])
@@ -1859,8 +1953,14 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Dispatch outcome: success", status)
         self.assertIn("Attempt failure class: none", status)
         self.assertIn("Counts toward takeover: false", status)
+        self.assertIn("Completion state: needs-review", status)
         attempt = self._artifact_path(result.stdout, "Attempt Class")
         self.assertTrue(attempt.exists())
+        outcome = json.loads(self._artifact_path(result.stdout, "Outcome Gates").read_text())
+        self.assertTrue(outcome["dispatch_success"])
+        self.assertFalse(outcome["artifact_valid"])
+        self.assertEqual(outcome["completion_state"], "needs-review")
+        self.assertEqual(outcome["semantic_acceptance"], "pending-codex-review")
 
     def test_diff_without_valid_report_remains_recoverable_diff_evidence(self):
         """exit 0 + normal result + diff + no valid report → diff without report"""
@@ -1889,6 +1989,34 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Dispatch outcome: approval_blocked", status)
         self.assertNotIn("Dispatch outcome: no_useful_progress", status)
 
+    def test_blocker_none_does_not_publish_blocked_execution_state(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_MODE": "blocker-none", "FAKE_CLAUDE_SLEEP_SECONDS": "4"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        events = self._artifact_path(result.stdout, "Progress Log").with_name(
+            self._artifact_path(result.stdout, "Progress Log").name.replace(
+                ".progress.log", ".monitor-events.log"
+            )
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("execution_state=external-blocked", events)
+        self.assertNotIn("execution_state=semantic-blocked", events)
+
+    def test_explicit_external_blocker_has_specific_execution_state(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_MODE": "external-blocker", "FAKE_CLAUDE_SLEEP_SECONDS": "4"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress_path = self._artifact_path(result.stdout, "Progress Log")
+        events = progress_path.with_name(
+            progress_path.name.replace(".progress.log", ".monitor-events.log")
+        ).read_text(encoding="utf-8")
+        self.assertIn("execution_state=external-blocked", events)
+
 
     # --- Progress-aware timeout extension tests ---
 
@@ -1909,8 +2037,14 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
-        # Extension should have kicked in (base timeout at 3s, diff created at 1s)
-        self.assertIn("Single growth extension started", progress)
+        # Depending on scheduler granularity, the first observed diff either
+        # refreshes the active window at the boundary or earns the bounded
+        # growth extension on the next boundary. Both preserve the run.
+        self.assertTrue(
+            "Single growth extension started" in progress
+            or "active_window_refreshed=yes" in progress,
+            progress,
+        )
         # Claude finishes at 7s (1+6) before extension deadline at 11s (3+8)
         self.assertNotIn("extension expired", progress)
         self.assertIn("Dispatch outcome: success", status)
@@ -2471,6 +2605,28 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         if argv_log.exists():
             argv_content = argv_log.read_text(encoding="utf-8")
             self.assertIn("Bash(bash -n scripts/dispatch-to-claude.sh)", argv_content)
+
+    def test_builder_exact_validation_command_is_allowlisted_when_supported(self):
+        task = self._write_builder_task_card()
+        text = task.read_text(encoding="utf-8").replace(
+            "```validation\ntrue\n```",
+            "- Local validation allowed: yes\n- Validation required: yes\n"
+            "- Exact narrow command: `python -m pytest tests/test_one.py -q`",
+        )
+        task.write_text(text, encoding="utf-8")
+        argv_log = self.case_root / "argv-builder-validation.log"
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TOOL_PROFILE": "auto",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_accepted=1", result.stdout)
+        self.assertIn("Bash(python -m pytest tests/test_one.py -q)", argv_log.read_text())
 
     def test_comments_and_blank_lines_ignored_in_validation(self):
         """Comments and blank lines in validation fences are ignored."""

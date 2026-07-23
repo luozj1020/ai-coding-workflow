@@ -376,6 +376,11 @@ python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 
 `python scripts/update_skill.py` 只更新用户级 Codex Skill。`--bootstrap-current` 和 `--bootstrap-repo` 会额外使用 `--update-workflow-files` 刷新目标仓库本地 workflow 文件，因此旧项目也能拿到新的 dispatcher、review prompt、模板和辅助脚本行为。
 
+更新过程现在在两个边界上都采用故障安全策略。用户级 Skill 会先复制到
+同级 staging 目录并完成校验，再原子切换；激活失败时恢复旧版本。项目
+bootstrap 在修改任何文件前会校验完整安装清单，随后对每个托管文件执行
+同目录原子替换。引导式配置最后仍由 `doctor_workflow.py` 完成跨文件一致性检查。
+
 ### 一键引导式配置
 
 新版更新器可以把 Skill 更新、项目 workflow 刷新、环境感知工具配置和最终 doctor 检查串成一个流程。默认只预览，不写入任何内容：
@@ -652,6 +657,7 @@ Spark 是建议层。仅当结构化路由、监测或终态证据能够替代 C
 确定性的 Claude-first 所有权：
 
 - `auto`：短小、按价值触发的阶段路由。执行前仅当路由已识别出一个合理的 Claude 候选、但经济性仍不确定时使用 `execution-cost-estimator`；确定性的 Codex 默认路径跳过 Spark。diff、报告或失败证据仍可在确实会改变决策时触发紧凑的后置分析。
+- 可用 Spark 额度现在默认用于非 Express 的 Claude 委派。所有权经济性尚未确定时运行 `execution-cost-estimator`；否则运行一次有界的 `task-card-audit`。审计结果仅作为 advisory 附录传递，不能扩大冻结范围或修改验收条件。可用 `AI_WORKFLOW_SPARK_GATE=off` 对单个任务关闭；Express 或 Spark 预算为零的路由仍会跳过。
 - `task-size-classifier`：判断任务是 tiny/small/medium/large/unknown，并建议 `codex-fast-path`、`spark-review-only`、`spark-micro-builder`、`claude-builder`、`checker-test`、`spec-first` 或 `human-clarification`。可用时包含执行成本字段。
 - `execution-cost-estimator`：只读模式，预测 diff 范围/文件数和相对直接/委托工作量。首次、revision、收窄、重试、重派和下一阶段任务卡在编写前都必须重新估算，可用 `--routing-event initial|revision|narrow|retry|next-phase` 标记；不能复用上一张卡的 owner 决策。Spark 原始行数上界默认乘 1.5，测试/夹具、shell/进程编排和跨平台任务乘 2.0。owner 通常只依据校准后规模/文件数、上下文充分度、方案明确度、置信度和派发开销；风险标志与验证复杂度提高审查、验证、隔离或审批强度，不得把任务从 Codex 推向 Claude。如果人工/策略显式使用风险作为 owner override，高风险任务只能倾向 Codex。范围、方案和上下文稳定时，实际修改量可以超过预测。
 
@@ -707,7 +713,11 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 
 估算器现在会记录仓库规模、历史 worktree 成本、`task_role`、`context_reacquisition_cost`、`codex_semantic_rereview`、`solution_clarity` 和 `semantic_concentration`。`python ai/repository-scale.py --format json` 可在不调用模型的情况下显示确定性事实。`--fast-path-max-diff-lines` / `CODEX_FAST_PATH_MAX_DIFF_LINES` 与 `--concentrated-fast-path-max-diff-lines` / `CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES` 会显式覆盖自动选择的行数上界。1.5/2.0 倍校准保持不变；范围、方案和上下文稳定时，实际编辑超过预测本身不触发重新路由。
 
-Claude 产生有效报告后，dispatcher 会自动执行确定性的报告—diff 一致性检查，并写入 `<task-id>.report-consistency.json`。报告末尾应包含每个实现文件一行 `claimed_file=<path>`、`claimed_changed_file_count=<n>`、可选的 `claimed_symbol=<name>`，以及 `claimed_no_unexpected_files=yes|no`。它只负责提前发现文件数、路径和符号声明冲突，不能证明语义验收通过。
+Claude 退出后，dispatcher 会写入 `<task-id>.report-consistency.json` 和 `<task-id>.outcome.json`。报告必须包含精确的变更文件、数量及无意外文件声明。任务分配了测试时，还必须提供 `claimed_test_count=<n>` 且 diff 中存在数量匹配的测试声明；分配了验证时，必须提供 `claimed_validation_command=<command>` 和 `claimed_validation_exit_code=<code>`。修订 finding 使用 `resolved_finding=<id>|file=<path>|symbol=<symbol>|test=<name or not-required>`。声明缺失或与 diff、测试证据矛盾时，终态降级为 `completion_state=needs-review`。`dispatch_success`、`artifact_valid`、`validation_success` 与 `semantic_acceptance` 分开记录，只有 Codex 审查能够确认语义验收。
+
+Dirty snapshot 的 runtime 现在区分原始 `source_base_commit` 与合成的
+`execution_base_commit`。同 worktree 重试分别校验源仓库 HEAD 和执行
+worktree HEAD，并继承既有快照基线，不会对仍然 dirty 的源工作区再次制作快照。
 
 当 Claude diff 有用但不完整时，应保留 dirty isolated worktree。如果 Codex 已接受实现方向且只剩一个明确的语义阻塞，使用 `aiwf advisor-continuation` 在同一 worktree 中继续，并绑定状态 hash、允许路径、禁止路径和一次性调用限制；不要仅为补报告或小范围补全而重新 checkout、从头实现。
 

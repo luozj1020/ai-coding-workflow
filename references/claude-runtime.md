@@ -56,6 +56,12 @@ diagnostic/test override.
 
 Builder progress also carries `Execution Phase`, `Implementation Complete`, `Assigned Tail Work`, `Tail Work Complete`, and `Completion Ready`. After implementation, Claude may run only the bounded self-review, narrow validation, documentation, and reporting explicitly assigned by the card's Post-Implementation Contract. It then marks `Completion Ready: yes`, writes the final report/result, and exits voluntarily without waiting for acknowledgement. The monitor reports `finish_recommended=yes` while awaiting that normal exit; it never turns this marker into kill authority. A bounded self-review uses built-in Read/diff/search tools over changed files. No separate code-review plugin is assumed, and Claude's review never replaces Codex semantic review.
 
+`Implementation Complete: yes` starts an independent tail/report window.
+`CLAUDE_CODE_TAIL_TIMEOUT_SECONDS` defaults to 90; expiry stops the lingering
+child, preserves and drains evidence, and records `tail-timeout`. A useful diff
+with missing prose produces `<task-id>.recovered-completion.json` for bounded
+Codex review rather than being discarded.
+
 `Execution Phase: implementation` is an edit-readiness declaration, not durable progress. It is accepted only with `Context Acquisition Complete: yes` and a non-empty `Planned First Write`, meaning repository scanning, requirement understanding, and local planning are complete. The dispatcher grants a bounded edit-ready bridge (`CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, default 120) but refreshes the full active window only after product content changes or a valid owned report appears.
 
 After the first product change, the dispatcher tracks the product-content digest rather than heartbeat timestamps. An unchanged digest for `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` (default 180) becomes an idle candidate; `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` consecutive observations (default 2) stop the child as `product_idle_confirmed`. Explicit blocker evidence, active validation with a named/running command, and declared completion/tail work reset or exempt this counter.
@@ -91,4 +97,11 @@ Each dispatch writes `<task-id>.phase-metrics.json` with approximate heartbeat-o
 
 ## Reports
 
-Seeded/fallback reports are not Claude-owned completion. Missing reports may be reconstructed when the diff matches the card and assigned checks pass. The dispatcher runs `verify-claude-report.py`; report claims must list changed files/count, optional symbols, and unexpected-file status. Mechanical agreement is review evidence, never semantic acceptance. Checker ALL GREEN supersedes an earlier Claude validation approval blocker in the aggregate status.
+Seeded/fallback reports are not Claude-owned completion. Missing reports may be reconstructed when the diff matches the card and assigned checks pass. The dispatcher runs `verify-claude-report.py`; changed-file/count/cleanliness claims are mandatory. Assigned tests additionally require a test diff and a claimed count that matches detected added test declarations. Assigned validation requires its exact command and exit code, but model-authored claims remain `claimed-unverified` until a deterministic receipt exists. A revision `RESOLVED` claim binds finding ID, changed file, symbol, and exact test name. Prose-only, missing, or contradictory claims produce `needs-review`.
+
+Treat `<task-id>.outcome.json` as the terminal control-plane summary. Keep
+`dispatch_success`, `artifact_valid`, `validation_success`, and
+`semantic_acceptance` separate. A normal process exit can have
+`completion_state=needs-review`; only Codex review can change semantic acceptance.
+Checker ALL GREEN may supersede an earlier validation approval blocker, but it
+never substitutes for semantic review.

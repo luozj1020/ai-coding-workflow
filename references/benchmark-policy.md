@@ -243,10 +243,12 @@ and active time within 2x. It reports rather than hides failed gates.
 
 When changing workflow prompts, dispatch scripts, review policy, or checker behavior:
 
-1. Run the unit tests.
-2. Run at least one representative task through the loop when Claude/Codex CLIs are available.
-3. Compare the new quality summary against prior runs.
-4. Treat lower quality, higher iteration count, missing checker evidence, or new stability findings as harness regressions unless there is a deliberate tradeoff.
+1. During iteration, run only directly affected test modules or named tests.
+2. Run the `quick` tier once at the review boundary, not after every patch.
+3. Keep subprocess timeout, real dispatcher, installer, and cross-platform cases
+   in `integration`; run them in CI or once before release.
+4. Run at least one representative task when model CLIs are available.
+5. Compare quality against prior runs; do not trade correctness for test speed.
 
 ## Benchmark Task Set
 

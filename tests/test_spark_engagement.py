@@ -69,8 +69,8 @@ class SparkEngagementTests(unittest.TestCase):
                     "exact_validation": True,
                     "effective_risks": no_risks,
                 },
-                False,
-                "claude-first-deterministic-route",
+                True,
+                None,
             ),
             (
                 {
@@ -112,11 +112,11 @@ class SparkEngagementTests(unittest.TestCase):
                 spark = self.prepare(root, facts, f"T-{index}")["spark"]
                 self.assertEqual(spark["invoke"], expected_invoke)
                 self.assertEqual(spark["skip_reason"], expected_skip)
-                self.assertEqual(spark["stage"], "precard-route")
-                self.assertEqual(spark["mode"], "execution-cost-estimator")
+                self.assertEqual(spark["stage"], "pre-dispatch")
+                if expected_invoke and not facts.get("spark_route_requested"):
+                    self.assertEqual(spark["mode"], "task-card-audit")
 
-    def test_generic_value_signals_do_not_trigger_spark_without_route_request(self):
-        """Generic uncertainty no longer taxes an otherwise complete owner route."""
+    def test_generic_value_signals_use_available_budget_for_card_audit(self):
         no_risks = {key: "no" for key in RISK_KEYS}
         base = {
             "execution_owner": "claude-builder",
@@ -139,9 +139,9 @@ class SparkEngagementTests(unittest.TestCase):
             for index, (extra, expected_code) in enumerate(signals):
                 facts = {**base, **extra}
                 spark = self.prepare(root, facts, f"VS-{index}")["spark"]
-                self.assertFalse(spark["invoke"], f"Signal {expected_code} must not trigger Spark alone")
-                self.assertEqual(spark["trigger_codes"], [])
-                self.assertIsNotNone(spark["skip_reason"])
+                self.assertTrue(spark["invoke"], f"Signal {expected_code} should retain the audit")
+                self.assertEqual(spark["trigger_codes"], ["utilize.task_card_audit"])
+                self.assertEqual(spark["mode"], "task-card-audit")
 
     def test_explicit_uncertain_claude_candidate_triggers_one_estimator(self):
         no_risks = {key: "no" for key in RISK_KEYS}
@@ -179,9 +179,10 @@ class SparkEngagementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             spark = self.prepare(root, facts, "ON-0")["spark"]
-            self.assertTrue(spark["invoke"])
-            self.assertEqual(spark["skip_reason"], None)
-            self.assertEqual(spark["trigger_codes"], [])
+        self.assertTrue(spark["invoke"])
+        self.assertEqual(spark["skip_reason"], None)
+        self.assertEqual(spark["trigger_codes"], [])
+        self.assertEqual(spark["mode"], "task-card-audit")
 
     def test_preview_exposes_plan_without_invoking_any_model(self):
         dispatch = load_script("dispatch-efficient.py")

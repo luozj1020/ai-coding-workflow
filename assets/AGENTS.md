@@ -28,8 +28,11 @@ ROUTE from a short current brief. `ownership_profile=claude-first` is the
 default. Claude owns source-writing unless the human explicitly chooses Codex,
 the task is confirmed high-risk core semantics, or Codex is applying a reviewed
 deterministic correction. `economy-first` is an explicit alternative profile.
-Spark may replace Codex estimation when ownership or task shape is uncertain;
-`preflight-bundle` remains diagnostic/compatibility-only.
+Spark may replace Codex estimation when ownership or task shape is uncertain.
+When Spark quota is available, every non-Express Claude delegation should use
+one bounded `task-card-audit` by default; an unresolved owner instead uses
+`execution-cost-estimator`. The audit is advisory and cannot expand scope or
+rewrite frozen acceptance. `preflight-bundle` remains diagnostic/compatibility-only.
 Unavailable or schema-invalid Spark auto-disables without strong-model fallback.
 
 Use Claude `execution-builder` for a frozen solution, `batch-builder` for
@@ -68,6 +71,9 @@ cards bind accepted evidence and describe only the delta.
   changes are required, record `checker skipped: deterministic evidence sufficient`.
 - Codex reviews Builder direction before any Checker dispatch. Final semantic
   review and merge authorization never belong to Spark or Claude.
+- Treat model reports as claims. Require report/diff/test/receipt consistency;
+  keep dispatch success, artifact validity, validation success, and semantic
+  acceptance separate. Missing or contradictory claims are `needs-review`.
 - Do not coordinate multiple projects or portfolio concurrency inside the Skill.
   The user runs one repository workflow per terminal. Legacy within-repository
   parallel helpers remain explicit compatibility tools, never an automatic route.

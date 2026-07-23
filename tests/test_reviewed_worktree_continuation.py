@@ -99,6 +99,35 @@ class ReviewedContinuationTest(unittest.TestCase):
         self.assertEqual(rejected.returncode, 2)
         self.assertIn("next_task_card_sha256", rejected.stderr)
 
+    def test_dirty_snapshot_continuation_binds_source_and_execution_bases(self) -> None:
+        run("git", "add", "src.txt", cwd=self.worktree)
+        run("git", "commit", "-qm", "synthetic dirty snapshot", cwd=self.worktree)
+        snapshot_commit = run("git", "rev-parse", "HEAD", cwd=self.worktree).stdout.strip()
+        (self.worktree / "src.txt").write_text(
+            "accepted implementation after snapshot\n", encoding="utf-8"
+        )
+        runtime_path = self.repo / ".worktrees" / f"{self.task_id}.runtime.json"
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        runtime.update({
+            "source_base_commit": self.head,
+            "execution_base_commit": snapshot_commit,
+            "worktree_start_commit": snapshot_commit,
+            "dirty_snapshot_commit": snapshot_commit,
+        })
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+
+        approval = self.prepare()
+
+        self.assertEqual(approval["base_commit"], self.head)
+        self.assertEqual(approval["source_base_commit"], self.head)
+        self.assertEqual(approval["execution_base_commit"], snapshot_commit)
+        self.assertEqual(approval["worktree_head"], snapshot_commit)
+        validated = self.helper(
+            "validate", "--approval", str(self.approval),
+            "--next-task-card", str(self.card),
+        )
+        self.assertEqual(json.loads(validated.stdout)["approval_id"], approval["approval_id"])
+
     def test_prepare_rejects_wrong_paths_and_non_fresh_strategy(self) -> None:
         wrong = self.helper(
             "prepare", "--prior-task-id", self.task_id,

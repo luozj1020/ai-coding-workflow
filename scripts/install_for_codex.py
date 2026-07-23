@@ -31,6 +31,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from fnmatch import fnmatch
 
 EXCLUDE_DIRS = {
@@ -539,15 +540,8 @@ def should_exclude(name, full_path):
     return False
 
 
-def copy_skill(src, dest):
-    """Copy skill directory, excluding unwanted files."""
-    if paths_equal(src, dest):
-        return
-    if os.path.exists(dest):
-        shutil.rmtree(dest)
-
-    os.makedirs(dest, exist_ok=True)
-
+def _copy_skill_contents(src, dest):
+    """Populate an empty staging directory from the skill source."""
     for root, dirs, files in os.walk(src):
         # Filter excluded directories (in-place modification)
         dirs[:] = [d for d in dirs if not should_exclude(d, os.path.join(root, d))]
@@ -564,6 +558,59 @@ def copy_skill(src, dest):
             dest_file = os.path.join(dest_root, f)
             os.makedirs(os.path.dirname(dest_file), exist_ok=True)
             shutil.copy2(src_file, dest_file)
+
+
+def validate_skill_tree(path):
+    """Validate the minimum executable skill surface before activation."""
+    required = [
+        "SKILL.md",
+        "assets/AGENTS.md",
+        "assets/CLAUDE.md",
+        "scripts/install_workflow.py",
+        "scripts/update_skill.py",
+    ]
+    missing = [rel for rel in required if not os.path.isfile(os.path.join(path, rel))]
+    if missing:
+        raise ValueError(
+            "staged skill is incomplete; missing: {}".format(", ".join(missing))
+        )
+
+
+def copy_skill(src, dest):
+    """Transactionally replace the installed skill from a validated staging tree."""
+    if paths_equal(src, dest):
+        return
+
+    src = os.path.abspath(src)
+    dest = os.path.abspath(dest)
+    parent = os.path.dirname(dest)
+    os.makedirs(parent, exist_ok=True)
+    staging = tempfile.mkdtemp(prefix=".{}-staging-".format(SKILL_NAME), dir=parent)
+    backup_root = None
+    backup = None
+    activated = False
+    try:
+        _copy_skill_contents(src, staging)
+        validate_skill_tree(staging)
+        if os.path.exists(dest):
+            backup_root = tempfile.mkdtemp(
+                prefix=".{}-backup-".format(SKILL_NAME), dir=parent
+            )
+            backup = os.path.join(backup_root, "previous")
+            os.replace(dest, backup)
+        try:
+            os.replace(staging, dest)
+            activated = True
+        except Exception:
+            if backup and os.path.exists(backup) and not os.path.exists(dest):
+                os.replace(backup, dest)
+            raise
+    finally:
+        if not activated and os.path.exists(staging):
+            shutil.rmtree(staging)
+        backup_consumed = not backup or not os.path.exists(backup)
+        if backup_root and backup_consumed and os.path.exists(backup_root):
+            shutil.rmtree(backup_root)
 
 
 def parse_args(argv=None):

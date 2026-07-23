@@ -98,20 +98,27 @@ def prepare(args):
         spark_reason = "Spark explicitly enabled"
         spark_trigger_codes = []
     else:
-        # Auto mode consumes the shared pre-card route. Generic uncertainty is
-        # not enough: Spark is paid only for an explicit plausible Claude
-        # candidate whose economics remain unresolved.
+        # Auto mode spends the already-budgeted Spark call on the highest-value
+        # pre-dispatch role. Unresolved ownership uses the estimator; an
+        # already-bound non-Express Claude route uses a task-card audit so the
+        # call improves cross-model transfer rather than re-estimating owner.
         precard = route.get("precard_estimator", {})
         if precard.get("spark_action") == "estimate":
             spark_use = True
             spark_skip_reason = None
             spark_reason = "shared route requested one estimate for an explicit Claude candidate"
             spark_trigger_codes = ["route.explicit_claude_candidate_estimate"]
+            spark_mode = "execution-cost-estimator"
         else:
-            spark_use = False
-            spark_skip_reason = precard.get("reason_code", "skip.no_expected_decision_value")
-            spark_reason = "shared route completed without a Spark decision"
-            spark_trigger_codes = []
+            spark_use = True
+            spark_skip_reason = None
+            spark_reason = "use available Spark budget to audit the frozen delegation card"
+            spark_trigger_codes = ["utilize.task_card_audit"]
+            spark_mode = "task-card-audit"
+    if spark_gate in {"off"} or route["lane"] == "express" or route["budget"]["spark_calls"] <= 0:
+        spark_mode = None
+    elif spark_gate == "on":
+        spark_mode = "task-card-audit"
     output = Path(args.output_dir)
     if route["execution"]["owner"] == "codex-fast-path":
         plan = {
@@ -184,7 +191,7 @@ def prepare(args):
             "repository_scale": hints.get("repository_size", hints.get("repository_scale", "unknown")),
             "execution": {"owner": route["execution"]["owner"], "owner_source": route["execution"].get("owner_source"), "ownership_profile": route["execution"].get("ownership_profile", "claude-first"), "claude_role": route["execution"].get("claude_role", "execution-builder"), "builder_mode": route["execution"].get("builder_mode", "standard"), "durable_output_required": route["execution"].get("durable_output_required", False), "delegation_mode": route["execution"].get("delegation_mode", "unproven"), "parallel_release_allowed": False, "portfolio_concurrency_owner": "independent-user-terminals", "builder_checker_split": route["execution"]["builder_checker_split"], "checker_model_dispatch": route["execution"]["checker_model_dispatch"], "checker_value_reasons": route["execution"]["checker_value_reasons"], "checker_skip_reason": route["execution"]["checker_skip_reason"], "single_pass_allowed": single, "single_pass_reason": route["execution"]["single_pass_reason"], "max_iterations": 2, "require_new_evidence_for_retry": True, "economy_gate": route["execution"].get("economy_gate", {})},
             "review": {"reserved_for": route["budget"].get("codex_reserved_for", []), "milestones": ["implementation-complete", "validation-complete", "final-candidate"], "incremental": True},
-            "spark": {"invoke": bool(spark_use), "stage": "precard-route", "mode": "execution-cost-estimator", "reason": spark_reason, "skip_reason": spark_skip_reason, "trigger_codes": spark_trigger_codes, "max_calls": 1},
+            "spark": {"invoke": bool(spark_use), "stage": "pre-dispatch", "mode": spark_mode, "reason": spark_reason, "skip_reason": spark_skip_reason, "trigger_codes": spark_trigger_codes, "max_calls": 1},
             "context": {"cache_key": digest(cache_identity), "levels": levels, "default_level": "L1", "allow_l2_on_gap": True},
             "legacy_loop_compatible": True, "automatic_model_invocation": False, "automatic_merge": False}
     context_packet = {"schema_version": 1, "task_id": task_id, "goal": hints.get("goal", ""), "acceptance": hints.get("acceptance", []), "forbidden_paths": hints.get("forbidden_paths", []), "validation": hints.get("validation", []), **levels}

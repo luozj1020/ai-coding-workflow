@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -33,6 +34,56 @@ class InstallWorkflowTests(unittest.TestCase):
             capture_output=True,
             check=True,
         )
+
+    def test_write_file_is_atomic_and_preserves_existing_mode(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "managed.txt"
+            target.write_text("old\n", encoding="utf-8")
+            target.chmod(0o640)
+
+            module.write_file(str(target), "new\r\n")
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "new\n")
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o640)
+            self.assertEqual(list(target.parent.glob(".aiwf-update-*")), [])
+
+    def test_write_file_failure_preserves_previous_file(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "managed.txt"
+            target.write_text("old\n", encoding="utf-8")
+
+            with mock.patch.object(module.os, "replace", side_effect=OSError("injected")):
+                with self.assertRaisesRegex(OSError, "injected"):
+                    module.write_file(str(target), "new\n")
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "old\n")
+            self.assertEqual(list(target.parent.glob(".aiwf-update-*")), [])
+
+    def test_manifest_validation_fails_before_project_creation(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = pathlib.Path(tmp) / "assets"
+            scripts = pathlib.Path(tmp) / "scripts"
+            assets.mkdir()
+            scripts.mkdir()
+
+            with self.assertRaisesRegex(ValueError, "missing required source files"):
+                module.validate_install_manifest(str(assets), str(scripts))
+
+    def test_manifest_validation_rejects_unreadable_source(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / "broken.md"
+            source.write_bytes(b"\xff")
+            with mock.patch.object(
+                module,
+                "build_install_manifest",
+                return_value=[(str(source), "ai/broken.md")],
+            ):
+                with self.assertRaisesRegex(ValueError, "unreadable required source files"):
+                    module.validate_install_manifest(tmp, tmp)
 
     def test_install_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
