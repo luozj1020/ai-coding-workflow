@@ -5837,7 +5837,7 @@ monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATU
 echo "Report saved to: $REPORT_FILE"
 
 echo ""
-echo "=== Dispatch Process Complete ==="
+echo "=== Dispatch Complete ==="
 echo "Worktree:        $WORKTREE_DIR"
 echo "Execution Profile: $CLAUDE_CODE_EXECUTION_PROFILE"
 echo "External Integrations: ${_EXTERNAL_INTEGRATIONS_ALLOWED}"
