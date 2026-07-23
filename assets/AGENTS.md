@@ -34,6 +34,10 @@ one bounded `task-card-audit` by default; an unresolved owner instead uses
 `execution-cost-estimator`. The audit is advisory and cannot expand scope or
 rewrite frozen acceptance. `preflight-bundle` remains diagnostic/compatibility-only.
 Unavailable or schema-invalid Spark auto-disables without strong-model fallback.
+Sandbox-network Spark failures are different: stop before Claude, persist the
+`needs_host_execution` receipt, and rerun the identical Spark request once from
+an explicitly authorized host boundary. Cache a successful host execution
+preference so later calls do not repeat the known-failing sandbox route.
 
 Use Claude `execution-builder` for a frozen solution, `batch-builder` for
 mechanical work, and `exploratory-builder` for bounded new-feature work whose

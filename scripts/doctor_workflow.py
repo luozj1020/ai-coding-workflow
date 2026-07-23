@@ -65,6 +65,7 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/doctor_workflow.py",
     "ai/claude-healthcheck.py",
     "ai/claude-api-availability.py",
+    "ai/spark_execution_availability.py",
     "ai/claude-process-state.py",
     "ai/process-identity.py",
     "ai/dispatch-preflight.py",
@@ -111,6 +112,7 @@ WORKFLOW_RUNTIME_HELPERS = [
     "ai/doctor_workflow.py",
     "ai/claude-healthcheck.py",
     "ai/claude-api-availability.py",
+    "ai/spark_execution_availability.py",
     "ai/claude-process-state.py",
     "ai/process-identity.py",
     "ai/dispatch-preflight.py",
@@ -207,6 +209,7 @@ WORKFLOW_PLAIN_FILE_SOURCES = [
     ("scripts/init-plan.py", "ai/init-plan.py"),
     ("scripts/session-catchup.py", "ai/session-catchup.py"),
     ("scripts/run-workflow.py", "ai/run-workflow.py"),
+    ("scripts/spark_execution_availability.py", "ai/spark_execution_availability.py"),
 ]
 
 

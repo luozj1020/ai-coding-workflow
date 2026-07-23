@@ -176,6 +176,7 @@ PYTHON_SCRIPTS = [
     ("model-call-broker.py", "ai/model-call-broker.py"),
     ("claude-route-preference.py", "ai/claude-route-preference.py"),
     ("claude-api-availability.py", "ai/claude-api-availability.py"),
+    ("spark_execution_availability.py", "ai/spark_execution_availability.py"),
     ("latency-policy.py", "ai/latency-policy.py"),
     ("evaluate-acceptance.py", "ai/evaluate-acceptance.py"),
     ("select-review-tier.py", "ai/select-review-tier.py"),

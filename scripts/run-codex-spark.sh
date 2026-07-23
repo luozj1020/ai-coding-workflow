@@ -1196,7 +1196,20 @@ spark_unavailable_failure() {
         text="$(tr '[:upper:]' '[:lower:]' < "$STDERR_FILE")"
     fi
     printf '%s\n' "$text" | grep -Eiq \
-        'quota|rate limit|rate-limit|insufficient|exceeded|billing|credit|model.*(not|unavailable|unsupported|unknown)|not.*model|access|permission|unauthori[sz]ed|forbidden|login|auth|network|connection|timeout|timed out|proxy|dns|read-only file system|os error 30|app-server|failed to initialize'
+        'quota|rate limit|rate-limit|insufficient|exceeded|billing|credit|model.*(not|unavailable|unsupported|unknown)|not.*model|access|permission|unauthori[sz]ed|forbidden|login|auth|network|connection|unable to connect|failedtoopensocket|socket|timeout|timed out|proxy|dns|read-only file system|os error 30|app-server|failed to initialize'
+}
+
+spark_network_environment_failure() {
+    local text=""
+    text="$(
+        {
+            [ ! -s "$STDERR_FILE" ] || cat "$STDERR_FILE"
+            [ ! -s "$SPARK_EVENTS_FILE" ] || cat "$SPARK_EVENTS_FILE"
+            [ ! -s "$RESULT_FILE" ] || cat "$RESULT_FILE"
+        } | tr '[:upper:]' '[:lower:]'
+    )"
+    printf '%s\n' "$text" | grep -Eiq \
+        'failedtoopensocket|unable to connect|network is unreachable|socket.*(not permitted|permission denied)|proxyconnect|proxy error|dns|name resolution|temporary failure in name resolution|connection (refused|reset|aborted)|could not resolve host'
 }
 
 spark_failure_auto_disable_reason() {
@@ -2145,6 +2158,9 @@ if [ "$CODEX_STATUS" -ne 0 ] && [ "$REQUIRE_SPARK" != "1" ] && spark_unavailable
     SPARK_AUTO_DISABLED="yes"
     SPARK_DISABLE_REASON="$(spark_failure_auto_disable_reason)"
     HELPER_EXIT_STATUS=0
+    if [ "$EXECUTION_ENV" != "host" ] && spark_network_environment_failure; then
+        SPARK_HOST_HANDOFF_REQUIRED="yes"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -2545,9 +2561,15 @@ case "$RESULT_MODE" in
             echo "spark_auto_disabled=${SPARK_AUTO_DISABLED}"
             echo "spark_disable_reason=${SPARK_DISABLE_REASON}"
             echo "spark_failure_class=${DIAGNOSTIC_FAILURE_CLASS}"
-                echo "spark_model_response_received=${SPARK_MODEL_RESPONSE_RECEIVED}"
-                echo "spark_protocol_end=aiwf-spark-stdout-v1"
+            echo "spark_model_response_received=${SPARK_MODEL_RESPONSE_RECEIVED}"
+            echo "spark_protocol_end=aiwf-spark-stdout-v1"
+            if [ "$SPARK_HOST_HANDOFF_REQUIRED" = "yes" ]; then
+                echo "needs_host_execution=true" >&2
+                echo "host_handoff_required=true" >&2
+                echo "execution_env_requested=${EXECUTION_ENV}" >&2
+                echo "execution_env_resolved=${RESOLVED_EXECUTION_ENV}" >&2
             fi
+        fi
         # Auto-disable reporting goes to stderr for direct mode
         if [ "$SPARK_AUTO_DISABLED" = "yes" ]; then
             if [ "$CODEX_STATUS" -eq 0 ]; then
