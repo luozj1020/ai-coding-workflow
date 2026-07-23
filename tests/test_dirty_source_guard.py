@@ -1894,9 +1894,13 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         self.assertIn("First-progress timed out: yes", status)
         self.assertIn("Counts toward takeover: false", status)
-        self.assertNotIn("acceptance", status.lower())
+        self.assertIn("Semantic acceptance: pending-codex-review", status)
+        self.assertIn("Completion state: incomplete", status)
+        self.assertNotIn("Semantic acceptance: accepted", status)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
-        self.assertNotIn("acceptance", progress.lower())
+        self.assertIn("semantic_acceptance=pending-codex-review", progress)
+        self.assertIn("completion_state=incomplete", progress)
+        self.assertNotIn("semantic_acceptance=accepted", progress)
 
 
     # --- Semantic result error detection and dispatch outcome tests ---
