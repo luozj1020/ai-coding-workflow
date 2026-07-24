@@ -47,8 +47,9 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 ## Hard Rules
 
 - Use one Spark call per non-Express Claude delegation: estimate unresolved
-  ownership, otherwise audit the card. A network handoff stops before Claude;
-  retry once at an authorized host, cache that route, and never strong-fallback.
+  ownership, otherwise audit the card. On Spark/Claude network exit 75, outer
+  Codex retries at an authorized host with recorded continuation fields;
+  cache success and never strong-fallback.
 - Checker/Test is conditional. Bind runnable interface evidence, validate each
   test file immediately, or prefer deterministic checks.
 - One Claude failure is not takeover authority. Classify it, preserve useful

@@ -185,6 +185,16 @@ Source-writing modes force `full`. Diagnostics default to `failure`, persisting 
 
 When `CODEX_SANDBOX_NETWORK_DISABLED=1` is inherited, `--execution-env auto` emits a machine-readable `needs_host_execution` handoff before a model call. Do not probe. Direct callers use `--execution-env host` only through an already-authorized outside-sandbox boundary. `dispatch-efficient.py --host-authority`, `run-workflow.py --spark-host-authority`, or `CODEX_SPARK_HOST_AUTHORITY=1` lets that already-authorized outer caller retry the identical Spark request exactly once; bound it with the corresponding host retry timeout. The dispatcher records both attempts in `spark-dispatch.json` and never uses a stronger-model fallback. Without explicit authority it stops before Claude with exit 75 (integrated lifecycle: `dispatch/needs-host-execution`) and persists the handoff. A successful host execution records a context-bound preference in `.ai-workflow/spark-execution-availability.json`; for its bounded TTL, later dispatches go directly to the authorized host boundary instead of repeating the known-failing sandbox attempt. A host failure marks availability suspect but retains the host preference; it does not send work back into the restricted sandbox. Merely unsetting the marker inside a restricted sandbox is not a bypass.
 
+Exit 75 is an orchestration request, not a terminal model result. The outer
+Codex caller must consume it in the same turn by replaying the exact invocation
+through its host-execution permission surface (for example,
+`sandbox_permissions=require_escalated`) with `--host-authority`,
+`--spark-host-authority`, or `CODEX_SPARK_HOST_AUTHORITY=1` as appropriate.
+Request permission once when it is not already granted. Only the outer caller
+can cross this boundary; a child shell must never pretend that unsetting an
+environment marker escaped the sandbox. Report Spark unavailable only after the
+one bounded host attempt also fails.
+
 The model-call broker owns the process timeout. The default
 `CODEX_SPARK_CALL_TIMEOUT_SECONDS=75` terminates the child process group,
 records a failed terminal ledger transition, and lets the wrapper emit its

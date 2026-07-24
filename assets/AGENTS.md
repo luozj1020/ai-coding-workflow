@@ -38,6 +38,14 @@ Sandbox-network Spark failures are different: stop before Claude, persist the
 `needs_host_execution` receipt, and rerun the identical Spark request once from
 an explicitly authorized host boundary. Cache a successful host execution
 preference so later calls do not repeat the known-failing sandbox route.
+The outer Codex/orchestrator must consume exit 75 immediately: rerun the exact
+command with host execution permission (`sandbox_permissions=require_escalated`
+when that tool surface is available) and the recorded host-authority flag.
+Do not report Spark unavailable or continue to Claude until that single host
+attempt finishes. If host permission is not already granted, request it once.
+Apply the same rule to Claude `needs_host_execution`, preserving its task card,
+worktree, and session lineage by setting `CLAUDE_CODE_HOST_AUTHORITY=1` plus the
+receipt's `CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID`.
 
 Use Claude `execution-builder` for a frozen solution, `batch-builder` for
 mechanical work, and `exploratory-builder` for bounded new-feature work whose

@@ -39,6 +39,19 @@ failure is inconclusive; a successful user-terminal interaction or dispatch is
 authoritative. `CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED=0` is an explicit
 diagnostic override, not the normal workflow.
 
+A restricted-sandbox interaction failure emits exit 75 plus
+`needs_host_execution=true` before Builder execution. The outer Codex caller
+must immediately replay the identical dispatcher command once through its
+host-execution permission surface (for example,
+`sandbox_permissions=require_escalated`) with
+`CLAUDE_CODE_HOST_AUTHORITY=1` and the emitted
+`CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID`. This preserves the same task card,
+worktree, retry lineage, and session identity. The authorized dispatcher forces
+the probe environment to `host` and removes the inherited sandbox marker; this
+is only an assertion of an already-crossed boundary and never grants authority
+by itself. Do not classify Claude as unavailable until this single host attempt
+fails.
+
 One failed Builder attempt is not takeover permission. Tighten and re-dispatch once. Two consecutive current-lineage counted rounds issue a hash-bound `*.takeover-receipt.json` containing only the permitted write scope and required validation. Transport, trust, approval, and sandbox failures never contribute. Useful on-plan diff remains salvageable; missing prose is an evidence gap, not automatic implementation failure.
 
 When useful on-plan work has exactly one semantic blocker, `aiwf advisor-continuation` may prepare a one-call same-worktree continuation. It does not invoke a model or dispatch by itself. Bind request/evidence, state hash, allowed and forbidden paths, and one-call idempotency.
