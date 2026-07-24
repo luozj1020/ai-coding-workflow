@@ -152,6 +152,8 @@ class ClaudeHealthcheckTests(unittest.TestCase):
                 self.assertEqual(health.main(["--settings", str(path), "--interaction-route", "inherit", "--json"]), 0)
             payload = json.loads(output.call_args.args[0])
             self.assertEqual(payload["interaction_conclusion"], "inconclusive-restricted-environment")
+            self.assertTrue(payload["needs_host_execution"])
+            self.assertTrue(payload["host_handoff_required"])
             self.assertIsNone(payload["recommended_proxy_mode"])
 
     def test_failed_interaction_is_failure_outside_network_sandbox(self):
@@ -162,8 +164,11 @@ class ClaudeHealthcheckTests(unittest.TestCase):
             path.write_text('{"env":{"ANTHROPIC_BASE_URL":"https://example.cn"}}')
             with mock.patch.object(health, "interaction_probe", return_value=value), \
                  mock.patch.object(health.shutil, "which", return_value="claude"), \
-                 mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print"):
+                 mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as output:
                 self.assertEqual(health.main(["--settings", str(path), "--interaction-route", "inherit", "--json"]), 1)
+            payload = json.loads(output.call_args.args[0])
+            self.assertFalse(payload["needs_host_execution"])
+            self.assertFalse(payload["host_handoff_required"])
 
     def test_explicit_settings_skips_path_home_on_cleared_env(self):
         """Windows regression: --settings flag must not trigger Path.home()."""
@@ -240,6 +245,17 @@ class ClaudeHealthcheckTests(unittest.TestCase):
         """sandbox mode returns restricted regardless of environment."""
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertTrue(health.restricted_network_environment("sandbox"))
+
+    def test_dispatcher_emits_and_consumes_claude_host_handoff(self):
+        dispatcher = (ROOT / "scripts" / "dispatch-to-claude.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('CLAUDE_CODE_HOST_AUTHORITY="${CLAUDE_CODE_HOST_AUTHORITY:-0}"', dispatcher)
+        self.assertIn('echo "needs_host_execution=true" >&2', dispatcher)
+        self.assertIn('echo "host_handoff_required=true" >&2', dispatcher)
+        self.assertIn('echo "host_retry_task_id=${TASK_ID}" >&2', dispatcher)
+        self.assertIn('echo "host_retry_limit=1" >&2', dispatcher)
+        self.assertIn('CLAUDE_CODE_PROBE_ENVIRONMENT="host"', dispatcher)
 
 
 if __name__ == "__main__":

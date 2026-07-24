@@ -200,6 +200,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         "probe_environment_resolved": "sandbox" if _resolved_restricted else "host",
         "interaction_authority": "current-process",
     }
+    result["needs_host_execution"] = False
+    result["host_handoff_required"] = False
     if args.probe:
         origin = result.get("base_url_origin")
         result["probe"] = probe(origin, args.timeout) if origin else {
@@ -237,6 +239,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             result["healthy"] = True
         elif result["execution_environment"]["network_restricted"]:
             result["interaction_conclusion"] = "inconclusive-restricted-environment"
+            result["needs_host_execution"] = True
+            result["host_handoff_required"] = True
             # Preserve configuration health: this process cannot disprove a
             # successful interaction observed in the user's real terminal.
         else:

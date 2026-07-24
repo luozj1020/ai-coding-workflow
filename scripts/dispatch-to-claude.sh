@@ -114,10 +114,18 @@ CLAUDE_CODE_NETWORK_HEALTHCHECK_URL="${CLAUDE_CODE_NETWORK_HEALTHCHECK_URL:-}"
 CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS="${CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS:-5}"
 CLAUDE_CODE_API_PROBE_MODE="${CLAUDE_CODE_API_PROBE_MODE:-adaptive}"
 CLAUDE_CODE_PROBE_ENVIRONMENT="${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}"
+CLAUDE_CODE_HOST_AUTHORITY="${CLAUDE_CODE_HOST_AUTHORITY:-0}"
 CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED="${CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED:-1}"
 CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS="${CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS:-86400}"
+case "$CLAUDE_CODE_HOST_AUTHORITY" in 0|1) ;; *) echo "Error: CLAUDE_CODE_HOST_AUTHORITY must be 0 or 1." >&2; exit 1 ;; esac
 case "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" in 0|1) ;; *) echo "Error: CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED must be 0 or 1." >&2; exit 1 ;; esac
 case "$CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS must be a positive integer." >&2; exit 1 ;; esac
+if [ "$CLAUDE_CODE_HOST_AUTHORITY" = "1" ]; then
+    # This flag is an assertion made by an already-authorized outer caller.
+    # Unsetting the marker does not grant network access inside a sandbox.
+    [ "$CLAUDE_CODE_PROBE_ENVIRONMENT" = "auto" ] && CLAUDE_CODE_PROBE_ENVIRONMENT="host"
+    unset CODEX_SANDBOX_NETWORK_DISABLED
+fi
 if [ -n "${CLAUDE_CODE_FIRST_PROGRESS_ACTION+x}" ]; then
     _FIRST_PROGRESS_ACTION_EXPLICIT=1
 else
@@ -3814,6 +3822,11 @@ fi
 
 if [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ] && \
    [ "${_STARTUP_PROBE_CONCLUSION}" != "available" ]; then
+    _STARTUP_NEEDS_HOST_EXECUTION=0
+    if [ "${_STARTUP_PROBE_CONCLUSION}" = "inconclusive-restricted-environment" ] && \
+       [ "$CLAUDE_CODE_HOST_AUTHORITY" != "1" ]; then
+        _STARTUP_NEEDS_HOST_EXECUTION=1
+    fi
     _STARTUP_FAILURE_CATEGORY="$({
         "$PYTHON_CMD" - "$STARTUP_INTERACTION_HEALTH_FILE" <<'PYEOF'
 import json, sys
@@ -3825,17 +3838,29 @@ except (OSError, ValueError, TypeError, IndexError):
     print("interaction-unavailable")
 PYEOF
     } 2>/dev/null)"
-    case "$_STARTUP_FAILURE_CATEGORY" in
-        workspace-not-trusted) _STARTUP_OUTCOME="approval_blocked" ;;
-        transport|timeout) _STARTUP_OUTCOME="network_error" ;;
-        *) _STARTUP_OUTCOME="preflight_error" ;;
-    esac
+    if [ "$_STARTUP_NEEDS_HOST_EXECUTION" -eq 1 ]; then
+        _STARTUP_FAILURE_CATEGORY="sandbox-network-host-handoff"
+        _STARTUP_OUTCOME="network_error"
+    else
+        case "$_STARTUP_FAILURE_CATEGORY" in
+            workspace-not-trusted) _STARTUP_OUTCOME="approval_blocked" ;;
+            transport|timeout) _STARTUP_OUTCOME="network_error" ;;
+            *) _STARTUP_OUTCOME="preflight_error" ;;
+        esac
+    fi
     {
         echo "Claude dispatch preflight blocked before Builder execution."
         echo "failure_category=${_STARTUP_FAILURE_CATEGORY}"
         echo "interaction_conclusion=${_STARTUP_PROBE_CONCLUSION}"
         echo "worktree=${WORKTREE_DIR}"
-        echo "Resolve workspace trust, transport, or execution-environment access, then rerun the exact dispatch."
+        if [ "$_STARTUP_NEEDS_HOST_EXECUTION" -eq 1 ]; then
+            echo "needs_host_execution=true"
+            echo "host_handoff_required=true"
+            echo "host_handoff_action=rerun-identical-dispatch-on-authorized-host-once"
+            echo "host_retry_task_id=${TASK_ID}"
+        else
+            echo "Resolve workspace trust, transport, or execution-environment access, then rerun the exact dispatch."
+        fi
     } > "$STATUS_FILE"
     if [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; then
         "$PYTHON_CMD" "${SCRIPT_DIR}/classify-claude-attempt.py" \
@@ -3845,9 +3870,11 @@ PYEOF
             > "$ATTEMPT_CLASSIFICATION_FILE" 2>/dev/null || true
     fi
     "$PYTHON_CMD" - "$RESULT_FILE" "$TASK_ID" "$_STARTUP_FAILURE_CATEGORY" \
-        "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" <<'PYEOF'
+        "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" \
+        "$_STARTUP_NEEDS_HOST_EXECUTION" <<'PYEOF'
 import json, os, sys
-output, task_id, category, health, classification = sys.argv[1:]
+output, task_id, category, health, classification, needs_host = sys.argv[1:]
+needs_host_execution = needs_host == "1"
 value = {
     "schema_version": 1,
     "task_id": task_id,
@@ -3856,6 +3883,19 @@ value = {
     "builder_started": False,
     "interaction_health": health,
     "attempt_classification": classification if os.path.exists(classification) else None,
+    "needs_host_execution": needs_host_execution,
+    "host_handoff_required": needs_host_execution,
+    "host_handoff_action": (
+        "rerun-identical-dispatch-on-authorized-host-once"
+        if needs_host_execution else None
+    ),
+    "host_retry_environment": (
+        {
+            "CLAUDE_CODE_HOST_AUTHORITY": "1",
+            "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": task_id,
+        }
+        if needs_host_execution else None
+    ),
 }
 with open(output, "w", encoding="utf-8") as handle:
     json.dump(value, handle, indent=2, sort_keys=True)
@@ -3865,6 +3905,13 @@ PYEOF
     monitor_event "event=terminal running=no terminal=yes exit_status=75 dispatch_outcome=preflight-blocked failure_category=${_STARTUP_FAILURE_CATEGORY}"
     echo "Error: Claude dispatch preflight failed (${_STARTUP_FAILURE_CATEGORY})." >&2
     echo "Evidence: ${STARTUP_INTERACTION_HEALTH_FILE}" >&2
+    if [ "$_STARTUP_NEEDS_HOST_EXECUTION" -eq 1 ]; then
+        echo "needs_host_execution=true" >&2
+        echo "host_handoff_required=true" >&2
+        echo "host_retry_environment=CLAUDE_CODE_HOST_AUTHORITY=1" >&2
+        echo "host_retry_task_id=${TASK_ID}" >&2
+        echo "host_retry_limit=1" >&2
+    fi
     exit 75
 fi
 

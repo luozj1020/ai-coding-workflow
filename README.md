@@ -716,6 +716,15 @@ python ai/run-workflow.py task.json --execute --spark-host-authority --spark-hos
 
 The same opt-in is available as `CODEX_SPARK_HOST_AUTHORITY=1`; `CODEX_SPARK_HOST_RETRY_TIMEOUT` sets the positive timeout. The initial sandbox attempt, handoff decision, host retry, timeout, and final state are recorded separately in `spark-dispatch.json`. Without explicit authority, dispatch stops before Claude and returns a machine-readable `needs_host_execution` result; rerun the same request once from an authorized host boundary. A successful host run persists a context-bound preference in `.ai-workflow/spark-execution-availability.json` (TTL: `CODEX_SPARK_EXECUTION_STATE_TTL_SECONDS`, default 24 hours), so later authorized dispatches skip the known-failing sandbox route. Host timeout/failure never falls back to another strong model or back to the restricted sandbox. Merely unsetting the variable inside a still-restricted sandbox does not restore network access or grant authority. Use `--execution-env sandbox` to preserve the marker intentionally.
 
+Claude uses the same outer-boundary contract. A restricted startup interaction
+returns exit 75 with `needs_host_execution=true` before Builder execution. The
+outer Codex caller must replay the identical dispatcher invocation once with
+host execution permission, `CLAUDE_CODE_HOST_AUTHORITY=1`, and the emitted
+`CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID`, preserving the task card, worktree, and
+session lineage. Exit 75 is a request for orchestration, not permission to
+abandon the model call; only a failed host attempt establishes that the current
+route is unavailable.
+
 `--brief-file PATH` and `--stdin-brief` are also supported. Brief input is limited to early read-only routing modes. Repeat deterministic ROUTE before every revised, narrowed, retried, re-dispatched, split-child, or next-phase card. Invoke Spark only if that route still has an economically uncertain Claude candidate; otherwise Codex proceeds directly without a task card.
 - `review-only`: quick read-only critique of the task card or likely direction.
 - `task-card-audit`: check missing gates, mixed responsibilities, unclear acceptance, and likely Claude stall risks before dispatch.
