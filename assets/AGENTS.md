@@ -14,6 +14,11 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 Prefer LSP, `ai/locate-code.py`, targeted reads, worktree-matched CodeGraph, and local
 deterministic tools over broad reads. Do not browse the web for local repository
 failures unless the user explicitly requests external/current information.
+After deterministic validation and bounded Codex review, an ordinary-risk
+composed task card proceeds directly to dispatch without a second human
+confirmation. Use `aiwf run --preview` for zero-model inspection. Material
+product/API/data-model ambiguity and destructive/high-impact actions still
+require explicit human authority.
 
 Apply this workflow only to non-trivial work where Claude delegation is expected
 to remove material Codex work and longer latency is acceptable. For tiny/urgent

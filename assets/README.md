@@ -78,6 +78,13 @@ For non-trivial changes, split Claude work into two roles:
 
 Task cards can require **Direction / Boundary Acknowledgement** before editing. Claude restates the goal, scope, out-of-scope boundaries, likely files, acceptance criteria, testing responsibility, confusions, and risks. This is a gate, not a discussion loop: at most one blocking acknowledgement is allowed per task or phase unless Codex materially changes the goal, scope, boundaries, or risk. Codex answers with exactly one decision: proceed, narrow-once/re-dispatch, split, or stop.
 
+`aiwf run task.json` validates, routes, composes the short execution card, and
+dispatches it by default without a second human confirmation. Use
+`aiwf run task.json --preview` for a zero-model inspection. This removes only
+the ordinary Task Card dispatch pause: unresolved product/API/data-model
+decisions and destructive/high-impact actions still require explicit human
+authority.
+
 Use `ai/init-spec.py` for ambiguous feature, UX, API, or data-model work, then fill `Spec Gate` in the task card. `ai/init-plan.py` creates `task_plan.md` with `### Task N: ...` sections; use `ai/plan-to-task-cards.py` to turn reviewed task sections into scoped task cards. Use `Root Cause Gate` before bugfixes/regressions, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work is ready for human merge.
 
 Spark supplies structured routing or monitoring only when that replaces Codex
