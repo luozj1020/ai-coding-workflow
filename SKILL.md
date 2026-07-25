@@ -35,16 +35,12 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
    mechanical work, and `execution-builder` for an already-frozen solution.
    Codex direct editing is reserved for explicit human ownership, confirmed
    high-risk core semantics, or a reviewer-owned deterministic correction.
-4. For delegation, read `ai/task-card-components/catalog.md`, choose one preset
-   plus material gates, and run `python ai/compose_task_card.py ...`. Fill only
-   the composed short card. `aiwf run` performs this after the positive route,
-   inlines bounded context once, and dispatches the Markdown card without a
-   second human confirmation rather than passing the source Task JSON. Use
-   `--preview` when a zero-model inspection is desired. Material product
-   ambiguity and destructive/high-impact actions still require human authority.
-5. Dispatch with `bash ai/dispatch-to-claude.sh <card>`. Continue useful work in
-   the same worktree once before takeover; review bounded terminal evidence
-   before optional Checker/Test work. Humans merge.
+4. For delegation, choose a catalog preset and material gates; run
+   `python ai/compose_task_card.py ...` and fill only that card. After routing,
+   `aiwf run` inlines context and dispatches without second confirmation.
+   `--preview` is zero-model; product ambiguity and high-impact actions need humans.
+5. Dispatch with `bash ai/dispatch-to-claude.sh <card>`. Continue once in the
+   same worktree before takeover, then review bounded evidence. Humans merge.
 
 ## Hard Rules
 
