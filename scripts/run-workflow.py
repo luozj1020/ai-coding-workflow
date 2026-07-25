@@ -9,15 +9,15 @@ Implements `aiwf run task.json` as the primary optimized lifecycle:
   5. route
   6. build/cache context
   7. create/preview execution plan
-  8. explicit --execute dispatch through broker-mediated Claude path
+  8. broker-mediated Claude dispatch (default; --preview opts out)
   9. automatic Evidence Builder
   10. deterministic acceptance
   11. Review Ladder/recovery
   12. remote handoff requirement or final structured decision
   13. ledger/benchmark metrics
 
-Default is preview: no model call, worktree, remote action, push, merge,
-or destructive mutation.  `--execute` is explicit.
+Default is execute: dispatches through the broker-mediated Claude path.
+`--preview` suppresses execution for a safe dry run.
 
 Each phase writes a stable artifact under one run directory plus append-only
 phase events and an artifact manifest.  On failure, stop with exact
@@ -27,7 +27,7 @@ Python 3.9+ compatible. No third-party dependencies.
 
 Usage:
     python scripts/run-workflow.py task.json
-    python scripts/run-workflow.py task.json --execute
+    python scripts/run-workflow.py task.json --preview
     python scripts/run-workflow.py task.json --execute --dispatcher /path/to/dispatch
 """
 from __future__ import annotations
@@ -789,7 +789,7 @@ def phase_dispatch(ctx: RunContext) -> None:
             "dispatch_card": str(dispatch_card_value),
             "single_pass": ctx.execution_plan.get("execution", {}).get("single_pass_allowed", False),
             "execute": False,
-            "message": "Preview mode. Use --execute to dispatch.",
+            "message": "Preview mode. Rerun without --preview to dispatch.",
         }
         out = ctx.run_dir / "dispatch-preview.json"
         write_artifact(out, preview)
@@ -1501,8 +1501,8 @@ def main(argv: Optional[list] = None) -> int:
         description="Quota-efficient aiwf run lifecycle.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Default is preview mode: no model calls, no worktree, no destructive mutations.\n"
-            "Use --execute to dispatch through the broker-mediated Claude path.\n"
+            "Default is execute mode: dispatches through the broker-mediated Claude path.\n"
+            "Use --preview for a safe dry run with no model calls or destructive mutations.\n"
             "Exit codes: 0=success, 1=phase failure, 2=task error."
         ),
     )
@@ -1510,10 +1510,16 @@ def main(argv: Optional[list] = None) -> int:
         "task",
         help="Path to the task JSON file.",
     )
-    parser.add_argument(
+    execution_mode = parser.add_mutually_exclusive_group()
+    execution_mode.add_argument(
+        "--preview",
+        action="store_true",
+        help="Preview only: no model calls, no worktree, no destructive mutations.",
+    )
+    execution_mode.add_argument(
         "--execute",
         action="store_true",
-        help="Execute dispatch (default is preview only).",
+        help="Execute dispatch (this is the default).",
     )
     parser.add_argument(
         "--profiles-dir",
@@ -1563,7 +1569,7 @@ def main(argv: Optional[list] = None) -> int:
 
     result = run_lifecycle(
         task_path=Path(args.task),
-        execute=args.execute,
+        execute=not args.preview,
         profiles_dir=Path(args.profiles_dir) if args.profiles_dir else None,
         repo=Path(args.repo) if args.repo else None,
         run_dir_base=Path(args.run_dir_base) if args.run_dir_base else None,

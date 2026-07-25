@@ -1,7 +1,7 @@
 """Tests for the aiwf run lifecycle (PR5).
 
 Covers:
-- Preview zero calls (default mode, no model invocation)
+- Preview zero calls (explicit --preview, no model invocation)
 - Complete phase ordering (all 13 phases run in sequence)
 - Express zero Codex (Express lane produces zero Codex model calls)
 - Standard deterministic L0 (Standard lane produces L0 acceptance)
@@ -124,7 +124,7 @@ def run_cli(*args, check=False):
 # ---------------------------------------------------------------------------
 
 class TestRunWorkflowPreview(unittest.TestCase):
-    """Test preview mode (default, no --execute)."""
+    """Test the programmatic preview path."""
 
     def test_preview_stops_after_claude_first_route(self):
         """The default Claude-first route stops before model execution."""
@@ -471,6 +471,7 @@ class TestRunWorkflowFailure(unittest.TestCase):
             # Run via CLI and check exit code
             r = run_cli(
                 str(task_path),
+                "--preview",
                 "--run-dir-base", str(tmp),
                 "--repo", str(ROOT),
                 "--profiles-dir", str(PROFILES),
@@ -674,6 +675,7 @@ class TestRunWorkflowCLI(unittest.TestCase):
             task_path = write_task(tmp, task)
             r = run_cli(
                 str(task_path),
+                "--preview",
                 "--run-dir-base", str(tmp),
                 "--repo", str(ROOT),
                 "--profiles-dir", str(PROFILES),
@@ -691,6 +693,7 @@ class TestRunWorkflowCLI(unittest.TestCase):
             task_path = write_task(tmp, task)
             r = run_cli(
                 str(task_path),
+                "--preview",
                 "--run-dir-base", str(tmp),
                 "--repo", str(ROOT),
                 "--profiles-dir", str(PROFILES),
@@ -704,6 +707,31 @@ class TestRunWorkflowCLI(unittest.TestCase):
         """Missing task file exits with nonzero."""
         r = run_cli("/nonexistent/task.json")
         self.assertNotEqual(r.returncode, 0)
+
+    def _assert_execute_mode(self, argv, expected):
+        with mock.patch.object(run_workflow, "run_lifecycle") as lifecycle:
+            lifecycle.return_value = {"status": "routed", "run_dir": "/tmp/run"}
+            with mock.patch("builtins.print"):
+                self.assertEqual(run_workflow.main(["task.json", *argv]), 0)
+        self.assertEqual(lifecycle.call_args.kwargs["execute"], expected)
+
+    def test_default_cli_passes_execute_true(self):
+        """Default CLI dispatches without a second confirmation command."""
+        self._assert_execute_mode([], True)
+
+    def test_preview_flag_passes_execute_false(self):
+        """--preview preserves the zero-model-call dry run."""
+        self._assert_execute_mode(["--preview"], False)
+
+    def test_execute_flag_passes_execute_true(self):
+        """--execute remains a compatible explicit spelling."""
+        self._assert_execute_mode(["--execute"], True)
+
+    def test_both_preview_and_execute_fails_argparse(self):
+        """Simultaneous execution-mode flags fail instead of using precedence."""
+        with self.assertRaises(SystemExit) as raised:
+            run_workflow.main(["task.json", "--preview", "--execute"])
+        self.assertEqual(raised.exception.code, 2)
 
 
 class TestRunWorkflowPython39(unittest.TestCase):

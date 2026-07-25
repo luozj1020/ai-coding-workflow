@@ -22,8 +22,13 @@ and writes no delegation card.
 
 The integrated `aiwf run` path performs the same selection only after routing,
 fills `delegation-task-card.md` from reviewed Task JSON and routing facts, and
-inlines bounded context into that one card. It does not create a duplicate
-standalone Context Packet or pass the source JSON to the Markdown dispatcher.
+inlines bounded context into that one card. After deterministic validation and
+bounded Codex review, an ordinary-risk card proceeds directly to dispatch; it
+does not wait for a second human confirmation. `--preview` explicitly requests
+the zero-model inspection path. Product/API/data-model ambiguity and
+destructive/high-impact actions remain stop conditions requiring human
+authority. The integrated path does not create a duplicate standalone Context
+Packet or pass the source JSON to the Markdown dispatcher.
 
 The local composer fills deterministic fields from routing facts; Spark may
 return structured missing fields. Codex reviews only the compact goal,

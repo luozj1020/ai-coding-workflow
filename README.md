@@ -36,12 +36,13 @@ strict total-cost and latency gate.
 
 For Bazel repositories, `build-bazel-context.py` turns a bounded list of source files into candidate BUILD rules, dependencies, test targets, and narrow validation commands without running Bazel. Remote Bazel handoff remains human-controlled: `generate-handoff.py` emits preview-only publish/update/batched-validation instructions, while `validation-ingest.py` classifies returned logs locally. These helpers never push, SSH, merge, or authorize acceptance.
 
-The primary quota-efficient path is preview-first:
+The primary quota-efficient path dispatches automatically after deterministic
+validation, routing, and bounded Codex review of the composed card:
 
 ```bash
 python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1
-# Review the routing, context, execution plan, and dispatch preview first.
-python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute
+# Opt into a zero-model preview when inspection is desired.
+python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview
 ```
 
 `aiwf run` performs lint → profile validation → repository facts → deterministic
@@ -49,7 +50,11 @@ routing. The normal result is a short Claude execution card with context inlined
 once. Open multi-phase features use Claude `solution-planner`, then return frozen
 slices to `exploratory-builder`, `batch-builder`, or `execution-builder`.
 Explicit/high-risk Codex work stops before card construction. Spark may fill a
-structured uncertainty when that avoids Codex analysis. Preview remains zero-model.
+structured uncertainty when that avoids Codex analysis. A valid ordinary-risk
+card does not wait for a second human confirmation; material product ambiguity
+and destructive/high-impact actions still stop for explicit human authority.
+Explicit `--preview` remains zero-model, and `--execute` remains accepted for
+backward compatibility.
 
 The lower-level control-plane commands remain available:
 
@@ -170,8 +175,8 @@ The selected role reaches runtime directly: `solution-planner` maps to
 | **Cross-sandbox process check** | Treat invisible dispatch PIDs as unknown, never as permission to launch a duplicate Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Classify Claude round** | Decide whether a failure counts toward takeover | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **Validate Claude context** | Check execution-only packet density | `python scripts/validate-claude-context.py task.md --require-complete` |
-| **Preview integrated run** | Inspect every phase without model calls | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
-| **Execute integrated run** | Run the reviewed plan | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute` |
+| **Preview integrated run** | Inspect every phase without model calls | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview` |
+| **Execute integrated run** | Validate, compose, and dispatch without a second confirmation step | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 
 Advisor calls require a non-empty request/evidence binding and an explicit one-call cap. The Broker enforces the same `request_id` cap across roles and records interrupts as cancelled. Fixed Claude probes are `diagnostic_call` entries that never consume Builder, takeover, or success budgets. Same-worktree continuation audits feed summary/benchmark metrics without inventing token or time savings.
 

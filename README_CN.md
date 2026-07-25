@@ -34,19 +34,21 @@ Codex 集中在意图冻结和有界
 
 对于 Bazel 仓库，`build-bazel-context.py` 会把有界的目标文件列表转换为候选 BUILD rule、依赖、测试 target 和窄范围验证命令，且不会执行 Bazel。远程 Bazel 仍由人工控制：`generate-handoff.py` 只生成预览式发布、更新和合并 target 验证指令，`validation-ingest.py` 在本地分类返回日志；这些工具不会自动 push、SSH、merge 或批准验收。
 
-额度优化的主入口默认只预览：
+额度优化的主入口会在确定性校验、路由和 Codex 对短任务卡的有界审查通过后自动派发：
 
 ```bash
 python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1
-# 先审查路由、Context、执行计划和 dispatch preview。
-python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute
+# 如需零模型预览，显式添加 --preview。
+python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview
 ```
 
 `aiwf run` 串联 lint → Profile 重验 → 仓库事实 → 确定性路由。正常结果
 是一张上下文只内联一次的 Claude 短执行卡。开放多阶段功能先由 Claude
 `solution-planner` 形成契约，再将冻结切片交给 `exploratory-builder`、
 `batch-builder` 或 `execution-builder`。显式/高风险 Codex 路由不生成卡；
-Spark 仅在结构化结果能够替代 Codex 分析时介入。预览保持零模型调用。
+Spark 仅在结构化结果能够替代 Codex 分析时介入。普通风险任务卡不再等待第二次
+人工确认；产品方向仍有实质歧义，或涉及破坏性/高影响操作时，仍须取得明确人工
+授权。显式 `--preview` 保持零模型调用，`--execute` 继续作为兼容写法。
 
 底层控制面命令继续保留：
 
@@ -164,8 +166,8 @@ Claude 是默认实现者：`exploratory-builder` 负责边界明确但路径不
 | **跨沙箱进程检查** | 调度 PID 不可见时标记为未知，绝不能据此启动重复 Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Claude 轮次分类** | 判断失败是否计入接管阈值 | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **校验 Claude 上下文** | 检查 execution-only 上下文密度 | `python scripts/validate-claude-context.py task.md --require-complete` |
-| **预览集成运行** | 零模型调用审查所有阶段 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
-| **执行集成运行** | 执行已审查的计划 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --execute` |
+| **预览集成运行** | 零模型调用审查所有阶段 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview` |
+| **执行集成运行** | 校验、编卡并直接派发，不再二次确认 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 
 Advisor 调用必须绑定非空 request/evidence，并明确使用单次调用上限。Broker 会跨角色执行相同 `request_id` 的上限，并把中断记为 cancelled。固定 Claude 探针以 `diagnostic_call` 记账，不占 Builder、接管或成功预算；同 worktree 延续审计会进入 summary/benchmark，但不会虚构 token 或时间节省。
 
