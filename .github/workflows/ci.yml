@@ -40,6 +40,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install full-suite system dependencies
+        run: sudo apt-get install --no-install-recommends -y bubblewrap
+
       - name: Run full tests
         run: python scripts/run-tests.py full
 
