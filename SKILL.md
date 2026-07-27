@@ -10,12 +10,8 @@ repeat it in working context. Load one relevant reference when needed.
 
 ## Applicability Gate
 
-Use when delegation materially reduces Codex work: multi-file/multi-phase
-features, batches, assigned tests, or long validation.
-
-For tiny/urgent edits, code questions, read-only or interactive debugging, or
-unreliable Claude/isolation/evidence, record `workflow bypassed: <reason>` and
-use ordinary Codex/local tools.
+Use for multi-file/multi-phase work, batches, assigned tests, or long validation.
+Otherwise record `workflow bypassed: <reason>` and use local tools.
 
 ## Default Loop
 
@@ -35,10 +31,8 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
    mechanical work, and `execution-builder` for an already-frozen solution.
    Codex direct editing is reserved for explicit human ownership, confirmed
    high-risk core semantics, or a reviewer-owned deterministic correction.
-4. For delegation, choose a catalog preset and material gates; run
-   `python ai/compose_task_card.py ...` and fill only that card. After routing,
-   `aiwf run` inlines context and dispatches without second confirmation.
-   `--preview` is zero-model; product ambiguity and high-impact actions need humans.
+4. Compose one catalog preset plus material gates and fill only its short card.
+   `--preview` is zero-model; ambiguity and high-impact actions need humans.
 5. Dispatch with `bash ai/dispatch-to-claude.sh <card>`. Continue once in the
    same worktree before takeover, then review bounded evidence. Humans merge.
 
@@ -53,6 +47,11 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 - One Claude failure is not takeover authority. Classify it, preserve useful
   evidence, and tighten once. Transport/approval/dirty-base conditions are not
   model failures. Explicit human takeover remains authoritative.
+- A takeover receipt is only a candidate. `aiwf prepare-takeover` must revoke
+  ownership, stop/confirm old process trees, freeze a baseline, and issue the
+  single-writer grant; unknown visibility fails closed.
+- Enforce exact Write paths in real time. `editor-only` removes Bash; required
+  enforcement never degrades to post-run auditing.
 - Never poll Claude with `ps`, `tail`, clocks, or Codex turns. Block on
   `monitor-claude.sh wait`. Implementation claims are readiness, not writes;
   Spark compresses ambiguous idle JSON while raw logs stay file-backed.

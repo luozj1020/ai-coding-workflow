@@ -154,7 +154,7 @@ def task_role(card: Path) -> Optional[str]:
     value = match.group(1).strip().lower()
     if value in {"checker", "test", "checker/test", "checker-test"}:
         return "checker-test"
-    return "builder" if value == "builder" else None
+    return "builder" if value in {"builder", "revision"} else None
 
 
 def repository_root() -> Path:
@@ -179,6 +179,11 @@ def validate_runtime(root: Path, task_id: str) -> tuple[Dict[str, Any], Path, Pa
     worktree = Path(str(runtime.get("worktree", ""))).resolve()
     if source != root or not is_within(worktree, root / ".worktrees"):
         raise ContinuationError("runtime repository/worktree boundary mismatch")
+    for takeover_marker in (root / ".worktrees").glob("*.codex-write-owner.json"):
+        marker = load_json(takeover_marker)
+        marker_worktree = Path(str(marker.get("worktree", ""))).resolve()
+        if marker_worktree == worktree:
+            raise ContinuationError("worktree ownership was transferred to Codex")
     if not worktree.is_dir() or git(worktree, "rev-parse", "--is-inside-work-tree").strip() != "true":
         raise ContinuationError("recorded worktree is unavailable")
     for raw in (runtime.get("pid_files") or {}).values():

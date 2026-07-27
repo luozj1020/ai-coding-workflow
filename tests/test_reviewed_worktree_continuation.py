@@ -99,6 +99,16 @@ class ReviewedContinuationTest(unittest.TestCase):
         self.assertEqual(rejected.returncode, 2)
         self.assertIn("next_task_card_sha256", rejected.stderr)
 
+    def test_revision_mode_is_native_builder_continuation(self) -> None:
+        self.card.write_text("| Mode | revision |\n", encoding="utf-8")
+        approval = self.prepare(next_role="builder")
+        self.assertEqual(approval["next_role"], "builder")
+        validated = self.helper(
+            "validate", "--approval", str(self.approval),
+            "--next-task-card", str(self.card),
+        )
+        self.assertEqual(validated.returncode, 0)
+
     def test_dirty_snapshot_continuation_binds_source_and_execution_bases(self) -> None:
         run("git", "add", "src.txt", cwd=self.worktree)
         run("git", "commit", "-qm", "synthetic dirty snapshot", cwd=self.worktree)
@@ -167,6 +177,22 @@ class ReviewedContinuationTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("no material implementation evidence", result.stderr)
+
+    def test_prepare_rejects_worktree_transferred_to_codex(self) -> None:
+        marker = self.repo / ".worktrees" / "newer-task.codex-write-owner.json"
+        marker.write_text(json.dumps({
+            "write_owner": "codex", "worktree": str(self.worktree),
+        }), encoding="utf-8")
+        result = self.helper(
+            "prepare", "--prior-task-id", self.task_id,
+            "--next-task-card", str(self.card), "--next-role", "builder",
+            "--decision", "accepted-direction",
+            "--accepted-existing-path", "src.txt",
+            "--allow-new-write-path", "src.txt",
+            "--output", str(self.approval), check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("transferred to Codex", result.stderr)
 
     def test_validate_rejects_worktree_drift(self) -> None:
         self.prepare()

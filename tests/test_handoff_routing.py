@@ -75,6 +75,22 @@ def route_facts(**overrides):
     return value
 
 
+def test_deterministic_evidence_closes_model_loop():
+    decision = router.route(route_facts(
+        deterministic_evidence_sufficient=True,
+        implementation_direction_accepted=True,
+        remaining_source_changes_required=False,
+        checker_model_required=True,
+        spark_route_requested=True,
+    ))
+    assert decision["execution"]["owner"] == "codex-fast-path"
+    assert decision["execution"]["owner_source"] == "deterministic-evidence-closed"
+    assert decision["execution"]["remote_rounds"] == 0
+    assert decision["execution"]["no_further_model_rounds"] is True
+    assert decision["execution"]["checker_model_dispatch"] is False
+    assert decision["precard_estimator"]["spark_action"] == "skip"
+
+
 def continuation_lease(model="claude"):
     owner = "claude-session-1" if model == "claude" else "codex-session-1"
     return select_owner({

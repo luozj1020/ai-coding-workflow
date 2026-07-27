@@ -143,10 +143,11 @@ Codex may directly edit implementation files only when at least one condition is
 Before editing, Codex must state the failed attempts, why another Claude revision is unlikely to help, the files/modules it will touch, and the validation it will run. The edit should be narrow and should not bypass safety approvals.
 
 When two directly linked attempts both have counted classifications, the
-dispatcher may issue `*.takeover-receipt.json`. Codex must stay inside its
-hash-bound `allowed_write_paths` and run the bound narrow validation. The
-receipt authorizes only bounded salvage; it never authorizes merge or expands
-human approval for destructive/high-impact actions.
+dispatcher may issue a `*.takeover-receipt.json` candidate. Codex must not edit
+from that candidate. `aiwf prepare-takeover` performs the atomic single-writer
+transfer and produces the actual grant only after old-process termination and a
+stable baseline. Codex stays inside the grant's hash-bound
+`allowed_write_paths` and runs the bound narrow validation.
 
 No-progress evidence, an early Claude exit, invalid result JSON, missing report, or a single failed implementation does not by itself satisfy the threshold. In those cases Codex should produce a smaller revision task with clearer acceptance criteria, stronger stop conditions, and required evidence for Claude.
 

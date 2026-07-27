@@ -30,6 +30,17 @@ def draft():
     }
 
 
+def draft_v2():
+    value = draft()
+    value["schema_version"] = 2
+    value["invariants"] = [{
+        "id": "INV-1",
+        "description": "Existing behavior remains compatible.",
+        "acceptance_ids": ["AC-1"],
+    }]
+    return value
+
+
 class SolutionContractTests(unittest.TestCase):
     def test_valid_contract_freezes_after_nonblocking_review(self):
         value = draft()
@@ -51,6 +62,18 @@ class SolutionContractTests(unittest.TestCase):
         }]}
         with self.assertRaises(ValueError):
             MODULE.freeze(draft(), findings)
+
+    def test_v2_freeze_emits_invariant_acceptance_matrix(self):
+        value = draft_v2()
+        self.assertEqual(MODULE.validate_contract(value), [])
+        frozen = MODULE.freeze(value, {"findings": []})
+        self.assertTrue(frozen["acceptance_matrix"]["all_invariants_mapped"])
+        self.assertEqual(frozen["acceptance_matrix"]["rows"][0]["invariant_id"], "INV-1")
+
+    def test_v2_rejects_unmapped_invariant_acceptance(self):
+        value = draft_v2()
+        value["invariants"][0]["acceptance_ids"] = ["AC-missing"]
+        self.assertTrue(any("unknown acceptance" in item for item in MODULE.validate_contract(value)))
 
     def test_unknown_acceptance_reference_is_invalid(self):
         value = draft()

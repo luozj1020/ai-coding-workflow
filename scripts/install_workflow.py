@@ -100,6 +100,11 @@ PYTHON_SCRIPTS = [
     ("dispatch-preflight.py", "ai/dispatch-preflight.py"),
     ("archive-control-files.py", "ai/archive-control-files.py"),
     ("build-takeover-receipt.py", "ai/build-takeover-receipt.py"),
+    ("prepare-codex-takeover.py", "ai/prepare-codex-takeover.py"),
+    ("prepare-write-sandbox.py", "ai/prepare-write-sandbox.py"),
+    ("build-invariant-acceptance-matrix.py", "ai/build-invariant-acceptance-matrix.py"),
+    ("change-size-advisory.py", "ai/change-size-advisory.py"),
+    ("archive-terminal-runtime.py", "ai/archive-terminal-runtime.py"),
     ("create-dirty-snapshot.py", "ai/create-dirty-snapshot.py"),
     ("enforce-checker-contract.py", "ai/enforce-checker-contract.py"),
     ("compare-transfer-pilot.py", "ai/compare-transfer-pilot.py"),
@@ -226,6 +231,7 @@ SCHEMA_ASSETS = [
     ("schemas/efficiency-plan-v1.schema.json", "ai/schemas/efficiency-plan-v1.schema.json"),
     ("schemas/routing-facts-v1.schema.json", "ai/schemas/routing-facts-v1.schema.json"),
     ("schemas/solution-contract-v1.schema.json", "ai/schemas/solution-contract-v1.schema.json"),
+    ("schemas/solution-contract-v2.schema.json", "ai/schemas/solution-contract-v2.schema.json"),
 ]
 
 # Structured assets: profiles (source relative to repo root, dest relative to repo root)

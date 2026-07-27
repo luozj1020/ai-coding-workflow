@@ -32,7 +32,8 @@ def _scope(card: str, label: str) -> List[str]:
 def build(
     current: Dict[str, object], current_path: Path,
     prior: Dict[str, object], prior_path: Path, card_path: Path,
-    current_task_id: str, prior_task_id: str, lineage_root_task_id: str,
+    runtime_path: Path, current_task_id: str, prior_task_id: str,
+    lineage_root_task_id: str,
 ) -> Dict[str, object]:
     attempts = [(prior_task_id, prior), (current_task_id, current)]
     eligible = all(
@@ -46,12 +47,17 @@ def build(
     allowed = _scope(card, "Write paths")
     if not allowed:
         raise ValueError("task card has no bounded Write paths")
+    if not runtime_path.is_file():
+        raise ValueError("current runtime receipt is required")
     return {
-        "schema_version": 1,
-        "status": "authorized",
-        "authorization": "codex-bounded-takeover",
+        "schema_version": 2,
+        "status": "preparation-required",
+        "authorization": "codex-takeover-candidate",
         "issued_at": datetime.now(timezone.utc).isoformat(),
         "lineage_root_task_id": lineage_root_task_id,
+        "current_task_id": current_task_id,
+        "runtime_receipt": str(runtime_path.resolve()),
+        "runtime_receipt_object": _hash(runtime_path),
         "attempts": [
             {
                 "task_id": task_id,
@@ -65,6 +71,14 @@ def build(
         "forbidden_paths": _scope(card, "Forbidden paths"),
         "remaining_work": "Apply only the unresolved deterministic correction inside allowed_write_paths.",
         "required_validation": "Run the exact narrow validation from the bound task card.",
+        "takeover_preparation_required": True,
+        "required_preparation": [
+            "revoke-or-explicitly-declare-absent-owner-lease",
+            "terminate-identity-matched-prior-process-tree",
+            "confirm-all-recorded-processes-inactive",
+            "sample-stable-worktree-content-hash",
+            "issue-single-writer-codex-grant",
+        ],
         "another_claude_retry_recommended": False,
         "merge_authorized": False,
     }
@@ -84,6 +98,7 @@ def main() -> int:
     parser.add_argument("--current", type=Path, required=True)
     parser.add_argument("--prior", type=Path, required=True)
     parser.add_argument("--task-card", type=Path, required=True)
+    parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--current-task-id", required=True)
     parser.add_argument("--prior-task-id", required=True)
     parser.add_argument("--lineage-root-task-id", required=True)
@@ -92,8 +107,10 @@ def main() -> int:
     try:
         current = json.loads(args.current.read_text(encoding="utf-8"))
         prior = json.loads(args.prior.read_text(encoding="utf-8"))
-        value = build(current, args.current, prior, args.prior, args.task_card, args.current_task_id,
-                      args.prior_task_id, args.lineage_root_task_id)
+        value = build(
+            current, args.current, prior, args.prior, args.task_card, args.runtime,
+            args.current_task_id, args.prior_task_id, args.lineage_root_task_id,
+        )
         atomic_write(args.output, value)
         print(json.dumps(value, ensure_ascii=False, sort_keys=True))
         return 0

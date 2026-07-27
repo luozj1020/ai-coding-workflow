@@ -39,7 +39,16 @@ status in runtime evidence. Same worktree alone preserves files/diff only; it
 does not prove conversation memory. A valid `--resume <uuid>` invocation is the
 model-session continuity evidence.
 
-When the dirty diff is useful and Codex has reviewed and accepted its direction, prefer an explicit reviewed continuation over another fresh checkout. Run `aiwf reviewed-continuation prepare` with the prior task id, exact accepted-existing paths, next-role card, and allow-new-write paths; then dispatch with `CLAUDE_CODE_REVIEWED_CONTINUATION=<approval.json>`. The approval binds source/base/worktree HEAD, full worktree state, path content/mode, and next-card hash. The dispatcher consumes it once, reuses the exact worktree without reset/clean/checkout, archives prior control files, and enforces new-write boundaries after execution. Builder→Builder and Builder→Checker are supported; Checker→Builder, managed/advisor/retry/parallel origins, state drift, live prior PIDs, and replay fail closed. This is an explicit Codex review path, never an automatic dirty-worktree reuse policy.
+When the dirty diff is useful and Codex has reviewed and accepted its direction,
+prefer an explicit reviewed continuation over another fresh checkout. `Mode =
+revision` is natively treated as a Builder continuation. The approval binds the
+baseline content hash and exact new Write paths. On supported hosts the
+dispatcher runs Claude inside a read-only-root sandbox with writable binds only
+for those exact paths and control reports, so Edit/Write/Bash cannot create
+forbidden siblings. Required enforcement fails closed when paths are globbed or
+the sandbox capability is unavailable; post-run checking remains secondary
+evidence. A Codex takeover marker permanently blocks later Claude continuation
+on that worktree.
 
 Checker worktree reuse requires every Checker Reuse Risk Gate row to be explicit `no`. Missing/unknown/high risk, DAG, parallel, or shared-contract work stays fresh. Environment overrides remain explicit.
 

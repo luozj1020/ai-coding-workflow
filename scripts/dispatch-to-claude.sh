@@ -180,6 +180,7 @@ fi
 # reuse-managed only for serial low-risk checker-test cards.  Parallel/DAG,
 # Builder/mixed, missing/ambiguous mode, or any risk keyword stays fresh.
 _PARSED_TASK_MODE=""
+_DECLARED_TASK_MODE=""
 if [ -f "$TASK_CARD" ]; then
     _PARSED_TASK_MODE="$(awk -F'|' '
         /^\|/ && NF >= 3 {
@@ -189,6 +190,12 @@ if [ -f "$TASK_CARD" ]; then
             if (tolower(field) == "mode") { print tolower(value); exit }
         }
     ' "$TASK_CARD" 2>/dev/null || true)"
+fi
+_DECLARED_TASK_MODE="$_PARSED_TASK_MODE"
+# A revision card is a narrowed Builder continuation, not a third runtime role.
+# Preserve the declared value in evidence while using Builder ownership/tooling.
+if [ "$_PARSED_TASK_MODE" = "revision" ]; then
+    _PARSED_TASK_MODE="builder"
 fi
 
 _IS_DAG_DISPATCH=0
@@ -407,9 +414,9 @@ case "$CLAUDE_CODE_BUILDER_MODE" in
 esac
 CLAUDE_CODE_TOOL_PROFILE="${CLAUDE_CODE_TOOL_PROFILE:-auto}"
 case "$CLAUDE_CODE_TOOL_PROFILE" in
-    auto|default|minimal-builder|locator-builder|checker|diagnostic) ;;
+    auto|default|editor-only|minimal-builder|locator-builder|checker|diagnostic) ;;
     *)
-        echo "Error: CLAUDE_CODE_TOOL_PROFILE must be 'auto', 'default', 'minimal-builder', 'locator-builder', 'checker', or 'diagnostic'." >&2
+        echo "Error: CLAUDE_CODE_TOOL_PROFILE must be 'auto', 'default', 'editor-only', 'minimal-builder', 'locator-builder', 'checker', or 'diagnostic'." >&2
         exit 1
         ;;
 esac
@@ -421,6 +428,25 @@ case "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" in
         exit 1
         ;;
 esac
+CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT="${CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT:-auto}"
+case "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT" in
+    auto|required|off) ;;
+    *)
+        echo "Error: CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT must be auto, required, or off." >&2
+        exit 1
+        ;;
+esac
+_TASK_WRITE_SCOPE_POLICY="$(awk -F'|' '
+    /^\|/ && NF >= 3 {
+        field=$2; value=$3
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", field)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        if (tolower(field) == "write scope enforcement") { print tolower(value); exit }
+    }
+' "$TASK_CARD" 2>/dev/null || true)"
+if [ "$_TASK_WRITE_SCOPE_POLICY" = "required" ]; then
+    CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT="required"
+fi
 if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
     if [ "$_PARSED_TASK_MODE" = "builder" ] && \
        grep -Eiq '^\|[[:space:]]*Planning owner[[:space:]]*\|[[:space:]]*Claude([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
@@ -466,7 +492,10 @@ fi
 _TOOL_PROFILE_DERIVATION="explicit"
 if [ "$CLAUDE_CODE_TOOL_PROFILE" = "auto" ]; then
     _TOOL_PROFILE_DERIVATION="auto-resolved"
-    if [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ]; then
+    if grep -Eiq '^\|[[:space:]]*(Tool profile|Shell access)[[:space:]]*\|[[:space:]]*(editor-only|forbidden|none)([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD" 2>/dev/null; then
+        CLAUDE_CODE_TOOL_PROFILE="editor-only"
+        _TOOL_PROFILE_DERIVATION="task-card-hard-restriction"
+    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ]; then
         CLAUDE_CODE_TOOL_PROFILE="minimal-builder"
     elif [ "$_PARSED_TASK_MODE" = "checker-test" ]; then
         CLAUDE_CODE_TOOL_PROFILE="checker"
@@ -478,7 +507,6 @@ if [ "$CLAUDE_CODE_TOOL_PROFILE" = "auto" ]; then
         CLAUDE_CODE_TOOL_PROFILE="default"
     fi
 fi
-
 # --- Tool profile CLI flag support detection ---
 # Detect --tools / --allowedTools support once per dispatch.
 # CLI support requires BOTH --tools AND either --allowedTools or --allowed-tools.
@@ -489,6 +517,10 @@ if printf '%s\n' "$_CLAUDE_HELP_OUTPUT" | grep -q -- '--tools' && \
    { printf '%s\n' "$_CLAUDE_HELP_OUTPUT" | grep -q -- '--allowedTools' || \
      printf '%s\n' "$_CLAUDE_HELP_OUTPUT" | grep -q -- '--allowed-tools'; }; then
     _TOOL_PROFILE_SUPPORTED=1
+fi
+if [ "$CLAUDE_CODE_TOOL_PROFILE" = "editor-only" ] && [ "$_TOOL_PROFILE_SUPPORTED" -ne 1 ]; then
+    echo "Error: editor-only requires Claude CLI --tools and --allowedTools support; refusing to expose Bash." >&2
+    exit 1
 fi
 
 # First-progress timeout: accept both spellings with _SECONDS precedence.
@@ -1467,6 +1499,9 @@ REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
 REPORT_CONSISTENCY_FILE="${WORKTREE_ROOT}/${TASK_ID}.report-consistency.json"
 OUTCOME_FILE="${WORKTREE_ROOT}/${TASK_ID}.outcome.json"
 RECOVERED_COMPLETION_FILE="${WORKTREE_ROOT}/${TASK_ID}.recovered-completion.json"
+WRITE_SCOPE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.write-scope-enforcement.json"
+PRODUCT_BASELINE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-baseline.json"
+CHANGE_SIZE_ADVISORY_FILE="${WORKTREE_ROOT}/${TASK_ID}.change-size-advisory.json"
 VALIDATION_CAPABILITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.validation-capability.json"
 REVISION_CARD_VALIDATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.revision-card-validation.json"
 CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
@@ -1911,6 +1946,37 @@ if [ -z "${_RETRY_WORKTREE_DIR:-}" ] && \
     fi
 fi
 
+# No continuation selector may bypass a Codex single-writer marker by naming an
+# older task id that points at the same physical worktree.
+_CODEX_OWNER_MARKER="$("$PYTHON_CMD" - "$WORKTREE_ROOT" "$WORKTREE_DIR" <<'PYEOF' 2>/dev/null || echo "__marker-check-failed__"
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+worktree = pathlib.Path(sys.argv[2]).resolve()
+for marker in root.glob("*.codex-write-owner.json"):
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+        candidate = pathlib.Path(str(value.get("worktree", ""))).resolve()
+    except (OSError, ValueError, TypeError):
+        print("__invalid_marker__")
+        raise SystemExit
+    if candidate == worktree:
+        print(str(marker.resolve()))
+        raise SystemExit
+PYEOF
+)"
+case "$_CODEX_OWNER_MARKER" in
+    "")
+        ;;
+    "__marker-check-failed__"|"__invalid_marker__")
+        echo "Error: cannot authoritatively validate Codex worktree ownership markers." >&2
+        exit 1
+        ;;
+    *)
+        echo "Error: worktree ownership was transferred to Codex; Claude dispatch is forbidden: ${_CODEX_OWNER_MARKER}" >&2
+        exit 1
+        ;;
+esac
+
 # Give Claude a task-scoped scratch directory outside the repository. This
 # makes the default temporary-file policy actionable instead of prompt-only.
 _SYSTEM_TMP_ROOT="${AI_WORKFLOW_SYSTEM_TMP_ROOT:-/tmp}"
@@ -2199,9 +2265,13 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     echo "  },"
     printf '  "builder_mode": "%s",\n' "$CLAUDE_CODE_BUILDER_MODE"
     printf '  "task_mode": "%s",\n' "${_PARSED_TASK_MODE:-unknown}"
+    printf '  "declared_task_mode": "%s",\n' "${_DECLARED_TASK_MODE:-unknown}"
     printf '  "tool_profile": "%s",\n' "$CLAUDE_CODE_TOOL_PROFILE"
     printf '  "tool_profile_derivation": "%s",\n' "$_TOOL_PROFILE_DERIVATION"
     printf '  "tool_profile_supported": %s,\n' "$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo true || echo false)"
+    printf '  "write_scope_enforcement": "%s",\n' "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT"
+    printf '  "write_scope_receipt": "%s",\n' "$WRITE_SCOPE_RECEIPT_FILE"
+    printf '  "product_baseline_receipt": "%s",\n' "$PRODUCT_BASELINE_FILE"
     printf '  "task_validation_allowlist": %s,\n' "$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo true || echo false)"
     printf '  "checker_runtime_enforcement": %s,\n' "$([ "$CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT" -eq 1 ] && echo true || echo false)"
     printf '  "checker_file_timeout_seconds": %s,\n' "$CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS"
@@ -3392,12 +3462,12 @@ worktree_change_count() {
 }
 
 worktree_digest() {
-    if [ "${CLAUDE_CODE_LARGE_REPO_MODE:-0}" = "1" ]; then
-        {
-            git status --porcelain --untracked-files=no 2>/dev/null || true
-            git diff --shortstat 2>/dev/null || true
-            git diff --cached --shortstat 2>/dev/null || true
-        } | sha1sum 2>/dev/null | awk '{print $1}' || true
+    # First progress and product-idle use the same full content hash. The prior
+    # shortstat/status digest missed same-size rewrites and made an existing
+    # continuation diff look like fresh model progress.
+    if [ -n "${PYTHON_CMD:-}" ] && [ -f "${SCRIPT_DIR}/worktree_state_hash.py" ]; then
+        "$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" \
+            --worktree "${WORKTREE_DIR:-.}" 2>/dev/null || true
         return
     fi
     {
@@ -3412,9 +3482,9 @@ worktree_digest() {
                 printf '?? %s\n' "$_digest_untracked_path"
             fi
         done < <(git ls-files --others --exclude-standard -z 2>/dev/null || true)
-        git diff --shortstat 2>/dev/null || true
-        git diff --cached --shortstat 2>/dev/null || true
-    } | sha1sum 2>/dev/null | awk '{print $1}' || true
+        git diff --binary 2>/dev/null || true
+        git diff --cached --binary 2>/dev/null || true
+    } | sha256sum 2>/dev/null | awk '{print $1}' || true
 }
 
 stop_claude() {
@@ -3527,13 +3597,13 @@ run_claude() {
         # projects and standalone dispatcher fixtures; refreshed installs use
         # the broker by default.
         if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
-            claude "${claude_base_args[@]}" \
+            "${_CLAUDE_SANDBOX_PREFIX[@]}" claude "${claude_base_args[@]}" \
                 < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
         else
             (
                 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
                 unset http_proxy https_proxy all_proxy no_proxy
-                claude "${claude_base_args[@]}" \
+                "${_CLAUDE_SANDBOX_PREFIX[@]}" claude "${claude_base_args[@]}" \
                     < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
             )
         fi
@@ -3557,13 +3627,13 @@ run_claude() {
         fi
         if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
             python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
-                claude "${claude_base_args[@]}"
+                "${_CLAUDE_SANDBOX_PREFIX[@]}" claude "${claude_base_args[@]}"
         else
             (
                 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
                 unset http_proxy https_proxy all_proxy no_proxy
                 python3 "${SCRIPT_DIR}/model-call-broker.py" "${broker_args[@]}" -- \
-                    claude "${claude_base_args[@]}"
+                    "${_CLAUDE_SANDBOX_PREFIX[@]}" claude "${claude_base_args[@]}"
             )
         fi
     fi
@@ -3605,6 +3675,9 @@ _TOOL_PROFILE_ALLOWLIST_COUNT=0
 
 if [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && [ "$CLAUDE_CODE_TOOL_PROFILE" != "default" ]; then
     case "$CLAUDE_CODE_TOOL_PROFILE" in
+        editor-only)
+            _CLAUDE_TOOLS_ARGS=(--tools "Read,Edit,Write,Grep,Glob")
+            ;;
         minimal-builder)
             _CLAUDE_TOOLS_ARGS=(--tools "Read,Edit,Write,Bash")
             ;;
@@ -3623,6 +3696,7 @@ if [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && [ "$CLAUDE_CODE_TOOL_PROFILE" != "def
     # Do not auto-allow unrestricted Bash.
     _TOOL_PROFILE_AVAILABLE_TOOLS=""
     case "$CLAUDE_CODE_TOOL_PROFILE" in
+        editor-only)       _TOOL_PROFILE_AVAILABLE_TOOLS="Read,Edit,Write,Grep,Glob" ;;
         minimal-builder)   _TOOL_PROFILE_AVAILABLE_TOOLS="Read,Edit,Write,Bash" ;;
         locator-builder)   _TOOL_PROFILE_AVAILABLE_TOOLS="Read,Edit,Write,Grep,Glob,Bash" ;;
         checker)           _TOOL_PROFILE_AVAILABLE_TOOLS="Read,Edit,Write,Grep,Glob,Bash" ;;
@@ -3749,6 +3823,74 @@ PYEOF
 fi
 
 progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}"
+
+# Enforce exact Write paths before Claude starts. Bubblewrap makes the whole
+# host filesystem read-only inside the model process and remounts only declared
+# product/control paths plus the task temp directory writable. This also blocks
+# repository writes attempted through Bash, not only Edit/Write tool calls.
+_CLAUDE_SANDBOX_PREFIX=()
+_WRITE_SCOPE_EFFECTIVE="off"
+_WRITING_RUNTIME_ROLE=0
+if { [ "$_PARSED_TASK_MODE" = "builder" ] || [ "$_PARSED_TASK_MODE" = "checker-test" ]; } && \
+   [ "$CLAUDE_CODE_TOOL_PROFILE" != "diagnostic" ]; then
+    _WRITING_RUNTIME_ROLE=1
+fi
+if [ -n "${_REVIEWED_CONTINUATION_TASK_ID:-}" ]; then
+    CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT="required"
+fi
+if [ "$_WRITING_RUNTIME_ROLE" -eq 1 ]; then
+    if [ "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT" = "auto" ] && \
+       command -v bwrap >/dev/null 2>&1 && \
+       grep -Eiq '^-?[[:space:]]*Write paths:[[:space:]]*[^[:space:]]' "${WORKTREE_DIR}/TASK_CARD_FULL.md" 2>/dev/null; then
+        CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT="required"
+    fi
+    if [ "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT" = "required" ]; then
+        if ! command -v bwrap >/dev/null 2>&1; then
+            echo "Error: required write-scope enforcement needs bubblewrap; refusing post-run-only scope auditing." >&2
+            exit 1
+        fi
+        if [ -z "$PYTHON_CMD" ] || [ ! -f "${SCRIPT_DIR}/prepare-write-sandbox.py" ]; then
+            echo "Error: required write-scope enforcement helper is unavailable." >&2
+            exit 1
+        fi
+        _WRITE_SCOPE_ARGS=(
+            --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
+            --worktree "$WORKTREE_DIR" \
+            --output "$WRITE_SCOPE_RECEIPT_FILE" \
+            --print-paths
+        )
+        if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
+            while IFS= read -r _approved_write_path; do
+                [ -n "$_approved_write_path" ] || continue
+                _WRITE_SCOPE_ARGS+=(--allow-path "$_approved_write_path")
+            done < <("$PYTHON_CMD" - "$_REVIEWED_CONTINUATION_APPROVAL" <<'PYEOF'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+for path in value.get("allow_new_write_paths", []):
+    print(path)
+PYEOF
+)
+        fi
+        _WRITE_BIND_OUTPUT="$("$PYTHON_CMD" "${SCRIPT_DIR}/prepare-write-sandbox.py" \
+            "${_WRITE_SCOPE_ARGS[@]}" 2>&1)" || {
+                echo "Error: required write-scope enforcement could not be prepared: ${_WRITE_BIND_OUTPUT}" >&2
+                exit 1
+            }
+        _CLAUDE_SANDBOX_PREFIX=(
+            bwrap --die-with-parent --ro-bind / /
+            --dev-bind /dev /dev --proc /proc
+            --bind "$TASK_TMPDIR" "$TASK_TMPDIR"
+            --chdir "$WORKTREE_DIR"
+        )
+        while IFS= read -r _write_bind_path; do
+            [ -n "$_write_bind_path" ] || continue
+            _CLAUDE_SANDBOX_PREFIX+=(--bind "$_write_bind_path" "$_write_bind_path")
+        done <<< "$_WRITE_BIND_OUTPUT"
+        _CLAUDE_SANDBOX_PREFIX+=(--)
+        _WRITE_SCOPE_EFFECTIVE="required"
+    fi
+fi
+progress_log "Write scope enforcement resolved: requested=${CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT}, effective=${_WRITE_SCOPE_EFFECTIVE}, receipt=${WRITE_SCOPE_RECEIPT_FILE}"
 
 # Verify only the launcher/capability, never run the assigned test suite twice.
 # This gives Claude concrete evidence that Python/pytest is executable in the
@@ -3915,6 +4057,34 @@ PYEOF
     exit 75
 fi
 
+# Freeze the approved product baseline before the child can write. Reviewed
+# continuations therefore start from their accepted dirty state, while a very
+# fast first child write still differs from this pre-launch digest.
+DISPATCH_PRODUCT_BASELINE_DIGEST="$(worktree_digest)"
+if [ -z "$DISPATCH_PRODUCT_BASELINE_DIGEST" ]; then
+    echo "Error: could not compute pre-launch product baseline digest." >&2
+    exit 1
+fi
+"$PYTHON_CMD" - "$PRODUCT_BASELINE_FILE" "$TASK_ID" "$WORKTREE_DIR" \
+    "$DISPATCH_PRODUCT_BASELINE_DIGEST" "${_REVIEWED_CONTINUATION_APPROVAL_ID:-}" <<'PYEOF'
+import json, os, sys, tempfile
+output, task_id, worktree, digest, approval_id = sys.argv[1:]
+value = {
+    "schema_version": 1,
+    "task_id": task_id,
+    "worktree": os.path.abspath(worktree),
+    "content_digest": digest,
+    "reviewed_continuation_approval_id": approval_id or None,
+    "first_progress_requires_relative_content_change": True,
+}
+directory = os.path.dirname(output)
+fd, temporary = tempfile.mkstemp(prefix=".product-baseline-", dir=directory)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(temporary, output)
+PYEOF
+
 set +e
 run_claude &
 CLAUDE_PID=$!
@@ -3937,7 +4107,7 @@ _APPROVAL_CONVERGENCE_COUNT=0
 _LAST_APPROVAL_FP=""
 LAST_ACTIVITY_EPOCH="$START_EPOCH"
 LAST_TOTAL_BYTES=0
-LAST_WORKTREE_DIGEST="$(worktree_digest)"
+LAST_WORKTREE_DIGEST="$DISPATCH_PRODUCT_BASELINE_DIGEST"
 LAST_RESULT_STATUS_BYTES=0
 LAST_REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
 LAST_PROGRESS_SEMANTIC_HASH="$(progress_semantic_hash "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
@@ -4015,6 +4185,10 @@ while claude_is_running; do
     CLAUDE_TASK_BYTES="$(file_size "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md")"
     WORKTREE_CHANGES="$(worktree_change_count)"
     CURRENT_WORKTREE_DIGEST="$(worktree_digest)"
+    PRODUCT_DELTA_FROM_BASELINE=0
+    if [ "$CURRENT_WORKTREE_DIGEST" != "$DISPATCH_PRODUCT_BASELINE_DIGEST" ]; then
+        PRODUCT_DELTA_FROM_BASELINE=1
+    fi
     TOTAL_BYTES=$((RESULT_BYTES + STATUS_BYTES + REPORT_BYTES + CLAUDE_PROGRESS_BYTES + CLAUDE_TASK_BYTES))
     RESULT_STATUS_BYTES=$((RESULT_BYTES + STATUS_BYTES))
     CURRENT_REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
@@ -4049,7 +4223,7 @@ while claude_is_running; do
     fi
     QUIET_SECONDS=$((NOW_EPOCH - LAST_ACTIVITY_EPOCH))
     NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" "$QUIET_SECONDS")"
-    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, first_progress_detected=${FIRST_PROGRESS_DETECTED}, edit_ready=${EDIT_READY_DETECTED}, execution_state=${EXECUTION_ACTIVITY_STATE}, product_idle_seconds=${PRODUCT_IDLE_SECONDS}, idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT}, ${NETWORK_SUMMARY}"
+    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE}, first_progress_detected=${FIRST_PROGRESS_DETECTED}, edit_ready=${EDIT_READY_DETECTED}, execution_state=${EXECUTION_ACTIVITY_STATE}, product_idle_seconds=${PRODUCT_IDLE_SECONDS}, idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT}, ${NETWORK_SUMMARY}"
 
     VALIDATION_EVIDENCE_ACTIVE=0
     # Stage markers are Claude-authored advisory evidence. They never stop the
@@ -4125,7 +4299,7 @@ while claude_is_running; do
     # command/process marker. A valid Claude-owned report is substantive evidence.
     if [ "$FIRST_PROGRESS_DETECTED" -eq 0 ]; then
         _FP_SIGNAL=""
-        if [ "$WORKTREE_CHANGES" -gt 0 ]; then
+        if [ "$PRODUCT_DELTA_FROM_BASELINE" -eq 1 ]; then
             if [ "$_PARSED_TASK_MODE" = "checker-test" ]; then
                 _FP_SIGNAL="checker_worktree_change"
             else
@@ -4946,6 +5120,14 @@ write_untracked_patches() {
     fi
 } > "$DIFF_FILE"
 
+if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/change-size-advisory.py" ]; then
+    if "$PYTHON_CMD" "${SCRIPT_DIR}/change-size-advisory.py" \
+        --worktree "$WORKTREE_DIR" --output "$CHANGE_SIZE_ADVISORY_FILE" >/dev/null; then
+        _CHANGE_SIZE_STATUS="$("$PYTHON_CMD" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status","unknown"))' "$CHANGE_SIZE_ADVISORY_FILE" 2>/dev/null || echo unknown)"
+        progress_log "Change-size advisory: status=${_CHANGE_SIZE_STATUS}, receipt=${CHANGE_SIZE_ADVISORY_FILE}"
+    fi
+fi
+
 {
     echo "# Untracked Files in Worktree - ${TIMESTAMP}"
     echo ""
@@ -5296,14 +5478,46 @@ fi
 # receipt so Codex can review the bounded tail without reconstructing it.
 if [ -n "$PYTHON_CMD" ] && [ "$IMPLEMENTATION_CHANGES" -gt 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; then
     "$PYTHON_CMD" - "$RECOVERED_COMPLETION_FILE" "$TASK_ID" "$WORKTREE_DIR" \
-        "$DIFF_FILE" "$VALIDATION_STATUS" "$TAIL_TIMEOUT_STOPPED" "$COMPLETION_STATE" <<'PYEOF'
+        "$DIFF_FILE" "$VALIDATION_STATUS" "$TAIL_TIMEOUT_STOPPED" "$COMPLETION_STATE" \
+        "$CHECKER_CONTRACT_RECEIPT_FILE" "$WRITE_SCOPE_RECEIPT_FILE" \
+        "${WORKTREE_ROOT}/${TASK_ID}.reviewed-continuation-post-run.json" \
+        "$DISPATCH_OUTCOME" "${TIMEOUT_EXTENSION_REASON:-}" <<'PYEOF'
 import hashlib, json, os, subprocess, sys, tempfile
-output, task_id, worktree, diff_path, validation, tail_timeout, completion = sys.argv[1:]
+(
+    output, task_id, worktree, diff_path, validation, tail_timeout, completion,
+    checker_receipt, write_scope_receipt, continuation_receipt,
+    dispatch_outcome, timeout_reason,
+) = sys.argv[1:]
 status = subprocess.run(
     ["git", "-C", worktree, "status", "--porcelain"], capture_output=True,
     text=True, encoding="utf-8", errors="replace",
 ).stdout.splitlines()
 paths = sorted({line[3:].strip() for line in status if len(line) > 3 and line[3:].strip()})
+def file_evidence(path):
+    if not path or not os.path.isfile(path):
+        return {"path": path or None, "available": False}
+    raw = open(path, "rb").read()
+    value = {"path": os.path.abspath(path), "available": True,
+             "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+        value["status"] = parsed.get("status") or parsed.get("validation_status")
+    except (UnicodeDecodeError, ValueError, TypeError):
+        value["status"] = "unparsed"
+    return value
+def path_state(path):
+    full = os.path.join(worktree, path)
+    try:
+        info = os.lstat(full)
+    except OSError:
+        return {"path": path, "kind": "missing"}
+    if os.path.islink(full):
+        return {"path": path, "kind": "symlink"}
+    if os.path.isfile(full):
+        raw = open(full, "rb").read()
+        return {"path": path, "kind": "file", "size": len(raw),
+                "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}
+    return {"path": path, "kind": "other"}
 try:
     diff_bytes = open(diff_path, "rb").read()
 except OSError:
@@ -5314,6 +5528,14 @@ value = {
     "diff_sha256": "sha256:" + hashlib.sha256(diff_bytes).hexdigest(),
     "validation_status": validation, "claude_report_complete": False,
     "tail_timeout_stopped": tail_timeout == "1", "completion_state": completion,
+    "dispatch_outcome": dispatch_outcome,
+    "timeout_reason": timeout_reason or None,
+    "changed_path_state": [path_state(path) for path in paths],
+    "validation_receipts": {
+        "checker_contract": file_evidence(checker_receipt),
+        "write_scope": file_evidence(write_scope_receipt),
+        "reviewed_continuation": file_evidence(continuation_receipt),
+    },
     "codex_bounded_tail_takeover_eligible": completion == "needs-review",
     "authority": "codex-review-required",
 }
@@ -5453,11 +5675,12 @@ if [ -n "$_TAKEOVER_PRIOR_TASK_ID" ] && [ -s "$ATTEMPT_CLASSIFICATION_FILE" ] &&
         --current "$ATTEMPT_CLASSIFICATION_FILE" \
         --prior "${WORKTREE_ROOT}/${_TAKEOVER_PRIOR_TASK_ID}.attempt-classification.json" \
         --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
+        --runtime "$RUNTIME_JSON" \
         --current-task-id "$TASK_ID" --prior-task-id "$_TAKEOVER_PRIOR_TASK_ID" \
         --lineage-root-task-id "${_LINEAGE_ROOT_TASK_ID:-$_TAKEOVER_PRIOR_TASK_ID}" \
         --output "$TAKEOVER_RECEIPT_FILE" >/dev/null 2>&1; then
-        ATTEMPT_RECOMMENDED_ACTION="codex-bounded-takeover"
-        progress_log "Bounded takeover receipt issued after two counted rounds: ${TAKEOVER_RECEIPT_FILE}"
+        ATTEMPT_RECOMMENDED_ACTION="prepare-codex-takeover"
+        progress_log "Takeover candidate issued after two counted rounds; process-stop preparation is still required: ${TAKEOVER_RECEIPT_FILE}"
     fi
 fi
 

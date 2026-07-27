@@ -27,6 +27,7 @@ VALIDATE_ADVISOR_REQUEST = ROOT / "scripts" / "validate-advisor-request.py"
 VALIDATE_ADVISOR_RESPONSE = ROOT / "scripts" / "validate-advisor-response.py"
 WORKTREE_STATE_HASH = ROOT / "scripts" / "worktree_state_hash.py"
 PREPARE_WORKTREE_CONTINUATION = ROOT / "scripts" / "prepare-worktree-continuation.py"
+PREPARE_WRITE_SANDBOX = ROOT / "scripts" / "prepare-write-sandbox.py"
 MODEL_USAGE = ROOT / "scripts" / "model-usage.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
@@ -95,6 +96,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(VALIDATE_ADVISOR_RESPONSE, self.repo / "scripts" / "validate-advisor-response.py")
         shutil.copy2(WORKTREE_STATE_HASH, self.repo / "scripts" / "worktree_state_hash.py")
         shutil.copy2(PREPARE_WORKTREE_CONTINUATION, self.repo / "scripts" / "prepare-worktree-continuation.py")
+        shutil.copy2(PREPARE_WRITE_SANDBOX, self.repo / "scripts" / "prepare-write-sandbox.py")
         shutil.copy2(MODEL_USAGE, self.repo / "scripts" / "model-usage.py")
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
@@ -105,6 +107,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                    "scripts/create-dirty-snapshot.py", "scripts/enforce-checker-contract.py",
                    "scripts/validate-advisor-request.py", "scripts/validate-advisor-response.py",
                    "scripts/worktree_state_hash.py", "scripts/prepare-worktree-continuation.py"], cwd=self.repo)
+        self._run(["git", "add", "scripts/prepare-write-sandbox.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/model-usage.py"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
@@ -1277,7 +1280,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
         receipt_path = self._artifact_path(second.stdout, "Takeover Receipt")
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        self.assertEqual(receipt["authorization"], "codex-bounded-takeover")
+        self.assertEqual(receipt["authorization"], "codex-takeover-candidate")
+        self.assertEqual(receipt["status"], "preparation-required")
+        self.assertTrue(receipt["takeover_preparation_required"])
         self.assertEqual(receipt["allowed_write_paths"], ["README.md"])
         self.assertFalse(receipt["merge_authorized"])
 
@@ -1427,7 +1432,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "task-cards/NEXT.md",
             {
                 "CLAUDE_CODE_REVIEWED_CONTINUATION": str(approval),
-                "FAKE_CLAUDE_MODE": "diff-without-report",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "FAKE_CLAUDE_MODE": "seed-only",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "8",
             },
         )
         self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
@@ -1439,6 +1446,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(second_runtime["strategy"], "reviewed-continuation")
         self.assertEqual(second_runtime["reviewed_continuation_of"], prior_runtime["task_id"])
         self.assertIsNone(second_runtime["worktree_setup_seconds"])
+        second_progress = self._artifact_path(
+            second.stdout, "Progress Log",
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("First substantive progress detected", second_progress)
+        self.assertIn("First-progress observation: no substantive progress", second_progress)
 
         replay = self._dispatch(
             "task-cards/NEXT.md",
@@ -2408,6 +2420,38 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         worktrees = self.repo / ".worktrees"
         artifacts = sorted(p.name for p in worktrees.glob("claude-*")) if worktrees.exists() else []
         self.assertEqual([], artifacts)
+
+    def test_task_card_editor_only_profile_excludes_bash(self):
+        task = self._write_task_card()
+        task.write_text(
+            task.read_text(encoding="utf-8")
+            + "\n| Tool profile | editor-only |\n| Shell access | forbidden |\n",
+            encoding="utf-8",
+        )
+        argv_log = self.case_root / "argv-editor-only.log"
+        result = self._dispatch(
+            "task-cards/PROJ.md",
+            {
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Tool Profile:    editor-only", result.stdout)
+        argv_content = argv_log.read_text(encoding="utf-8")
+        self.assertIn("Read,Edit,Write,Grep,Glob", argv_content)
+        self.assertNotIn("Bash", argv_content)
+
+    def test_editor_only_fails_closed_when_cli_cannot_restrict_tools(self):
+        task = self._write_task_card()
+        task.write_text(
+            task.read_text(encoding="utf-8") + "\n| Tool profile | editor-only |\n",
+            encoding="utf-8",
+        )
+        result = self._dispatch("task-cards/PROJ.md")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("editor-only requires Claude CLI", result.stderr)
 
     def test_auto_execution_only_builder_resolves_minimal_builder(self):
         """Auto tool profile with execution-only Builder resolves minimal-builder."""
