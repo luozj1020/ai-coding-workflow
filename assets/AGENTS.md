@@ -119,6 +119,13 @@ Missing prose is an evidence gap. Recover from matching diff and deterministic
 checks when possible. Seeded/fallback reports never count as Claude completion.
 No model merges automatically.
 
+Codex takeover is an atomic single-writer transfer. A threshold receipt is only
+a candidate: revoke/declare absent the Owner Lease, stop and identity-confirm
+old process trees, freeze a stable baseline, then issue the Codex grant. Unknown
+visibility fails closed; its ownership marker forbids later Claude continuation.
+Writing roles use exact paths with real-time read-only-root enforcement when
+required. `editor-only` removes Bash.
+
 Before a revision or test fix, use a granted Owner Lease to prefer the original
 Builder and recorded session. Do not open a fresh same-owner session until
 resume failure is recorded. Skip Advisor without a semantic blocker and

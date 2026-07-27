@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import tempfile
@@ -35,19 +36,42 @@ def validate_contract(data: Any) -> List[str]:
     for field in REQUIRED:
         if field not in data:
             errors.append("missing required field: {}".format(field))
-    if data.get("schema_version") != 1:
-        errors.append("schema_version must be 1")
+    if data.get("schema_version") not in {1, 2}:
+        errors.append("schema_version must be 1 or 2")
     for field in ("task_id", "goal", "end_state"):
         if field in data and not _nonempty(data[field]):
             errors.append("{} must be a non-empty string".format(field))
-    for field in ("invariants", "non_goals", "unknowns"):
+    for field in ("non_goals", "unknowns"):
         value = data.get(field)
         if value is not None and (
             not isinstance(value, list) or any(not _nonempty(item) for item in value)
         ):
             errors.append("{} must be an array of non-empty strings".format(field))
-    if isinstance(data.get("invariants"), list) and not data["invariants"]:
+    invariants = data.get("invariants")
+    if not isinstance(invariants, list) or not invariants:
         errors.append("invariants must not be empty")
+    elif data.get("schema_version") == 1:
+        if any(not _nonempty(item) for item in invariants):
+            errors.append("schema_version 1 invariants must be non-empty strings")
+    else:
+        invariant_ids = set()
+        expected_invariant = {"id", "description", "acceptance_ids"}
+        for index, item in enumerate(invariants):
+            if not isinstance(item, dict) or set(item) != expected_invariant:
+                errors.append(
+                    "schema_version 2 invariants[{}] must contain only id, description, acceptance_ids".format(index)
+                )
+                continue
+            if not _nonempty(item.get("id")) or not _nonempty(item.get("description")):
+                errors.append("invariants[{}] id and description must be non-empty".format(index))
+            elif item["id"] in invariant_ids:
+                errors.append("duplicate invariant id: {}".format(item["id"]))
+            else:
+                invariant_ids.add(item["id"])
+            if not isinstance(item.get("acceptance_ids"), list) or not item["acceptance_ids"] or any(
+                not _nonempty(value) for value in item.get("acceptance_ids", [])
+            ):
+                errors.append("invariants[{}].acceptance_ids must be a non-empty string array".format(index))
 
     acceptance = data.get("acceptance")
     acceptance_ids = set()
@@ -64,6 +88,15 @@ def validate_contract(data: Any) -> List[str]:
                 errors.append("duplicate acceptance id: {}".format(item["id"]))
             else:
                 acceptance_ids.add(item["id"])
+    if data.get("schema_version") == 2 and isinstance(invariants, list):
+        for index, item in enumerate(invariants):
+            if not isinstance(item, dict):
+                continue
+            for aid in item.get("acceptance_ids", []):
+                if aid not in acceptance_ids:
+                    errors.append(
+                        "invariants[{}] references unknown acceptance id: {}".format(index, aid)
+                    )
 
     slices = data.get("slices")
     slice_ids = set()
@@ -146,6 +179,17 @@ def freeze(contract: Dict[str, Any], findings: Dict[str, Any]) -> Dict[str, Any]
             if row["severity"] in {"recommended", "backlog", "spec-change"}
         ],
     }
+    if contract.get("schema_version") == 2:
+        matrix_path = Path(__file__).resolve().with_name("build-invariant-acceptance-matrix.py")
+        spec = importlib.util.spec_from_file_location("aiwf_invariant_matrix", matrix_path)
+        if spec is None or spec.loader is None:
+            raise ValueError("invariant acceptance matrix helper is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        matrix = module.build(result)
+        if matrix["errors"] or not matrix["all_invariants_mapped"]:
+            raise ValueError("contract cannot freeze: invariant acceptance matrix is incomplete")
+        result["acceptance_matrix"] = matrix
     return result
 
 

@@ -181,6 +181,13 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     # Economy-first retains the stricter positive delegation gate.
     owner_hint = data.get("execution_owner", data.get("recommended_owner"))
     explicit_owner_hint = bool(owner_hint)
+    evidence_closes_acceptance = bool(
+        data.get("deterministic_evidence_sufficient") is True
+        and data.get("implementation_direction_accepted") is True
+        and data.get("remaining_source_changes_required") is False
+    )
+    if evidence_closes_acceptance and not explicit_owner_hint:
+        owner_hint = "codex-fast-path"
     continuity_owner, continuity_eligible, continuity_reason = _validated_continuation(data)
     if data.get("continuation_eligible") is False:
         continuity_owner, continuity_eligible, continuity_reason = None, False, "continuation-explicitly-disabled"
@@ -188,7 +195,7 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     if not owner_hint and continuity_eligible:
         owner_hint = continuity_owner
         continuity_selected = True
-    delegation_value = data.get("delegation_value")
+    delegation_value = False if evidence_closes_acceptance else data.get("delegation_value")
     requested_role = str(data.get("claude_role") or "none")
     solution_planner_requested = requested_role == "solution-planner"
     explicit_read_only_task = data.get("read_only_task") is True
@@ -213,6 +220,8 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     economy_gate = economics.delegation_economy_gate(economy_facts, calibration)
     historical_bias = calibration.get("owner_bias", "none") if isinstance(calibration, dict) else "none"
     owner_source = "continuation-lease" if continuity_selected else ("explicit" if owner_hint else "codex-default")
+    if evidence_closes_acceptance and not explicit_owner_hint:
+        owner_source = "deterministic-evidence-closed"
     if not owner_hint and historical_bias == "codex-fast-path":
         owner_hint = historical_bias
         owner_source = "accepted-history"
@@ -302,7 +311,12 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     claude_role = "none"
     handoff_tax_veto = bool(economy_gate.get("handoff_tax", {}).get("veto"))
     if delegation_value is False or owner_hint in ("codex", "codex-fast-path"):
-        owner_source = "explicit" if explicit_owner_hint else ("continuation-lease" if continuity_selected else "codex-default")
+        owner_source = (
+            "deterministic-evidence-closed" if evidence_closes_acceptance and not explicit_owner_hint
+            else ("explicit" if explicit_owner_hint else (
+                "continuation-lease" if continuity_selected else "codex-default"
+            ))
+        )
     elif explicit_read_only_task and not readonly_value:
         owner_source = "readonly-without-durable-value"
     elif high_risk_codex_bias:
@@ -371,7 +385,9 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     deterministic_handoff_route = bool(
         economy_gate.get("handoff_tax", {}).get("verified_observed_calibration")
     )
-    if deterministic_owner:
+    if evidence_closes_acceptance:
+        spark_action, spark_reason = "skip", "deterministic-evidence-closed"
+    elif deterministic_owner:
         spark_action, spark_reason = "skip", "explicit-deterministic-owner"
     elif deterministic_handoff_route:
         spark_action, spark_reason = "skip", "communication-aware-deterministic-route"
@@ -406,6 +422,7 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         bool(checker_value_reasons)
         and not single_pass_allowed
         and delegation_mode != "canary"
+        and not evidence_closes_acceptance
     )
     builder_checker_split = checker_model_dispatch
     if single_pass_allowed:
@@ -485,7 +502,8 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
             ),
             "single_pass_allowed": single_pass_allowed,
             "single_pass_reason": single_pass_reason,
-            "remote_rounds": 1,
+            "remote_rounds": 0 if evidence_closes_acceptance else 1,
+            "no_further_model_rounds": evidence_closes_acceptance,
         },
         "planning": {
             "strategy": (

@@ -22,6 +22,7 @@ def _process_linux(pid: int) -> Optional[Dict[str, Any]]:
         namespace_inode = (root / "ns" / "pid").stat().st_ino
         return {
             "pid": pid,
+            "state": tail[0],
             "start_time_ticks": int(tail[19]),
             "pid_namespace_inode": namespace_inode,
             "cmdline_sha256": "sha256:" + hashlib.sha256(cmdline).hexdigest(),
@@ -138,6 +139,10 @@ def check(
         except (OSError, ValueError):
             return "not-running", {}
         return "visibility-unknown", {}
+    # A Linux zombie retains a PID and /proc entry until its parent reaps it,
+    # but it has exited and cannot perform any further writes.
+    if current.get("state") == "Z":
+        return "not-running", {"state": "zombie"}
     fields = ("start_time_ticks", "pid_namespace_inode", "cmdline_sha256")
     mismatches = [field for field in fields if identity.get(field) != current.get(field)]
     if mismatches:

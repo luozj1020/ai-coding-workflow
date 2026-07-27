@@ -18,24 +18,33 @@ class TakeoverReceiptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             prior_path, current_path, card = root / "prior.json", root / "current.json", root / "card.md"
+            runtime = root / "runtime.json"
             counted = {"failure_class": "model-no-progress", "counts_toward_takeover": True}
             prior_path.write_text(json.dumps(counted), encoding="utf-8")
             current_path.write_text(json.dumps(counted), encoding="utf-8")
             card.write_text("## Scope\n\n- Write paths: src/a.py, tests/test_a.py\n- Forbidden paths: deploy/\n", encoding="utf-8")
-            value = MOD.build(counted, current_path, counted, prior_path, card, "round-2", "round-1", "root")
-            self.assertEqual(value["status"], "authorized")
+            runtime.write_text('{"task_id":"round-2"}\n', encoding="utf-8")
+            value = MOD.build(
+                counted, current_path, counted, prior_path, card, runtime,
+                "round-2", "round-1", "root",
+            )
+            self.assertEqual(value["status"], "preparation-required")
+            self.assertEqual(value["authorization"], "codex-takeover-candidate")
             self.assertEqual(value["allowed_write_paths"], ["src/a.py", "tests/test_a.py"])
+            self.assertTrue(value["takeover_preparation_required"])
             self.assertFalse(value["merge_authorized"])
 
     def test_external_failure_cannot_authorize_takeover(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path, card = root / "attempt.json", root / "card.md"
+            runtime = root / "runtime.json"
             external = {"failure_class": "transient-transport", "counts_toward_takeover": False}
             path.write_text(json.dumps(external), encoding="utf-8")
             card.write_text("- Write paths: src/a.py\n", encoding="utf-8")
+            runtime.write_text('{"task_id":"two"}\n', encoding="utf-8")
             with self.assertRaises(ValueError):
-                MOD.build(external, path, external, path, card, "two", "one", "root")
+                MOD.build(external, path, external, path, card, runtime, "two", "one", "root")
 
 
 if __name__ == "__main__":

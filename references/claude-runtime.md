@@ -52,7 +52,15 @@ is only an assertion of an already-crossed boundary and never grants authority
 by itself. Do not classify Claude as unavailable until this single host attempt
 fails.
 
-One failed Builder attempt is not takeover permission. Tighten and re-dispatch once. Two consecutive current-lineage counted rounds issue a hash-bound `*.takeover-receipt.json` containing only the permitted write scope and required validation. Transport, trust, approval, and sandbox failures never contribute. Useful on-plan diff remains salvageable; missing prose is an evidence gap, not automatic implementation failure.
+One failed Builder attempt is not takeover permission. Tighten and re-dispatch
+once. Two consecutive current-lineage counted rounds issue a hash-bound
+`*.takeover-receipt.json` candidate containing only the permitted write scope
+and required validation. It is not write authority. Run `aiwf prepare-takeover`
+to revoke (or explicitly declare absent) the Owner Lease, terminate and
+identity-confirm every recorded Claude/dispatcher/checker process tree, sample a
+stable worktree content hash, and issue the single-writer Codex grant. Unknown
+process visibility fails closed. Transport, trust, approval, and sandbox
+failures never contribute.
 
 When useful on-plan work has exactly one semantic blocker, `aiwf advisor-continuation` may prepare a one-call same-worktree continuation. It does not invoke a model or dispatch by itself. Bind request/evidence, state hash, allowed and forbidden paths, and one-call idempotency.
 
@@ -77,7 +85,13 @@ Codex review rather than being discarded.
 
 `Execution Phase: implementation` is an edit-readiness declaration, not durable progress. It is accepted only with `Context Acquisition Complete: yes` and a non-empty `Planned First Write`, meaning repository scanning, requirement understanding, and local planning are complete. The dispatcher grants a bounded edit-ready bridge (`CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, default 120) but refreshes the full active window only after product content changes or a valid owned report appears.
 
-After the first product change, the dispatcher tracks the product-content digest rather than heartbeat timestamps. An unchanged digest for `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` (default 180) becomes an idle candidate; `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` consecutive observations (default 2) stop the child as `product_idle_confirmed`. Explicit blocker evidence, active validation with a named/running command, and declared completion/tail work reset or exempt this counter.
+Before launch, the dispatcher freezes a full product-content baseline. Existing
+dirty content in a reviewed continuation never counts as first progress; only a
+content digest different from that approved baseline does. First progress and
+product idle use the same full content hash. An unchanged digest for
+`CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` (default 180) becomes an idle
+candidate; `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` consecutive observations
+(default 2) stop the child as `product_idle_confirmed`.
 
 `solution-planner` progress uses `context`, `planning`, `contract-validation`, and `complete`. It must never report `implementation`, because planning progress is not implementation evidence.
 
