@@ -30,7 +30,6 @@ jobs:
   test-full:
     name: Tests (full suite, Ubuntu, Python 3.12)
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
 
     steps:
       - uses: actions/checkout@v4
