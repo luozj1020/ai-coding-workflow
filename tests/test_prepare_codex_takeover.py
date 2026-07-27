@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,6 +167,35 @@ class PrepareCodexTakeoverTests(unittest.TestCase):
             if sleeper.poll() is None:
                 sleeper.kill()
                 sleeper.wait(timeout=3)
+
+    def test_windows_authoritative_wait_closes_visibility_gap(self) -> None:
+        identity = {
+            "pid": 123,
+            "task_id": self.task_id,
+            "role": "claude",
+            "start_time_ticks": 1,
+            "pid_namespace_inode": 1,
+            "cmdline_sha256": "sha256:" + "0" * 64,
+        }
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(MOD.sys, "platform", "win32"), \
+            mock.patch.object(
+                MOD.PROCESS_IDENTITY,
+                "check",
+                side_effect=[
+                    ("running-same-process", {}),
+                    ("visibility-unknown", {}),
+                ],
+            ), \
+            mock.patch.object(MOD, "_snapshot_processes", return_value={123: identity}), \
+            mock.patch.object(MOD, "_same_process", return_value=True), \
+            mock.patch.object(MOD, "_wait_windows_inactive", return_value=True), \
+            mock.patch.object(MOD.subprocess, "run", return_value=completed):
+            value = MOD.terminate_identity(
+                identity, self.task_id, "claude", timeout=2.0,
+            )
+        self.assertTrue(value["terminated"])
+        self.assertTrue(value["confirmed_inactive"])
 
 
 if __name__ == "__main__":

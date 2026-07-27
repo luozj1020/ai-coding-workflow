@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,16 @@ class ProcessIdentityTests(unittest.TestCase):
         status, detail = MOD.check(identity, "another-task", "dispatcher")
         self.assertEqual(status, "invalid-identity")
         self.assertEqual(detail["mismatched_fields"], ["task_id"])
+
+    @unittest.skipIf(os.name == "nt", "Linux process state is unavailable on Windows")
+    def test_zombie_process_is_inactive_even_while_pid_exists(self):
+        identity = MOD.capture(os.getpid(), "task", "claude")
+        current = dict(identity)
+        current["state"] = "Z"
+        with mock.patch.object(MOD, "_process", return_value=current):
+            status, detail = MOD.check(identity, "task", "claude")
+        self.assertEqual(status, "not-running")
+        self.assertEqual(detail["state"], "zombie")
 
     def test_cli_capture_and_check(self):
         with tempfile.TemporaryDirectory() as temporary:

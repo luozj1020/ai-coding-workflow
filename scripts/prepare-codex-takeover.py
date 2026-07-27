@@ -125,10 +125,43 @@ def _same_process(identity: Dict[str, Any]) -> bool:
     current = PROCESS_IDENTITY._process(pid)
     if current is None:
         return False
+    if current.get("state") == "Z":
+        return False
     return all(
         identity.get(field) == current.get(field)
         for field in ("pid", "start_time_ticks", "pid_namespace_inode", "cmdline_sha256")
     )
+
+
+def _wait_windows_inactive(pid: int, timeout: float) -> bool:
+    """Authoritatively wait for a Windows process handle to become signaled."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    process = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if not process:
+        error = ctypes.get_last_error()
+        if error == 87:  # ERROR_INVALID_PARAMETER: PID no longer exists.
+            return True
+        raise TakeoverError(
+            f"cannot open Windows process {pid} for termination wait: error {error}"
+        )
+    try:
+        result = kernel32.WaitForSingleObject(process, max(1, int(timeout * 1000)))
+    finally:
+        kernel32.CloseHandle(process)
+    if result == 0:  # WAIT_OBJECT_0
+        return True
+    if result == 258:  # WAIT_TIMEOUT
+        return False
+    raise TakeoverError(f"Windows process termination wait failed: result {result}")
 
 
 def terminate_identity(identity: Dict[str, Any], task_id: str, role: str, timeout: float) -> Dict[str, Any]:
@@ -141,6 +174,7 @@ def terminate_identity(identity: Dict[str, Any], task_id: str, role: str, timeou
     descendants = _linux_descendants(pid) if sys.platform != "win32" else []
     snapshots = _snapshot_processes([pid, *descendants])
     owned_groups = _linux_owned_process_groups(descendants) if sys.platform != "win32" else []
+    windows_inactive = False
     if sys.platform == "win32":
         result = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -148,6 +182,9 @@ def terminate_identity(identity: Dict[str, Any], task_id: str, role: str, timeou
         )
         if result.returncode not in {0, 128}:
             raise TakeoverError(f"taskkill failed for {role}: {(result.stderr or result.stdout).strip()}")
+        windows_inactive = _wait_windows_inactive(pid, timeout)
+        if not windows_inactive:
+            raise TakeoverError(f"{role} process tree did not terminate before timeout")
     else:
         # The broker launches the model in a new session/process group. Kill
         # that group first so a child created during takeover cannot escape by
@@ -174,6 +211,8 @@ def terminate_identity(identity: Dict[str, Any], task_id: str, role: str, timeou
             break
         time.sleep(0.1)
     survivors = [process_id for process_id, value in snapshots.items() if _same_process(value)]
+    if windows_inactive:
+        survivors = []
     if survivors and sys.platform != "win32":
         for group in owned_groups:
             leader = snapshots.get(group)
@@ -196,6 +235,8 @@ def terminate_identity(identity: Dict[str, Any], task_id: str, role: str, timeou
     if survivors:
         raise TakeoverError(f"{role} process tree did not terminate: {survivors}")
     final_status, _ = PROCESS_IDENTITY.check(identity, task_id, role)
+    if windows_inactive:
+        final_status = "not-running"
     if final_status not in {"not-running", "pid-reused-or-foreign"}:
         raise TakeoverError(f"{role} termination could not be confirmed: {final_status}")
     return {
