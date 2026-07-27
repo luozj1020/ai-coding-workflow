@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -156,7 +157,9 @@ class PrepareCodexTakeoverTests(unittest.TestCase):
         self.assertFalse((self.root / "grant.json").exists())
 
     def test_identity_matched_live_process_is_terminated_before_grant(self) -> None:
-        sleeper = subprocess.Popen(["sleep", "60"])
+        sleeper = subprocess.Popen([
+            sys.executable, "-c", "import time; time.sleep(60)",
+        ])
         try:
             identity = MOD.PROCESS_IDENTITY.capture(sleeper.pid, self.task_id, "claude")
             value = MOD.terminate_identity(identity, self.task_id, "claude", timeout=2.0)
