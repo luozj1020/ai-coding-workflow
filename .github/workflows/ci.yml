@@ -30,7 +30,6 @@ jobs:
   test-full:
     name: Tests (full suite, Ubuntu, Python 3.12)
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
 
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +41,28 @@ jobs:
 
       - name: Install full-suite system dependencies
         run: sudo apt-get install --no-install-recommends -y bubblewrap
+
+      - name: Enable and verify bubblewrap user namespaces
+        shell: bash
+        run: |
+          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+          probe_dir="$(mktemp -d)"
+          probe_file="${probe_dir}/allowed.txt"
+          touch "${probe_file}"
+          bwrap \
+            --die-with-parent \
+            --ro-bind / / \
+            --dev-bind /dev /dev \
+            --proc /proc \
+            --bind "${probe_file}" "${probe_file}" \
+            -- sh -c "printf smoke > '${probe_file}'"
+          test "$(tr -d '\r\n' < "${probe_file}")" = "smoke"
 
       - name: Run full tests
         run: python scripts/run-tests.py full
