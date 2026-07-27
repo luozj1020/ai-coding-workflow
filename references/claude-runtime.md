@@ -77,6 +77,21 @@ diagnostic/test override.
 
 Builder progress also carries `Execution Phase`, `Implementation Complete`, `Assigned Tail Work`, `Tail Work Complete`, and `Completion Ready`. After implementation, Claude may run only the bounded self-review, narrow validation, documentation, and reporting explicitly assigned by the card's Post-Implementation Contract. It then marks `Completion Ready: yes`, writes the final report/result, and exits voluntarily without waiting for acknowledgement. The monitor reports `finish_recommended=yes` while awaiting that normal exit; it never turns this marker into kill authority. A bounded self-review uses built-in Read/diff/search tools over changed files. No separate code-review plugin is assumed, and Claude's review never replaces Codex semantic review.
 
+Planner and Checker have an additional dispatcher-owned convergence path because
+they may have no implementation boundary. When `Completion Ready: yes` is
+paired with a valid owned report, no blocker, and role-specific durable evidence
+(`solution-contract.draft.json` for Planner; a test diff or validation-start
+evidence for Checker), the dispatcher grants
+`CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS` (default 20) for final output
+flush, then identity-stops the child and records `completion_ready_converged`.
+This is dispatch completion only, not validation success or semantic acceptance.
+The standalone monitor still has no kill authority.
+When the dispatcher stops a direct child, it freezes the remaining authenticated
+process tree before terminating any leaf, preventing a parent shell from
+resuming for one last write. Brokered calls instead cancel through the broker,
+which terminates the model process group and records a terminal `cancelled`
+ledger transition before the wrapper is reaped.
+
 `Implementation Complete: yes` starts an independent tail/report window.
 `CLAUDE_CODE_TAIL_TIMEOUT_SECONDS` defaults to 90; expiry stops the lingering
 child, preserves and drains evidence, and records `tail-timeout`. A useful diff
@@ -106,6 +121,11 @@ default single sampling owner and appends only `started`, `material-change`,
 `monitor-claude.sh wait <task-id> --until material|terminal` call; repeated
 `ps`, `tail`, status, process-tree, or clock-only commands are forbidden. Read a bounded
 decision/diff only after that wait returns.
+
+Installed monitor helpers are versioned with the rest of the runtime. If an
+older project copy does not recognize `wait --until`, run
+`python ai/doctor_workflow.py`; it reports `ai/monitor-claude.sh` as outdated,
+then refresh with the displayed `--update-workflow-files` command.
 
 Do not start a detached monitoring supervisor. It duplicates dispatcher
 sampling and is not part of the installed workflow. When `wait` reaches a

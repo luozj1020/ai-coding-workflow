@@ -146,6 +146,12 @@ when its structured answer replaces work Codex would otherwise perform. The
 default available-quota policy performs one `task-card-audit` for each
 non-Express initial or revision card. Pass only a bounded advisory to Claude;
 it cannot alter scope, acceptance, ownership, or authority.
+For an audit after Builder execution, pass
+`--context-worktree .worktrees/<builder-task-id>`. The helper verifies that it
+belongs to the task-card repository, exposes its absolute path and dirty status
+to Spark, and directs the audit to use its uncommitted diff as the Builder
+baseline rather than substituting source `HEAD`. This option is advisory-only
+and is rejected by Spark source-writing modes.
 Observed Handoff Tax and a valid Owner Lease make continuity deterministic, so
 Spark is skipped even when requested. With insufficient history, Spark may
 advise task shape only; it is never an authoritative Handoff Tax source.

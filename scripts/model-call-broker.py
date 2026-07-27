@@ -734,9 +734,9 @@ def run_command(
             shell=False,
             **popen_kwargs,
         )
-        try:
-            process.communicate(input=input_data, timeout=timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
+        def terminate_process_group() -> None:
+            if process.poll() is not None:
+                return
             if os.name == "nt":
                 process.kill()
             else:
@@ -749,9 +749,19 @@ def run_command(
                     except ProcessLookupError:
                         pass
             process.wait()
+
+        try:
+            process.communicate(input=input_data, timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            terminate_process_group()
             raise CommandTimeout(
                 f"model command timed out after {timeout_seconds:g}s"
             ) from exc
+        except BaseException:
+            # External dispatcher cancellation must not orphan a model process
+            # that can keep writing after ownership has transferred.
+            terminate_process_group()
+            raise
         return process.returncode
     finally:
         if output_path and out_fh is not None:
@@ -1033,6 +1043,11 @@ def main() -> int:
     run_id = args.run_id or f"run-{uuid.uuid4().hex[:12]}"
     reservation_id = args.reservation_id or f"res-{uuid.uuid4().hex[:12]}"
 
+    def cancel_on_signal(signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt(f"termination signal {signum}")
+
+    signal.signal(signal.SIGTERM, cancel_on_signal)
+
     try:
         return execute(
             role=args.role,
@@ -1064,6 +1079,9 @@ def main() -> int:
     except BrokerError as exc:
         print(f"broker: denied: {exc}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt as exc:
+        print(f"broker: cancelled: {exc}", file=sys.stderr)
+        return 130
     except Exception as exc:
         print(f"broker: error: {exc}", file=sys.stderr)
         return 3

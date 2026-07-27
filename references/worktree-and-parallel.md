@@ -41,7 +41,9 @@ model-session continuity evidence.
 
 When the dirty diff is useful and Codex has reviewed and accepted its direction,
 prefer an explicit reviewed continuation over another fresh checkout. `Mode =
-revision` is natively treated as a Builder continuation. The approval binds the
+revision` is natively treated as a Builder continuation, including a reviewed
+Builder-to-Checker transition; the runtime receipt and task-card fallback use
+the same role normalization. The approval binds the
 baseline content hash and exact new Write paths. On supported hosts the
 dispatcher runs Claude inside a read-only-root sandbox with writable binds only
 for those exact paths and control reports, so Edit/Write/Bash cannot create

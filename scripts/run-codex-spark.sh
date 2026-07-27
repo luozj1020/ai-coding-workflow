@@ -56,6 +56,9 @@ Options:
                     Maximum added+deleted lines for controlled-builder (1-200)
   --artifact PATH   Add a bounded artifact excerpt to the Spark prompt.
                     May be passed more than once.
+  --context-worktree PATH
+                    Run a read-only advisory from this same-repository worktree,
+                    including its uncommitted Builder changes.
   --output DIR      Artifact directory (default: .worktrees/codex-spark-<timestamp>)
   --diagnostics MODE
                     off, failure, or full (default: failure).
@@ -83,6 +86,7 @@ Environment:
   CODEX_SPARK_ARTIFACT_LINES=160
   CODEX_SPARK_STDOUT_MAX_BYTES=32768
   CODEX_SPARK_CALL_TIMEOUT_SECONDS=75
+  CODEX_SPARK_CONTEXT_WORKTREE
   CODEX_SPARK_ALLOW_DIRTY_SOURCE=1
   CODEX_SPARK_REQUIRED=1
   AI_SPARK_BUDGET_MODE=aggressive|balanced|conservative
@@ -142,6 +146,7 @@ REPOSITORY_SCALE_REQUESTED="${CODEX_REPOSITORY_SCALE:-auto}"
 ROUTING_EVENT="${CODEX_SPARK_ROUTING_EVENT:-initial}"
 EXPLICIT_OUTPUT="no"
 EXECUTION_ENV="${CODEX_SPARK_EXECUTION_ENV:-auto}"
+CONTEXT_WORKTREE="${CODEX_SPARK_CONTEXT_WORKTREE:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -184,6 +189,11 @@ while [ $# -gt 0 ]; do
         --artifact)
             [ $# -ge 2 ] || { echo "Error: --artifact requires a value." >&2; exit 1; }
             ARTIFACTS+=("$2")
+            shift 2
+            ;;
+        --context-worktree)
+            [ $# -ge 2 ] || { echo "Error: --context-worktree requires a value." >&2; exit 1; }
+            CONTEXT_WORKTREE="$2"
             shift 2
             ;;
         --result-mode)
@@ -474,6 +484,25 @@ if [ "$INPUT_KIND" = "task-card" ]; then
     REPO_ROOT="$(git -C "$(dirname "$TASK_CARD")" rev-parse --show-toplevel 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd)"
 else
     REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+fi
+if [ -n "$CONTEXT_WORKTREE" ]; then
+    if is_source_writing_mode; then
+        echo "Error: --context-worktree is read-only advisory context and cannot be used by source-writing modes." >&2
+        exit 1
+    fi
+    _CONTEXT_TOP="$(git -C "$CONTEXT_WORKTREE" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -z "$_CONTEXT_TOP" ]; then
+        echo "Error: --context-worktree is not a Git worktree: $CONTEXT_WORKTREE" >&2
+        exit 1
+    fi
+    _SOURCE_COMMON="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    _CONTEXT_COMMON="$(git -C "$_CONTEXT_TOP" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -z "$_SOURCE_COMMON" ] || [ "$_SOURCE_COMMON" != "$_CONTEXT_COMMON" ]; then
+        echo "Error: --context-worktree must belong to the task card repository." >&2
+        exit 1
+    fi
+    CONTEXT_WORKTREE="$_CONTEXT_TOP"
+    export CODEX_SPARK_CONTEXT_WORKTREE="$CONTEXT_WORKTREE"
 fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -794,7 +823,12 @@ fi
 SPARK_EVENTS_FILE="${RESULT_FILE%.txt}.events.jsonl"
 
 WORKTREE_DIR=""
-RUN_DIR="$REPO_ROOT"
+RUN_DIR="${CONTEXT_WORKTREE:-$REPO_ROOT}"
+CONTEXT_WORKTREE_STATUS="not-requested"
+if [ -n "$CONTEXT_WORKTREE" ]; then
+    CONTEXT_WORKTREE_STATUS="$(git -C "$CONTEXT_WORKTREE" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
+    [ -n "$CONTEXT_WORKTREE_STATUS" ] || CONTEXT_WORKTREE_STATUS="clean"
+fi
 CODEX_STATUS=0
 CODEX_RUNTIME_HOME=""
 CODEX_RUNTIME_PARENT_CREATED="no"
@@ -1787,12 +1821,15 @@ Historical worktree cost: ${REPOSITORY_WORKTREE_COST} (median ${REPOSITORY_WORKT
 Dynamic ordinary gate: ${FAST_PATH_MAX_DIFF_LINES} calibrated lines / ${ORDINARY_FAST_PATH_MAX_FILES} files
 Dynamic concentrated gate: ${CONCENTRATED_FAST_PATH_MAX_DIFF_LINES} calibrated lines / ${CONCENTRATED_FAST_PATH_MAX_FILES} files
 Large-repository full-rereview economy gate: ${FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES} calibrated lines / ${FULL_REREVIEW_FAST_PATH_MAX_FILES} files
+Advisory context worktree: ${CONTEXT_WORKTREE:-not-requested}
+Advisory context worktree status: ${CONTEXT_WORKTREE_STATUS}
 
 Operating rules:
 - Use the requested Spark model only. Do not silently fall back to a stronger model.
 - Keep output compressed: decisions, evidence, changed files if any, checks run, and risks.
 - Keep estimator-family responses below 4,096 bytes and emit only the requested unquoted key=value lines. Do not add Markdown headings, backticks, tables, acceptance matrices, or repository narration unless the caller explicitly selected preflight-bundle.
 - Treat Claude-owned implementation as Claude-owned unless this task card explicitly authorizes Spark micro-builder work.
+- When an advisory context worktree is present, inspect that worktree and its uncommitted diff as the Builder baseline; do not substitute the source repository HEAD or report the baseline missing merely because the changes are uncommitted.
 - Do not claim completion from prose alone. Cite artifacts, commands, or diffs.
 - If blocked by missing context, permissions, model access, network, or auth, report the blocker instead of guessing.
 - Spark output is advisory input to Codex review. It cannot replace Claude Builder ownership, cannot approve final review, and cannot by itself satisfy acceptance criteria.
