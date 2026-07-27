@@ -47,12 +47,13 @@ class TestTiers(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("test_dirty_source_guard.py", result.stdout.splitlines())
 
-    def test_ci_uses_quick_matrix_and_one_full_job(self):
+    def test_ci_uses_quick_matrix_and_one_premerge_full_job(self):
         text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertEqual(text.count("python scripts/run-tests.py quick"), 1)
         self.assertEqual(text.count("python scripts/run-tests.py full"), 1)
         self.assertNotIn("unittest discover", text)
-        self.assertIn("if: github.event_name == 'push'", text)
+        self.assertNotIn("if: github.event_name == 'push'", text)
+        self.assertIn("Enable and verify bubblewrap user namespaces", text)
 
 
 if __name__ == "__main__":
