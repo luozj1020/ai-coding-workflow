@@ -622,6 +622,49 @@ class TestCommandPassthrough(unittest.TestCase):
             self.assertEqual(out.read_text(encoding="utf-8"), "output-data")
             self.assertEqual(err.read_text(encoding="utf-8"), "error-data")
 
+    @unittest.skipIf(os.name == "nt", "POSIX signal/process-group cancellation")
+    def test_sigterm_cancels_ledger_and_model_process_group(self):
+        with tempfile.TemporaryDirectory(prefix="broker_test_") as td:
+            tmp = Path(td)
+            ledger = tmp / "ledger.jsonl"
+            marker = tmp / "late-write.txt"
+            child_code = (
+                "import pathlib,time; "
+                "time.sleep(30); "
+                f"pathlib.Path({str(marker)!r}).write_text('late')"
+            )
+            broker_cmd = [
+                sys.executable, str(BROKER),
+                "--role", "claude", "--stage", "builder",
+                "--task-id", "cancel-test", "--max-calls", "1",
+                "--ledger", str(ledger),
+                "--", sys.executable, "-c", child_code,
+            ]
+            process = subprocess.Popen(
+                broker_cmd, cwd=str(tmp), text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if ledger.exists() and '"state": "running"' in ledger.read_text(encoding="utf-8"):
+                    break
+                time.sleep(0.05)
+            else:
+                process.kill()
+                self.fail("broker never recorded running state")
+
+            process.terminate()
+            _stdout, stderr = process.communicate(timeout=10)
+
+            self.assertEqual(process.returncode, 130, stderr)
+            self.assertFalse(marker.exists())
+            records = [
+                json.loads(line)
+                for line in ledger.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(records[-1]["state"], "cancelled")
+
 
 # ---------------------------------------------------------------------------
 # Test 7: Ledger parseability after concurrency

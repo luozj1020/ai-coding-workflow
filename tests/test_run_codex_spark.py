@@ -69,6 +69,75 @@ class RunCodexSparkTests(unittest.TestCase):
         self.assertIn("--brief", result.stderr)
         self.assertIn("--brief-file", result.stderr)
         self.assertIn("--stdin-brief", result.stderr)
+        self.assertIn("--context-worktree", result.stderr)
+
+    def test_task_card_audit_inspects_uncommitted_builder_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo = tmp_path / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+            subprocess.run(
+                ["git", "config", "user.email", "test@example.com"],
+                cwd=str(repo), check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Test"],
+                cwd=str(repo), check=True,
+            )
+            task_card = repo / "task-card.md"
+            task_card.write_text("# Task\n\nAudit the Builder result.\n", encoding="utf-8")
+            source = repo / "src.txt"
+            source.write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=str(repo), check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=str(repo), check=True)
+
+            builder = tmp_path / "builder-worktree"
+            subprocess.run(
+                ["git", "worktree", "add", "-q", "-b", "builder", str(builder)],
+                cwd=str(repo), check=True,
+            )
+            (builder / "src.txt").write_text("uncommitted builder result\n", encoding="utf-8")
+
+            fake_codex = tmp_path / "codex.sh"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "pwd > \"$CODEX_FAKE_CWD\"\n"
+                "git -C \"$CODEX_SPARK_CONTEXT_WORKTREE\" diff -- src.txt > \"$CODEX_FAKE_DIFF\"\n"
+                "cat > \"$CODEX_FAKE_STDIN\"\n"
+                "echo 'audit ok'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_FAKE_CWD"] = bash_path(tmp_path / "cwd.txt")
+            env["CODEX_FAKE_DIFF"] = bash_path(tmp_path / "diff.txt")
+            env["CODEX_FAKE_STDIN"] = bash_path(tmp_path / "stdin.md")
+
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                    "--mode", "task-card-audit",
+                    "--result-mode", "full",
+                    "--context-worktree", bash_path(builder),
+                    "--output", bash_path(repo / ".worktrees" / "spark-audit"),
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertNotEqual((tmp_path / "cwd.txt").read_text(encoding="utf-8").strip(), "")
+            self.assertIn("uncommitted builder result", (tmp_path / "diff.txt").read_text(encoding="utf-8"))
+            prompt = (tmp_path / "stdin.md").read_text(encoding="utf-8")
+            self.assertIn("Advisory context worktree", prompt)
+            self.assertIn("inspect that worktree and its uncommitted diff", prompt)
 
     def test_help_documents_repository_scaled_fast_path_defaults(self):
         """Help distinguishes auto scale defaults from explicit env overrides."""

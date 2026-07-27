@@ -114,7 +114,8 @@ Runtime role propagation is explicit: `solution-planner` selects
 selects `batch`, and `execution-builder` selects `execution-only`.
 
 After Codex accepts a Builder's main direction, prefer one reviewed same-worktree
-Claude continuation. A deterministic correction may route to Codex only when it
+Claude continuation. `Mode = revision` is normalized as Builder and can
+transition directly to a reviewed `checker-test` continuation. A deterministic correction may route to Codex only when it
 already holds the exact context and no new decision is needed.
 
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
@@ -502,6 +503,8 @@ When the task card leaves `Codex Spark Gate` at `auto`, run Spark as a low-cost 
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode review-only
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode task-card-audit
+bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode task-card-audit \
+  --context-worktree .worktrees/claude-<builder-id>
 bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode validation-planner
 ```
 
@@ -998,11 +1001,11 @@ After child exit, the dispatcher performs one bounded terminal drain and a secon
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Compact snapshots include `collected_at` plus per-source `observed_at` timestamps and separate process, report, result, and product-diff evidence, so cached fields are not presented as one fresh observation. Watch events additionally expose `execution_phase`, `implementation_complete`, `completion_ready`, and `finish_recommended`. Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, the dispatcher is the only sampling owner and appends material/final terminal boundaries to `*.monitor-events.log`. Use one blocking `monitor-claude.sh wait <task-id> --until material|terminal` call; repeated `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On a boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` to compress ambiguous `inspect` or `interrupt-candidate` evidence before Codex sees it. Spark receives only bounded JSON and returns a summary capped at 240 characters plus fixed decision fields; raw evidence stays file-backed. Neither helper authorizes interruption.
+For agent-driven runs, the dispatcher is the only sampling owner and appends material/final terminal boundaries to `*.monitor-events.log`. Use one blocking `monitor-claude.sh wait <task-id> --until material|terminal` call; repeated `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On a boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` to compress ambiguous `inspect` or `interrupt-candidate` evidence before Codex sees it. Spark receives only bounded JSON and returns a summary capped at 240 characters plus fixed decision fields; raw evidence stays file-backed. Neither helper authorizes interruption. If an installed project copy rejects `wait --until`, run `python ai/doctor_workflow.py`; monitor helper drift is now included in the version check and the doctor prints the workflow refresh command.
 
 `Execution Phase: implementation` is only edit readiness and must include `Context Acquisition Complete: yes` plus a non-empty `Planned First Write`. It does not refresh the full active window. A product diff or valid owned report is durable progress. After the first product change, an unchanged product digest defaults to an idle candidate at 180 seconds and stops only after two consecutive confirmations; active validation, declared tail work, and explicit blockers are exempt. Configure these bounds with `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS`, and `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS`.
 
-Builder cards use conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation remain disabled until assigned precisely. After that bounded tail, Claude sets `Completion Ready: yes`, writes its final report/result, and exits normally. The dispatcher writes `<task-id>.phase-metrics.json`; when `AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE` is exported by an experiment run, it also copies the same diagnostic metrics into that run directory automatically.
+Builder cards use conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation remain disabled until assigned precisely. After that bounded tail, Claude sets `Completion Ready: yes`, writes its final report/result, and exits normally. Planner/Checker calls with a valid owned report, no blocker, and their role-specific durable evidence receive a final flush window (`CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS`, default 20) before the dispatcher identity-stops a lingering child; this records dispatch convergence, not semantic acceptance. Direct children are frozen as a process tree before termination so a parent shell cannot resume for a last write; brokered calls terminate the model process group and record `cancelled`. The dispatcher writes `<task-id>.phase-metrics.json`; when `AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE` is exported by an experiment run, it also copies the same diagnostic metrics into that run directory automatically.
 
 CodeGraph is guarded per execution worktree. The default `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` rejects graph results whose `projectPath`/`worktreeMismatch` or pending state does not match the isolated worktree, writes `<task-id>.codegraph-worktree.json`, and directs Claude to LSP/locator/targeted reads. Use `repair` to sync or reindex that execution worktree explicitly, or `off` to disable graph use without probing.
 

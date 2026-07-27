@@ -89,11 +89,12 @@ CLAUDE_CODE_EDIT_READY_GRACE_SECONDS="${CLAUDE_CODE_EDIT_READY_GRACE_SECONDS:-12
 CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS="${CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS:-180}"
 CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS="${CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS:-2}"
 CLAUDE_CODE_TAIL_TIMEOUT_SECONDS="${CLAUDE_CODE_TAIL_TIMEOUT_SECONDS:-90}"
+CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS="${CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS:-20}"
 CLAUDE_CODE_CODEGRAPH_POLICY="${CLAUDE_CODE_CODEGRAPH_POLICY:-fallback}"
 CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS="${CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS:-180}"
 case "$CLAUDE_CODE_CODEGRAPH_POLICY" in fallback|repair|off) ;; *) echo "Error: CLAUDE_CODE_CODEGRAPH_POLICY must be fallback, repair, or off." >&2; exit 1 ;; esac
 case "$CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_CODEGRAPH_TIMEOUT_SECONDS must be a positive integer." >&2; exit 1 ;; esac
-for _idle_name in CLAUDE_CODE_EDIT_READY_GRACE_SECONDS CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS CLAUDE_CODE_TAIL_TIMEOUT_SECONDS; do
+for _idle_name in CLAUDE_CODE_EDIT_READY_GRACE_SECONDS CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS CLAUDE_CODE_TAIL_TIMEOUT_SECONDS CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS; do
     _idle_value="${!_idle_name}"
     case "$_idle_value" in ''|*[!0-9]*) echo "Error: ${_idle_name} must be a non-negative integer." >&2; exit 1 ;; esac
 done
@@ -3506,41 +3507,48 @@ stop_claude() {
             frontier="$next_frontier"
         done
     fi
-    progress_log "Stopping Claude (${reason}) after ${elapsed}s; draining leaf processes before wrapper pid=${CLAUDE_PID} descendants=${descendants:-none}"
-    # Stop leaf workers first. When model-call-broker is present this gives it
-    # a chance to observe the child exit and persist a failed reservation,
-    # instead of leaving a permanent `running` record that blocks retry.
-    local leaves=""
-    if [ -n "$descendants" ] && command -v pgrep >/dev/null 2>&1; then
-        local descendant
+    local broker_pid=""
+    local descendant=""
+    if [ -n "$descendants" ] && command -v ps >/dev/null 2>&1; then
         for descendant in $descendants; do
-            if [ -z "$(pgrep -P "$descendant" 2>/dev/null || true)" ]; then
-                leaves="${leaves} ${descendant}"
+            if ps -p "$descendant" -o args= 2>/dev/null | grep -Fq "model-call-broker.py"; then
+                broker_pid="$descendant"
+                break
             fi
         done
     fi
-    if [ -n "$leaves" ]; then
-        kill $leaves 2>/dev/null || true
+
+    if [ -n "$broker_pid" ]; then
+        progress_log "Stopping Claude (${reason}) after ${elapsed}s; requesting broker cancellation before wrapper pid=${CLAUDE_PID} broker_pid=${broker_pid}"
+        # The broker converts TERM into a cancelled ledger transition and
+        # terminates the model's dedicated process group.
+        kill "$broker_pid" 2>/dev/null || true
+        sleep 5
     else
-        kill "$CLAUDE_PID" 2>/dev/null || true
+        progress_log "Stopping Claude (${reason}) after ${elapsed}s; atomically freezing direct process tree before termination wrapper pid=${CLAUDE_PID} descendants=${descendants:-none}"
     fi
-    sleep 5
-    if [ -n "$descendants" ]; then
-        local descendant
-        for descendant in $descendants; do
-            if kill -0 "$descendant" 2>/dev/null; then
-                kill -9 "$descendant" 2>/dev/null || true
-            fi
-        done
-    fi
+
     if kill -0 "$CLAUDE_PID" 2>/dev/null; then
-        progress_log "Claude wrapper still alive after drain; sending TERM to pid=${CLAUDE_PID}"
-        kill "$CLAUDE_PID" 2>/dev/null || true
-        sleep 1
-        if kill -0 "$CLAUDE_PID" 2>/dev/null; then
-            progress_log "Claude wrapper still alive after TERM; sending KILL to pid=${CLAUDE_PID}"
-            kill -9 "$CLAUDE_PID" 2>/dev/null || true
+        # Freeze every remaining writer before killing any leaf. Killing a
+        # leaf first lets its parent shell resume and perform one final write.
+        descendants=""
+        if command -v pgrep >/dev/null 2>&1; then
+            local frontier="$CLAUDE_PID"
+            local parent children
+            while [ -n "$frontier" ]; do
+                local next_frontier=""
+                for parent in $frontier; do
+                    children="$(pgrep -P "$parent" 2>/dev/null || true)"
+                    if [ -n "$children" ]; then
+                        descendants="${descendants} ${children}"
+                        next_frontier="${next_frontier} ${children}"
+                    fi
+                done
+                frontier="$next_frontier"
+            done
         fi
+        kill -STOP "$CLAUDE_PID" $descendants 2>/dev/null || true
+        kill -9 $descendants "$CLAUDE_PID" 2>/dev/null || true
     fi
 }
 
@@ -4102,6 +4110,7 @@ START_EPOCH="$(date +%s)"
 CLAUDE_TIMED_OUT=0
 CLAUDE_NO_OUTPUT_TIMED_OUT=0
 CLAUDE_APPROVAL_CONVERGED=0
+CLAUDE_COMPLETION_CONVERGED=0
 CLAUDE_FIRST_PROGRESS_TIMED_OUT=0
 _APPROVAL_CONVERGENCE_COUNT=0
 _LAST_APPROVAL_FP=""
@@ -4131,6 +4140,7 @@ IMPLEMENTATION_COMPLETE_DETECTED=0
 IMPLEMENTATION_COMPLETE_ELAPSED_SECONDS=""
 COMPLETION_READY_DETECTED=0
 COMPLETION_READY_ELAPSED_SECONDS=""
+COMPLETION_EVIDENCE_ELAPSED_SECONDS=""
 VALIDATION_STARTED_ELAPSED_SECONDS=""
 VALIDATION_EVIDENCE_ACTIVE=0
 _LAST_MONITOR_MATERIAL_DIGEST=""
@@ -4169,8 +4179,9 @@ SECOND_EXTENSION_REASON=""
 SECOND_EXTENSION_START_WORKTREE_DIGEST=""
 SECOND_EXTENSION_START_REPORT_BYTES=0
 SECOND_EXTENSION_START_PROGRESS_BYTES=0
+_LOOP_SLEEP_SECONDS="$CLAUDE_CODE_HEARTBEAT_SECONDS"
 while claude_is_running; do
-    sleep "$CLAUDE_CODE_HEARTBEAT_SECONDS"
+    sleep "$_LOOP_SLEEP_SECONDS"
     NOW_EPOCH="$(date +%s)"
     ELAPSED=$((NOW_EPOCH - START_EPOCH))
 
@@ -4290,6 +4301,37 @@ while claude_is_running; do
         fi
         break
     done
+
+    # Planner and Checker can finish without an implementation phase. Once
+    # Completion Ready is paired with role-specific durable evidence, shorten
+    # sampling and allow one small flush window before deterministic convergence.
+    _COMPLETION_READY_EVIDENCE=0
+    if [ "$COMPLETION_READY_DETECTED" -eq 1 ] && [ "$BLOCKER_RECORDED" -eq 0 ] && \
+       valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
+        if [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] && \
+           [ -s "${WORKTREE_DIR}/solution-contract.draft.json" ]; then
+            _COMPLETION_READY_EVIDENCE=1
+        elif [ "$_PARSED_TASK_MODE" = "checker-test" ] && \
+             { [ "$PRODUCT_DELTA_FROM_BASELINE" -eq 1 ] || [ -n "$VALIDATION_STARTED_ELAPSED_SECONDS" ]; }; then
+            _COMPLETION_READY_EVIDENCE=1
+        fi
+    fi
+    if [ "$_COMPLETION_READY_EVIDENCE" -eq 1 ]; then
+        if [ -z "$COMPLETION_EVIDENCE_ELAPSED_SECONDS" ]; then
+            COMPLETION_EVIDENCE_ELAPSED_SECONDS="$ELAPSED"
+        fi
+        if [ "$_LOOP_SLEEP_SECONDS" -gt 5 ]; then
+            _LOOP_SLEEP_SECONDS=5
+            progress_log "Completion-ready durable evidence observed: role=$([ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] && echo planner || echo checker), flush_window_seconds=${CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS}, sampling_seconds=${_LOOP_SLEEP_SECONDS}"
+        fi
+        if [ "$CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS" -eq 0 ] || \
+           [ $((ELAPSED - COMPLETION_EVIDENCE_ELAPSED_SECONDS)) -ge "$CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS" ]; then
+            CLAUDE_COMPLETION_CONVERGED=1
+            EXECUTION_ACTIVITY_STATE="completion-ready-converged"
+            stop_claude "completion-ready durable evidence flush window complete" "$ELAPSED"
+            break
+        fi
+    fi
 
     # --- First-substantive-progress detection ---
     # Builder reading/planning, acknowledgement, generic progress text, seeded
@@ -4531,6 +4573,10 @@ done
 wait "$CLAUDE_PID"
 CLAUDE_STATUS=$?
 set -e
+if [ "$CLAUDE_COMPLETION_CONVERGED" -eq 1 ]; then
+    CLAUDE_CONVERGENCE_PROCESS_STATUS="$CLAUDE_STATUS"
+    CLAUDE_STATUS=0
+fi
 
 # --- Spec item 4: distinct child exit detection and finalization transition ---
 # Log the moment the Claude child is detected as no longer running, then allow
@@ -4603,6 +4649,9 @@ fi
     printf '  "implementation_complete_observed": %s,\n' "$([ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 1 ] && echo true || echo false)"
     printf '  "completion_ready_observed": %s,\n' "$([ "$COMPLETION_READY_DETECTED" -eq 1 ] && echo true || echo false)"
     printf '  "completion_ready_elapsed_seconds": %s,\n' "${COMPLETION_READY_ELAPSED_SECONDS:-null}"
+    printf '  "completion_evidence_elapsed_seconds": %s,\n' "${COMPLETION_EVIDENCE_ELAPSED_SECONDS:-null}"
+    printf '  "completion_ready_timeout_seconds": %s,\n' "$CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS"
+    printf '  "completion_ready_converged": %s,\n' "$([ "$CLAUDE_COMPLETION_CONVERGED" -eq 1 ] && echo true || echo false)"
     echo '  "measurement": "dispatcher heartbeat observation; phase boundaries are approximate"'
     echo '}'
 } > "$PHASE_METRICS_FILE"
@@ -4639,7 +4688,16 @@ if [ "$CLAUDE_TIMED_OUT" -eq 1 ] || [ "$CLAUDE_FIRST_PROGRESS_TIMED_OUT" -eq 1 ]
     CLAUDE_CODE_TIMEOUT_DRAIN_SECONDS="${CLAUDE_CODE_TIMEOUT_DRAIN_SECONDS:-6}"
     sleep "$CLAUDE_CODE_TIMEOUT_DRAIN_SECONDS"
 fi
-if [ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ]; then
+if [ "${CLAUDE_COMPLETION_CONVERGED:-0}" -eq 1 ]; then
+    {
+        echo ""
+        echo "[dispatch] Claude stopped after durable completion-ready evidence converged."
+        echo "[dispatch] Convergence type: completion_ready_evidence"
+        echo "[dispatch] Original process status: ${CLAUDE_CONVERGENCE_PROCESS_STATUS:-unknown}"
+        echo "[dispatch] Progress log: ${PROGRESS_FILE}"
+    } >> "$STATUS_FILE"
+    progress_log "Claude finished by completion-ready evidence convergence: elapsed_seconds=${ELAPSED}, original_wait_status=${CLAUDE_CONVERGENCE_PROCESS_STATUS:-unknown}"
+elif [ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ]; then
     {
         echo ""
         echo "[dispatch] Claude stopped for approval-blocked early convergence after ${ELAPSED}s."
@@ -5408,6 +5466,8 @@ elif [ "$CLAUDE_TIMED_OUT" -eq 1 ] || [ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] ||
     else
         DISPATCH_OUTCOME="timeout"
     fi
+elif [ "${CLAUDE_COMPLETION_CONVERGED:-0}" -eq 1 ]; then
+    DISPATCH_OUTCOME="success"
 elif [ "$RESULT_FALLBACK_GENERATED" -eq 1 ]; then
     DISPATCH_OUTCOME="fallback"
 elif [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ]; then

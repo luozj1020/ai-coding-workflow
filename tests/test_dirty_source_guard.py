@@ -263,6 +263,22 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "  planner-contract)\n"
                 "    printf '%s\\n' '{\"schema_version\":1,\"task_id\":\"fixture\",\"goal\":\"g\",\"end_state\":\"done\",\"invariants\":[],\"non_goals\":[],\"unknowns\":[],\"acceptance\":[],\"slices\":[]}' > solution-contract.draft.json\n"
                 "    ;;\n"
+                "  planner-completion-ready)\n"
+                "    printf '%s\\n' '{\"schema_version\":1,\"task_id\":\"fixture\",\"goal\":\"g\",\"end_state\":\"done\",\"invariants\":[],\"non_goals\":[],\"unknowns\":[],\"acceptance\":[],\"slices\":[]}' > solution-contract.draft.json\n"
+                "    cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
+                "# Claude Modification Report\n\n"
+                "## Requirements Summary\nPlanning completed.\n\n"
+                "## Files Changed\n- solution-contract.draft.json\n\n"
+                "## Acceptance Criteria Mapping\n- contract drafted\n\n"
+                "## Out-of-Scope Confirmation\nNone.\n\n"
+                "## Plan Match\nfull\n\n"
+                "## Checks Run\n- contract validation passed\n\n"
+                "Implementation complete.\n"
+                "REPORT_EOF\n"
+                "    printf '%s\\n' 'Current Phase: reporting' 'Completion Ready: yes' > CLAUDE_PROGRESS.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
+                "    printf 'not stopped\\n' > PLANNER_SURVIVED.txt\n"
+                "    ;;\n"
                 "  empty-file)\n"
                 "    : > EMPTY_PLACEHOLDER.py\n"
                 "    ;;\n"
@@ -363,6 +379,21 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "## Checks Run\n- single-file pytest passed\n\n"
                 "Implementation complete.\n"
                 "REPORT_EOF\n"
+                "    ;;\n"
+                "  checker-completion-ready)\n"
+                "    printf '%s\\n' 'Current Phase: validation' 'Validation command started' 'Completion Ready: yes' > CLAUDE_PROGRESS.md\n"
+                "    cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
+                "# Claude Modification Report\n\n"
+                "## Requirements Summary\nChecker validation completed.\n\n"
+                "## Files Changed\n- none\n\n"
+                "## Acceptance Criteria Mapping\n- validation complete\n\n"
+                "## Out-of-Scope Confirmation\nNone.\n\n"
+                "## Plan Match\nfull\n\n"
+                "## Checks Run\n- targeted validation passed\n\n"
+                "Implementation complete.\n"
+                "REPORT_EOF\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
+                "    printf 'not stopped\\n' > CHECKER_SURVIVED.txt\n"
                 "    ;;\n"
                 "  success)\n"
                 "    cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
@@ -1628,6 +1659,30 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertIn("Solution-planner output scope PASSED", progress)
 
+    def test_solution_planner_completion_ready_converges_after_flush_window(self):
+        task = self._write_builder_task_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Claude Solution Planner Contract\n\n"
+                "| Field | Value |\n|---|---|\n| Planning owner | Claude |\n"
+            )
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "FAKE_CLAUDE_MODE": "planner-completion-ready",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "30",
+                "CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Dispatch Outcome:success", result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        metrics = json.loads(self._artifact_path(result.stdout, "Phase Metrics").read_text(encoding="utf-8"))
+        self.assertIn("completion-ready durable evidence flush window complete", progress)
+        self.assertTrue(metrics["completion_ready_converged"])
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        self.assertFalse((worktree / "PLANNER_SURVIVED.txt").exists())
+
     def test_solution_planner_source_edit_is_scope_violation(self):
         task = self._write_builder_task_card()
         with task.open("a", encoding="utf-8") as handle:
@@ -1869,6 +1924,25 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertIn("signal=checker_validation_started", progress)
         self.assertIn("active_window_refreshed=yes", progress)
+
+    def test_checker_completion_ready_converges_after_flush_window(self):
+        self._write_low_risk_checker_card()
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {
+                "FAKE_CLAUDE_MODE": "checker-completion-ready",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "30",
+                "CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Dispatch Outcome:success", result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        metrics = json.loads(self._artifact_path(result.stdout, "Phase Metrics").read_text(encoding="utf-8"))
+        self.assertIn("completion-ready durable evidence flush window complete", progress)
+        self.assertTrue(metrics["completion_ready_converged"])
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        self.assertFalse((worktree / "CHECKER_SURVIVED.txt").exists())
 
     def test_blocker_recorded_does_not_refresh_execution_window(self):
         self._write_builder_task_card()

@@ -109,6 +109,25 @@ class ReviewedContinuationTest(unittest.TestCase):
         )
         self.assertEqual(validated.returncode, 0)
 
+    def test_revision_runtime_can_transition_to_checker(self) -> None:
+        runtime_path = self.repo / ".worktrees" / f"{self.task_id}.runtime.json"
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        runtime["task_mode"] = "revision"
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+        self.prior_card.write_text("| Mode | revision |\n", encoding="utf-8")
+        self.card.write_text("| Mode | checker-test |\n", encoding="utf-8")
+
+        approval = self.prepare(next_role="checker-test", allow="test.txt")
+
+        self.assertEqual(approval["prior_declared_mode"], "revision")
+        self.assertEqual(approval["prior_role"], "builder")
+        self.assertEqual(approval["next_role"], "checker-test")
+        validated = self.helper(
+            "validate", "--approval", str(self.approval),
+            "--next-task-card", str(self.card),
+        )
+        self.assertEqual(validated.returncode, 0)
+
     def test_dirty_snapshot_continuation_binds_source_and_execution_bases(self) -> None:
         run("git", "add", "src.txt", cwd=self.worktree)
         run("git", "commit", "-qm", "synthetic dirty snapshot", cwd=self.worktree)

@@ -146,15 +146,17 @@ def live_pid_file(path: Path) -> bool:
         return True
 
 
-def task_role(card: Path) -> Optional[str]:
-    text = card.read_text(encoding="utf-8", errors="replace")
-    match = re.search(r"(?im)^\|\s*Mode\s*\|\s*([^|]+)", text)
-    if not match:
-        return None
-    value = match.group(1).strip().lower()
+def normalize_task_role(value: object) -> Optional[str]:
+    value = str(value or "").strip().lower()
     if value in {"checker", "test", "checker/test", "checker-test"}:
         return "checker-test"
     return "builder" if value in {"builder", "revision"} else None
+
+
+def task_role(card: Path) -> Optional[str]:
+    text = card.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"(?im)^\|\s*Mode\s*\|\s*([^|]+)", text)
+    return normalize_task_role(match.group(1)) if match else None
 
 
 def repository_root() -> Path:
@@ -236,8 +238,9 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
         raise ContinuationError("next task card not found")
     if args.next_role not in ALLOWED_ROLES or task_role(card) != args.next_role:
         raise ContinuationError("next role does not match task card Mode")
-    prior_role = str(runtime.get("task_mode") or "").lower()
-    if prior_role not in ALLOWED_ROLES:
+    prior_declared_mode = str(runtime.get("task_mode") or "").strip().lower()
+    prior_role = normalize_task_role(prior_declared_mode)
+    if prior_role is None:
         prior_role = task_role(worktree / "TASK_CARD_FULL.md") or ""
     if prior_role != "builder":
         raise ContinuationError("only Builder worktrees may start reviewed continuation")
@@ -267,6 +270,7 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
         "decision": args.decision,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "prior_task_id": args.prior_task_id,
+        "prior_declared_mode": prior_declared_mode or None,
         "prior_role": prior_role,
         "next_role": args.next_role,
         "prior_strategy": runtime["strategy"],
