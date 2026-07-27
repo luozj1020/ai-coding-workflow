@@ -31,11 +31,15 @@ class CheckerContractEnforcementTests(unittest.TestCase):
         self.git(repo, "commit", "-m", "base")
         return repo
 
-    def card(self, repo, write_paths, command="python -m py_compile {path}"):
+    def card(
+        self, repo, write_paths, command="python -m py_compile {path}",
+        exact_command="",
+    ):
         path = repo / "TASK_CARD_FULL.md"
         path.write_text(
             f"- Write paths: {write_paths}\n"
-            f"| Per-file validation command | {command} |\n",
+            f"| Per-file validation command | {command} |\n"
+            f"- Exact narrow command: {exact_command}\n",
             encoding="utf-8",
         )
         return path
@@ -69,6 +73,60 @@ class CheckerContractEnforcementTests(unittest.TestCase):
             (tests / "test_feature.py").touch()
             result = module.enforce(repo, self.card(repo, "tests/test_feature.py"), repo / "receipt.json", 30)
             self.assertIn("missing-or-empty:tests/test_feature.py", result["violations"])
+
+    def test_runs_frozen_exact_command_after_per_file_validation(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repo(tmp)
+            tests = repo / "tests"
+            tests.mkdir()
+            (tests / "test_feature.py").write_text(
+                "def test_ok():\n    assert True\n\n"
+                "if __name__ == '__main__':\n    test_ok()\n",
+                encoding="utf-8",
+            )
+            result = module.enforce(
+                repo,
+                self.card(
+                    repo, "tests/test_feature.py",
+                    exact_command="`python tests/test_feature.py`",
+                ),
+                repo / "receipt.json",
+                30,
+            )
+
+            self.assertTrue(result["enforcement_passed"])
+            self.assertEqual(
+                result["exact_validation"]["validation_kind"],
+                "frozen-exact-command",
+            )
+            self.assertEqual(result["exact_validation"]["exit_code"], 0)
+            self.assertEqual(len(result["validations"]), 3)
+
+    def test_rejects_shell_syntax_in_frozen_exact_command(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repo(tmp)
+            tests = repo / "tests"
+            tests.mkdir()
+            (tests / "test_feature.py").write_text(
+                "def test_ok():\n    assert True\n", encoding="utf-8"
+            )
+            result = module.enforce(
+                repo,
+                self.card(
+                    repo, "tests/test_feature.py",
+                    exact_command="python tests/test_feature.py && echo unsafe",
+                ),
+                repo / "receipt.json",
+                30,
+            )
+
+            self.assertFalse(result["enforcement_passed"])
+            self.assertTrue(any(
+                item.startswith("invalid-exact-validation-command:")
+                for item in result["violations"]
+            ))
 
 
 if __name__ == "__main__":

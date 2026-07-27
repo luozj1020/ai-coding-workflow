@@ -43,8 +43,11 @@ When the dirty diff is useful and Codex has reviewed and accepted its direction,
 prefer an explicit reviewed continuation over another fresh checkout. `Mode =
 revision` is natively treated as a Builder continuation, including a reviewed
 Builder-to-Checker transition; the runtime receipt and task-card fallback use
-the same role normalization. The approval binds the
-baseline content hash and exact new Write paths. On supported hosts the
+the same role normalization. A narrow Checker-to-Checker continuation is also
+supported when the runtime records a valid Claude session UUID; it must resume
+that same session and remain in the Checker role. Checker-to-Builder remains
+fail closed. The approval binds the baseline content hash, prior role and
+session, and exact new Write paths. On supported hosts the
 dispatcher runs Claude inside a read-only-root sandbox with writable binds only
 for those exact paths and control reports, so Edit/Write/Bash cannot create
 forbidden siblings. Required enforcement fails closed when paths are globbed or

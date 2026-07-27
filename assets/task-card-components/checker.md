@@ -13,6 +13,7 @@
 | Runtime field | Value |
 |---|---|
 | Per-file validation command | replace with a shell-free argv template containing `{path}`; for example `python -m pytest {path} -q` |
+| Acceptance-to-test IDs | `none` or comma-separated frozen acceptance IDs that require concrete test/assertion evidence |
 
 ## Required Report
 
@@ -25,3 +26,7 @@
   `claimed_test_count=<n>`; when validation is assigned, include
   `claimed_validation_command=<exact command>` and
   `claimed_validation_exit_code=<code>`.
+- For every declared Acceptance-to-test ID, include one machine-readable
+  `acceptance_test=<ID>|file=<repo-relative-test-path>|test=<test symbol>|assertion=<literal assertion marker>`.
+  Missing mappings remain unverified; nonexistent tests or assertion markers
+  conflict with the report.

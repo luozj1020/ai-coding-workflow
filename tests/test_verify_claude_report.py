@@ -149,6 +149,99 @@ class VerifyClaudeReportTests(unittest.TestCase):
             self.assertEqual(data["status"], "conflict")
             self.assertGreaterEqual(len(data["conflicts"]), 3)
 
+    def test_acceptance_to_test_claims_bind_test_and_assertion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(pathlib.Path(tmp))
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_new.py").write_text(
+                "def test_missing_outcome():\n"
+                "    result = 'missing-outcome'\n"
+                "    assert result == 'missing-outcome'\n",
+                encoding="utf-8",
+            )
+            _, data = self._run(
+                repo,
+                "\n".join([
+                    "# Report", "claimed_file=source.py",
+                    "claimed_file=tests/test_new.py",
+                    "claimed_changed_file_count=2",
+                    "claimed_no_unexpected_files=yes",
+                    "claimed_test_count=1",
+                    "acceptance_test=AC-MISSING|file=tests/test_new.py|"
+                    "test=test_missing_outcome|assertion=assert result == 'missing-outcome'",
+                ]),
+                task_card_text=(
+                    "| Test writing | Claude Checker |\n"
+                    "| Acceptance-to-test IDs | AC-MISSING |\n"
+                ),
+            )
+
+            self.assertEqual(data["status"], "matched")
+            self.assertEqual(
+                data["acceptance_test_coverage"]["supported"], ["AC-MISSING"]
+            )
+
+    def test_missing_acceptance_mapping_is_unverified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(pathlib.Path(tmp))
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_new.py").write_text(
+                "def test_other():\n    assert True\n", encoding="utf-8"
+            )
+            _, data = self._run(
+                repo,
+                "\n".join([
+                    "# Report", "claimed_file=source.py",
+                    "claimed_file=tests/test_new.py",
+                    "claimed_changed_file_count=2",
+                    "claimed_no_unexpected_files=yes",
+                    "claimed_test_count=1",
+                ]),
+                task_card_text=(
+                    "| Test writing | Claude Checker |\n"
+                    "| Acceptance-to-test IDs | AC-MISSING |\n"
+                ),
+            )
+
+            self.assertEqual(data["status"], "insufficient-claims")
+            self.assertEqual(
+                data["acceptance_test_coverage"]["unverified"], ["AC-MISSING"]
+            )
+            self.assertTrue(any(
+                check["status"] == "unverified"
+                for check in data["checks"]
+                if check["check"] == "acceptance_test:AC-MISSING"
+            ))
+
+    def test_exaggerated_acceptance_mapping_conflicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(pathlib.Path(tmp))
+            (repo / "tests").mkdir()
+            (repo / "tests" / "test_new.py").write_text(
+                "def test_actual():\n    assert True\n", encoding="utf-8"
+            )
+            _, data = self._run(
+                repo,
+                "\n".join([
+                    "# Report", "claimed_file=source.py",
+                    "claimed_file=tests/test_new.py",
+                    "claimed_changed_file_count=2",
+                    "claimed_no_unexpected_files=yes",
+                    "claimed_test_count=1",
+                    "acceptance_test=AC-INVALID|file=tests/test_new.py|"
+                    "test=test_invalid_result|assertion=campaign mismatch",
+                ]),
+                task_card_text=(
+                    "| Test writing | Claude Checker |\n"
+                    "| Acceptance-to-test IDs | AC-INVALID |\n"
+                ),
+            )
+
+            self.assertEqual(data["status"], "conflict")
+            self.assertTrue(any(
+                "test_invalid_result" in conflict for conflict in data["conflicts"]
+            ))
+
 
 if __name__ == "__main__":
     unittest.main()

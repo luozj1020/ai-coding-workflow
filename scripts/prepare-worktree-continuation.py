@@ -242,8 +242,20 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
     prior_role = normalize_task_role(prior_declared_mode)
     if prior_role is None:
         prior_role = task_role(worktree / "TASK_CARD_FULL.md") or ""
-    if prior_role != "builder":
-        raise ContinuationError("only Builder worktrees may start reviewed continuation")
+    prior_session_id = str(runtime.get("claude_session_id") or "").strip()
+    if prior_role == "checker-test":
+        if args.next_role != "checker-test":
+            raise ContinuationError(
+                "Checker worktrees may only start checker-test reviewed continuation"
+            )
+        try:
+            uuid.UUID(prior_session_id)
+        except (ValueError, AttributeError):
+            raise ContinuationError(
+                "Checker reviewed continuation requires a valid recorded Claude session"
+            )
+    elif prior_role != "builder":
+        raise ContinuationError("prior worktree role is not reviewable")
     actual = changed_paths(worktree)
     accepted = normalize_paths(args.accepted_existing_path, worktree)
     allowed = normalize_paths(args.allow_new_write_path, worktree)
@@ -272,6 +284,7 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
         "prior_task_id": args.prior_task_id,
         "prior_declared_mode": prior_declared_mode or None,
         "prior_role": prior_role,
+        "prior_claude_session_id": prior_session_id or None,
         "next_role": args.next_role,
         "prior_strategy": runtime["strategy"],
         "provenance_root_strategy": runtime.get("provenance_root_strategy", "fresh"),
@@ -320,6 +333,15 @@ def validate_common(approval_path: Path, card: Path) -> tuple[Dict[str, Any], Pa
         "next_task_card": str(card),
         "next_task_card_sha256": sha256_file(card),
     }
+    prior_declared_mode = str(runtime.get("task_mode") or "").strip().lower()
+    prior_role = normalize_task_role(prior_declared_mode)
+    if prior_role is None:
+        prior_role = task_role(worktree / "TASK_CARD_FULL.md") or ""
+    exact["prior_role"] = prior_role
+    if prior_role == "checker-test":
+        exact["prior_claude_session_id"] = str(
+            runtime.get("claude_session_id") or ""
+        ).strip()
     for key, expected in exact.items():
         if approval.get(key) != expected:
             raise ContinuationError(f"approval binding mismatch: {key}")

@@ -12,7 +12,7 @@ import json
 import re
 import subprocess
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 CONTROL_FILES = {
     "TASK_CARD.md", "TASK_CARD_FULL.md", "CLAUDE_TASK_CARD.md",
@@ -29,6 +29,7 @@ TEST_COUNT_LINE = re.compile(r"^claimed_test_count=(\d+)$", re.M)
 VALIDATION_COMMAND_LINE = re.compile(r"^claimed_validation_command=(.+)$", re.M)
 VALIDATION_EXIT_LINE = re.compile(r"^claimed_validation_exit_code=(-?\d+)$", re.M)
 RESOLVED_FINDING_LINE = re.compile(r"^resolved_finding=(.+)$", re.M)
+ACCEPTANCE_TEST_LINE = re.compile(r"^acceptance_test=(.+)$", re.M)
 PROSE_TEST_COUNT = re.compile(
     r"(?:added|created|新增|增加)?\s*(\d+)\s*(?:new\s+)?(?:tests?|test cases?|个?测试)", re.I,
 )
@@ -112,9 +113,26 @@ def _is_test_path(path: str) -> bool:
     )
 
 
-def _task_requirements(task_card: Optional[Path]) -> Dict[str, bool]:
+def _task_field(text: str, name: str) -> str:
+    table = re.search(
+        rf"^\|\s*{re.escape(name)}\s*\|\s*(.*?)\s*\|\s*$",
+        text, re.I | re.M,
+    )
+    if table:
+        return table.group(1).strip()
+    bullet = re.search(
+        rf"^-\s*{re.escape(name)}\s*:\s*(.*?)\s*$",
+        text, re.I | re.M,
+    )
+    return bullet.group(1).strip() if bullet else ""
+
+
+def _task_requirements(task_card: Optional[Path]) -> Dict[str, object]:
     if not task_card or not task_card.is_file():
-        return {"tests_required": False, "validation_required": False}
+        return {
+            "tests_required": False, "validation_required": False,
+            "acceptance_to_test_ids": [],
+        }
     text = task_card.read_text(encoding="utf-8", errors="replace")
     tests_required = bool(re.search(r"(?im)^\s*-?\s*Tests required:\s*yes\s*$", text))
     owner = re.search(r"(?im)^\|\s*Test writing\s*\|\s*([^|]+)\|", text)
@@ -124,7 +142,19 @@ def _task_requirements(task_card: Optional[Path]) -> Dict[str, bool]:
     validation_owner = re.search(r"(?im)^\|\s*Narrow validation\s*\|\s*([^|]+)\|", text)
     if validation_owner and re.search(r"\b(?:claude|builder|checker|model|executor)\b", validation_owner.group(1), re.I):
         validation_required = True
-    return {"tests_required": tests_required, "validation_required": validation_required}
+    acceptance_value = _task_field(text, "Acceptance-to-test IDs")
+    acceptance_ids = [] if acceptance_value.lower() in {
+        "", "none", "n/a", "not-required",
+    } else sorted({
+        item.strip().strip("`")
+        for item in re.split(r"[,;]", acceptance_value)
+        if item.strip()
+    })
+    return {
+        "tests_required": tests_required,
+        "validation_required": validation_required,
+        "acceptance_to_test_ids": acceptance_ids,
+    }
 
 
 def _parse_resolved_finding(value: str) -> Dict[str, str]:
@@ -134,6 +164,20 @@ def _parse_resolved_finding(value: str) -> Dict[str, str]:
         if "=" in part:
             key, item = part.split("=", 1)
             result[key.strip().lower()] = item.strip().strip("`")
+    return result
+
+
+def _parse_acceptance_test(value: str) -> Dict[str, str]:
+    parts = [part.strip() for part in value.split("|") if part.strip()]
+    result: Dict[str, str] = {}
+    if parts and "=" not in parts[0]:
+        result["acceptance_id"] = parts.pop(0)
+    for part in parts:
+        if "=" in part:
+            key, item = part.split("=", 1)
+            result[key.strip().lower()] = item.strip().strip("`")
+    if "id" in result and "acceptance_id" not in result:
+        result["acceptance_id"] = result["id"]
     return result
 
 
@@ -292,6 +336,80 @@ def verify(
         elif test.lower() != "not-required" and test not in added_text and not _repo_contains(worktree, test):
             add(f"resolved_finding:{finding_id}:test", "conflict", f"test={test} is not evidenced")
 
+    required_acceptance_ids = set(
+        requirements.get("acceptance_to_test_ids") or []
+    )
+    acceptance_test_claims: List[Dict[str, str]] = []
+    supported_acceptance_ids: Set[str] = set()
+    claimed_acceptance_ids: Set[str] = set()
+    for raw in ACCEPTANCE_TEST_LINE.findall(report_text):
+        claim = _parse_acceptance_test(raw)
+        acceptance_test_claims.append(claim)
+        acceptance_id = claim.get("acceptance_id", "")
+        path = claim.get("file", "").replace("\\", "/")
+        test = claim.get("test", "")
+        assertion = claim.get("assertion", "")
+        if acceptance_id:
+            claimed_acceptance_ids.add(acceptance_id)
+        missing = [
+            name for name, value in (
+                ("acceptance_id", acceptance_id), ("file", path),
+                ("test", test), ("assertion", assertion),
+            ) if not value
+        ]
+        if missing:
+            add(
+                f"acceptance_test:{acceptance_id or 'missing-id'}",
+                "conflict",
+                f"acceptance_test claim missing fields={missing}",
+            )
+            continue
+        if acceptance_id not in required_acceptance_ids:
+            add(
+                f"acceptance_test:{acceptance_id}",
+                "conflict",
+                f"acceptance_id={acceptance_id} is not required by task card",
+            )
+            continue
+        if path not in actual_test_files:
+            add(
+                f"acceptance_test:{acceptance_id}:file",
+                "conflict",
+                f"file={path} is not a changed test file",
+            )
+            continue
+        candidate = worktree / path
+        content = candidate.read_text(encoding="utf-8", errors="replace")
+        if test not in content:
+            add(
+                f"acceptance_test:{acceptance_id}:test",
+                "conflict",
+                f"test={test} is not present in {path}",
+            )
+            continue
+        if assertion not in content:
+            add(
+                f"acceptance_test:{acceptance_id}:assertion",
+                "conflict",
+                f"assertion={assertion} is not present in {path}",
+            )
+            continue
+        supported_acceptance_ids.add(acceptance_id)
+        add(
+            f"acceptance_test:{acceptance_id}",
+            "matched",
+            f"file={path}; test={test}; assertion={assertion}",
+        )
+    for acceptance_id in sorted(required_acceptance_ids - supported_acceptance_ids):
+        if acceptance_id in claimed_acceptance_ids:
+            continue
+        add(
+            f"acceptance_test:{acceptance_id}",
+            "unverified",
+            f"acceptance_id={acceptance_id} has no acceptance_test claim",
+        )
+        missing_claims.append(f"acceptance_test:{acceptance_id}")
+
     status = "conflict" if conflicts else ("insufficient-claims" if missing_claims else "matched")
     return {
         "schema_version": 1,
@@ -308,6 +426,12 @@ def verify(
         "completion_state": "semantic-review-required" if status == "matched" else "needs-review",
         "missing_claims": sorted(set(missing_claims)),
         "resolved_findings": resolved_findings,
+        "acceptance_test_claims": acceptance_test_claims,
+        "acceptance_test_coverage": {
+            "required": sorted(required_acceptance_ids),
+            "supported": sorted(supported_acceptance_ids),
+            "unverified": sorted(required_acceptance_ids - supported_acceptance_ids),
+        },
         "checks": checks,
         "conflicts": conflicts,
     }

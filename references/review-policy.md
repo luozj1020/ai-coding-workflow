@@ -32,7 +32,21 @@ test. Missing or contradictory evidence is `needs-review`, never acceptance.
 
 Checker/Test Claude owns mechanical validation evidence. It does not make architectural judgments and should not perform broad implementation rewrites.
 
-For test-writing Checker cards, declare exact Write paths and a shell-free `Per-file validation command` containing `{path}`. Runtime enforcement rejects empty or out-of-scope files, compiles each Python file, and runs the per-file command before acceptance evidence is considered. Python test files without an explicit command fall back to single-file pytest. The receipt is `*.checker-contract.json`; a violation is isolated and cannot authorize merge.
+For test-writing Checker cards, declare exact Write paths, a shell-free
+`Per-file validation command` containing `{path}`, and one frozen shell-free
+`Exact narrow command`. Runtime enforcement rejects empty or out-of-scope
+files, compiles each Python file, runs the per-file command, and then runs the
+exact command once before acceptance evidence is considered. Python test files
+without an explicit per-file command fall back to single-file pytest. The
+receipt is `*.checker-contract.json`; it records both validation layers, and a
+violation is isolated and cannot authorize merge.
+
+When a card declares `Acceptance-to-test IDs`, the Checker report must bind each
+ID to a changed test file, test symbol, and literal assertion marker. Static
+verification classifies a missing binding as `unverified` and a binding to an
+unknown ID, unchanged test file, missing symbol, or missing assertion as a
+`conflict`. These bindings verify report-to-diff consistency only; they never
+prove semantic acceptance.
 
 Checker dispatch is conditional. Use local deterministic validation without a
 model when it closes acceptance and no test changes are required. Dispatch

@@ -72,7 +72,15 @@ def in_scope(path: str, allowed: list[str]) -> bool:
     return any(path == root or path.startswith(f"{root}/") for root in allowed)
 
 
+def command_text(value: str) -> str:
+    cleaned = value.strip()
+    if cleaned.startswith("`") and cleaned.endswith("`") and cleaned.count("`") == 2:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
 def safe_command(template: str, path: str) -> list[str]:
+    template = command_text(template)
     if SHELL_META.search(template):
         raise ValueError("per-file validation command contains shell control syntax")
     if "{path}" not in template:
@@ -80,6 +88,18 @@ def safe_command(template: str, path: str) -> list[str]:
     argv = shlex.split(template.replace("{path}", path))
     if not argv:
         raise ValueError("per-file validation command is empty")
+    return argv
+
+
+def safe_exact_command(command: str) -> list[str]:
+    command = command_text(command)
+    if SHELL_META.search(command):
+        raise ValueError("exact validation command contains shell control syntax")
+    if "{" in command or "}" in command:
+        raise ValueError("exact validation command contains unresolved placeholders")
+    argv = shlex.split(command)
+    if not argv:
+        raise ValueError("exact validation command is empty")
     return argv
 
 
@@ -106,9 +126,11 @@ def enforce(worktree: Path, card_path: Path, output: Path, timeout: int) -> dict
     card = card_path.read_text(encoding="utf-8", errors="replace")
     allowed = parse_list(field(card, "Write paths"))
     command_template = field(card, "Per-file validation command")
+    exact_command = field(card, "Exact narrow command")
     changed = changed_paths(worktree)
     violations: list[str] = []
     validations: list[dict[str, object]] = []
+    exact_validation: dict[str, object] | None = None
     if not allowed:
         violations.append("missing-write-paths")
     for path in changed:
@@ -137,18 +159,32 @@ def enforce(worktree: Path, card_path: Path, output: Path, timeout: int) -> dict
         for argv in commands:
             result = execute(argv, worktree, timeout, env)
             result["path"] = path
+            result["validation_kind"] = "per-file"
             validations.append(result)
             if not result["passed"]:
                 violations.append(f"validation-failed:{path}")
                 break
     if not changed:
         violations.append("no-test-file-output")
+    if exact_command and not violations:
+        try:
+            exact_argv = safe_exact_command(exact_command)
+        except ValueError as exc:
+            violations.append(f"invalid-exact-validation-command:{exc}")
+        else:
+            exact_validation = execute(exact_argv, worktree, timeout, dict(os.environ))
+            exact_validation["validation_kind"] = "frozen-exact-command"
+            validations.append(exact_validation)
+            if not exact_validation["passed"]:
+                violations.append("exact-validation-failed")
     receipt: dict[str, object] = {
         "schema_version": 1,
         "task_mode": "checker-test",
         "allowed_write_paths": allowed,
         "changed_paths": changed,
         "per_file_validation_command": command_template or None,
+        "exact_validation_command": exact_command or None,
+        "exact_validation": exact_validation,
         "validations": validations,
         "violations": sorted(set(violations)),
         "enforcement_passed": not violations,

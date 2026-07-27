@@ -49,6 +49,7 @@ class ReviewedContinuationTest(unittest.TestCase):
             "worktree": str(self.worktree),
             "source_repository": str(self.repo),
             "base_commit": self.head,
+            "claude_session_id": "5ef9e3c8-bdbc-4d1e-8c64-c8bd0f0e4c66",
             "pid_files": {},
         }
         (self.repo / ".worktrees" / f"{self.task_id}.runtime.json").write_text(
@@ -68,12 +69,15 @@ class ReviewedContinuationTest(unittest.TestCase):
             *args, cwd=self.repo, check=check,
         )
 
-    def prepare(self, *, next_role: str = "builder", allow: str = "src.txt") -> dict:
+    def prepare(
+        self, *, next_role: str = "builder", accepted: str = "src.txt",
+        allow: str = "src.txt",
+    ) -> dict:
         result = self.helper(
             "prepare", "--prior-task-id", self.task_id,
             "--next-task-card", str(self.card), "--next-role", next_role,
             "--decision", "accepted-direction",
-            "--accepted-existing-path", "src.txt",
+            "--accepted-existing-path", accepted,
             "--allow-new-write-path", allow,
             "--output", str(self.approval),
         )
@@ -127,6 +131,61 @@ class ReviewedContinuationTest(unittest.TestCase):
             "--next-task-card", str(self.card),
         )
         self.assertEqual(validated.returncode, 0)
+
+    def test_checker_can_resume_same_session_for_narrow_checker_revision(self) -> None:
+        run("git", "checkout", "--", "src.txt", cwd=self.worktree)
+        (self.worktree / "test.txt").write_text(
+            "accepted checker tests\n", encoding="utf-8"
+        )
+        runtime_path = self.repo / ".worktrees" / f"{self.task_id}.runtime.json"
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        runtime["task_mode"] = "checker-test"
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+        self.prior_card.write_text("| Mode | checker-test |\n", encoding="utf-8")
+        self.card.write_text("| Mode | checker-test |\n", encoding="utf-8")
+
+        approval = self.prepare(
+            next_role="checker-test", accepted="test.txt", allow="test.txt"
+        )
+
+        self.assertEqual(approval["prior_role"], "checker-test")
+        self.assertEqual(
+            approval["prior_claude_session_id"],
+            "5ef9e3c8-bdbc-4d1e-8c64-c8bd0f0e4c66",
+        )
+        validated = self.helper(
+            "validate", "--approval", str(self.approval),
+            "--next-task-card", str(self.card),
+        )
+        self.assertEqual(validated.returncode, 0)
+
+        runtime["claude_session_id"] = "6a176739-6bdb-43fe-bf7a-a2b038b511aa"
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+        rejected = self.helper(
+            "validate", "--approval", str(self.approval),
+            "--next-task-card", str(self.card), check=False,
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("prior_claude_session_id", rejected.stderr)
+
+    def test_checker_continuation_cannot_switch_back_to_builder(self) -> None:
+        runtime_path = self.repo / ".worktrees" / f"{self.task_id}.runtime.json"
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        runtime["task_mode"] = "checker-test"
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+        self.prior_card.write_text("| Mode | checker-test |\n", encoding="utf-8")
+
+        rejected = self.helper(
+            "prepare", "--prior-task-id", self.task_id,
+            "--next-task-card", str(self.card), "--next-role", "builder",
+            "--decision", "accepted-direction",
+            "--accepted-existing-path", "src.txt",
+            "--allow-new-write-path", "src.txt",
+            "--output", str(self.approval), check=False,
+        )
+
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("only start checker-test", rejected.stderr)
 
     def test_dirty_snapshot_continuation_binds_source_and_execution_bases(self) -> None:
         run("git", "add", "src.txt", cwd=self.worktree)
