@@ -156,6 +156,16 @@ class CheckerContractEnforcementTests(unittest.TestCase):
                         "output_tail": "Segmentation fault (core dumped)",
                         "passed": False,
                     }
+                if argv in (
+                    ["python", "-m", "pytest", "-q", "tests/test_a.py"],
+                    ["python", "-m", "pytest", "-q", "tests/test_b.py"],
+                ):
+                    return {
+                        "argv": argv,
+                        "exit_code": 0,
+                        "output_tail": "1 passed",
+                        "passed": True,
+                    }
                 return original(argv, worktree, timeout, env)
 
             with unittest.mock.patch.object(module, "execute", side_effect=execute):
