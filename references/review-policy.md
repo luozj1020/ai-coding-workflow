@@ -29,6 +29,11 @@ match the diff; claimed test counts must match detected test declarations and
 test paths; validation commands require exit-code receipts. Every revision
 finding reported `RESOLVED` must name its finding ID, changed file, symbol, and
 test. Missing or contradictory evidence is `needs-review`, never acceptance.
+The consistency helper accepts either explicit machine claims or the equivalent
+standard report sections: a complete `Files Changed` list, an explicit
+`Out-of-Scope Confirmation`, and the frozen command plus result under
+`Checks Run`. Standard prose remains claim evidence only and never proves the
+command actually ran without a deterministic receipt.
 
 Checker/Test Claude owns mechanical validation evidence. It does not make architectural judgments and should not perform broad implementation rewrites.
 
@@ -40,6 +45,9 @@ exact command once before acceptance evidence is considered. Python test files
 without an explicit per-file command fall back to single-file pytest. The
 receipt is `*.checker-contract.json`; it records both validation layers, and a
 violation is isolated and cannot authorize merge.
+The execution card also records whether the exact command was pre-authorized by
+the Checker Bash allowlist. Claude must attempt an authorized command before
+claiming a sandbox or permission blocker and must preserve the original denial.
 
 When a card declares `Acceptance-to-test IDs`, the Checker report must bind each
 ID to a changed test file, test symbol, and literal assertion marker. Static

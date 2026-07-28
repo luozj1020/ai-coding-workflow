@@ -75,13 +75,13 @@ rechecks the worktree. A late change triggers one additional stability sample
 before diff/status/result capture. `CLAUDE_CODE_TERMINAL_DRAIN_SECONDS=0` is a
 diagnostic/test override.
 
-Builder progress also carries `Execution Phase`, `Implementation Complete`, `Assigned Tail Work`, `Tail Work Complete`, and `Completion Ready`. After implementation, Claude may run only the bounded self-review, narrow validation, documentation, and reporting explicitly assigned by the card's Post-Implementation Contract. It then marks `Completion Ready: yes`, writes the final report/result, and exits voluntarily without waiting for acknowledgement. The monitor reports `finish_recommended=yes` while awaiting that normal exit; it never turns this marker into kill authority. A bounded self-review uses built-in Read/diff/search tools over changed files. No separate code-review plugin is assumed, and Claude's review never replaces Codex semantic review.
+Builder progress also carries `Execution Phase`, `Implementation Complete`, `Assigned Tail Work`, `Tail Work Complete`, and `Completion Ready`. After implementation, Claude may run only the bounded self-review, narrow validation, documentation, and reporting explicitly assigned by the card's Post-Implementation Contract. It then marks `Completion Ready: yes`, writes the final report/result, and exits voluntarily without waiting for acknowledgement. The monitor reports `finish_recommended=yes` while awaiting that normal exit. A bounded self-review uses built-in Read/diff/search tools over changed files. No separate code-review plugin is assumed, and Claude's review never replaces Codex semantic review.
 
-Planner and Checker have an additional dispatcher-owned convergence path because
-they may have no implementation boundary. When `Completion Ready: yes` is
-paired with a valid owned report, no blocker, and role-specific durable evidence
-(`solution-contract.draft.json` for Planner; a test diff or validation-start
-evidence for Checker), the dispatcher grants
+The dispatcher has a role-specific completion convergence path. When
+`Completion Ready: yes` is paired with a valid owned report, no blocker, and
+durable evidence (`solution-contract.draft.json` for Planner; a test diff or
+validation-start evidence for Checker; both `Implementation Complete: yes` and
+a product delta for Builder), the dispatcher grants
 `CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS` (default 20) for final output
 flush, then identity-stops the child and records `completion_ready_converged`.
 This is dispatch completion only, not validation success or semantic acceptance.

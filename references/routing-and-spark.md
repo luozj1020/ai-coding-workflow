@@ -146,6 +146,10 @@ when its structured answer replaces work Codex would otherwise perform. The
 default available-quota policy performs one `task-card-audit` for each
 non-Express initial or revision card. Pass only a bounded advisory to Claude;
 it cannot alter scope, acceptance, ownership, or authority.
+Pre-dispatch audits treat `CLAUDE_PROGRESS.md` and `CLAUDE_REPORT.md` as
+dispatcher-created runtime outputs whose current absence is expected. They also
+distinguish positive Read authority from narrower Write authority; a path that
+is not writable is not automatically forbidden to read.
 For an audit after Builder execution, pass
 `--context-worktree .worktrees/<builder-task-id>`. The helper verifies that it
 belongs to the task-card repository, exposes its absolute path and dirty status

@@ -131,7 +131,7 @@ def _task_requirements(task_card: Optional[Path]) -> Dict[str, object]:
     if not task_card or not task_card.is_file():
         return {
             "tests_required": False, "validation_required": False,
-            "acceptance_to_test_ids": [],
+            "acceptance_to_test_ids": [], "exact_validation_command": "",
         }
     text = task_card.read_text(encoding="utf-8", errors="replace")
     tests_required = bool(re.search(r"(?im)^\s*-?\s*Tests required:\s*yes\s*$", text))
@@ -143,6 +143,7 @@ def _task_requirements(task_card: Optional[Path]) -> Dict[str, object]:
     if validation_owner and re.search(r"\b(?:claude|builder|checker|model|executor)\b", validation_owner.group(1), re.I):
         validation_required = True
     acceptance_value = _task_field(text, "Acceptance-to-test IDs")
+    exact_validation_command = _task_field(text, "Exact narrow command").strip().strip("`")
     acceptance_ids = [] if acceptance_value.lower() in {
         "", "none", "n/a", "not-required",
     } else sorted({
@@ -154,6 +155,7 @@ def _task_requirements(task_card: Optional[Path]) -> Dict[str, object]:
         "tests_required": tests_required,
         "validation_required": validation_required,
         "acceptance_to_test_ids": acceptance_ids,
+        "exact_validation_command": exact_validation_command,
     }
 
 
@@ -198,6 +200,43 @@ def _prose_changed_files(report_text: str) -> List[str]:
             if "/" in value or "." in Path(value).name:
                 paths.add(value)
     return sorted(paths)
+
+
+def _report_section(report_text: str, heading: str) -> str:
+    section = re.search(
+        rf"(?ims)^##\s+{re.escape(heading)}\s*$\n(.*?)(?=^##\s|\Z)",
+        report_text,
+    )
+    return section.group(1).strip() if section else ""
+
+
+def _standard_no_unexpected_files(report_text: str) -> bool:
+    section = _report_section(report_text, "Out-of-Scope Confirmation")
+    if not section:
+        return False
+    compact = " ".join(section.split()).strip(" .:-").lower()
+    return compact in {"none", "no", "n/a", "not applicable", "无", "没有"} or bool(
+        re.search(
+            r"\b(?:no|without)\s+(?:unexpected|unlisted|out-of-scope|extra)\s+"
+            r"(?:files?|changes?|writes?)\b",
+            compact,
+        )
+    )
+
+
+def _standard_validation_exit(report_text: str, command: str) -> Optional[int]:
+    if not command:
+        return None
+    checks = _report_section(report_text, "Checks Run")
+    for line in checks.splitlines():
+        cleaned = line.strip().strip("-* ").replace("`", "")
+        if not cleaned.startswith(command):
+            continue
+        if re.search(r"\b(?:failed|failure|error|blocked|denied)\b", cleaned, re.I):
+            return 1
+        if re.search(r"\b(?:passed|pass|success|succeeded|green|ok)\b", cleaned, re.I):
+            return 0
+    return None
 
 
 def _repo_contains(worktree: Path, needle: str) -> bool:
@@ -246,13 +285,18 @@ def verify(
         if status == "conflict":
             conflicts.append(detail)
 
-    if claimed_files:
-        missing = sorted(set(claimed_files) - set(actual_files))
-        unclaimed = sorted(set(actual_files) - set(claimed_files))
+    effective_claimed_files = claimed_files or prose_files
+    file_claim_source = "machine" if claimed_files else ("standard-report" if prose_files else "none")
+    if effective_claimed_files:
+        missing = sorted(set(effective_claimed_files) - set(actual_files))
+        unclaimed = sorted(set(actual_files) - set(effective_claimed_files))
         add("claimed_files", "conflict" if missing or unclaimed else "matched",
-            f"missing_from_diff={missing}; unclaimed_actual={unclaimed}")
+            f"source={file_claim_source}; missing_from_diff={missing}; unclaimed_actual={unclaimed}")
     else:
-        add("claimed_files", "not-claimed", "add one claimed_file=<repo-relative-path> line per implementation file")
+        add(
+            "claimed_files", "not-claimed",
+            "add claimed_file=<path> lines or a complete standard ## Files Changed list",
+        )
         missing_claims.append("claimed_files")
 
     if prose_files:
@@ -268,6 +312,12 @@ def verify(
         claimed_count = int(count_match.group(1))
         add("claimed_changed_file_count", "matched" if claimed_count == len(actual_files) else "conflict",
             f"claimed={claimed_count}; actual={len(actual_files)}")
+    elif effective_claimed_files:
+        add(
+            "claimed_changed_file_count",
+            "matched" if len(effective_claimed_files) == len(actual_files) else "conflict",
+            f"source={file_claim_source}; claimed={len(effective_claimed_files)}; actual={len(actual_files)}",
+        )
     else:
         add("claimed_changed_file_count", "not-claimed", f"actual={len(actual_files)}")
         missing_claims.append("claimed_changed_file_count")
@@ -278,14 +328,23 @@ def verify(
     if not claimed_symbols:
         add("claimed_symbols", "not-claimed", "optional; use claimed_symbol=<name> for important wiring claims")
 
-    unexpected_untracked = sorted(set(untracked) - set(claimed_files))
+    unexpected_untracked = sorted(set(untracked) - set(effective_claimed_files))
     if clean_match and clean_match.group(1) == "yes":
         add("no_unexpected_files", "matched" if not unexpected_untracked else "conflict",
             f"unexpected_untracked={unexpected_untracked}")
     elif clean_match:
         add("no_unexpected_files", "declared-no", f"unexpected_untracked={unexpected_untracked}")
+    elif _standard_no_unexpected_files(report_text) and effective_claimed_files:
+        add(
+            "no_unexpected_files",
+            "matched" if not unexpected_untracked else "conflict",
+            f"source=standard-report; unexpected_untracked={unexpected_untracked}",
+        )
     else:
-        add("no_unexpected_files", "not-claimed", f"unexpected_untracked={unexpected_untracked}")
+        add(
+            "no_unexpected_files", "not-claimed",
+            f"unexpected_untracked={unexpected_untracked}; add the machine claim or an explicit standard Out-of-Scope Confirmation",
+        )
         missing_claims.append("claimed_no_unexpected_files")
 
     declared_test_counts = list(prose_test_counts)
@@ -301,18 +360,36 @@ def verify(
         add("claimed_test_files", "conflict", "report claims added tests but diff contains no test file")
     if requirements["tests_required"] and not actual_test_files:
         add("required_test_diff", "conflict", "task assigns test writing but diff contains no test file")
-    elif requirements["tests_required"] and not test_count_match:
+    elif requirements["tests_required"] and not declared_test_counts:
         add("claimed_test_count", "not-claimed", "task assigns test writing; add claimed_test_count=<n>")
         missing_claims.append("claimed_test_count")
 
     validation_status = "not-required"
     if requirements["validation_required"]:
-        if not validation_command_match or not validation_exit_match:
+        standard_validation_exit = _standard_validation_exit(
+            report_text, str(requirements.get("exact_validation_command") or ""),
+        )
+        if (
+            not validation_command_match
+            and standard_validation_exit is not None
+        ):
+            add(
+                "validation_command",
+                "matched",
+                f"source=standard-report; command={requirements['exact_validation_command']}",
+            )
+        if not validation_command_match and standard_validation_exit is None:
             validation_status = "missing-evidence"
-            if not validation_command_match:
-                missing_claims.append("claimed_validation_command")
-            if not validation_exit_match:
-                missing_claims.append("claimed_validation_exit_code")
+            missing_claims.append("claimed_validation_command")
+        elif not validation_exit_match and standard_validation_exit is None:
+            validation_status = "missing-evidence"
+            missing_claims.append("claimed_validation_exit_code")
+        elif standard_validation_exit == 0 and not validation_exit_match:
+            validation_status = "claimed-unverified"
+            add("validation_exit_code", "matched", "source=standard-report; claimed exit=0")
+        elif standard_validation_exit not in (None, 0) and not validation_exit_match:
+            validation_status = "failed"
+            add("validation_exit_code", "conflict", "standard report records validation failure")
         elif int(validation_exit_match.group(1)) == 0:
             validation_status = "claimed-unverified"
         else:

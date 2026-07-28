@@ -3945,7 +3945,11 @@ PYEOF
         echo "- Launcher capability: ${_CAPABILITY_STATUS}"
         echo "- Exact assigned commands allowlisted: ${_TOOL_PROFILE_ALLOWLIST_COUNT:-0}"
         echo "- Receipt: ${VALIDATION_CAPABILITY_FILE}"
-        echo "- This proves launcher availability only; execute assigned validation and report its real exit code."
+        if [ "${_TOOL_PROFILE_ALLOWLIST_COUNT:-0}" -gt 0 ]; then
+            echo "- Permission decision: the exact assigned validation command is pre-authorized through the Checker Bash allowlist."
+            echo "- Execute that exact command without requesting another approval. Report a sandbox/permission blocker only after an actual invocation is denied, including the rejected command and original denial."
+        fi
+        echo "- Launcher probing does not execute the assigned tests; run them and report the real exit code."
     } >> "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
     progress_log "Validation capability recorded: status=${_CAPABILITY_STATUS}, artifact=${VALIDATION_CAPABILITY_FILE}"
 fi
@@ -4302,27 +4306,36 @@ while claude_is_running; do
         break
     done
 
-    # Planner and Checker can finish without an implementation phase. Once
-    # Completion Ready is paired with role-specific durable evidence, shorten
-    # sampling and allow one small flush window before deterministic convergence.
+    # Once Completion Ready is paired with role-specific durable evidence,
+    # shorten sampling and allow one small flush window before deterministic
+    # convergence. Builders require both their implementation-complete marker
+    # and a product delta; a report alone can never terminate an editing run.
     _COMPLETION_READY_EVIDENCE=0
+    _COMPLETION_READY_ROLE=""
     if [ "$COMPLETION_READY_DETECTED" -eq 1 ] && [ "$BLOCKER_RECORDED" -eq 0 ] && \
        valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
         if [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] && \
            [ -s "${WORKTREE_DIR}/solution-contract.draft.json" ]; then
             _COMPLETION_READY_EVIDENCE=1
+            _COMPLETION_READY_ROLE="planner"
         elif [ "$_PARSED_TASK_MODE" = "checker-test" ] && \
              { [ "$PRODUCT_DELTA_FROM_BASELINE" -eq 1 ] || [ -n "$VALIDATION_STARTED_ELAPSED_SECONDS" ]; }; then
             _COMPLETION_READY_EVIDENCE=1
+            _COMPLETION_READY_ROLE="checker"
+        elif [ "$_PARSED_TASK_MODE" = "builder" ] && \
+             [ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 1 ] && \
+             [ "$PRODUCT_DELTA_FROM_BASELINE" -eq 1 ]; then
+            _COMPLETION_READY_EVIDENCE=1
+            _COMPLETION_READY_ROLE="builder"
         fi
     fi
     if [ "$_COMPLETION_READY_EVIDENCE" -eq 1 ]; then
         if [ -z "$COMPLETION_EVIDENCE_ELAPSED_SECONDS" ]; then
             COMPLETION_EVIDENCE_ELAPSED_SECONDS="$ELAPSED"
+            progress_log "Completion-ready durable evidence observed: role=${_COMPLETION_READY_ROLE}, flush_window_seconds=${CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS}, sampling_seconds=$([ "$_LOOP_SLEEP_SECONDS" -gt 5 ] && echo 5 || echo "$_LOOP_SLEEP_SECONDS")"
         fi
         if [ "$_LOOP_SLEEP_SECONDS" -gt 5 ]; then
             _LOOP_SLEEP_SECONDS=5
-            progress_log "Completion-ready durable evidence observed: role=$([ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] && echo planner || echo checker), flush_window_seconds=${CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS}, sampling_seconds=${_LOOP_SLEEP_SECONDS}"
         fi
         if [ "$CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS" -eq 0 ] || \
            [ $((ELAPSED - COMPLETION_EVIDENCE_ELAPSED_SECONDS)) -ge "$CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS" ]; then

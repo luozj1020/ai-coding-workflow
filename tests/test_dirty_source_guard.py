@@ -279,6 +279,22 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
                 "    printf 'not stopped\\n' > PLANNER_SURVIVED.txt\n"
                 "    ;;\n"
+                "  builder-completion-ready)\n"
+                "    printf '# completed builder work\\n' > README.md\n"
+                "    cat > CLAUDE_REPORT.md <<'REPORT_EOF'\n"
+                "# Claude Modification Report\n\n"
+                "## Requirements Summary\nBuilder implementation completed.\n\n"
+                "## Files Changed\n- README.md\n\n"
+                "## Acceptance Criteria Mapping\n- implementation complete\n\n"
+                "## Out-of-Scope Confirmation\nNone.\n\n"
+                "## Plan Match\nfull\n\n"
+                "## Checks Run\n- assigned narrow check passed\n\n"
+                "Implementation complete.\n"
+                "REPORT_EOF\n"
+                "    printf '%s\\n' 'Execution Phase: tail' 'Implementation Complete: yes' 'Tail Work Complete: yes' 'Completion Ready: yes' 'Next Check: exit' > CLAUDE_PROGRESS.md\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-10}\"\n"
+                "    printf 'not stopped\\n' > BUILDER_SURVIVED.txt\n"
+                "    ;;\n"
                 "  empty-file)\n"
                 "    : > EMPTY_PLACEHOLDER.py\n"
                 "    ;;\n"
@@ -1683,6 +1699,27 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         worktree = self._artifact_path(result.stdout, "Worktree")
         self.assertFalse((worktree / "PLANNER_SURVIVED.txt").exists())
 
+    def test_builder_completion_ready_converges_without_timeout(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "FAKE_CLAUDE_MODE": "builder-completion-ready",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "30",
+                "CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Dispatch Outcome:success", result.stdout)
+        self.assertNotIn("Dispatch Outcome:timeout", result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        metrics = json.loads(self._artifact_path(result.stdout, "Phase Metrics").read_text(encoding="utf-8"))
+        self.assertIn("role=builder", progress)
+        self.assertTrue(metrics["completion_ready_converged"])
+        self.assertFalse(metrics["tail_timeout_stopped"])
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        self.assertFalse((worktree / "BUILDER_SURVIVED.txt").exists())
+
     def test_solution_planner_source_edit_is_scope_violation(self):
         task = self._write_builder_task_card()
         with task.open("a", encoding="utf-8") as handle:
@@ -2707,6 +2744,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             argv_content = argv_log.read_text(encoding="utf-8")
             self.assertIn("Bash(python -m pytest -q)", argv_content)
             self.assertIn("Bash(git diff --check)", argv_content)
+        worktree = self._artifact_path(result.stdout, "Worktree")
+        execution_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
+        self.assertIn(
+            "exact assigned validation command is pre-authorized", execution_card
+        )
+        self.assertIn(
+            "Report a sandbox/permission blocker only after an actual invocation is denied",
+            execution_card,
+        )
 
     def test_checker_accepts_commands_from_check_fence(self):
         """Checker accepts commands from fences with 'check' in info string."""

@@ -138,6 +138,12 @@ class RunCodexSparkTests(unittest.TestCase):
             prompt = (tmp_path / "stdin.md").read_text(encoding="utf-8")
             self.assertIn("Advisory context worktree", prompt)
             self.assertIn("inspect that worktree and its uncommitted diff", prompt)
+            self.assertIn(
+                "expected to be absent before dispatch", prompt
+            )
+            self.assertIn(
+                'distinguish "may not write" from "may not read"', prompt
+            )
 
     def test_help_documents_repository_scaled_fast_path_defaults(self):
         """Help distinguishes auto scale defaults from explicit env overrides."""

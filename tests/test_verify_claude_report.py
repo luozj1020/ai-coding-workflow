@@ -66,6 +66,58 @@ class VerifyClaudeReportTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(data["status"], "insufficient-claims")
 
+    def test_standard_report_sections_satisfy_mechanical_claims(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(pathlib.Path(tmp))
+            _, data = self._run(
+                repo,
+                "\n".join([
+                    "# Claude Modification Report",
+                    "## Files Changed",
+                    "- `source.py` — implementation update",
+                    "## Out-of-Scope Confirmation",
+                    "None.",
+                    "## Checks Run",
+                    "- `python -m pytest tests/test_source.py -q`: passed",
+                    "Implementation complete.",
+                ]),
+                task_card_text=(
+                    "- Validation required: yes\n"
+                    "- Exact narrow command: `python -m pytest tests/test_source.py -q`\n"
+                ),
+            )
+
+            self.assertEqual(data["status"], "matched")
+            self.assertEqual(data["validation_status"], "claimed-unverified")
+            self.assertTrue(any(
+                check["check"] == "claimed_files"
+                and "source=standard-report" in check["detail"]
+                for check in data["checks"]
+            ))
+
+    def test_standard_report_validation_failure_remains_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(pathlib.Path(tmp))
+            _, data = self._run(
+                repo,
+                "\n".join([
+                    "# Claude Modification Report",
+                    "## Files Changed",
+                    "- `source.py`",
+                    "## Out-of-Scope Confirmation",
+                    "None.",
+                    "## Checks Run",
+                    "- `python -m pytest tests/test_source.py -q`: failed; retry passed was not run",
+                ]),
+                task_card_text=(
+                    "- Validation required: yes\n"
+                    "- Exact narrow command: `python -m pytest tests/test_source.py -q`\n"
+                ),
+            )
+
+            self.assertEqual(data["status"], "conflict")
+            self.assertEqual(data["validation_status"], "failed")
+
     def test_claimed_new_file_is_not_unexpected(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._repo(pathlib.Path(tmp))
