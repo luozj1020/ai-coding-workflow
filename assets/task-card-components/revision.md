@@ -12,6 +12,14 @@
 - Narrow validation:
 - Re-route if:
 
+## Dependency Summary
+
+<!-- List only frozen interfaces/invariants from earlier phases that this slice consumes. -->
+
+- Required upstream artifacts/interfaces:
+- Frozen invariants relevant to this slice:
+- Explicitly out of scope:
+
 ## Required Report
 
 - Each correction completed/not completed

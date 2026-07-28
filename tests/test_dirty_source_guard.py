@@ -20,6 +20,7 @@ PROCESS_IDENTITY = ROOT / "scripts" / "process-identity.py"
 CODEGRAPH_WORKTREE_GUARD = ROOT / "scripts" / "codegraph-worktree-guard.py"
 CLAUDE_API_AVAILABILITY = ROOT / "scripts" / "claude-api-availability.py"
 ARCHIVE_CONTROL_FILES = ROOT / "scripts" / "archive-control-files.py"
+BUILD_ACCEPTANCE_BUNDLE = ROOT / "scripts" / "build-acceptance-bundle.py"
 BUILD_TAKEOVER_RECEIPT = ROOT / "scripts" / "build-takeover-receipt.py"
 CREATE_DIRTY_SNAPSHOT = ROOT / "scripts" / "create-dirty-snapshot.py"
 ENFORCE_CHECKER_CONTRACT = ROOT / "scripts" / "enforce-checker-contract.py"
@@ -89,6 +90,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(CODEGRAPH_WORKTREE_GUARD, self.repo / "scripts" / "codegraph-worktree-guard.py")
         shutil.copy2(CLAUDE_API_AVAILABILITY, self.repo / "scripts" / "claude-api-availability.py")
         shutil.copy2(ARCHIVE_CONTROL_FILES, self.repo / "scripts" / "archive-control-files.py")
+        shutil.copy2(BUILD_ACCEPTANCE_BUNDLE, self.repo / "scripts" / "build-acceptance-bundle.py")
         shutil.copy2(BUILD_TAKEOVER_RECEIPT, self.repo / "scripts" / "build-takeover-receipt.py")
         shutil.copy2(CREATE_DIRTY_SNAPSHOT, self.repo / "scripts" / "create-dirty-snapshot.py")
         shutil.copy2(ENFORCE_CHECKER_CONTRACT, self.repo / "scripts" / "enforce-checker-contract.py")
@@ -103,7 +105,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                    "scripts/dispatch-preflight.py", "scripts/process-identity.py",
                    "scripts/codegraph-worktree-guard.py",
                    "scripts/claude-api-availability.py",
-                   "scripts/archive-control-files.py", "scripts/build-takeover-receipt.py",
+                   "scripts/archive-control-files.py", "scripts/build-acceptance-bundle.py",
+                   "scripts/build-takeover-receipt.py",
                    "scripts/create-dirty-snapshot.py", "scripts/enforce-checker-contract.py",
                    "scripts/validate-advisor-request.py", "scripts/validate-advisor-response.py",
                    "scripts/worktree_state_hash.py", "scripts/prepare-worktree-continuation.py"], cwd=self.repo)
@@ -209,7 +212,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    ;;\n"
                 "  worktree-change-validation)\n"
                 "    printf '# worktree change\\n' > NEW_FILE.md\n"
-                "    printf '%s\\n' 'Current Phase: validation' 'Validation command started' > CLAUDE_PROGRESS.md\n"
+                "    printf '%s\\n' 'Current Phase: validation' 'Validation command started' 'Current Validation Command: python -m pytest tests/test_feature.py -q' > CLAUDE_PROGRESS.md\n"
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
                 "    ;;\n"
                 "  blocker-none)\n"
@@ -1943,6 +1946,26 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         metrics = json.loads(self._artifact_path(result.stdout, "Phase Metrics").read_text(encoding="utf-8"))
         self.assertFalse(metrics["product_idle_stopped"])
         self.assertEqual(metrics["final_execution_activity_state"], "validation")
+        phase_events = [
+            json.loads(line)
+            for line in self._artifact_path(result.stdout, "Phase Events").read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        self.assertIn("exploring", [event["phase"] for event in phase_events])
+        validating = [event for event in phase_events if event["phase"] == "validating"]
+        self.assertTrue(validating)
+        self.assertEqual(
+            validating[-1]["current_validation_command"],
+            "python -m pytest tests/test_feature.py -q",
+        )
+        acceptance = json.loads(
+            self._artifact_path(result.stdout, "Acceptance Bundle").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertFalse(acceptance["merge_authorized"])
+        self.assertEqual(acceptance["authority"], "evidence-summary-only")
 
     def test_checker_validation_start_refreshes_active_window(self):
         self._write_low_risk_checker_card()

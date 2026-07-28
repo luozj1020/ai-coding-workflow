@@ -118,6 +118,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "process-identity.py").exists())
             self.assertTrue((repo / "ai" / "dispatch-preflight.py").exists())
             self.assertTrue((repo / "ai" / "archive-control-files.py").exists())
+            self.assertTrue((repo / "ai" / "build-acceptance-bundle.py").exists())
             self.assertTrue((repo / "ai" / "build-takeover-receipt.py").exists())
             self.assertTrue((repo / "ai" / "create-dirty-snapshot.py").exists())
             self.assertTrue((repo / "ai" / "enforce-checker-contract.py").exists())

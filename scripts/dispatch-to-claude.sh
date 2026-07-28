@@ -1499,6 +1499,7 @@ USAGE_FILE="${WORKTREE_ROOT}/${TASK_ID}.usage.txt"
 REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
 REPORT_CONSISTENCY_FILE="${WORKTREE_ROOT}/${TASK_ID}.report-consistency.json"
 OUTCOME_FILE="${WORKTREE_ROOT}/${TASK_ID}.outcome.json"
+ACCEPTANCE_BUNDLE_FILE="${WORKTREE_ROOT}/${TASK_ID}.acceptance-bundle.json"
 RECOVERED_COMPLETION_FILE="${WORKTREE_ROOT}/${TASK_ID}.recovered-completion.json"
 WRITE_SCOPE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.write-scope-enforcement.json"
 PRODUCT_BASELINE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-baseline.json"
@@ -1521,6 +1522,7 @@ CHECKER_IDENTITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker.process.json"
 PHASE_METRICS_FILE="${WORKTREE_ROOT}/${TASK_ID}.phase-metrics.json"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 MONITOR_EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.monitor-events.log"
+PHASE_EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.phase-events.jsonl"
 NETWORK_FILE="${WORKTREE_ROOT}/${TASK_ID}.network.log"
 ATTEMPT_CLASSIFICATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.attempt-classification.json"
 TAKEOVER_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.takeover-receipt.json"
@@ -1537,7 +1539,7 @@ FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
 for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIFF_FILE" "$CHECKER_REPORT_FILE" \
          "$SOURCE_STATUS_FILE" "$WORKTREE_STATUS_FILE" "$UNTRACKED_FILE" "$USAGE_FILE" "$REPORT_FILE" \
          "$CLAUDE_PROGRESS_FILE" "$PID_FILE" "$DISPATCHER_PID_FILE" "$CLAUDE_PID_FILE" "$CHECKER_PID_FILE" \
-         "$PROGRESS_FILE" "$MONITOR_EVENT_LOG" "$NETWORK_FILE"; do
+         "$PROGRESS_FILE" "$MONITOR_EVENT_LOG" "$PHASE_EVENT_LOG" "$NETWORK_FILE"; do
     mkdir -p "$(dirname "$f")"
 done
 TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
@@ -2202,10 +2204,16 @@ echo "Source status saved to: $SOURCE_STATUS_FILE"
 # Write atomically (via temp + mv) so monitors never see a partial file.
 _RUNTIME_STRATEGY="${CLAUDE_CODE_WORKTREE_STRATEGY}"
 _LINEAGE_ROOT_TASK_ID="${_RETRY_ROOT_TASK_ID:-$TASK_ID}"
+_REUSE_COUNT=0
 if [ -n "${_REVIEWED_CONTINUATION_TASK_ID:-}" ]; then
     _RUNTIME_STRATEGY="reviewed-continuation"
     _LINEAGE_ROOT_TASK_ID="$(sed -n 's/.*"lineage_root_task_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${WORKTREE_ROOT}/${_REVIEWED_CONTINUATION_TASK_ID}.runtime.json" 2>/dev/null | head -1)"
     [ -n "$_LINEAGE_ROOT_TASK_ID" ] || _LINEAGE_ROOT_TASK_ID="$_REVIEWED_CONTINUATION_TASK_ID"
+    _PRIOR_REUSE_COUNT="$(sed -n 's/.*"reuse_count"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "${WORKTREE_ROOT}/${_REVIEWED_CONTINUATION_TASK_ID}.runtime.json" 2>/dev/null | head -1)"
+    case "$_PRIOR_REUSE_COUNT" in
+        ''|*[!0-9]*) _PRIOR_REUSE_COUNT=0 ;;
+    esac
+    _REUSE_COUNT=$((_PRIOR_REUSE_COUNT + 1))
 elif [ -n "${_RETRY_TASK_ID:-}" ]; then
     _RUNTIME_STRATEGY="retry-in-place"
 elif [ -n "${_ADVISOR_CONTINUE_TASK_ID:-}" ]; then
@@ -2251,7 +2259,7 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
         printf '  "reviewed_continuation_approval_id": "%s",\n' "$_REVIEWED_CONTINUATION_APPROVAL_ID"
         printf '  "reviewed_continuation_baseline_hash": "%s",\n' "$_REVIEWED_CONTINUATION_BASELINE_HASH"
         printf '  "provenance_root_strategy": "fresh",\n'
-        printf '  "reuse_count": 1,\n'
+        printf '  "reuse_count": %s,\n' "$_REUSE_COUNT"
     fi
     printf '  "pid_files": {\n'
     printf '    "dispatcher": "%s",\n' "$DISPATCHER_PID_FILE"
@@ -2381,6 +2389,7 @@ render_claude_task_card() {
             || name == "Required Exploratory Report" \
             || name == "Checker Contract" \
             || name == "Revision Delta" \
+            || name == "Dependency Summary" \
             || name == "Spec Gate" \
             || name == "Root Cause Gate" \
             || name == "Test-First / TDD Contract" \
@@ -2388,6 +2397,7 @@ render_claude_task_card() {
             || name == "Handoff Contract" \
             || name == "Required Revisions" \
             || name == "Required Changes" \
+            || name == "Dependency Summary" \
             || name == "Acceptance Criteria" \
             || name == "Testing Responsibility" \
             || name == "Validation Contract" \
@@ -3031,6 +3041,27 @@ monitor_event() {
     # Compact, append-only boundary events are the only monitor surface an
     # agent needs while waiting. Values supplied here are machine-safe tokens.
     printf 'monitor_event source=dispatcher task_id=%s %s\n' "$TASK_ID" "$1" >> "$MONITOR_EVENT_LOG"
+}
+
+phase_event() {
+    # Claude-authored progress is advisory. Normalize it into a compact JSONL
+    # stream without treating the phase or command as completion evidence.
+    local phase="$1"
+    local current_command="${2:-}"
+    "$PYTHON_CMD" - "$PHASE_EVENT_LOG" "$TASK_ID" "$phase" "$current_command" <<'PYEOF'
+import datetime, json, sys
+path, task_id, phase, command = sys.argv[1:]
+value = {
+    "schema_version": 1,
+    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "task_id": task_id,
+    "phase": phase,
+    "current_validation_command": command[:1000] or None,
+    "authority": "advisory-progress",
+}
+with open(path, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(value, sort_keys=True) + "\n")
+PYEOF
 }
 
 ZERO_OUTPUT_PROBE_CONCLUSION="not-run"
@@ -4148,6 +4179,8 @@ COMPLETION_EVIDENCE_ELAPSED_SECONDS=""
 VALIDATION_STARTED_ELAPSED_SECONDS=""
 VALIDATION_EVIDENCE_ACTIVE=0
 _LAST_MONITOR_MATERIAL_DIGEST=""
+_LAST_EMITTED_PHASE=""
+_LAST_EMITTED_VALIDATION_COMMAND=""
 _CONTINUATION_THRESHOLD_SECONDS=120
 INITIAL_PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | awk '{print $1}' || true)"
 # --- Two-stage execution clock ---
@@ -4184,6 +4217,10 @@ SECOND_EXTENSION_START_WORKTREE_DIGEST=""
 SECOND_EXTENSION_START_REPORT_BYTES=0
 SECOND_EXTENSION_START_PROGRESS_BYTES=0
 _LOOP_SLEEP_SECONDS="$CLAUDE_CODE_HEARTBEAT_SECONDS"
+if [ -n "$PYTHON_CMD" ]; then
+    phase_event "exploring" ""
+    _LAST_EMITTED_PHASE="exploring"
+fi
 while claude_is_running; do
     sleep "$_LOOP_SLEEP_SECONDS"
     NOW_EPOCH="$(date +%s)"
@@ -4473,6 +4510,29 @@ while claude_is_running; do
         fi
     elif [ "$EDIT_READY_DETECTED" -eq 1 ]; then
         EXECUTION_ACTIVITY_STATE="implementation-ready"
+    fi
+
+    _NORMALIZED_PHASE="exploring"
+    _CURRENT_VALIDATION_COMMAND=""
+    if [ "$VALIDATION_EVIDENCE_ACTIVE" -eq 1 ]; then
+        _NORMALIZED_PHASE="validating"
+        _CURRENT_VALIDATION_COMMAND="$(
+            sed -n -E 's/^[[:space:]-]*(Current )?Validation Command:[[:space:]]*//Ip' \
+                "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/null | head -1
+        )"
+    elif [ "$IMPLEMENTATION_COMPLETE_DETECTED" -eq 1 ] || \
+         [ "$COMPLETION_READY_DETECTED" -eq 1 ]; then
+        _NORMALIZED_PHASE="reporting"
+    elif [ "$PRODUCT_DELTA_FROM_BASELINE" -eq 1 ] || [ "$EDIT_READY_DETECTED" -eq 1 ]; then
+        _NORMALIZED_PHASE="editing"
+    fi
+    if [ -n "$PYTHON_CMD" ] && \
+       { [ "$_NORMALIZED_PHASE" != "$_LAST_EMITTED_PHASE" ] || \
+         [ "$_CURRENT_VALIDATION_COMMAND" != "$_LAST_EMITTED_VALIDATION_COMMAND" ]; }; then
+        phase_event "$_NORMALIZED_PHASE" "$_CURRENT_VALIDATION_COMMAND"
+        _LAST_EMITTED_PHASE="$_NORMALIZED_PHASE"
+        _LAST_EMITTED_VALIDATION_COMMAND="$_CURRENT_VALIDATION_COMMAND"
+        progress_log "Claude normalized progress: phase=${_NORMALIZED_PHASE}, current_validation_command=${_CURRENT_VALIDATION_COMMAND:-none}"
     fi
 
     # Bound report formatting independently from productive implementation.
@@ -5626,6 +5686,25 @@ PYEOF
     progress_log "Recovered completion receipt saved: ${RECOVERED_COMPLETION_FILE}"
 fi
 
+# Summarize the final evidence chain without granting semantic acceptance.
+if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/build-acceptance-bundle.py" ]; then
+    _ACCEPTANCE_BUNDLE_ARGS=(
+        --worktree "$WORKTREE_DIR"
+        --outcome "$OUTCOME_FILE"
+        --report-consistency "$REPORT_CONSISTENCY_FILE"
+        --write-scope "$WRITE_SCOPE_RECEIPT_FILE"
+        --checker-contract "$CHECKER_CONTRACT_RECEIPT_FILE"
+        --recovered-completion "$RECOVERED_COMPLETION_FILE"
+        --output "$ACCEPTANCE_BUNDLE_FILE"
+    )
+    if "$PYTHON_CMD" "${SCRIPT_DIR}/build-acceptance-bundle.py" \
+        "${_ACCEPTANCE_BUNDLE_ARGS[@]}" >/dev/null; then
+        progress_log "Acceptance bundle saved: ${ACCEPTANCE_BUNDLE_FILE}"
+    else
+        progress_log "Acceptance bundle advisory failed; authoritative outcome remains ${OUTCOME_FILE}"
+    fi
+fi
+
 # Record exactly one cross-model handoff after terminal evidence is available.
 # Integrated aiwf runs point this at their run-events.jsonl; standalone
 # dispatches use the repository-local handoff ledger.  Recording is advisory
@@ -6212,6 +6291,9 @@ echo "Hard Cap:        ${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}s"
 echo "Dispatch Outcome:${DISPATCH_OUTCOME}"
 echo "Completion State:${COMPLETION_STATE}"
 echo "Outcome Gates:   $OUTCOME_FILE"
+if [ -s "$ACCEPTANCE_BUNDLE_FILE" ]; then
+    echo "Acceptance Bundle: $ACCEPTANCE_BUNDLE_FILE"
+fi
 echo "Task Card Full:  ${WORKTREE_DIR}/TASK_CARD_FULL.md"
 echo "Claude Task:     ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
 echo "Result:          $RESULT_FILE"
@@ -6241,6 +6323,7 @@ echo "Worktree Status: $WORKTREE_STATUS_FILE"
 echo "Untracked Files: $UNTRACKED_FILE"
 echo "Usage Summary:   $USAGE_FILE"
 echo "Claude Progress: $CLAUDE_PROGRESS_FILE"
+echo "Phase Events:    $PHASE_EVENT_LOG"
 echo "Report:          $REPORT_FILE"
 echo "Claude PID:      $PID_FILE"
 echo "Dispatcher PID:  $DISPATCHER_PID_FILE"

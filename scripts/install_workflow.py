@@ -99,6 +99,7 @@ PYTHON_SCRIPTS = [
     ("process-identity.py", "ai/process-identity.py"),
     ("dispatch-preflight.py", "ai/dispatch-preflight.py"),
     ("archive-control-files.py", "ai/archive-control-files.py"),
+    ("build-acceptance-bundle.py", "ai/build-acceptance-bundle.py"),
     ("build-takeover-receipt.py", "ai/build-takeover-receipt.py"),
     ("prepare-codex-takeover.py", "ai/prepare-codex-takeover.py"),
     ("prepare-write-sandbox.py", "ai/prepare-write-sandbox.py"),

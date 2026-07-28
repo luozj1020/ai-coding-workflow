@@ -45,6 +45,11 @@ exact command once before acceptance evidence is considered. Python test files
 without an explicit per-file command fall back to single-file pytest. The
 receipt is `*.checker-contract.json`; it records both validation layers, and a
 violation is isolated and cannot authorize merge.
+If the aggregate pytest process exits by signal or reports a Python interpreter
+crash, classify it as `environment-crash`. The helper may retry only an
+equivalent set of explicit changed test-file targets one file at a time. All
+groups must pass to recover the validation gate; an unsplittable broad suite
+remains an environment failure, not an assertion failure.
 The execution card also records whether the exact command was pre-authorized by
 the Checker Bash allowlist. Claude must attempt an authorized command before
 claiming a sandbox or permission blocker and must preserve the original denial.

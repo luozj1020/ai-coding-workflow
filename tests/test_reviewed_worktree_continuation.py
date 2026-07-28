@@ -113,6 +113,25 @@ class ReviewedContinuationTest(unittest.TestCase):
         )
         self.assertEqual(validated.returncode, 0)
 
+    def test_reviewed_continuation_can_be_rebound_from_latest_hash(self) -> None:
+        runtime_path = self.repo / ".worktrees" / f"{self.task_id}.runtime.json"
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        runtime.update({
+            "strategy": "reviewed-continuation",
+            "provenance_root_strategy": "fresh",
+            "reuse_count": 1,
+        })
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+
+        approval = self.prepare()
+
+        self.assertEqual(approval["prior_strategy"], "reviewed-continuation")
+        self.assertEqual(approval["provenance_root_strategy"], "fresh")
+        self.assertEqual(
+            approval["worktree_state_hash"],
+            json.loads(self.approval.read_text(encoding="utf-8"))["worktree_state_hash"],
+        )
+
     def test_revision_runtime_can_transition_to_checker(self) -> None:
         runtime_path = self.repo / ".worktrees" / f"{self.task_id}.runtime.json"
         runtime = json.loads(runtime_path.read_text(encoding="utf-8"))

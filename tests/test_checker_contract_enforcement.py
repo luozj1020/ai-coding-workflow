@@ -1,4 +1,5 @@
 import importlib.util
+import unittest.mock
 from pathlib import Path
 import subprocess
 import tempfile
@@ -127,6 +128,59 @@ class CheckerContractEnforcementTests(unittest.TestCase):
                 item.startswith("invalid-exact-validation-command:")
                 for item in result["violations"]
             ))
+
+    def test_environment_crash_is_recovered_by_equivalent_file_groups(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.repo(tmp)
+            tests = repo / "tests"
+            tests.mkdir()
+            for name in ("test_a.py", "test_b.py"):
+                (tests / name).write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+            card = self.card(
+                repo,
+                "tests",
+                command="python -m py_compile {path}",
+                exact_command="python -m pytest tests/test_a.py tests/test_b.py -q",
+            )
+            original = module.execute
+
+            def execute(argv, worktree, timeout, env):
+                if argv == [
+                    "python", "-m", "pytest",
+                    "tests/test_a.py", "tests/test_b.py", "-q",
+                ]:
+                    return {
+                        "argv": argv,
+                        "exit_code": 139,
+                        "output_tail": "Segmentation fault (core dumped)",
+                        "passed": False,
+                    }
+                return original(argv, worktree, timeout, env)
+
+            with unittest.mock.patch.object(module, "execute", side_effect=execute):
+                result = module.enforce(repo, card, repo / "receipt.json", 30)
+
+            self.assertTrue(result["enforcement_passed"])
+            self.assertTrue(result["environment_failure_observed"])
+            self.assertTrue(result["grouped_retry"]["recovered"])
+            self.assertEqual(len(result["grouped_retry"]["results"]), 2)
+
+    def test_unsplittable_suite_crash_remains_environment_failure(self):
+        module = load_module()
+        crash = {
+            "argv": ["python", "-m", "pytest", "-q"],
+            "exit_code": -11,
+            "output_tail": "",
+            "passed": False,
+        }
+        self.assertTrue(module.is_environment_crash(crash))
+        self.assertEqual(
+            module.pytest_group_commands(
+                crash["argv"], ["tests/test_feature.py"]
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":

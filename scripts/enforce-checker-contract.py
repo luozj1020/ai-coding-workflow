@@ -22,6 +22,10 @@ CONTROL_FILES = {
     "TASK_CARD_FULL.md",
 }
 SHELL_META = re.compile(r"[|&;<>()`\n\r]")
+PYTHON_CRASH = re.compile(
+    r"segmentation fault|fatal python error|core dumped",
+    re.IGNORECASE,
+)
 
 
 def git(worktree: Path, *args: str) -> list[str]:
@@ -122,6 +126,75 @@ def execute(argv: list[str], worktree: Path, timeout: int, env: dict[str, str]) 
         return {"argv": argv, "exit_code": None, "output_tail": str(exc), "passed": False, "timed_out": True}
 
 
+def is_environment_crash(result: dict[str, object]) -> bool:
+    code = result.get("exit_code")
+    output = str(result.get("output_tail") or "")
+    return (
+        isinstance(code, int)
+        and (code < 0 or code in {134, 139})
+    ) or bool(PYTHON_CRASH.search(output))
+
+
+def pytest_prefix(argv: list[str]) -> tuple[list[str], int] | None:
+    if argv and Path(argv[0]).name in {"pytest", "py.test"}:
+        return [argv[0]], 1
+    if len(argv) >= 3 and Path(argv[0]).name.startswith("python") and argv[1:3] == ["-m", "pytest"]:
+        return argv[:3], 3
+    return None
+
+
+def pytest_group_commands(argv: list[str], changed: list[str]) -> list[list[str]]:
+    """Split an explicit multi-file pytest command into equivalent file groups.
+
+    A command without explicit file targets is not broadened or declared
+    recovered: changed files are not evidence for an entire repository suite.
+    """
+    prefix_info = pytest_prefix(argv)
+    if prefix_info is None:
+        return []
+    prefix, start = prefix_info
+    tail = argv[start:]
+    targets = [
+        value for value in tail
+        if not value.startswith("-") and (
+            value.endswith(".py") or "::" in value
+        )
+    ]
+    if not targets:
+        return []
+    changed_tests = {
+        path for path in changed
+        if path.endswith(".py") and (
+            Path(path).name.startswith("test_") or "tests" in Path(path).parts
+        )
+    }
+    target_files = {value.split("::", 1)[0] for value in targets}
+    if not target_files or not target_files.issubset(changed_tests):
+        return []
+    options = [value for value in tail if value not in targets]
+    return [prefix + options + [target] for target in targets]
+
+
+def recover_pytest_crash(
+    argv: list[str],
+    changed: list[str],
+    worktree: Path,
+    timeout: int,
+    env: dict[str, str],
+) -> dict[str, object]:
+    commands = pytest_group_commands(argv, changed)
+    results = [execute(command, worktree, timeout, env) for command in commands]
+    recovered = bool(results) and all(result["passed"] for result in results)
+    return {
+        "attempted": bool(commands),
+        "strategy": "explicit-test-file-groups" if commands else "not-safe-to-split",
+        "commands": commands,
+        "results": results,
+        "recovered": recovered,
+        "coverage_equivalent": bool(commands),
+    }
+
+
 def enforce(worktree: Path, card_path: Path, output: Path, timeout: int) -> dict[str, object]:
     card = card_path.read_text(encoding="utf-8", errors="replace")
     allowed = parse_list(field(card, "Write paths"))
@@ -131,6 +204,8 @@ def enforce(worktree: Path, card_path: Path, output: Path, timeout: int) -> dict
     violations: list[str] = []
     validations: list[dict[str, object]] = []
     exact_validation: dict[str, object] | None = None
+    grouped_retry: dict[str, object] | None = None
+    environment_failure_observed = False
     if not allowed:
         violations.append("missing-write-paths")
     for path in changed:
@@ -176,15 +251,30 @@ def enforce(worktree: Path, card_path: Path, output: Path, timeout: int) -> dict
             exact_validation["validation_kind"] = "frozen-exact-command"
             validations.append(exact_validation)
             if not exact_validation["passed"]:
-                violations.append("exact-validation-failed")
+                if is_environment_crash(exact_validation):
+                    environment_failure_observed = True
+                    exact_validation["failure_class"] = "environment-crash"
+                    grouped_retry = recover_pytest_crash(
+                        exact_argv, changed, worktree, timeout, dict(os.environ)
+                    )
+                    for result in grouped_retry["results"]:
+                        result["validation_kind"] = "grouped-crash-retry"
+                        validations.append(result)
+                    if not grouped_retry["recovered"]:
+                        violations.append("exact-validation-environment-crash")
+                else:
+                    exact_validation["failure_class"] = "assertion-or-command-failure"
+                    violations.append("exact-validation-failed")
     receipt: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "task_mode": "checker-test",
         "allowed_write_paths": allowed,
         "changed_paths": changed,
         "per_file_validation_command": command_template or None,
         "exact_validation_command": exact_command or None,
         "exact_validation": exact_validation,
+        "grouped_retry": grouped_retry,
+        "environment_failure_observed": environment_failure_observed,
         "validations": validations,
         "violations": sorted(set(violations)),
         "enforcement_passed": not violations,

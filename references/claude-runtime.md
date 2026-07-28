@@ -141,6 +141,10 @@ sandbox cannot see PIDs without a terminal event, report `visibility-unknown`
 from the dispatch environment and never launch a duplicate Builder.
 
 Each dispatch writes `<task-id>.phase-metrics.json` with approximate heartbeat-observed context acquisition, implementation, validation, tail, and completion-ready timing. Use it to identify context reacquisition or post-implementation tail waste; do not treat sampled boundaries as provider billing timestamps.
+It also writes `<task-id>.phase-events.jsonl` when the normalized phase or
+current validation command changes. Phases are `exploring`, `editing`,
+`validating`, and `reporting`; these Claude-authored signals are advisory and
+never satisfy completion by themselves.
 
 ## Reports
 
@@ -152,3 +156,7 @@ Treat `<task-id>.outcome.json` as the terminal control-plane summary. Keep
 `completion_state=needs-review`; only Codex review can change semantic acceptance.
 Checker ALL GREEN may supersede an earlier validation approval blocker, but it
 never substitutes for semantic review.
+`<task-id>.acceptance-bundle.json` is the compact review entry point for changed
+paths, scope/report/validation gates, environment-failure classification, and a
+recommended next decision. It is evidence-summary-only, always records
+`merge_authorized=false`, and never replaces the underlying receipts.

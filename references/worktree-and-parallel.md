@@ -54,6 +54,10 @@ forbidden siblings. Required enforcement fails closed when paths are globbed or
 the sandbox capability is unavailable; post-run checking remains secondary
 evidence. A Codex takeover marker permanently blocks later Claude continuation
 on that worktree.
+After each reviewed continuation, a later continuation may be prepared again
+from the latest runtime only after Codex reviews the new state. Every approval
+is one-use and rebinds the current content hash, task-card hash, role/session,
+and exact paths; runtime `reuse_count` increases across the lineage.
 
 Checker worktree reuse requires every Checker Reuse Risk Gate row to be explicit `no`. Missing/unknown/high risk, DAG, parallel, or shared-contract work stays fresh. Environment overrides remain explicit.
 
