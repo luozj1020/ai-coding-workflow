@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -146,6 +147,64 @@ def live_pid_file(path: Path) -> bool:
         return True
 
 
+def process_identity_state(
+    path: Path, task_id: str, role: str,
+) -> str:
+    """Classify a recorded writer without treating PID reuse as liveness."""
+    identity = load_json(path)
+    module_path = SCRIPT_DIR / "process-identity.py"
+    spec = importlib.util.spec_from_file_location(
+        "_aiwf_process_identity", module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ContinuationError("process identity checker is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        state, _ = module.check(
+            identity, expected_task_id=task_id, expected_role=role,
+        )
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise ContinuationError(f"process identity check failed: {path}: {exc}") from exc
+    return str(state)
+
+
+def validate_recorded_writers(runtime: Dict[str, Any], task_id: str) -> None:
+    pid_files = runtime.get("pid_files") or {}
+    identity_files = runtime.get("process_identity_files") or {}
+    if not isinstance(pid_files, dict) or not isinstance(identity_files, dict):
+        raise ContinuationError("runtime process receipts must be objects")
+
+    # ``pid`` is the historical alias for the Claude role.  Once the named
+    # Claude receipt exists, checking the alias with bare kill(0) would undo
+    # the identity protection and recreate the PID-reuse false positive.
+    roles = [role for role in ("dispatcher", "claude", "checker") if role in pid_files]
+    if pid_files.get("pid") and not pid_files.get("claude"):
+        roles.append("pid")
+
+    for role in roles:
+        raw_pid = pid_files.get(role)
+        if not raw_pid:
+            continue
+        identity_role = "claude" if role == "pid" else role
+        raw_identity = identity_files.get(identity_role)
+        identity_path = Path(str(raw_identity)) if raw_identity else None
+        if identity_path is not None and identity_path.is_file():
+            state = process_identity_state(identity_path, task_id, identity_role)
+            if state == "running-same-process":
+                raise ContinuationError(
+                    f"recorded process is still live: {raw_pid}"
+                )
+            if state in {"not-running", "pid-reused-or-foreign"}:
+                continue
+            raise ContinuationError(
+                f"recorded process identity is not trustworthy: "
+                f"{identity_path} ({state})"
+            )
+        if live_pid_file(Path(str(raw_pid))):
+            raise ContinuationError(f"recorded process is still live: {raw_pid}")
+
+
 def normalize_task_role(value: object) -> Optional[str]:
     value = str(value or "").strip().lower()
     if value in {"checker", "test", "checker/test", "checker-test"}:
@@ -188,9 +247,7 @@ def validate_runtime(root: Path, task_id: str) -> tuple[Dict[str, Any], Path, Pa
             raise ContinuationError("worktree ownership was transferred to Codex")
     if not worktree.is_dir() or git(worktree, "rev-parse", "--is-inside-work-tree").strip() != "true":
         raise ContinuationError("recorded worktree is unavailable")
-    for raw in (runtime.get("pid_files") or {}).values():
-        if raw and live_pid_file(Path(str(raw))):
-            raise ContinuationError(f"recorded process is still live: {raw}")
+    validate_recorded_writers(runtime, task_id)
     source_head = git(root, "rev-parse", "HEAD").strip()
     worktree_head = git(worktree, "rev-parse", "HEAD").strip()
     source_base = str(runtime.get("source_base_commit") or runtime.get("base_commit") or "")

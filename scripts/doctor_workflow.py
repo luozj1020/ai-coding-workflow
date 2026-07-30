@@ -215,6 +215,13 @@ WORKFLOW_PLAIN_FILE_SOURCES = [
     ("scripts/spark_execution_availability.py", "ai/spark_execution_availability.py"),
 ]
 
+MANAGED_BEGIN = "<!-- AI-CODING-WORKFLOW:BEGIN managed -->"
+MANAGED_END = "<!-- AI-CODING-WORKFLOW:END managed -->"
+WORKFLOW_MANAGED_FILE_SOURCES = [
+    ("assets/AGENTS.md", "AGENTS.md"),
+    ("assets/CLAUDE.md", "CLAUDE.md"),
+]
+
 
 def _find_repo_root(start):
     """Walk upward from *start* until a directory containing .git is found."""
@@ -654,6 +661,16 @@ def _read_text(path):
         return f.read()
 
 
+def _managed_block_for_compare(text):
+    start = text.find(MANAGED_BEGIN)
+    end = text.find(MANAGED_END, start + len(MANAGED_BEGIN))
+    if start < 0 or end < 0:
+        return None
+    return _normalize_for_compare(
+        text[start:end + len(MANAGED_END)]
+    )
+
+
 def _reference_skill_root():
     """Return the first candidate skill root with expected assets/scripts."""
     for root in _candidate_skill_roots():
@@ -662,6 +679,40 @@ def _reference_skill_root():
         ):
             return root
     return None
+
+
+def _skill_source_tree_files(repo_root, skill_root):
+    """Return source-tree paths that drift from the installed skill."""
+    source_markers = (
+        "SKILL.md",
+        "scripts/install_for_codex.py",
+        "assets/AGENTS.md",
+    )
+    if not all(os.path.isfile(os.path.join(repo_root, marker)) for marker in source_markers):
+        return []
+    relative_paths = {"SKILL.md"}
+    relative_paths.update(src for src, _ in WORKFLOW_PLAIN_FILE_SOURCES)
+    relative_paths.update(src for src, _ in WORKFLOW_MANAGED_FILE_SOURCES)
+    for reference_dir in (
+        os.path.join(skill_root, "references"),
+        os.path.join(repo_root, "references"),
+    ):
+        if os.path.isdir(reference_dir):
+            for name in os.listdir(reference_dir):
+                if name.endswith(".md"):
+                    relative_paths.add("references/{}".format(name))
+    drifted = []
+    for rel in sorted(relative_paths):
+        source = os.path.join(repo_root, *rel.split("/"))
+        installed = os.path.join(skill_root, *rel.split("/"))
+        if not os.path.isfile(source):
+            continue
+        if not os.path.isfile(installed) or (
+            _normalize_for_compare(_read_text(source))
+            != _normalize_for_compare(_read_text(installed))
+        ):
+            drifted.append("source:{}".format(rel))
+    return drifted
 
 
 def _outdated_project_workflow_files(repo_root):
@@ -677,6 +728,17 @@ def _outdated_project_workflow_files(repo_root):
             continue
         if _normalize_for_compare(_read_text(src)) != _normalize_for_compare(_read_text(dest)):
             outdated.append(dest_rel)
+    for src_rel, dest_rel in WORKFLOW_MANAGED_FILE_SOURCES:
+        src = os.path.join(skill_root, *src_rel.split("/"))
+        dest = os.path.join(repo_root, *dest_rel.split("/"))
+        if not os.path.isfile(src) or not os.path.isfile(dest):
+            continue
+        source_block = _managed_block_for_compare(_read_text(src))
+        installed_block = _managed_block_for_compare(_read_text(dest))
+        if source_block is None or installed_block != source_block:
+            outdated.append("{} (managed block)".format(dest_rel))
+    if os.path.realpath(repo_root) != os.path.realpath(skill_root):
+        outdated.extend(_skill_source_tree_files(repo_root, skill_root))
     return outdated
 
 

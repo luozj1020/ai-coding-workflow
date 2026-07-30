@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ class ReviewedContinuationTest(unittest.TestCase):
         run("git", "config", "user.name", "Test", cwd=self.repo)
         (self.repo / "scripts").mkdir()
         shutil.copy2(HELPER, self.repo / "scripts" / HELPER.name)
+        shutil.copy2(ROOT / "scripts" / "process-identity.py", self.repo / "scripts")
         shutil.copy2(ROOT / "scripts" / "worktree_state_hash.py", self.repo / "scripts")
         (self.repo / "src.txt").write_text("base\n", encoding="utf-8")
         (self.repo / "test.txt").write_text("base test\n", encoding="utf-8")
@@ -82,6 +84,69 @@ class ReviewedContinuationTest(unittest.TestCase):
             "--output", str(self.approval),
         )
         return json.loads(result.stdout)
+
+    def set_current_process_receipt(
+        self, role: str = "dispatcher", *, mutate: str | None = None,
+    ) -> None:
+        pid_file = self.repo / ".worktrees" / f"{role}.pid"
+        identity_file = self.repo / ".worktrees" / f"{role}.process.json"
+        pid_file.write_text(f"{os.getpid()}\n", encoding="utf-8")
+        captured = run(
+            sys.executable, str(self.repo / "scripts" / "process-identity.py"),
+            "capture", "--pid", str(os.getpid()), "--task-id", self.task_id,
+            "--role", role, "--output", str(identity_file), cwd=self.repo,
+        )
+        self.assertEqual(captured.returncode, 0)
+        identity = json.loads(identity_file.read_text(encoding="utf-8"))
+        if mutate == "start-time":
+            identity["start_time_ticks"] = int(identity["start_time_ticks"]) + 1
+        elif mutate == "task-id":
+            identity["task_id"] = "different-task"
+        identity_file.write_text(json.dumps(identity), encoding="utf-8")
+
+        runtime_path = self.repo / ".worktrees" / f"{self.task_id}.runtime.json"
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        runtime["pid_files"] = {role: str(pid_file)}
+        runtime["process_identity_files"] = {role: str(identity_file)}
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+
+    def test_reused_pid_identity_does_not_block_continuation(self) -> None:
+        self.set_current_process_receipt(mutate="start-time")
+        self.assertEqual(self.prepare()["status"], "available")
+
+    def test_matching_live_process_identity_blocks_continuation(self) -> None:
+        self.set_current_process_receipt()
+        rejected = self.helper(
+            "prepare", "--prior-task-id", self.task_id,
+            "--next-task-card", str(self.card), "--next-role", "builder",
+            "--decision", "accepted-direction",
+            "--accepted-existing-path", "src.txt",
+            "--allow-new-write-path", "src.txt",
+            "--output", str(self.approval), check=False,
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("still live", rejected.stderr)
+
+    def test_mismatched_identity_fails_closed(self) -> None:
+        self.set_current_process_receipt(mutate="task-id")
+        rejected = self.helper(
+            "prepare", "--prior-task-id", self.task_id,
+            "--next-task-card", str(self.card), "--next-role", "builder",
+            "--decision", "accepted-direction",
+            "--accepted-existing-path", "src.txt",
+            "--allow-new-write-path", "src.txt",
+            "--output", str(self.approval), check=False,
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("not trustworthy", rejected.stderr)
+
+    def test_generic_pid_alias_is_not_rechecked_without_identity(self) -> None:
+        self.set_current_process_receipt(role="claude", mutate="start-time")
+        runtime_path = self.repo / ".worktrees" / f"{self.task_id}.runtime.json"
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        runtime["pid_files"]["pid"] = runtime["pid_files"]["claude"]
+        runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+        self.assertEqual(self.prepare()["status"], "available")
 
     def test_prepare_and_validate_bind_exact_state_and_card(self) -> None:
         approval = self.prepare()

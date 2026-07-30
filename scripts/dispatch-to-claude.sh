@@ -448,6 +448,7 @@ _TASK_WRITE_SCOPE_POLICY="$(awk -F'|' '
 if [ "$_TASK_WRITE_SCOPE_POLICY" = "required" ]; then
     CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT="required"
 fi
+_WRITE_SCOPE_REQUESTED="$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT"
 if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
     if [ "$_PARSED_TASK_MODE" = "builder" ] && \
        grep -Eiq '^\|[[:space:]]*Planning owner[[:space:]]*\|[[:space:]]*Claude([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
@@ -3689,17 +3690,6 @@ cd "$WORKTREE_DIR"
 : > "$PROGRESS_FILE"
 : > "$MONITOR_EVENT_LOG"
 write_network_header
-if [ -n "${_REVIEWED_CONTINUATION_LEASE_DIR:-}" ]; then
-    if ! mkdir "$_REVIEWED_CONTINUATION_CONSUMED_DIR" 2>/dev/null; then
-        echo "Error: reviewed-continuation approval became consumed before dispatch start." >&2
-        exit 1
-    fi
-    printf '%s\n' "$$" > "${_REVIEWED_CONTINUATION_CONSUMED_DIR}/dispatcher.pid"
-    printf '%s\n' "$_REVIEWED_CONTINUATION_APPROVAL" > "${_REVIEWED_CONTINUATION_CONSUMED_DIR}/approval.path"
-    printf '%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')" > "${_REVIEWED_CONTINUATION_CONSUMED_DIR}/consumed-at"
-    rm -rf "$_REVIEWED_CONTINUATION_LEASE_DIR"
-    _REVIEWED_CONTINUATION_LEASE_DIR=""
-fi
 
 progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, context_acquisition_timeout_seconds=${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}, active_execution_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, hard_timeout_seconds=${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${_RUNTIME_STRATEGY:-$CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, growth_extension_limit=1, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
 
@@ -3878,9 +3868,7 @@ if [ -n "${_REVIEWED_CONTINUATION_TASK_ID:-}" ]; then
     CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT="required"
 fi
 if [ "$_WRITING_RUNTIME_ROLE" -eq 1 ]; then
-    if [ "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT" = "auto" ] && \
-       command -v bwrap >/dev/null 2>&1 && \
-       grep -Eiq '^-?[[:space:]]*Write paths:[[:space:]]*[^[:space:]]' "${WORKTREE_DIR}/TASK_CARD_FULL.md" 2>/dev/null; then
+    if [ "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT" = "auto" ]; then
         CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT="required"
     fi
     if [ "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT" = "required" ]; then
@@ -3929,7 +3917,7 @@ PYEOF
         _WRITE_SCOPE_EFFECTIVE="required"
     fi
 fi
-progress_log "Write scope enforcement resolved: requested=${CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT}, effective=${_WRITE_SCOPE_EFFECTIVE}, receipt=${WRITE_SCOPE_RECEIPT_FILE}"
+progress_log "Write scope enforcement resolved: requested=${_WRITE_SCOPE_REQUESTED}, effective=${_WRITE_SCOPE_EFFECTIVE}, receipt=${WRITE_SCOPE_RECEIPT_FILE}"
 
 # Verify only the launcher/capability, never run the assigned test suite twice.
 # This gives Claude concrete evidence that Python/pytest is executable in the
@@ -4042,7 +4030,11 @@ PYEOF
             echo "needs_host_execution=true"
             echo "host_handoff_required=true"
             echo "host_handoff_action=rerun-identical-dispatch-on-authorized-host-once"
-            echo "host_retry_task_id=${TASK_ID}"
+            if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
+                echo "host_retry_reviewed_continuation=${_REVIEWED_CONTINUATION_APPROVAL}"
+            else
+                echo "host_retry_task_id=${TASK_ID}"
+            fi
         else
             echo "Resolve workspace trust, transport, or execution-environment access, then rerun the exact dispatch."
         fi
@@ -4056,10 +4048,18 @@ PYEOF
     fi
     "$PYTHON_CMD" - "$RESULT_FILE" "$TASK_ID" "$_STARTUP_FAILURE_CATEGORY" \
         "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" \
-        "$_STARTUP_NEEDS_HOST_EXECUTION" <<'PYEOF'
+        "$_STARTUP_NEEDS_HOST_EXECUTION" \
+        "${_REVIEWED_CONTINUATION_APPROVAL:-}" <<'PYEOF'
 import json, os, sys
-output, task_id, category, health, classification, needs_host = sys.argv[1:]
+output, task_id, category, health, classification, needs_host, reviewed_approval = sys.argv[1:]
 needs_host_execution = needs_host == "1"
+host_retry_environment = None
+if needs_host_execution:
+    host_retry_environment = {"CLAUDE_CODE_HOST_AUTHORITY": "1"}
+    if reviewed_approval:
+        host_retry_environment["CLAUDE_CODE_REVIEWED_CONTINUATION"] = reviewed_approval
+    else:
+        host_retry_environment["CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID"] = task_id
 value = {
     "schema_version": 1,
     "task_id": task_id,
@@ -4074,13 +4074,7 @@ value = {
         "rerun-identical-dispatch-on-authorized-host-once"
         if needs_host_execution else None
     ),
-    "host_retry_environment": (
-        {
-            "CLAUDE_CODE_HOST_AUTHORITY": "1",
-            "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": task_id,
-        }
-        if needs_host_execution else None
-    ),
+    "host_retry_environment": host_retry_environment,
 }
 with open(output, "w", encoding="utf-8") as handle:
     json.dump(value, handle, indent=2, sort_keys=True)
@@ -4094,7 +4088,11 @@ PYEOF
         echo "needs_host_execution=true" >&2
         echo "host_handoff_required=true" >&2
         echo "host_retry_environment=CLAUDE_CODE_HOST_AUTHORITY=1" >&2
-        echo "host_retry_task_id=${TASK_ID}" >&2
+        if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
+            echo "host_retry_reviewed_continuation=${_REVIEWED_CONTINUATION_APPROVAL}" >&2
+        else
+            echo "host_retry_task_id=${TASK_ID}" >&2
+        fi
         echo "host_retry_limit=1" >&2
     fi
     exit 75
@@ -4127,6 +4125,22 @@ with os.fdopen(fd, "w", encoding="utf-8") as handle:
     handle.write("\n")
 os.replace(temporary, output)
 PYEOF
+
+# A reviewed approval remains merely reserved through startup preflight.  Only
+# consume it once the approved baseline is frozen and Builder launch is
+# imminent.  An exit-75 host handoff therefore releases the lease via the EXIT
+# trap and can replay the same hash/session/path-bound approval exactly once.
+if [ -n "${_REVIEWED_CONTINUATION_LEASE_DIR:-}" ]; then
+    if ! mkdir "$_REVIEWED_CONTINUATION_CONSUMED_DIR" 2>/dev/null; then
+        echo "Error: reviewed-continuation approval became consumed before dispatch start." >&2
+        exit 1
+    fi
+    printf '%s\n' "$$" > "${_REVIEWED_CONTINUATION_CONSUMED_DIR}/dispatcher.pid"
+    printf '%s\n' "$_REVIEWED_CONTINUATION_APPROVAL" > "${_REVIEWED_CONTINUATION_CONSUMED_DIR}/approval.path"
+    printf '%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')" > "${_REVIEWED_CONTINUATION_CONSUMED_DIR}/consumed-at"
+    rm -rf "$_REVIEWED_CONTINUATION_LEASE_DIR"
+    _REVIEWED_CONTINUATION_LEASE_DIR=""
+fi
 
 set +e
 run_claude &
@@ -5088,7 +5102,14 @@ $CLAUDE_CODE_CHECKER_COMMANDS
 EOF_CHECKER_COMMANDS
     fi
     set +e
-    bash "$CHECK_SCRIPT" "${CHECK_ARGS[@]}" >> "$STATUS_FILE" 2>&1 &
+    (
+        if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/process-identity.py" ]; then
+            "$PYTHON_CMD" "${SCRIPT_DIR}/process-identity.py" capture \
+                --pid "$BASHPID" --task-id "$TASK_ID" --role checker \
+                --output "$CHECKER_IDENTITY_FILE" >/dev/null 2>&1 || true
+        fi
+        exec bash "$CHECK_SCRIPT" "${CHECK_ARGS[@]}"
+    ) >> "$STATUS_FILE" 2>&1 &
     CHECKER_PID=$!
     echo "$CHECKER_PID" > "$CHECKER_PID_FILE"
     progress_log "Checker helper started: pid=${CHECKER_PID}"

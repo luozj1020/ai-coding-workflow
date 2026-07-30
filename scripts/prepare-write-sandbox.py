@@ -18,7 +18,7 @@ CONTROL_WRITES = (
     "CLAUDE_REPORT.md",
     "CLAUDE_TASK_CARD.md",
 )
-UNSAFE_PATTERN = re.compile(r"[*?\[\]{}]")
+UNSAFE_PATTERN = re.compile(r"[*?\[\]{}:]")
 
 
 class SandboxError(RuntimeError):
@@ -26,13 +26,35 @@ class SandboxError(RuntimeError):
 
 
 def _card_paths(text: str) -> List[str]:
-    match = re.search(r"(?mi)^-[ \t]*Write paths:[ \t]*(.+)$", text)
-    if not match:
-        raise SandboxError("task card has no Write paths")
-    value = match.group(1).strip()
-    if value.lower() in {"", "none", "not assigned", "n/a"}:
-        return []
-    return [item.strip().strip("`") for item in value.split(",") if item.strip()]
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"(?i)^-[ \t]*Write paths:[ \t]*(.*)$", line)
+        if not match:
+            continue
+        inline = match.group(1).strip()
+        if inline:
+            if inline.lower() in {"none", "not assigned", "n/a"}:
+                return []
+            return [
+                item.strip().strip("`")
+                for item in inline.split(",")
+                if item.strip()
+            ]
+
+        values: List[str] = []
+        for nested in lines[index + 1:]:
+            if re.match(r"^-[ \t]*[^:]+:", nested) or nested.startswith("#"):
+                break
+            if not nested.strip():
+                continue
+            item = re.match(r"^[ \t]+-[ \t]+(.+?)\s*$", nested)
+            if item is None:
+                raise SandboxError(
+                    f"invalid multi-line Write paths entry: {nested!r}"
+                )
+            values.append(item.group(1).strip().strip("`"))
+        return values
+    raise SandboxError("task card has no Write paths")
 
 
 def normalize(raw: str, worktree: Path) -> str:

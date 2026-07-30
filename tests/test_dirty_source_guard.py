@@ -600,6 +600,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             # Probe-specific tests opt back into startup preflight explicitly.
             "CLAUDE_CODE_API_PROBE_MODE": "failure-only",
             "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "0",
+            # Legacy fixture cards intentionally omit exact Scope declarations.
+            # Enforcement-specific tests override this and use scoped cards.
+            "CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "off",
         }
         if extra_env:
             env.update(extra_env)
@@ -924,6 +927,22 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("artifact collection OK; validation skipped by policy", progress)
         self.assertIn("SKIPPED by policy", checker)
         self.assertNotIn("Checker helper completed: ALL GREEN", progress)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        checker_identity_path = pathlib.Path(
+            runtime["process_identity_files"]["checker"]
+        )
+        self.assertTrue(checker_identity_path.is_file())
+        checker_identity = json.loads(
+            checker_identity_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(checker_identity["task_id"], runtime["task_id"])
+        self.assertEqual(checker_identity["role"], "checker")
+        self.assertEqual(
+            checker_identity["pid"],
+            int(pathlib.Path(runtime["pid_files"]["checker"]).read_text().strip()),
+        )
 
     def test_unrelated_untracked_file_blocks(self):
         self._write_task_card()
@@ -1097,6 +1116,64 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(value["scope"], "launcher-only-no-assigned-tests-executed")
         card = pathlib.Path(runtime["worktree"]) / "CLAUDE_TASK_CARD.md"
         self.assertIn("Validation Capability Receipt", card.read_text(encoding="utf-8"))
+
+    def test_multiline_write_paths_enable_required_sandbox_in_auto_mode(self):
+        fake_bwrap = self.fake_bin / "bwrap"
+        fake_bwrap.write_text(
+            "#!/usr/bin/env bash\n"
+            "chdir=''\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  case \"$1\" in\n"
+            "    --die-with-parent) shift ;;\n"
+            "    --ro-bind|--dev-bind|--bind) shift 3 ;;\n"
+            "    --proc) shift 2 ;;\n"
+            "    --chdir) chdir=\"$2\"; shift 2 ;;\n"
+            "    --) shift; break ;;\n"
+            "    *) exit 64 ;;\n"
+            "  esac\n"
+            "done\n"
+            "[ -z \"$chdir\" ] || cd \"$chdir\"\n"
+            "exec \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake_bwrap.chmod(0o755)
+        task = self._write_builder_task_card()
+        task.write_text(
+            "# Builder\n\n"
+            "| Field | Value |\n|---|---|\n| Mode | builder |\n\n"
+            "## Scope\n\n"
+            "- Write paths:\n"
+            "  - `README.md`\n"
+            "- Read paths:\n"
+            "  - `scripts/dispatch-to-claude.sh`\n"
+            "- Forbidden paths: deploy/\n",
+            encoding="utf-8",
+        )
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "auto"},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "Write scope enforcement resolved: requested=auto, effective=required",
+            progress,
+        )
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(
+                encoding="utf-8"
+            )
+        )
+        receipt = json.loads(
+            (
+                self.repo / ".worktrees"
+                / f"{runtime['task_id']}.write-scope-enforcement.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(receipt["declared_write_paths"], ["README.md"])
+        self.assertTrue(receipt["bash_cannot_bypass_scope"])
 
     def test_workspace_trust_preflight_stops_before_builder_window(self):
         self._write_task_card()
@@ -1508,6 +1585,88 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertNotEqual(replay.returncode, 0)
         self.assertIn("already consumed", replay.stderr)
+
+    def test_reviewed_continuation_host_handoff_preserves_unconsumed_approval(self):
+        first_card = self._write_task_card()
+        first_card.write_text(
+            "# Builder\n\n| Field | Value |\n|---|---|\n| Mode | builder |\n",
+            encoding="utf-8",
+        )
+        next_card = self.repo / "task-cards" / "NEXT.md"
+        next_card.write_text(
+            "# Revision Builder\n\n| Field | Value |\n|---|---|\n| Mode | builder |\n",
+            encoding="utf-8",
+        )
+        self._run(["git", "add", "task-cards/PROJ.md", "task-cards/NEXT.md"])
+        self._run(["git", "commit", "-m", "add continuation cards"])
+        first = self._dispatch(extra_env={"FAKE_CLAUDE_MODE": "diff-without-report"})
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        prior_runtime = json.loads(
+            self._artifact_path(first.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+
+        approval = self.repo / ".worktrees" / "reviewed-host-approval.json"
+        prepared = self._run([
+            sys.executable, "scripts/prepare-worktree-continuation.py", "prepare",
+            "--prior-task-id", prior_runtime["task_id"],
+            "--next-task-card", str(next_card),
+            "--next-role", "builder",
+            "--decision", "accepted-direction",
+            "--accepted-existing-path", "README.md",
+            "--allow-new-write-path", "README.md",
+            "--output", str(approval),
+        ])
+        approval_value = json.loads(prepared.stdout)
+        consumed = (
+            self.repo / ".worktrees"
+            / f".reviewed-continuation-consumed-{approval_value['approval_id']}"
+        )
+        before_results = set((self.repo / ".worktrees").glob("*.result.json"))
+
+        blocked = self._dispatch(
+            "task-cards/NEXT.md",
+            {
+                "CLAUDE_CODE_REVIEWED_CONTINUATION": str(approval),
+                "CLAUDE_CODE_API_PROBE_MODE": "always",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
+                "CODEX_SANDBOX_NETWORK_DISABLED": "1",
+                "FAKE_CLAUDE_HEALTHCHECK_FAIL": "1",
+            },
+        )
+        self.assertEqual(blocked.returncode, 75, blocked.stderr + blocked.stdout)
+        self.assertFalse(consumed.exists())
+        self.assertIn(
+            f"host_retry_reviewed_continuation={approval.resolve()}",
+            blocked.stderr,
+        )
+        self.assertNotIn("host_retry_task_id=", blocked.stderr)
+        result_paths = set((self.repo / ".worktrees").glob("*.result.json")) - before_results
+        self.assertEqual(len(result_paths), 1)
+        payload = json.loads(result_paths.pop().read_text(encoding="utf-8"))
+        self.assertEqual(
+            payload["host_retry_environment"],
+            {
+                "CLAUDE_CODE_HOST_AUTHORITY": "1",
+                "CLAUDE_CODE_REVIEWED_CONTINUATION": str(approval.resolve()),
+            },
+        )
+        self.assertNotIn(
+            "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID",
+            payload["host_retry_environment"],
+        )
+
+        replay = self._dispatch(
+            "task-cards/NEXT.md",
+            {
+                "CLAUDE_CODE_REVIEWED_CONTINUATION": str(approval),
+                "CLAUDE_CODE_HOST_AUTHORITY": "1",
+                "CLAUDE_CODE_API_PROBE_MODE": "always",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
+                "FAKE_CLAUDE_MODE": "success",
+            },
+        )
+        self.assertEqual(replay.returncode, 0, replay.stderr + replay.stdout)
+        self.assertTrue(consumed.is_dir())
 
     def test_zero_byte_untracked_placeholder_is_not_implementation_progress(self):
         self._write_task_card()

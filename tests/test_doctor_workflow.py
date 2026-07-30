@@ -120,6 +120,102 @@ class DoctorWorkflowTests(unittest.TestCase):
             self.assertIn("ai/monitor-claude.sh", text)
             self.assertIn("--update-workflow-files", text)
 
+    def test_doctor_detects_outdated_agents_managed_block(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            agents = repo / "AGENTS.md"
+            agents.write_text(
+                agents.read_text(encoding="utf-8").replace(
+                    "## AI Coding Workflow Core",
+                    "## AI Coding Workflow Core stale",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+
+            old_roots = module._candidate_skill_roots
+            try:
+                module._candidate_skill_roots = lambda: [str(ROOT)]
+                findings, has_error = module.run_doctor(str(repo))
+            finally:
+                module._candidate_skill_roots = old_roots
+
+            self.assertFalse(has_error)
+            text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+            self.assertIn("workflow-version", text)
+            self.assertIn("AGENTS.md (managed block)", text)
+
+    def test_doctor_ignores_user_content_outside_agents_managed_block(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            agents = repo / "AGENTS.md"
+            agents.write_text(
+                agents.read_text(encoding="utf-8")
+                + "\n## User Instructions\n\nPreserve this custom text.\n",
+                encoding="utf-8",
+            )
+
+            old_roots = module._candidate_skill_roots
+            try:
+                module._candidate_skill_roots = lambda: [str(ROOT)]
+                outdated = module._outdated_project_workflow_files(str(repo))
+            finally:
+                module._candidate_skill_roots = old_roots
+
+            self.assertNotIn("AGENTS.md (managed block)", outdated)
+
+    def test_doctor_compares_skill_source_scripts_with_installed_skill(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            installed = base / "installed"
+            source = base / "source"
+            for root in (installed, source):
+                (root / "assets").mkdir(parents=True)
+                (root / "scripts").mkdir()
+                (root / "assets" / "task-card-template.md").write_text(
+                    "template\n", encoding="utf-8"
+                )
+                (root / "assets" / "AGENTS.md").write_text(
+                    "<!-- AI-CODING-WORKFLOW:BEGIN managed -->\n"
+                    "core\n"
+                    "<!-- AI-CODING-WORKFLOW:END managed -->\n",
+                    encoding="utf-8",
+                )
+                (root / "scripts" / "install_for_codex.py").write_text(
+                    "installer\n", encoding="utf-8"
+                )
+                (root / "SKILL.md").write_text("skill\n", encoding="utf-8")
+            (installed / "scripts" / "dispatch-to-claude.sh").write_text(
+                "installed\n", encoding="utf-8"
+            )
+            (source / "scripts" / "dispatch-to-claude.sh").write_text(
+                "new source\n", encoding="utf-8"
+            )
+            (source / "references").mkdir()
+            (source / "references" / "new-policy.md").write_text(
+                "new policy\n", encoding="utf-8"
+            )
+
+            old_roots = module._candidate_skill_roots
+            try:
+                module._candidate_skill_roots = lambda: [str(installed)]
+                outdated = module._outdated_project_workflow_files(str(source))
+            finally:
+                module._candidate_skill_roots = old_roots
+
+            self.assertIn(
+                "source:scripts/dispatch-to-claude.sh",
+                outdated,
+            )
+            self.assertIn("source:references/new-policy.md", outdated)
+
     def test_doctor_exits_nonzero_without_git(self):
         """Doctor exits 1 when no .git is found."""
         with tempfile.TemporaryDirectory() as tmp:

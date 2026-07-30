@@ -47,6 +47,34 @@ class PrepareWriteSandboxTests(unittest.TestCase):
                 with self.assertRaises(MOD.SandboxError):
                     MOD.prepare(self.card, self.worktree, self.output)
 
+    def test_composed_multiline_write_paths_are_exact(self) -> None:
+        self.card.write_text(
+            "## Scope\n\n"
+            "- Write paths:\n"
+            "  - `src/a.py`\n"
+            "  - `tests/test_a.py`\n"
+            "- Read paths:\n"
+            "  - `src/reference.py`\n"
+            "- Forbidden paths: deploy/\n",
+            encoding="utf-8",
+        )
+        value = MOD.prepare(self.card, self.worktree, self.output)
+        self.assertEqual(
+            value["declared_write_paths"],
+            ["src/a.py", "tests/test_a.py"],
+        )
+        self.assertNotIn("src/reference.py", value["declared_write_paths"])
+
+    def test_multiline_write_path_prose_fails_closed(self) -> None:
+        self.card.write_text(
+            "- Write paths:\n"
+            "  - runtime evidence only: CLAUDE_PROGRESS.md\n"
+            "- Read paths: src/\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(MOD.SandboxError):
+            MOD.prepare(self.card, self.worktree, self.output)
+
     def test_symlink_parent_and_hard_link_fail_closed(self) -> None:
         (self.worktree / ".git").mkdir()
         (self.worktree / "alias").symlink_to(".git", target_is_directory=True)
