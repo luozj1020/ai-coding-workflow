@@ -34,6 +34,22 @@ python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py . --local-
 
 Refresh an already-bootstrapped repository with `--update-workflow-files`. Without it, the installer reports outdated plain `ai/*` files but does not overwrite them. Managed blocks in `AGENTS.md` and `CLAUDE.md` preserve user-owned content outside their markers.
 
+Bootstrap also installs the managed project rule
+`.codex/rules/ai-coding-workflow.rules`. In a trusted project, after Codex is
+restarted, it pre-authorizes only these standard repository entrypoints:
+
+```bash
+bash ai/dispatch-to-claude.sh ...
+bash ai/run-codex-spark.sh ...
+```
+
+The rule does not authorize arbitrary Bash, `scripts/*` source helpers,
+environment-wrapped commands, merge, deployment, or destructive operations.
+Spark remains advisory and Codex still performs routing and bounded semantic
+review; actions that require human authority keep their existing approval
+boundary. Existing projects receive or refresh the rule through
+`--update-workflow-files`.
+
 Before changing the target repository, the project installer validates that
 every required asset, helper, schema, profile, and example exists and that no
 two sources target the same path. A broken source package therefore fails

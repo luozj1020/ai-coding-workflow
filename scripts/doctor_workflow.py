@@ -28,6 +28,7 @@ INFO = "INFO"
 WORKFLOW_REQUIRED_FILES = [
     "AGENTS.md",
     "CLAUDE.md",
+    ".codex/rules/ai-coding-workflow.rules",
     "ai/task-card-template.md",
     "ai/task-card-components/catalog.json",
     "ai/task-card-components/catalog.md",
@@ -147,6 +148,7 @@ WORKFLOW_RUNTIME_HELPERS = [
 ]
 
 WORKFLOW_PLAIN_FILE_SOURCES = [
+    ("assets/codex/ai-coding-workflow.rules", ".codex/rules/ai-coding-workflow.rules"),
     ("assets/task-card-template.md", "ai/task-card-template.md"),
     ("assets/task-card-components/catalog.json", "ai/task-card-components/catalog.json"),
     ("assets/task-card-components/catalog.md", "ai/task-card-components/catalog.md"),
@@ -988,6 +990,14 @@ def run_doctor(repo_path=None, hash_paths=None):
             findings.append((INFO, "workflow-version", "Refresh command: {}".format(_workflow_bootstrap_command(root, update_workflow_files=True))))
         else:
             findings.append((INFO, "workflow-version", "Local workflow files match the installed skill"))
+        findings.append((
+            INFO,
+            "codex-rules",
+            "Trusted-project Codex rule pre-authorizes only "
+            "`bash ai/dispatch-to-claude.sh ...` and "
+            "`bash ai/run-codex-spark.sh ...`; restart Codex after install/update. "
+            "Environment-wrapped or custom commands keep normal approval handling.",
+        ))
 
     git_path, git_version = _git_available()
     if git_path is None:

@@ -42,6 +42,7 @@ AGENTS_IMPORT = "@AGENTS.md"
 
 # Files to copy directly (source relative to assets/, dest relative to repo root)
 DIRECT_COPY = [
+    ("codex/ai-coding-workflow.rules", ".codex/rules/ai-coding-workflow.rules"),
     ("task-card-template.md", "ai/task-card-template.md"),
     ("task-card-components/catalog.json", "ai/task-card-components/catalog.json"),
     ("task-card-components/catalog.md", "ai/task-card-components/catalog.md"),
@@ -264,6 +265,7 @@ LOCAL_ONLY_EXCLUDE_LINES = [
     "/AGENTS.md",
     "/CLAUDE.md",
     "/ai/",
+    "/.codex/rules/ai-coding-workflow.rules",
     "/.worktrees/",
 ]
 

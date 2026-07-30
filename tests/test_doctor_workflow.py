@@ -73,6 +73,45 @@ class DoctorWorkflowTests(unittest.TestCase):
             result = self.run_doctor(repo)
             self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
             self.assertIn("Project workflow files are installed", result.stdout)
+            self.assertIn("Trusted-project Codex rule pre-authorizes only", result.stdout)
+            self.assertIn("restart Codex after install/update", result.stdout)
+            self.assertIn("Environment-wrapped or custom commands", result.stdout)
+
+    def test_doctor_requires_project_codex_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            (repo / ".codex" / "rules" / "ai-coding-workflow.rules").unlink()
+
+            result = self.run_doctor(repo)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(".codex/rules/ai-coding-workflow.rules", result.stdout)
+
+    def test_doctor_detects_outdated_project_codex_rule(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            (repo / ".codex" / "rules" / "ai-coding-workflow.rules").write_text(
+                "# stale approval rule\n",
+                encoding="utf-8",
+            )
+
+            old_roots = module._candidate_skill_roots
+            try:
+                module._candidate_skill_roots = lambda: [str(ROOT)]
+                findings, has_error = module.run_doctor(str(repo))
+            finally:
+                module._candidate_skill_roots = old_roots
+
+            self.assertFalse(has_error)
+            text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+            self.assertIn("workflow-version", text)
+            self.assertIn(".codex/rules/ai-coding-workflow.rules", text)
+            self.assertIn("--update-workflow-files", text)
 
     def test_doctor_warns_when_local_workflow_files_are_outdated(self):
         module = load_module()

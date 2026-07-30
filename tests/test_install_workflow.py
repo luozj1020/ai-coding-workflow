@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import stat
 import subprocess
 import sys
@@ -96,6 +97,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("skipped: AGENTS.md", second.stdout)
             self.assertTrue((repo / "AGENTS.md").exists())
             self.assertTrue((repo / "CLAUDE.md").exists())
+            self.assertTrue((repo / ".codex" / "rules" / "ai-coding-workflow.rules").exists())
             self.assertTrue((repo / "ai" / "task-card-template.md").exists())
             self.assertTrue((repo / "ai" / "task-card-components" / "catalog.md").exists())
             self.assertTrue((repo / "ai" / "task-card-components" / "core.md").exists())
@@ -234,6 +236,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("/AGENTS.md", exclude)
             self.assertIn("/CLAUDE.md", exclude)
             self.assertIn("/ai/", exclude)
+            self.assertIn("/.codex/rules/ai-coding-workflow.rules", exclude)
             self.assertIn("/.worktrees/", exclude)
 
     def test_local_only_warns_without_git_root(self):
@@ -315,6 +318,112 @@ class InstallWorkflowTests(unittest.TestCase):
 
             self.assertIn("updated: ai/dispatch-to-claude.sh", second.stdout)
             self.assertIn("You are the executor in a Codex/Claude Code workflow.", dispatch.read_text(encoding="utf-8"))
+
+    def test_project_rule_allows_only_standard_workflow_entrypoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+
+            self.run_installer(repo)
+
+            rule = (repo / ".codex" / "rules" / "ai-coding-workflow.rules").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(
+                'pattern = ["bash", "ai/dispatch-to-claude.sh"]',
+                rule,
+            )
+            self.assertIn(
+                'pattern = ["bash", "ai/run-codex-spark.sh"]',
+                rule,
+            )
+            self.assertEqual(rule.count('decision = "allow"'), 2)
+            self.assertNotIn('pattern = ["bash"]', rule)
+            self.assertNotIn('pattern = ["env"]', rule)
+            self.assertNotIn('pattern = ["bash", "scripts/', rule)
+
+    def test_old_project_rule_requires_explicit_workflow_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            rule = repo / ".codex" / "rules" / "ai-coding-workflow.rules"
+            rule.write_text("# stale rule that still prompts\n", encoding="utf-8")
+
+            unchanged = self.run_installer(repo)
+
+            self.assertIn(
+                "outdated: .codex/rules/ai-coding-workflow.rules",
+                unchanged.stdout,
+            )
+            self.assertEqual(
+                rule.read_text(encoding="utf-8"),
+                "# stale rule that still prompts\n",
+            )
+
+            refreshed = self.run_installer(repo, "--update-workflow-files")
+
+            self.assertIn(
+                "updated: .codex/rules/ai-coding-workflow.rules",
+                refreshed.stdout,
+            )
+            self.assertEqual(
+                rule.read_text(encoding="utf-8"),
+                (ROOT / "assets" / "codex" / "ai-coding-workflow.rules").read_text(
+                    encoding="utf-8"
+                ),
+            )
+
+    @unittest.skipUnless(shutil.which("codex"), "codex CLI is not installed")
+    def test_project_rule_matches_expected_execpolicy_commands(self):
+        def check(rule, *command):
+            result = subprocess.run(
+                [
+                    "codex",
+                    "execpolicy",
+                    "check",
+                    "--pretty",
+                    "--rules",
+                    str(rule),
+                    "--",
+                    *command,
+                ],
+                cwd=str(ROOT),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=True,
+            )
+            return json.loads(result.stdout)
+
+        rule = ROOT / "assets" / "codex" / "ai-coding-workflow.rules"
+        dispatch = check(rule, "bash", "ai/dispatch-to-claude.sh", "/tmp/card.md")
+        spark = check(
+            rule,
+            "bash",
+            "ai/run-codex-spark.sh",
+            "/tmp/card.md",
+            "--mode",
+            "task-card-audit",
+        )
+        wrapped = check(
+            rule,
+            "env",
+            "CLAUDE_CODE_HOST_AUTHORITY=1",
+            "bash",
+            "ai/dispatch-to-claude.sh",
+            "/tmp/card.md",
+        )
+        source_helper = check(
+            rule,
+            "bash",
+            "scripts/dispatch-to-claude.sh",
+            "/tmp/card.md",
+        )
+
+        self.assertEqual(dispatch["decision"], "allow")
+        self.assertEqual(spark["decision"], "allow")
+        self.assertEqual(wrapped["matchedRules"], [])
+        self.assertEqual(source_helper["matchedRules"], [])
 
     def test_installed_agent_rules_include_execution_contracts(self):
         with tempfile.TemporaryDirectory() as tmp:

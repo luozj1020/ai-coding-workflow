@@ -27,7 +27,9 @@ Skill installation and project bootstrap are separate. If another repository doe
 python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py .
 ```
 
-If the target repository should use the workflow locally but should not commit `ai/`, `AGENTS.md`, `CLAUDE.md`, `.worktrees/`, or `.gitignore` changes, use local-only bootstrap:
+If the target repository should use the workflow locally but should not commit
+`ai/`, `.codex/rules/ai-coding-workflow.rules`, `AGENTS.md`, `CLAUDE.md`,
+`.worktrees/`, or `.gitignore` changes, use local-only bootstrap:
 
 ```bash
 python ~/.codex/skills/ai-coding-workflow/scripts/install_workflow.py . --local-only
@@ -48,6 +50,15 @@ python scripts/update_skill.py --bootstrap-current
 ```
 
 Updating the user-level Skill and updating this repository's local workflow files are separate operations. `update_skill.py --bootstrap-current` does both: it refreshes the Codex Skill and then runs the repository bootstrap with `--update-workflow-files` so existing `ai/*` workflow files receive new dispatcher, review prompt, template, and helper behavior. Running `install_workflow.py` without that flag reports outdated local files but does not overwrite them.
+
+Bootstrap also manages `.codex/rules/ai-coding-workflow.rules`. Once the project
+is trusted and Codex is restarted, the rule allows the exact standard
+`bash ai/dispatch-to-claude.sh ...` and
+`bash ai/run-codex-spark.sh ...` entrypoints without another human
+confirmation. It deliberately does not allow arbitrary Bash, `scripts/*`
+source helpers, environment-wrapped commands, merge, deployment, or destructive
+actions. Spark remains advisory and Codex retains routing and semantic review.
+Use `--update-workflow-files` to add or refresh this rule in an older project.
 
 If running from the installed Skill while using a separate clone as the update source:
 
