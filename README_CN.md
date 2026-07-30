@@ -178,6 +178,27 @@ Advisor 调用必须绑定非空 request/evidence，并明确使用单次调用�
 
 安装 Skill 只会让 Codex 发现该 workflow，不会自动在目标仓库创建或刷新 `ai/` 目录。已经引导过的项目会保留本地的 `ai/dispatch-to-claude.sh`、`ai/task-card-template.md` 等 workflow 副本。更新 Skill 后，需要使用 `update_skill.py --bootstrap-current` 或 `install_workflow.py . --update-workflow-files` 刷新这些本地副本。
 
+刷新旧项目时还会安装 `.codex/rules/ai-coding-workflow.rules`。刷新完成后
+必须重启 Codex，新的项目规则才会生效。在可信项目中，该规则只让以下标准仓库
+入口免于再次请求人工确认：
+
+```bash
+bash ai/run-codex-spark.sh ...
+bash ai/dispatch-to-claude.sh ...
+```
+
+不要在命令前添加环境变量赋值，也不要把 `ai/` 换成 `scripts/`；这两种写法都会
+改变命令前缀，因而仍可能触发确认。如果需要在不读取真实文件的前提下禁用项目
+专用 API 配置，应保留标准前缀并使用受限 wrapper 参数：
+
+```bash
+bash ai/run-codex-spark.sh CARD ... --empty-api-config-env PROJECT_API_CONFIG_FILE
+bash ai/dispatch-to-claude.sh CARD --empty-api-config-env PROJECT_API_CONFIG_FILE
+```
+
+这条窄规则不会授权任意 Bash、合并、部署、破坏性操作或产品决策。Spark 仍然
+只是 advisory，路由和有界语义审查仍由 Codex 负责。
+
 如果目标仓库只想本地使用 `ai/`、`AGENTS.md`、`CLAUDE.md` 和 `.worktrees/`，不希望把这些控制面文件提交到业务仓库，使用 `--local-only`。它会把这些路径写入 `.git/info/exclude`，不会修改 `.gitignore`；`doctor_workflow.py` 会把这种配置识别为 local-only ignore mode。
 
 ## 仓库结构
@@ -377,6 +398,20 @@ python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
 `python scripts/update_skill.py` 只更新用户级 Codex Skill。`--bootstrap-current` 和 `--bootstrap-repo` 会额外使用 `--update-workflow-files` 刷新目标仓库本地 workflow 文件，因此旧项目也能拿到新的 dispatcher、review prompt、模板和辅助脚本行为。
+
+已安装的更新器会记录并复用真实源码 checkout，不会再静默地把已安装 Skill
+目录当成自己的更新源。来源记录缺失、过期、自引用或不再指向 Git checkout
+时，更新会在修改项目文件前失败，并要求显式传入
+`--source /path/to/checkout`。成功执行 `--update-workflow-files` 后，安装器还会
+校验每个托管目标是否与新安装的 Skill 一致。
+
+如果更新后看起来仍是旧版本，请依次核对三层：
+
+1. 源码 checkout 是否包含预期提交。
+2. 用户级 Skill 是否从该 checkout 安装。安装器会在
+   `.aiwf-install-provenance.json` 中记录来源路径、提交、dirty 状态和包哈希。
+3. 目标项目是否使用 `--update-workflow-files` 完成刷新，以及刷新后是否重启
+   Codex，使新的 `.codex/rules/ai-coding-workflow.rules` 生效。
 
 更新过程现在在两个边界上都采用故障安全策略。用户级 Skill 会先复制到
 同级 staging 目录并完成校验，再原子切换；激活失败时恢复旧版本。项目

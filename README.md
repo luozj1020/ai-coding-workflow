@@ -188,6 +188,31 @@ symptoms force a live probe and invalidate failed availability evidence. Set
 
 These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create or refresh the target repository's `ai/` directory. Already bootstrapped projects keep local copies of `ai/dispatch-to-claude.sh`, `ai/task-card-template.md`, and other workflow files. Use `update_skill.py --bootstrap-current` or `install_workflow.py . --update-workflow-files` to refresh those local copies after updating the Skill.
 
+Refreshing an existing project also installs
+`.codex/rules/ai-coding-workflow.rules`. Restart Codex after the refresh so the
+new project rule is loaded. In a trusted project, the rule avoids another
+human confirmation only for commands that begin exactly with the standard
+repository entrypoints:
+
+```bash
+bash ai/run-codex-spark.sh ...
+bash ai/dispatch-to-claude.sh ...
+```
+
+Do not prepend an environment assignment or replace `ai/` with `scripts/`;
+either change produces a different command prefix and can prompt again. To
+disable a project-specific API config without reading it, preserve the standard
+prefix and use the bounded wrapper option:
+
+```bash
+bash ai/run-codex-spark.sh CARD ... --empty-api-config-env PROJECT_API_CONFIG_FILE
+bash ai/dispatch-to-claude.sh CARD --empty-api-config-env PROJECT_API_CONFIG_FILE
+```
+
+This narrow rule does not authorize arbitrary Bash, merge, deployment,
+destructive actions, or product decisions. Spark remains advisory and Codex
+still owns routing and semantic review.
+
 Use `--local-only` when a target repository should use `ai/`, `AGENTS.md`, `CLAUDE.md`, and `.worktrees/` locally but should not commit them. It writes those control-plane paths to `.git/info/exclude` and leaves `.gitignore` untouched; `doctor_workflow.py` accepts this as the local-only ignore mode.
 
 ## Repository layout
@@ -404,6 +429,18 @@ silently using the installed Skill as its own update source. Missing or invalid
 source provenance now fails before project files are changed. A successful
 `--update-workflow-files` run also verifies that every managed destination
 matches the newly installed Skill.
+
+If an update appears to have had no effect, verify all three layers:
+
+1. The source checkout contains the expected commit.
+2. The user-level Skill was installed from that checkout. The installer records
+   its source path, commit, dirty state, and package hash in
+   `.aiwf-install-provenance.json`; an installed updater with missing, stale, or
+   self-referential provenance fails and requires
+   `--source /path/to/checkout`.
+3. The target repository was refreshed with `--update-workflow-files`, and
+   Codex was restarted so its new `.codex/rules/ai-coding-workflow.rules` was
+   loaded.
 
 Updates are fail-safe at both boundaries. The user-level Skill is copied into a
 validated sibling staging directory and atomically activated; activation
