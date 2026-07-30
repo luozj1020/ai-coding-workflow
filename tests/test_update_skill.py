@@ -1,8 +1,10 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -77,6 +79,82 @@ class ParseArgsGuidedSetupTests(unittest.TestCase):
     def test_guided_apply_allows_pull(self):
         args = self.module.parse_args(["--setup-current", "--pull", "--apply"])
         self.assertTrue(args.pull)
+
+    def test_source_defaults_to_deferred_resolution(self):
+        args = self.module.parse_args([])
+        self.assertIsNone(args.source)
+
+
+class ResolveSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def test_explicit_source_is_used_without_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, provenance = self.module.resolve_source(tmp, "/missing/install")
+        self.assertEqual(source, os.path.abspath(tmp))
+        self.assertIsNone(provenance)
+
+    def test_installed_updater_resolves_recorded_git_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            installed = root / "installed"
+            source = root / "source"
+            installed.mkdir()
+            source.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=str(source), check=True)
+            (source / "tracked.txt").write_text("ok\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=str(source), check=True)
+            subprocess.run(
+                [
+                    "git", "-c", "user.name=Test",
+                    "-c", "user.email=test@example.com",
+                    "commit", "-qm", "initial",
+                ],
+                cwd=str(source),
+                check=True,
+            )
+            commit = self.module.git_commit(str(source))
+            (installed / self.module.INSTALL_PROVENANCE_FILE).write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "source_path": str(source),
+                        "source_commit": commit,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            resolved, provenance = self.module.resolve_source(
+                running_root=str(installed)
+            )
+
+            self.assertEqual(resolved, str(source))
+            self.assertEqual(provenance["source_commit"], commit)
+
+    def test_installed_updater_without_provenance_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, "no valid update provenance"):
+                self.module.resolve_source(running_root=tmp)
+
+    def test_self_referential_provenance_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            installed = pathlib.Path(tmp)
+            (installed / self.module.INSTALL_PROVENANCE_FILE).write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "source_path": str(installed),
+                        "source_commit": None,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "points back"):
+                self.module.resolve_source(running_root=str(installed))
 
 
 class BuildGuidedPhasesTests(unittest.TestCase):

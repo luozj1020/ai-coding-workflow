@@ -1,6 +1,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import pathlib
 import re
@@ -42,6 +43,8 @@ class InstallForCodexTests(unittest.TestCase):
             (src / "__pycache__").mkdir()
             (src / ".worktrees").mkdir()
             (src / ".codegraph").mkdir()
+            (src / ".codex").mkdir()
+            (src / ".agents").mkdir()
             (src / "ref").mkdir()
             (src / "ai").mkdir()
             (src / "README.md").write_text("ok\n", encoding="utf-8")
@@ -56,6 +59,8 @@ class InstallForCodexTests(unittest.TestCase):
             (src / "__pycache__" / "x.pyc").write_text("compiled\n", encoding="utf-8")
             (src / ".worktrees" / "artifact.txt").write_text("artifact\n", encoding="utf-8")
             (src / ".codegraph" / "codegraph.db").write_text("db\n", encoding="utf-8")
+            (src / ".codex" / "local-rule").write_text("rule\n", encoding="utf-8")
+            (src / ".agents" / "local-agent").write_text("agent\n", encoding="utf-8")
             (src / "ref" / "article.md").write_text("local reference\n", encoding="utf-8")
             (src / "ai" / "dispatch-to-claude.sh").write_text("generated\n", encoding="utf-8")
 
@@ -71,10 +76,20 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertFalse((dest / "__pycache__").exists())
             self.assertFalse((dest / ".worktrees").exists())
             self.assertFalse((dest / ".codegraph").exists())
+            self.assertFalse((dest / ".codex").exists())
+            self.assertFalse((dest / ".agents").exists())
             self.assertFalse((dest / "ref").exists())
             self.assertFalse((dest / "ai").exists())
             self.assertFalse((dest / "task-cards").exists())
             self.assertFalse((dest / "tmp-smoke").exists())
+            provenance = json.loads(
+                (dest / self.module.INSTALL_PROVENANCE_FILE).read_text(encoding="utf-8")
+            )
+            self.assertEqual(provenance["schema_version"], 1)
+            self.assertEqual(provenance["source_path"], str(src.resolve()))
+            self.assertIsNone(provenance["source_commit"])
+            self.assertIsNone(provenance["source_dirty"])
+            self.assertRegex(provenance["package_sha256"], r"^sha256:[0-9a-f]{64}$")
 
     def test_copy_skill_activation_failure_restores_previous_install(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -122,6 +137,48 @@ class InstallForCodexTests(unittest.TestCase):
 
             self.assertTrue(marker.exists())
             self.assertEqual(marker.read_text(encoding="utf-8"), "ok\n")
+
+    def test_copy_skill_records_source_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = pathlib.Path(tmp) / "src"
+            dest = pathlib.Path(tmp) / "dest"
+            (src / "assets").mkdir(parents=True)
+            (src / "scripts").mkdir()
+            (src / "SKILL.md").write_text("skill\n", encoding="utf-8")
+            (src / "assets" / "AGENTS.md").write_text("agents\n", encoding="utf-8")
+            (src / "assets" / "CLAUDE.md").write_text("claude\n", encoding="utf-8")
+            (src / "scripts" / "install_workflow.py").write_text("install\n", encoding="utf-8")
+            (src / "scripts" / "update_skill.py").write_text("update\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=str(src), check=True)
+            subprocess.run(["git", "add", "-A"], cwd=str(src), check=True)
+            subprocess.run(
+                [
+                    "git", "-c", "user.name=Test",
+                    "-c", "user.email=test@example.com",
+                    "commit", "-qm", "initial",
+                ],
+                cwd=str(src),
+                check=True,
+            )
+
+            self.module.copy_skill(str(src), str(dest))
+
+            provenance = json.loads(
+                (dest / self.module.INSTALL_PROVENANCE_FILE).read_text(encoding="utf-8")
+            )
+            expected = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(src),
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual(provenance["source_commit"], expected)
+            self.assertFalse(provenance["source_dirty"])
+            self.assertEqual(
+                provenance["package_sha256"],
+                self.module.package_tree_hash(str(dest)),
+            )
 
     def test_build_bootstrap_command_targets_installed_skill(self):
         with tempfile.TemporaryDirectory() as tmp:

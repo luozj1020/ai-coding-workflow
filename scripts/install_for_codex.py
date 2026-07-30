@@ -25,7 +25,9 @@ Uses only the Python standard library.
 """
 
 import argparse
+import hashlib
 import importlib.util
+import json
 import os
 import shlex
 import shutil
@@ -36,13 +38,15 @@ from fnmatch import fnmatch
 
 EXCLUDE_DIRS = {
     ".git", "__pycache__", ".worktrees", "node_modules", "task-cards",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".codegraph", "ref", "ai",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".codegraph", ".codex",
+    ".agents", "ref", "ai",
 }
 EXCLUDE_FILES = {"*.pyc", ".DS_Store", "Thumbs.db"}
 EXCLUDE_ROOT_FILES = {"AGENTS.md", "CLAUDE.md"}
 EXCLUDE_NAME_PATTERNS = ["tmp-*", "test-repo", "test_repo"]
 EXCLUDE_PATH_PATTERNS = [".cache"]
 SKILL_NAME = "ai-coding-workflow"
+INSTALL_PROVENANCE_FILE = ".aiwf-install-provenance.json"
 LSP_TOOL_CHECKS = [
     ("python", "pyright", "pyright"),
     ("node", "typescript-language-server", "typescript-language-server"),
@@ -85,6 +89,78 @@ def paths_equal(left, right):
         return os.path.samefile(left_abs, right_abs)
     except OSError:
         return os.path.normcase(left_abs) == os.path.normcase(right_abs)
+
+
+def git_commit(path):
+    """Return the checkout HEAD for *path*, or None outside a Git checkout."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.path.abspath(path), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError):
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def install_provenance(source):
+    """Build stable provenance that lets an installed updater find its checkout."""
+    return {
+        "schema_version": 1,
+        "source_path": os.path.realpath(os.path.abspath(source)),
+        "source_commit": git_commit(source),
+        "source_dirty": git_dirty(source),
+    }
+
+
+def write_install_provenance(destination, source):
+    path = os.path.join(destination, INSTALL_PROVENANCE_FILE)
+    value = install_provenance(source)
+    value["package_sha256"] = package_tree_hash(destination)
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def git_dirty(path):
+    """Return True/False for a checkout, or None outside Git."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.path.abspath(path), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError):
+        return None
+    return bool(result.stdout.strip())
+
+
+def package_tree_hash(path):
+    """Hash installed package paths and bytes, excluding provenance itself."""
+    digest = hashlib.sha256()
+    root_path = os.path.abspath(path)
+    for root, dirs, files in os.walk(root_path):
+        dirs.sort()
+        for name in sorted(files):
+            full_path = os.path.join(root, name)
+            relative = os.path.relpath(full_path, root_path).replace(os.sep, "/")
+            if relative == INSTALL_PROVENANCE_FILE:
+                continue
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            with open(full_path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            digest.update(b"\0")
+    return "sha256:" + digest.hexdigest()
 
 
 def quote_cmd_arg(value):
@@ -591,6 +667,7 @@ def copy_skill(src, dest):
     activated = False
     try:
         _copy_skill_contents(src, staging)
+        write_install_provenance(staging, src)
         validate_skill_tree(staging)
         if os.path.exists(dest):
             backup_root = tempfile.mkdtemp(
@@ -663,7 +740,7 @@ def run_bootstrap(installed_skill_dir, repo_path):
     subprocess.run([sys.executable, installer, repo_abs, "--update-workflow-files"], check=True)
 
 
-def print_next_steps(installed_skill_dir):
+def print_next_steps(installed_skill_dir, source_dir=None):
     """Print commands that connect skill installation to project bootstrap."""
     installed_installer = os.path.join(installed_skill_dir, "scripts", "install_for_codex.py")
     installed_updater = os.path.join(installed_skill_dir, "scripts", "update_skill.py")
@@ -676,8 +753,17 @@ def print_next_steps(installed_skill_dir):
         quote_cmd_arg(installed_updater),
     )
     print("\nConvenient update command:")
-    print("  {}".format(installed_updater_cmd))
-    print("  {} --bootstrap-current".format(installed_updater_cmd))
+    if source_dir and not paths_equal(source_dir, installed_skill_dir):
+        source_arg = quote_cmd_arg(os.path.abspath(source_dir))
+        print("  {} --source {}".format(installed_updater_cmd, source_arg))
+        print("  {} --source {} --bootstrap-current".format(
+            installed_updater_cmd, source_arg
+        ))
+    else:
+        print("  {} --source <path-to-git-checkout>".format(installed_updater_cmd))
+        print("  {} --source <path-to-git-checkout> --bootstrap-current".format(
+            installed_updater_cmd
+        ))
     print("")
     print("\nNext step for each target repository:")
     print("  cd <your-repository>")
@@ -729,7 +815,7 @@ def main(argv=None):
     print(f"\nInstalled {file_count} files to {dest}")
     print("\nTo update, run this script again.")
     print("To verify, check that SKILL.md exists in the target directory.")
-    print_next_steps(dest)
+    print_next_steps(dest, source_dir=skill_dir)
 
     bootstrap_repo = None
     if args.bootstrap_current:

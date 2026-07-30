@@ -627,6 +627,39 @@ def install_or_update_plain(src_content, dest_path, update_existing=False):
     return "skipped"
 
 
+def verify_refresh_postcondition(repo_path, assets_dir, scripts_dir):
+    """Return managed destinations that do not match this Skill after refresh."""
+    mismatches = []
+    entries = build_install_manifest(assets_dir, scripts_dir)
+    for source, dest_rel in entries:
+        destination = os.path.join(repo_path, dest_rel)
+        if not os.path.isfile(destination):
+            mismatches.append(dest_rel + " (missing)")
+            continue
+        expected = read_file(source)
+        actual = read_file(destination)
+        if dest_rel in {"AGENTS.md", "CLAUDE.md"}:
+            expected_block = get_managed_block_from_asset(expected)
+            actual_block = extract_managed_block(actual)
+            if (
+                actual_block is None
+                or normalize_for_compare(actual_block)
+                != normalize_for_compare(expected_block)
+            ):
+                mismatches.append(dest_rel + " (managed block mismatch)")
+                continue
+            if dest_rel == "CLAUDE.md" and not any(
+                line.strip() == AGENTS_IMPORT for line in actual.splitlines()
+            ):
+                mismatches.append(dest_rel + " (missing @AGENTS.md)")
+        elif normalize_for_compare(actual) != normalize_for_compare(expected):
+            mismatches.append(dest_rel + " (content mismatch)")
+    for dest_rel in RETIRED_WORKFLOW_FILES:
+        if os.path.lexists(os.path.join(repo_path, dest_rel)):
+            mismatches.append(dest_rel + " (retired file remains)")
+    return mismatches
+
+
 def ensure_worktrees_gitignore(repo_path):
     """Ensure workflow runtime artifacts under .worktrees stay ignored."""
     gitignore_path = os.path.join(repo_path, ".gitignore")
@@ -963,7 +996,21 @@ def main(argv=None):
         print(f"  Failed:    {len(results['failed'])} scripts")
         for f in results["failed"]:
             print(f"    X {f}")
+    postcondition_mismatches = []
+    if update_workflow_files:
+        postcondition_mismatches = verify_refresh_postcondition(
+            repo_path, assets_dir, scripts_dir
+        )
+        if postcondition_mismatches:
+            print("  Refresh verification failed:")
+            for item in postcondition_mismatches:
+                print(f"    X {item}")
+        else:
+            print("  Refresh verification: PASS")
     print("\nDone.")
+    if results["failed"] or postcondition_mismatches:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

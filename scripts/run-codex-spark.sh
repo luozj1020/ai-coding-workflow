@@ -73,6 +73,10 @@ Options:
                     auto: detect restricted sandbox from CODEX_SANDBOX_NETWORK_DISABLED.
                     host: caller asserts outside-sandbox authority; unsets inherited marker.
                     sandbox: preserve inherited marker and existing invocation behavior.
+  --empty-api-config-env NAME
+                    Export NAME=/dev/null for this run. NAME must end in
+                    _API_CONFIG_FILE. This keeps the approved `bash ai/...`
+                    command prefix while preventing reads of a real API config.
   -h, --help        Show this help
 
 Environment:
@@ -147,6 +151,7 @@ ROUTING_EVENT="${CODEX_SPARK_ROUTING_EVENT:-initial}"
 EXPLICIT_OUTPUT="no"
 EXECUTION_ENV="${CODEX_SPARK_EXECUTION_ENV:-auto}"
 CONTEXT_WORKTREE="${CODEX_SPARK_CONTEXT_WORKTREE:-}"
+EMPTY_API_CONFIG_ENV=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -258,6 +263,11 @@ while [ $# -gt 0 ]; do
             EXECUTION_ENV="$2"
             shift 2
             ;;
+        --empty-api-config-env)
+            [ $# -ge 2 ] || { echo "Error: --empty-api-config-env requires a value." >&2; exit 1; }
+            EMPTY_API_CONFIG_ENV="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -278,6 +288,24 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+if [ -n "$EMPTY_API_CONFIG_ENV" ]; then
+    case "$EMPTY_API_CONFIG_ENV" in
+        *[!A-Z0-9_]*|[0-9]*|"")
+            echo "Error: --empty-api-config-env must be an uppercase environment name ending in _API_CONFIG_FILE." >&2
+            exit 1
+            ;;
+    esac
+    case "$EMPTY_API_CONFIG_ENV" in
+        *_API_CONFIG_FILE) ;;
+        *)
+            echo "Error: --empty-api-config-env must end in _API_CONFIG_FILE." >&2
+            exit 1
+            ;;
+    esac
+    printf -v "$EMPTY_API_CONFIG_ENV" '%s' /dev/null
+    export "$EMPTY_API_CONFIG_ENV"
+fi
 
 _INPUT_COUNT=0
 [ -n "$TASK_CARD" ] && _INPUT_COUNT=$((_INPUT_COUNT + 1))

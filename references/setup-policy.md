@@ -16,6 +16,13 @@ Update the skill and refresh the current repository's managed workflow files:
 python scripts/update_skill.py --bootstrap-current
 ```
 
+An updater run from the installed Skill never treats that installed directory
+as its own source. Installation records the real source-checkout path, HEAD,
+dirty state, and package content hash. The installed updater reuses that
+checkout; if the provenance is missing, stale, self-referential, or no longer a
+Git checkout, it fails before project bootstrap and requires an explicit
+`--source /path/to/checkout`.
+
 Preview or apply guided setup:
 
 ```bash
@@ -50,6 +57,20 @@ review; actions that require human authority keep their existing approval
 boundary. Existing projects receive or refresh the rule through
 `--update-workflow-files`.
 
+When a workflow must suppress a project-specific API configuration without
+reading the real file, keep the standard approved prefix and use the bounded
+wrapper option:
+
+```bash
+bash ai/run-codex-spark.sh CARD ... --empty-api-config-env PROJECT_API_CONFIG_FILE
+bash ai/dispatch-to-claude.sh CARD --empty-api-config-env PROJECT_API_CONFIG_FILE
+```
+
+The name must be uppercase and end in `_API_CONFIG_FILE`; the wrapper exports
+that variable as `/dev/null`. Do not prepend an environment assignment to the
+command because that changes the command shape and cannot match the narrow
+trusted-project rule.
+
 Before changing the target repository, the project installer validates that
 every required asset, helper, schema, profile, and example exists and that no
 two sources target the same path. A broken source package therefore fails
@@ -65,6 +86,11 @@ executable Skill surface, then atomically switches the installed directory. If
 activation fails after the previous directory is moved aside, the previous
 Skill is restored before the command returns an error. Repository bootstrap
 starts only after that Skill activation succeeds.
+
+With `--update-workflow-files`, the project installer also performs a final
+content comparison across managed blocks, rules, helpers, schemas, profiles,
+and examples. Any missing or stale managed destination makes the command fail
+instead of reporting a successful refresh.
 
 ## Environment-Aware Setup
 

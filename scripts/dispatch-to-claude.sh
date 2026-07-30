@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # dispatch-to-claude.sh  -  Dispatch a task card to Claude Code in an isolated worktree.
 #
-# Usage: bash ai/dispatch-to-claude.sh <task-card-path>
+# Usage: bash ai/dispatch-to-claude.sh <task-card-path> [--empty-api-config-env NAME]
 #
 # This script:
 #   1. Validates that git and claude CLI exist.
@@ -23,11 +23,47 @@ PATH="${PATH}:/usr/bin:/bin:/mingw64/bin"
 export PATH
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path>" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME]" >&2
     exit 1
 fi
 
 TASK_CARD="$1"
+shift
+EMPTY_API_CONFIG_ENV=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --empty-api-config-env)
+            [ $# -ge 2 ] || {
+                echo "Error: --empty-api-config-env requires a value." >&2
+                exit 1
+            }
+            EMPTY_API_CONFIG_ENV="$2"
+            shift 2
+            ;;
+        *)
+            echo "Error: unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+if [ -n "$EMPTY_API_CONFIG_ENV" ]; then
+    case "$EMPTY_API_CONFIG_ENV" in
+        *[!A-Z0-9_]*|[0-9]*|"")
+            echo "Error: --empty-api-config-env must be an uppercase environment name ending in _API_CONFIG_FILE." >&2
+            exit 1
+            ;;
+    esac
+    case "$EMPTY_API_CONFIG_ENV" in
+        *_API_CONFIG_FILE) ;;
+        *)
+            echo "Error: --empty-api-config-env must end in _API_CONFIG_FILE." >&2
+            exit 1
+            ;;
+    esac
+    printf -v "$EMPTY_API_CONFIG_ENV" '%s' /dev/null
+    export "$EMPTY_API_CONFIG_ENV"
+fi
 
 if [ ! -f "$TASK_CARD" ]; then
     echo "Error: Task card not found: $TASK_CARD" >&2

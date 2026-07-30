@@ -1,0 +1,36 @@
+# Managed by ai-coding-workflow.
+#
+# These rules allow only the two standard audited workflow entrypoints to run
+# outside the sandbox without another human confirmation.  Codex still owns
+# routing and semantic review; Spark remains advisory; both scripts retain
+# their own scope, worktree, network, and evidence enforcement.
+
+prefix_rule(
+    pattern = ["bash", "ai/dispatch-to-claude.sh"],
+    decision = "allow",
+    justification = "Allow the repository-scoped Claude dispatcher after Codex routing and bounded Spark audit.",
+    match = [
+        "bash ai/dispatch-to-claude.sh task-card.md",
+        "bash ai/dispatch-to-claude.sh /tmp/task-card.md",
+    ],
+    not_match = [
+        "bash scripts/dispatch-to-claude.sh task-card.md",
+        "env CLAUDE_CODE_HOST_AUTHORITY=1 bash ai/dispatch-to-claude.sh task-card.md",
+        "bash ai/run-codex-spark.sh task-card.md",
+    ],
+)
+
+prefix_rule(
+    pattern = ["bash", "ai/run-codex-spark.sh"],
+    decision = "allow",
+    justification = "Allow the repository-scoped advisory Spark entrypoint for bounded audit and review work.",
+    match = [
+        "bash ai/run-codex-spark.sh task-card.md --mode task-card-audit --result-mode direct",
+        "bash ai/run-codex-spark.sh task-card.md --mode task-card-audit --result-mode direct --execution-env host",
+    ],
+    not_match = [
+        "bash scripts/run-codex-spark.sh task-card.md",
+        "env CODEX_SPARK_HOST_AUTHORITY=1 bash ai/run-codex-spark.sh task-card.md",
+        "bash ai/dispatch-to-claude.sh task-card.md",
+    ],
+)

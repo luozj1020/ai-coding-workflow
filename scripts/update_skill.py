@@ -26,10 +26,13 @@ the plan without changes; --apply runs the coordinated sequence.
 """
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
 import sys
+
+INSTALL_PROVENANCE_FILE = ".aiwf-install-provenance.json"
 
 
 def script_root():
@@ -50,8 +53,11 @@ def parse_args(argv=None):
     parser.add_argument(
         "--source",
         metavar="PATH",
-        default=script_root(),
-        help="Skill source checkout to install from. Defaults to the directory containing this script.",
+        default=None,
+        help=(
+            "Skill source checkout to install from. From an installed Skill, "
+            "the recorded source checkout is used; from a checkout, that checkout is used."
+        ),
     )
     parser.add_argument(
         "--pull",
@@ -106,6 +112,79 @@ def validate_source(source):
     if not os.path.isdir(assets):
         raise FileNotFoundError("assets directory not found under source: {}".format(source))
     return source, installer
+
+
+def git_commit(source):
+    """Return HEAD for a valid Git checkout, or None."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.path.abspath(source), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError):
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def read_install_provenance(installed_root):
+    path = os.path.join(installed_root, INSTALL_PROVENANCE_FILE)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            value = json.load(handle)
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(
+            "installed Skill has no valid update provenance at {}: {}. "
+            "Run this updater from a Git checkout or pass --source explicitly."
+            .format(path, exc)
+        )
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise RuntimeError(
+            "installed Skill update provenance is unsupported: {}. "
+            "Pass --source explicitly.".format(path)
+        )
+    return value
+
+
+def resolve_source(explicit_source=None, running_root=None):
+    """Resolve a real update source without silently self-sourcing an install."""
+    running_root = os.path.abspath(running_root or script_root())
+    if explicit_source:
+        return os.path.abspath(explicit_source), None
+
+    running_commit = git_commit(running_root)
+    if running_commit:
+        return running_root, {
+            "schema_version": 1,
+            "source_path": os.path.realpath(running_root),
+            "source_commit": running_commit,
+        }
+
+    provenance = read_install_provenance(running_root)
+    source = provenance.get("source_path")
+    if not isinstance(source, str) or not source.strip():
+        raise RuntimeError(
+            "installed Skill update provenance has no source_path. "
+            "Pass --source explicitly."
+        )
+    source = os.path.abspath(source)
+    if os.path.normcase(os.path.realpath(source)) == os.path.normcase(
+        os.path.realpath(running_root)
+    ):
+        raise RuntimeError(
+            "installed Skill provenance points back to the installed Skill itself. "
+            "Pass the real Git checkout with --source."
+        )
+    if not git_commit(source):
+        raise RuntimeError(
+            "recorded Skill source is missing or is not a Git checkout: {}. "
+            "Pass a current checkout with --source.".format(source)
+        )
+    return source, provenance
 
 
 def maybe_pull(source, enabled):
@@ -220,9 +299,26 @@ def run_guided_setup(source, repo_path, phases):
 
 def main(argv=None):
     args = parse_args(argv)
-    source, installer = validate_source(args.source)
+    try:
+        source, provenance = resolve_source(args.source)
+        source, installer = validate_source(source)
+    except (FileNotFoundError, RuntimeError) as exc:
+        print("Error: {}".format(exc), file=sys.stderr)
+        return 2
 
     maybe_pull(source, args.pull)
+    current_commit = git_commit(source)
+    print("Resolved update source:")
+    print("  Checkout: {}".format(source))
+    print("  HEAD:     {}".format(current_commit or "unknown"))
+    if provenance and provenance.get("source_commit") != current_commit:
+        print("  Installed from: {}".format(
+            provenance.get("source_commit") or "unknown"
+        ))
+    if provenance:
+        print("  Installed source dirty: {}".format(
+            provenance.get("source_dirty", "unknown")
+        ))
 
     # Guided setup path
     if args.setup_current or args.setup_repo:

@@ -86,6 +86,40 @@ class InstallWorkflowTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "unreadable required source files"):
                     module.validate_install_manifest(tmp, tmp)
 
+    def test_refresh_postcondition_detects_stale_managed_script(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo, "--update-workflow-files")
+            assets = str(ROOT / "assets")
+            scripts = str(ROOT / "scripts")
+
+            self.assertEqual(
+                module.verify_refresh_postcondition(str(repo), assets, scripts), []
+            )
+            (repo / "ai" / "dispatch-to-claude.sh").write_text(
+                "# stale\n", encoding="utf-8"
+            )
+
+            mismatches = module.verify_refresh_postcondition(
+                str(repo), assets, scripts
+            )
+            self.assertIn(
+                "ai/dispatch-to-claude.sh (content mismatch)", mismatches
+            )
+
+    def test_update_mode_returns_nonzero_when_postcondition_fails(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                module,
+                "verify_refresh_postcondition",
+                return_value=["ai/example.py (content mismatch)"],
+            ):
+                result = module.main([tmp, "--update-workflow-files"])
+
+            self.assertEqual(result, 1)
+
     def test_install_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"

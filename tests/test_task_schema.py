@@ -826,6 +826,12 @@ class TestLegacyScriptsUntouched(unittest.TestCase):
         first_line = dispatch.read_text(encoding="utf-8").split("\n")[0]
         self.assertIn("#!/usr/bin/env bash", first_line)
 
+    def test_dispatch_supports_safe_empty_api_config_option(self):
+        dispatch = (SCRIPTS / "dispatch-to-claude.sh").read_text(encoding="utf-8")
+        self.assertIn("--empty-api-config-env", dispatch)
+        self.assertIn("*_API_CONFIG_FILE", dispatch)
+        self.assertIn("/dev/null", dispatch)
+
     def test_no_dispatch_test_module_exists(self):
         """Verify test_dispatch_to_claude does not exist (as expected per task card)."""
         dispatch_test = pathlib.Path(__file__).parent / "test_dispatch_to_claude.py"

@@ -2961,6 +2961,63 @@ class SparkExecutionEnvTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("invalid", result.stderr.lower())
 
+    def test_empty_api_config_env_preserves_standard_wrapper_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            capture = tmp_path / "api-config.txt"
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                'printf "%s\\n" "${PLD_API_CONFIG_FILE-unset}" > "$CAPTURE_FILE"\n'
+                "cat >/dev/null\n"
+                "echo 'spark ok'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CAPTURE_FILE"] = bash_path(capture)
+
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                    "--mode", "review-only",
+                    "--empty-api-config-env", "PLD_API_CONFIG_FILE",
+                    "--execution-env", "host",
+                    "--result-mode", "direct",
+                ],
+                cwd=str(repo),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(capture.read_text(encoding="utf-8").strip(), "/dev/null")
+
+    def test_empty_api_config_env_rejects_arbitrary_environment_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                    "--empty-api-config-env", "PATH",
+                ],
+                cwd=str(repo),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("_API_CONFIG_FILE", result.stderr)
+
     def test_restricted_auto_optional_disables_with_zero_calls(self):
         """Restricted optional auto: zero fake calls, invoked=no, actionable guidance."""
         with tempfile.TemporaryDirectory() as tmp:

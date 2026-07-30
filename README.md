@@ -399,6 +399,12 @@ python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 
 `python scripts/update_skill.py` updates only the user-level Codex Skill. `--bootstrap-current` and `--bootstrap-repo` additionally refresh the target repository's local workflow files with `--update-workflow-files`, so existing projects receive new dispatcher, review prompt, template, and helper behavior.
 
+The installed updater records and reuses the real source checkout rather than
+silently using the installed Skill as its own update source. Missing or invalid
+source provenance now fails before project files are changed. A successful
+`--update-workflow-files` run also verifies that every managed destination
+matches the newly installed Skill.
+
 Updates are fail-safe at both boundaries. The user-level Skill is copied into a
 validated sibling staging directory and atomically activated; activation
 failure restores the previous install. Before project bootstrap changes any
