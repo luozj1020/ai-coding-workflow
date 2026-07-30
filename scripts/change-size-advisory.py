@@ -11,6 +11,18 @@ from pathlib import Path
 from typing import Any, Dict
 
 
+MAX_UNTRACKED_FILE_BYTES = 4 * 1024 * 1024
+
+
+def is_control_artifact(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    name = Path(normalized).name
+    return (
+        name.startswith(("CLAUDE_", "TASK_CARD"))
+        or normalized.startswith((".ai-workflow/", ".worktrees/"))
+    )
+
+
 def is_test(path: str) -> bool:
     normalized = "/" + path.replace("\\", "/").lower()
     name = Path(path).name.lower()
@@ -18,6 +30,17 @@ def is_test(path: str) -> bool:
         "/tests/" in normalized or "/test/" in normalized or "/__tests__/" in normalized
         or name.startswith("test_") or name.endswith(("_test.py", ".test.ts", ".test.js"))
     )
+
+
+def changed_line_count(path: Path) -> int | None:
+    if path.is_symlink() or not path.is_file():
+        return None
+    if path.stat().st_size > MAX_UNTRACKED_FILE_BYTES:
+        return None
+    content = path.read_bytes()
+    if b"\0" in content:
+        return None
+    return content.count(b"\n") + (1 if content and not content.endswith(b"\n") else 0)
 
 
 def analyze(worktree: Path, ratio_threshold: float, line_threshold: int) -> Dict[str, Any]:
@@ -29,6 +52,7 @@ def analyze(worktree: Path, ratio_threshold: float, line_threshold: int) -> Dict
         raise ValueError(result.stderr.strip() or "git diff --numstat failed")
     totals = {"test": 0, "implementation": 0}
     files = {"test": 0, "implementation": 0}
+    counted_paths = set()
     for line in result.stdout.splitlines():
         cells = line.split("\t", 2)
         if len(cells) != 3:
@@ -36,9 +60,38 @@ def analyze(worktree: Path, ratio_threshold: float, line_threshold: int) -> Dict
         added, removed, path = cells
         if not added.isdigit() or not removed.isdigit():
             continue
+        if is_control_artifact(path):
+            continue
         kind = "test" if is_test(path) else "implementation"
         totals[kind] += int(added) + int(removed)
         files[kind] += 1
+        counted_paths.add(path)
+
+    untracked = subprocess.run(
+        ["git", "-C", str(worktree), "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True, check=False,
+    )
+    if untracked.returncode:
+        raise ValueError(
+            untracked.stderr.decode("utf-8", errors="replace").strip()
+            or "git ls-files --others failed"
+        )
+    untracked_count = 0
+    untracked_skipped = 0
+    for raw_path in untracked.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        path = raw_path.decode("utf-8", errors="surrogateescape")
+        if path in counted_paths or is_control_artifact(path):
+            continue
+        lines = changed_line_count(worktree / path)
+        if lines is None:
+            untracked_skipped += 1
+            continue
+        kind = "test" if is_test(path) else "implementation"
+        totals[kind] += lines
+        files[kind] += 1
+        untracked_count += 1
     denominator = max(totals["implementation"], 1)
     ratio = totals["test"] / denominator
     warn = totals["test"] >= line_threshold and ratio > ratio_threshold
@@ -50,6 +103,8 @@ def analyze(worktree: Path, ratio_threshold: float, line_threshold: int) -> Dict
         "test_to_implementation_ratio": round(ratio, 3),
         "test_files": files["test"],
         "implementation_files": files["implementation"],
+        "untracked_files_included": untracked_count,
+        "untracked_files_skipped": untracked_skipped,
         "ratio_threshold": ratio_threshold,
         "test_line_threshold": line_threshold,
         "recommendations": (

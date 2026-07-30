@@ -53,6 +53,14 @@ remains an environment failure, not an assertion failure.
 The execution card also records whether the exact command was pre-authorized by
 the Checker Bash allowlist. Claude must attempt an authorized command before
 claiming a sandbox or permission blocker and must preserve the original denial.
+Checker cards prefer parameterized or table-driven cases and reuse the strict
+source-of-truth fixture/layout named in the Context Packet. The dispatcher emits
+a non-blocking `*.change-size-advisory.json` when tracked or newly created test
+growth is both large and disproportionate to implementation growth. Workflow
+control artifacts are excluded and oversized/binary untracked files are skipped.
+A warning asks for fixture reuse, parameterization, or a frozen-acceptance
+justification; line ratio alone never rejects a semantically necessary test
+suite.
 
 When a card declares `Acceptance-to-test IDs`, the Checker report must bind each
 ID to a changed test file, test symbol, and literal assertion marker. Static

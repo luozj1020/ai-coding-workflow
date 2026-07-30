@@ -150,6 +150,14 @@ Pre-dispatch audits treat `CLAUDE_PROGRESS.md` and `CLAUDE_REPORT.md` as
 dispatcher-created runtime outputs whose current absence is expected. They also
 distinguish positive Read authority from narrower Write authority; a path that
 is not writable is not automatically forbidden to read.
+Each task-card audit starts with
+`audit_disposition=proceed|proceed-with-required-corrections|blocked-human-clarification`.
+Locally discoverable signatures, types, fixtures, commands, and repository
+facts produce required card corrections; they do not justify a human block.
+Reserve `blocked-human-clarification` for unresolved questions that change
+product/API/data/security/permission/destructive behavior, frozen acceptance,
+or authority. The disposition remains advisory: Codex applies or rejects the
+corrections and independently decides whether the card is dispatchable.
 For an audit after Builder execution, pass
 `--context-worktree .worktrees/<builder-task-id>`. The helper verifies that it
 belongs to the task-card repository, exposes its absolute path and dirty status

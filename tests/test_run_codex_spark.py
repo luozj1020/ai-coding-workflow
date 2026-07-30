@@ -133,6 +133,7 @@ class RunCodexSparkTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertNotIn("command not found", result.stderr)
             self.assertNotEqual((tmp_path / "cwd.txt").read_text(encoding="utf-8").strip(), "")
             self.assertIn("uncommitted builder result", (tmp_path / "diff.txt").read_text(encoding="utf-8"))
             prompt = (tmp_path / "stdin.md").read_text(encoding="utf-8")
@@ -144,6 +145,54 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn(
                 'distinguish "may not write" from "may not read"', prompt
             )
+            self.assertIn("'CLAUDE_PROGRESS.md' and 'CLAUDE_REPORT.md'", prompt)
+            self.assertIn(
+                "audit_disposition=proceed|proceed-with-required-corrections|"
+                "blocked-human-clarification",
+                prompt,
+            )
+            self.assertIn(
+                "Missing locally discoverable signatures, types, fixtures, "
+                "validation commands, or repository facts are required corrections",
+                prompt,
+            )
+            self.assertIn(
+                "Use blocked-human-clarification only when unresolved ambiguity "
+                "changes product/API/data/security/permission/destructive behavior",
+                prompt,
+            )
+
+    def test_context_worktree_is_rejected_for_source_writing_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+            task_card = repo / "task-card.md"
+            task_card.write_text("# Task\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    bash_exe(),
+                    bash_path(SCRIPT),
+                    bash_path(task_card),
+                    "--mode",
+                    "controlled-builder",
+                    "--context-worktree",
+                    bash_path(repo),
+                ],
+                cwd=str(repo),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn(
+                "--context-worktree is read-only advisory context",
+                result.stderr,
+            )
+            self.assertNotIn("command not found", result.stderr)
 
     def test_help_documents_repository_scaled_fast_path_defaults(self):
         """Help distinguishes auto scale defaults from explicit env overrides."""

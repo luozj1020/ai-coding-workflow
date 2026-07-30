@@ -9,6 +9,12 @@
   narrow single-file test before creating another test file.
 - Use `$TMPDIR` for generated validation helpers; do not create repository-root
   scratch scripts.
+- Prefer parameterized/table-driven cases over repeated test bodies. Reuse the
+  strict source-of-truth fixture or layout named in the Context Packet instead
+  of constructing a second competing fixture contract.
+- If the non-blocking change-size advisory warns that test growth is
+  disproportionate to implementation growth, report the reuse/parameterization
+  decision or the frozen acceptance reason the larger test diff is necessary.
 
 | Runtime field | Value |
 |---|---|

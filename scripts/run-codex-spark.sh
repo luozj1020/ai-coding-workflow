@@ -485,6 +485,14 @@ if [ "$INPUT_KIND" = "task-card" ]; then
 else
     REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 fi
+
+is_source_writing_mode() {
+    case "$MODE" in
+        micro-builder|controlled-builder) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 if [ -n "$CONTEXT_WORKTREE" ]; then
     if is_source_writing_mode; then
         echo "Error: --context-worktree is read-only advisory context and cannot be used by source-writing modes." >&2
@@ -599,13 +607,6 @@ is_checker_task() {
 
 is_advisory_mode() {
     ! is_source_writing_mode
-}
-
-is_source_writing_mode() {
-    case "$MODE" in
-        micro-builder|controlled-builder) return 0 ;;
-        *) return 1 ;;
-    esac
 }
 
 resolve_auto_mode() {
@@ -1839,7 +1840,12 @@ Mode contract:
 - task-size-classifier: classify task size and routing risk using cheap Spark quota before Codex spends stronger-model context; do not edit files. Output the standard estimator fields listed by execution-cost-estimator plus size=tiny|small|medium|large|unknown; recommended_route=codex-fast-path|spark-review-only|spark-micro-builder|claude-builder|checker-test|spec-first|human-clarification; confidence=high|medium|low; expected_files=1-2|3-5|>5|unknown. Choose owner from edit size/files, context sufficiency, solution clarity, confidence, context reacquisition, mandatory Codex rereview, and delegation overhead. Risk flags and validation complexity affect downstream rigor and MUST NOT push ownership from Codex to Claude.
 - execution-cost-estimator: read-only mode for routing event ${ROUTING_EVENT}. Estimate direct Codex work versus Claude planning/execution overhead. Do not edit files. Output exactly these unquoted machine-readable lines and nothing else: predicted_diff_lines_low=<integer>; predicted_diff_lines_high=<integer>; predicted_files=<integer|unknown>; context_scope=local|bounded|broad|unknown; validation_complexity=none|low|medium|high|unknown; delegation_overhead=low|medium|high; context_reacquisition_cost=none|low|medium|high; codex_semantic_rereview=none|sampled|full; solution_clarity=high|medium|low; semantic_concentration=high|medium|low; task_role=core-semantic|auxiliary|mixed|unknown; estimated_direct_work_units=<positive integer>; estimated_delegated_work_units=<positive integer>; delegation_to_direct_ratio=<decimal>; economic_recommendation=codex-fast-path|claude-builder; safety_eligible=yes|no; recommended_owner=codex-fast-path|claude-builder|spec-first|human-clarification; cost_confidence=high|medium|low; risk_flags=none|comma-separated flags; reason=<one short line>; stop_condition=<one short line>; claude_role=solution-planner|execution-builder|batch-builder|none; durable_output_required=yes|no; readonly_delegation_value=yes|no. Codex is the default. Recommend solution-planner only for a bounded open multi-phase design that produces a structured solution contract and removes at least 30 percent of Codex planning work. Recommend batch-builder or execution-builder only for auxiliary/mechanical independent work with sampled or bounded Codex review. Never recommend Claude for concentrated core semantics that Codex must rereview fully. Prose-only discovery and summaries have no delegation value. predicted_files MUST be one integer or unknown. Risk may only bias toward Codex.
 - review-only: inspect the task card and available repository context, do not edit files.
-- task-card-audit: inspect the task card for missing gates, mixed responsibilities, unclear acceptance criteria, unsafe scope, and likely Claude stall risks; do not edit files. `CLAUDE_PROGRESS.md` and `CLAUDE_REPORT.md` are dispatcher-created runtime outputs and are expected to be absent before dispatch, so never report their pre-dispatch absence as a task-card defect. Treat declared Read paths as positive read authority even when Write paths are narrower; distinguish "may not write" from "may not read" and report a contradiction only when the card explicitly denies the same read.
+- task-card-audit: inspect the task card for missing gates, mixed responsibilities, unclear acceptance criteria, unsafe scope, and likely Claude stall risks; do not edit files. 'CLAUDE_PROGRESS.md' and 'CLAUDE_REPORT.md' are dispatcher-created runtime outputs and are expected to be absent before dispatch, so never report their pre-dispatch absence as a task-card defect. Treat declared Read paths as positive read authority even when Write paths are narrower; distinguish "may not write" from "may not read" and report a contradiction only when the card explicitly denies the same read.
+  Begin with exactly these three lines:
+  audit_disposition=proceed|proceed-with-required-corrections|blocked-human-clarification
+  required_corrections=none|comma-separated concrete card corrections
+  human_question=none|one material question
+  Use blocked-human-clarification only when unresolved ambiguity changes product/API/data/security/permission/destructive behavior, frozen acceptance, or authority and cannot be answered from declared repository sources. Missing locally discoverable signatures, types, fixtures, validation commands, or repository facts are required corrections, not human blockers. The audit is advisory: proceed never approves dispatch, and Codex must apply or reject every required correction.
 - plan-splitter: propose smaller Builder/Checker task cards or independent parallelizable slices; do not edit files.
 - validation-planner: propose exact low-noise validation commands and state whether local validation should be skipped; do not run commands unless the task card explicitly allows it.
 - failure-triage: inspect provided artifacts for likely stall/failure attribution and recommend wait/re-dispatch/narrow/takeover; do not edit files.

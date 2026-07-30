@@ -460,6 +460,12 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("failing test or failing evidence before production edits", claude)
             self.assertIn("Codex Spark evidence", claude)
             self.assertIn("Parallel Execution Gate", claude)
+            checker = (
+                repo / "ai" / "task-card-components" / "checker.md"
+            ).read_text(encoding="utf-8")
+            self.assertIn("Prefer parameterized/table-driven cases", checker)
+            self.assertIn("strict source-of-truth fixture or layout", checker)
+            self.assertIn("non-blocking change-size advisory", checker)
 
     def test_claude_import_is_deduplicated_and_near_top(self):
         with tempfile.TemporaryDirectory() as tmp:
