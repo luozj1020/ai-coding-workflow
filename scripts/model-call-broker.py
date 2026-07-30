@@ -84,15 +84,19 @@ class LedgerLock:
                             f"Could not open ledger lock {self.lock_path} within {timeout}s"
                         )
                     time.sleep(0.05)
-            # Ensure lock file contains at least one byte
-            size = self._fh.seek(0, 2)  # seek to end, returns position
-            if size == 0:
-                self._fh.write(b"\x00")
-                self._fh.flush()
-            self._fh.seek(0)
             while True:
                 try:
+                    # Lock before initializing an empty sidecar. Initializing
+                    # first lets concurrent Windows processes both observe
+                    # size zero and race on the same byte, which can surface
+                    # as a transient sharing-violation PermissionError.
+                    self._fh.seek(0)
                     msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    size = self._fh.seek(0, 2)
+                    if size == 0:
+                        self._fh.write(b"\x00")
+                        self._fh.flush()
+                    self._fh.seek(0)
                     return
                 except OSError:
                     if time.monotonic() >= deadline:

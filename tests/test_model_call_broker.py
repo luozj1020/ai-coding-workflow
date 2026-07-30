@@ -674,9 +674,15 @@ class TestCommandPassthrough(unittest.TestCase):
 class TestLedgerLock(unittest.TestCase):
     def test_windows_lock_uses_single_non_truncating_open(self):
         handle = mock.MagicMock()
-        handle.seek.side_effect = [0, None, None]
+        handle.seek.side_effect = [None, 0, None, None]
         handle.fileno.return_value = 7
-        windows_locking = mock.Mock()
+        write_seen_at_lock = []
+
+        def observe_lock(_fd, operation, _count):
+            if operation == 1:
+                write_seen_at_lock.append(handle.write.called)
+
+        windows_locking = mock.Mock(side_effect=observe_lock)
         fake_msvcrt = mock.Mock(
             LK_NBLCK=1,
             LK_UNLCK=2,
@@ -696,10 +702,11 @@ class TestLedgerLock(unittest.TestCase):
         windows_locking.assert_has_calls(
             [mock.call(7, fake_msvcrt.LK_NBLCK, 1), mock.call(7, fake_msvcrt.LK_UNLCK, 1)]
         )
+        self.assertEqual(write_seen_at_lock, [False])
 
     def test_windows_lock_retries_transient_open_permission_error(self):
         handle = mock.MagicMock()
-        handle.seek.side_effect = [1, None, None]
+        handle.seek.side_effect = [None, 1, None, None]
         handle.fileno.return_value = 7
         fake_msvcrt = mock.Mock(LK_NBLCK=1, LK_UNLCK=2, locking=mock.Mock())
 
@@ -714,6 +721,23 @@ class TestLedgerLock(unittest.TestCase):
         fake_msvcrt.locking.assert_has_calls(
             [mock.call(7, fake_msvcrt.LK_NBLCK, 1), mock.call(7, fake_msvcrt.LK_UNLCK, 1)]
         )
+
+    def test_windows_lock_initializes_empty_sidecar_only_after_lock(self):
+        handle = mock.MagicMock()
+        handle.seek.side_effect = [None, None, 0, None, None]
+        handle.fileno.return_value = 7
+        locking = mock.Mock(side_effect=[OSError("busy"), None, None])
+        fake_msvcrt = mock.Mock(LK_NBLCK=1, LK_UNLCK=2, locking=locking)
+
+        with mock.patch.object(broker_mod, "msvcrt", fake_msvcrt), mock.patch(
+            "builtins.open", return_value=handle
+        ), mock.patch.object(broker_mod.time, "sleep"):
+            lock = broker_mod.LedgerLock(Path("ledger.lock"))
+            lock.acquire(timeout=1)
+            lock.release()
+
+        self.assertEqual(locking.call_count, 3)
+        handle.write.assert_called_once_with(b"\x00")
 
     def test_ledger_read_retries_transient_permission_error(self):
         record = json.dumps({"state": "diagnostic"}) + "\n"
