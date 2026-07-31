@@ -28,7 +28,9 @@ VALIDATE_ADVISOR_REQUEST = ROOT / "scripts" / "validate-advisor-request.py"
 VALIDATE_ADVISOR_RESPONSE = ROOT / "scripts" / "validate-advisor-response.py"
 WORKTREE_STATE_HASH = ROOT / "scripts" / "worktree_state_hash.py"
 PREPARE_WORKTREE_CONTINUATION = ROOT / "scripts" / "prepare-worktree-continuation.py"
+PREPARE_CODEX_TAKEOVER = ROOT / "scripts" / "prepare-codex-takeover.py"
 PREPARE_WRITE_SANDBOX = ROOT / "scripts" / "prepare-write-sandbox.py"
+OWNER_LEASE = ROOT / "scripts" / "owner_lease.py"
 MODEL_USAGE = ROOT / "scripts" / "model-usage.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
@@ -98,7 +100,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(VALIDATE_ADVISOR_RESPONSE, self.repo / "scripts" / "validate-advisor-response.py")
         shutil.copy2(WORKTREE_STATE_HASH, self.repo / "scripts" / "worktree_state_hash.py")
         shutil.copy2(PREPARE_WORKTREE_CONTINUATION, self.repo / "scripts" / "prepare-worktree-continuation.py")
+        shutil.copy2(PREPARE_CODEX_TAKEOVER, self.repo / "scripts" / "prepare-codex-takeover.py")
         shutil.copy2(PREPARE_WRITE_SANDBOX, self.repo / "scripts" / "prepare-write-sandbox.py")
+        shutil.copy2(OWNER_LEASE, self.repo / "scripts" / "owner_lease.py")
         shutil.copy2(MODEL_USAGE, self.repo / "scripts" / "model-usage.py")
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
@@ -109,7 +113,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                    "scripts/build-takeover-receipt.py",
                    "scripts/create-dirty-snapshot.py", "scripts/enforce-checker-contract.py",
                    "scripts/validate-advisor-request.py", "scripts/validate-advisor-response.py",
-                   "scripts/worktree_state_hash.py", "scripts/prepare-worktree-continuation.py"], cwd=self.repo)
+                   "scripts/worktree_state_hash.py", "scripts/prepare-worktree-continuation.py",
+                   "scripts/prepare-codex-takeover.py", "scripts/owner_lease.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/prepare-write-sandbox.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/model-usage.py"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
@@ -589,7 +594,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertNotIn("approval-blocked early convergence", progress.lower())
 
-    def _dispatch(self, task_arg="task-cards/PROJ.md", extra_env=None):
+    def _dispatch(self, task_arg="task-cards/PROJ.md", extra_env=None, extra_args=None):
         env = {
             "PATH": str(self.fake_bin) + os.pathsep + os.environ.get("PATH", ""),
             "CLAUDE_CODE_TIMEOUT_SECONDS": "30",
@@ -607,7 +612,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
-            [BASH, "scripts/dispatch-to-claude.sh", task_arg],
+            [BASH, "scripts/dispatch-to-claude.sh", task_arg] + list(extra_args or []),
             cwd=str(self.repo),
             env=env,
             text=True,
@@ -939,10 +944,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(checker_identity["task_id"], runtime["task_id"])
         self.assertEqual(checker_identity["role"], "checker")
-        self.assertEqual(
-            checker_identity["pid"],
-            int(pathlib.Path(runtime["pid_files"]["checker"]).read_text().strip()),
-        )
+        self.assertFalse(pathlib.Path(runtime["pid_files"]["checker"]).exists())
+        self.assertGreater(checker_identity["pid"], 0)
 
     def test_unrelated_untracked_file_blocks(self):
         self._write_task_card()
@@ -1636,10 +1639,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(blocked.returncode, 75, blocked.stderr + blocked.stdout)
         self.assertFalse(consumed.exists())
         self.assertIn(
-            f"host_retry_reviewed_continuation={approval.resolve()}",
+            f"--reviewed-continuation {approval.resolve()}",
             blocked.stderr,
         )
-        self.assertNotIn("host_retry_task_id=", blocked.stderr)
+        self.assertIn("--execution-env host", blocked.stderr)
+        self.assertNotIn("--retry-in-place-task-id", blocked.stderr)
         result_paths = set((self.repo / ".worktrees").glob("*.result.json")) - before_results
         self.assertEqual(len(result_paths), 1)
         payload = json.loads(result_paths.pop().read_text(encoding="utf-8"))
@@ -1654,16 +1658,28 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID",
             payload["host_retry_environment"],
         )
+        self.assertEqual(
+            payload["host_retry_args"],
+            [
+                "task-cards/NEXT.md",
+                "--execution-env",
+                "host",
+                "--reviewed-continuation",
+                str(approval.resolve()),
+            ],
+        )
 
         replay = self._dispatch(
             "task-cards/NEXT.md",
             {
-                "CLAUDE_CODE_REVIEWED_CONTINUATION": str(approval),
-                "CLAUDE_CODE_HOST_AUTHORITY": "1",
                 "CLAUDE_CODE_API_PROBE_MODE": "always",
                 "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
                 "FAKE_CLAUDE_MODE": "success",
             },
+            [
+                "--execution-env", "host",
+                "--reviewed-continuation", str(approval),
+            ],
         )
         self.assertEqual(replay.returncode, 0, replay.stderr + replay.stdout)
         self.assertTrue(consumed.is_dir())
@@ -1676,6 +1692,89 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("[dispatch] Implementation changes: 0", status)
         self.assertIn("[dispatch] Evidence classification: seeded report only", status)
         self.assertIn("[dispatch] Dispatch outcome: no_useful_progress", status)
+
+    @unittest.skipIf(os.name == "nt", "POSIX dispatcher signal lifecycle")
+    def test_dispatcher_term_reclaims_brokerless_tree_and_writes_terminal_receipt(self):
+        self._write_task_card()
+        env = {
+            "PATH": str(self.fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+            "CLAUDE_CODE_TIMEOUT_SECONDS": "60",
+            "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "90",
+            "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+            "CLAUDE_CODE_TERMINATE_GRACE_SECONDS": "2",
+            "CLAUDE_CODE_TERMINAL_DRAIN_SECONDS": "0",
+            "CLAUDE_CODE_API_PROBE_MODE": "failure-only",
+            "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "0",
+            "CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "off",
+            "AI_CODING_WORKFLOW_BYPASS_BROKER": "1",
+            "FAKE_CLAUDE_MODE": "seed-only",
+            "FAKE_CLAUDE_SLEEP_SECONDS": "60",
+        }
+        process = subprocess.Popen(
+            [BASH, "scripts/dispatch-to-claude.sh", "task-cards/PROJ.md"],
+            cwd=str(self.repo),
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            worktrees = self.repo / ".worktrees"
+            deadline = time.time() + 15
+            identities = []
+            while time.time() < deadline:
+                identities = list(worktrees.glob("claude-*.claude.process.json"))
+                if identities:
+                    break
+                if process.poll() is not None:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(len(identities), 1)
+            identity_path = identities[0]
+            task_id = identity_path.name[: -len(".claude.process.json")]
+
+            process.terminate()
+            stdout, stderr = process.communicate(timeout=20)
+
+            self.assertEqual(process.returncode, 143, stdout + stderr)
+            abnormal = json.loads(
+                (worktrees / f"{task_id}.dispatcher-abnormal-exit.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                abnormal["dispatch_outcome"], "dispatcher-abnormal-exit"
+            )
+            self.assertTrue(abnormal["process_cleanup_confirmed"])
+            self.assertTrue(
+                (worktrees / f"{task_id}.process-termination.json").is_file()
+            )
+            self.assertFalse((worktrees / f"{task_id}.pid").exists())
+            self.assertFalse((worktrees / f"{task_id}.claude.pid").exists())
+            self.assertFalse((worktrees / f"{task_id}.dispatcher.pid").exists())
+            checked = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/process-identity.py",
+                    "check",
+                    "--identity",
+                    str(identity_path),
+                    "--task-id",
+                    task_id,
+                    "--role",
+                    "claude",
+                ],
+                cwd=str(self.repo),
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(checked.returncode, 1, checked.stdout + checked.stderr)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate(timeout=5)
 
     def test_progress_log_includes_child_exit_transition(self):
         self._write_task_card()

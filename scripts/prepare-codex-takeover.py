@@ -35,8 +35,21 @@ def _load_module(name: str, path: Path):
 
 
 PROCESS_IDENTITY = _load_module("aiwf_process_identity", SCRIPT_DIR / "process-identity.py")
-OWNER_LEASE = _load_module("aiwf_owner_lease", SCRIPT_DIR / "owner_lease.py")
-WORKTREE_HASH = _load_module("aiwf_worktree_state_hash", SCRIPT_DIR / "worktree_state_hash.py")
+OWNER_LEASE = None
+WORKTREE_HASH = None
+
+
+def _load_takeover_modules() -> None:
+    """Load takeover-only dependencies outside the lightweight stop command."""
+    global OWNER_LEASE, WORKTREE_HASH
+    if OWNER_LEASE is None:
+        OWNER_LEASE = _load_module(
+            "aiwf_owner_lease", SCRIPT_DIR / "owner_lease.py"
+        )
+    if WORKTREE_HASH is None:
+        WORKTREE_HASH = _load_module(
+            "aiwf_worktree_state_hash", SCRIPT_DIR / "worktree_state_hash.py"
+        )
 
 
 def load_json(path: Path, label: str) -> Dict[str, Any]:
@@ -278,6 +291,7 @@ def stable_hash(worktree: Path, samples: int, interval: float) -> Tuple[str, Lis
 
 
 def prepare(args: argparse.Namespace) -> Dict[str, Any]:
+    _load_takeover_modules()
     candidate_path = args.receipt.resolve()
     runtime_path = args.runtime.resolve()
     candidate = load_json(candidate_path, "takeover candidate")
@@ -409,7 +423,56 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def terminate_process_parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(
+        description="Identity-confirm and terminate one recorded workflow process tree.",
+    )
+    result.add_argument("--identity", type=Path, required=True)
+    result.add_argument("--task-id", required=True)
+    result.add_argument(
+        "--role", choices=("dispatcher", "claude", "checker"), required=True,
+    )
+    result.add_argument("--terminate-timeout", type=float, default=5.0)
+    result.add_argument("--reason", default="bounded-process-tree-stop")
+    result.add_argument("--output", type=Path, required=True)
+    return result
+
+
+def terminate_process_command(args: argparse.Namespace) -> Dict[str, Any]:
+    identity_path = args.identity.resolve()
+    identity = load_json(identity_path, f"{args.role} process identity")
+    evidence = terminate_identity(
+        identity, args.task_id, args.role, args.terminate_timeout,
+    )
+    value = {
+        "schema_version": 1,
+        "status": "confirmed-inactive",
+        "task_id": args.task_id,
+        "role": args.role,
+        "reason": args.reason,
+        "identity_receipt": str(identity_path),
+        "identity_receipt_object": digest(identity_path),
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "process_termination": evidence,
+    }
+    atomic_json(args.output.resolve(), value)
+    return value
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    if argv and argv[0] == "terminate-process":
+        args = terminate_process_parser().parse_args(argv[1:])
+        if args.terminate_timeout <= 0:
+            print("Error: invalid termination timeout", file=sys.stderr)
+            return 2
+        try:
+            value = terminate_process_command(args)
+        except (OSError, ValueError, TypeError, KeyError, TakeoverError) as exc:
+            print(f"process termination failed: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(value, ensure_ascii=False, sort_keys=True))
+        return 0
     args = parser().parse_args(argv)
     if args.terminate_timeout <= 0 or args.stability_samples < 2 or args.stability_interval < 0:
         print("Error: invalid timeout/stability settings", file=sys.stderr)

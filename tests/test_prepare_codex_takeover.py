@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -170,6 +171,64 @@ class PrepareCodexTakeoverTests(unittest.TestCase):
             if sleeper.poll() is None:
                 sleeper.kill()
                 sleeper.wait(timeout=3)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX process-group fixture")
+    def test_terminate_process_cli_stops_identity_bound_tree_and_writes_receipt(self) -> None:
+        child_pid_file = self.root / "child.pid"
+        parent = subprocess.Popen([
+            sys.executable,
+            "-c",
+            (
+                "import pathlib,subprocess,sys,time;"
+                "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'],"
+                "start_new_session=True);"
+                f"pathlib.Path({str(child_pid_file)!r}).write_text(str(p.pid));"
+                "time.sleep(60)"
+            ),
+        ])
+        try:
+            deadline = time.time() + 5
+            while not child_pid_file.exists() and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertTrue(child_pid_file.exists())
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+            identity_path = self.root / "live.process.json"
+            identity_path.write_text(
+                json.dumps(
+                    MOD.PROCESS_IDENTITY.capture(
+                        parent.pid, self.task_id, "claude"
+                    )
+                ),
+                encoding="utf-8",
+            )
+            output = self.root / "termination.json"
+
+            rc = MOD.main([
+                "terminate-process",
+                "--identity", str(identity_path),
+                "--task-id", self.task_id,
+                "--role", "claude",
+                "--terminate-timeout", "2",
+                "--reason", "test-stop",
+                "--output", str(output),
+            ])
+
+            self.assertEqual(rc, 0)
+            receipt = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "confirmed-inactive")
+            self.assertTrue(
+                receipt["process_termination"]["confirmed_inactive"]
+            )
+            parent.wait(timeout=3)
+            child_state = MOD.PROCESS_IDENTITY._process(child_pid)
+            self.assertTrue(
+                child_state is None or child_state.get("state") == "Z",
+                child_state,
+            )
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=3)
 
     def test_windows_authoritative_wait_closes_visibility_gap(self) -> None:
         identity = {

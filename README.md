@@ -258,7 +258,7 @@ ai-coding-workflow/
     status-claude.sh     -> Inspect Claude dispatch status and artifacts
     watch-claude.sh      -> Show CLI progress panel for running dispatches
     monitor-claude.sh    -> Block on dispatcher events or request one decision
-    kill-claude.sh       -> Stop a recorded Claude dispatch process
+    kill-claude.sh       -> Identity-confirm and stop a Claude process tree
     cleanup-worktree.sh  -> Remove stopped worktrees while preserving evidence
     pwsh-utf8.ps1        -> Configure PowerShell UTF-8 sessions
     doctor_workflow.py   -> Read-only readiness check for dispatch/review loop
@@ -767,9 +767,13 @@ The same opt-in is available as `CODEX_SPARK_HOST_AUTHORITY=1`; `CODEX_SPARK_HOS
 Claude uses the same outer-boundary contract. A restricted startup interaction
 returns exit 75 with `needs_host_execution=true` before Builder execution. The
 outer Codex caller must replay the identical dispatcher invocation once with
-host execution permission, `CLAUDE_CODE_HOST_AUTHORITY=1`, and the emitted
-`CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID`, preserving the task card, worktree, and
-session lineage. Exit 75 is a request for orchestration, not permission to
+host execution permission using the stable approved launcher:
+`bash ai/dispatch-to-claude.sh CARD --execution-env host
+--retry-in-place-task-id TASK_ID`. Reviewed continuation uses
+`--reviewed-continuation APPROVAL` instead. Legacy environment selectors remain
+compatible, but the CLI form avoids changing the command prefix and preserves
+the task card, worktree, and session lineage. Exit 75 is a request for
+orchestration, not permission to
 abandon the model call; only a failed host attempt establishes that the current
 route is unavailable.
 
@@ -896,7 +900,7 @@ When `--output` is passed without an explicit `--result-mode`, the helper select
 
 **Spark diagnostics (`--diagnostics`):** when a direct-mode call produces an unusable result (empty response, availability/execution failure, or schema-invalid estimator output), `--diagnostics failure` (default) writes a compact redacted record under a unique `.worktrees/spark-diagnostic-<timestamp>-<suffix>/` directory. Secrets are stripped from stderr excerpts. `--diagnostics off` disables all persistence. `--diagnostics full` copies all evidence into the permanent directory for reproduction. Successful calls remain zero-persistence. Estimator output classified as `schema-invalid` auto-disables Spark (exits 0) unless `--require-spark` is set.
 
-Direct stdout uses the `aiwf-spark-stdout-v1` envelope. It emits `spark_status=started` before the blocking call and one terminal status afterward; parse it with `python ai/parse-spark-output.py FILE --require-terminal`. The broker enforces `CODEX_SPARK_CALL_TIMEOUT_SECONDS=75` by default, terminates the model process group, and records a terminal ledger transition before the wrapper finishes.
+Direct stdout uses the `aiwf-spark-stdout-v1` envelope. It emits `spark_status=started` before the blocking call and one terminal status afterward; parse it with `python ai/parse-spark-output.py FILE --require-terminal`. If the wrapper exits after `started` without its normal terminal path, an EXIT finalizer emits `failed` with `spark_failure_class=wrapper-exit-before-terminal`. The broker enforces `CODEX_SPARK_CALL_TIMEOUT_SECONDS=75` by default, terminates the model process group, and records a terminal ledger transition before the wrapper finishes.
 
 **Controlled-builder permission mode** provides narrow, auditable source-write permission for Spark:
 
@@ -1086,7 +1090,9 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.phase-metrics.json` | Context, implementation, validation, tail, edit-ready, and product-idle timing |
 | `*.codegraph-worktree.json` | CodeGraph project/worktree identity, pending state, repair action, and safe-use decision |
 | `*.runtime.json` | Worktree, session, timeout, process identity, and guard configuration |
-| `*.pid` | Claude subprocess PID for status/kill helpers |
+| `*.pid` | Transient PID hint while a role is active; removed after confirmed terminal cleanup |
+| `*.process-termination.json` | Identity-bound process-tree termination evidence |
+| `*.dispatcher-abnormal-exit.json` | Catchable abnormal-exit terminal and cleanup evidence |
 | `*.progress.log` | Dispatch heartbeat, timeout, and completion log |
 | `*.review.txt` | Persisted Codex review output |
 | `*.codex-events.jsonl` | Raw Codex JSON events when available |
@@ -1239,7 +1245,7 @@ For a direct-arm call, save Codex JSONL events and normalize them with `python a
 
 **Append-only loop events:** `ai/run-loop.sh` writes `.worktrees/loop-<timestamp>/loop-events.jsonl`, an append-only event stream for run start, iteration start, dispatch completion, review completion, decisions, revision task creation, and stop reasons. This preserves recovery context without rewriting prior observations.
 
-**Structured progress memory and active exit:** Claude maintains `CLAUDE_PROGRESS.md` with Goal, Current Phase, Next Check, Blocker, Last Update, Execution Phase, Context Acquisition Complete, Planned First Write, Implementation Complete, Assigned Tail Work, Tail Work Complete, and Completion Ready. Declaring implementation means edit readiness, not durable output; only a product-content change or valid owned report refreshes the full active window. After the first write, the dispatcher detects an unchanged product digest with two-confirmation idle handling while exempting active validation, explicit blockers, and assigned tail work. Builder cards default to changed-file self-review, with validation/documentation/long validation disabled until Codex assigns exact work. Once implementation is done, Claude performs only that bounded tail, marks completion ready, and exits normally without waiting for dispatcher acknowledgement. Planner/Checker calls with a valid report, no blocker, and role-specific durable evidence get a 20-second final flush window before dispatcher-owned identity stop; this is dispatch convergence, not acceptance. Direct children are frozen as a process tree before termination so a parent shell cannot resume for a last write; brokered calls terminate the model process group and record `cancelled`. Compact monitor events expose the phase and finish recommendation but never authorize a kill. Each dispatch writes approximate context/implementation/validation/tail timing to `<task-id>.phase-metrics.json`.
+**Structured progress memory and active exit:** Claude maintains `CLAUDE_PROGRESS.md` with Goal, Current Phase, Next Check, Blocker, Last Update, Execution Phase, Context Acquisition Complete, Planned First Write, Implementation Complete, Assigned Tail Work, Tail Work Complete, and Completion Ready. Declaring implementation means edit readiness, not durable output; only a product-content change or valid owned report refreshes the full active window. After the first write, the dispatcher detects an unchanged product digest with two-confirmation idle handling while exempting active validation, explicit blockers, and assigned tail work. Builder cards default to changed-file self-review, with validation/documentation/long validation disabled until Codex assigns exact work. Once implementation is done, Claude performs only that bounded tail, marks completion ready, and exits normally without waiting for dispatcher acknowledgement. Planner/Checker calls with a valid report, no blocker, and role-specific durable evidence get a 20-second final flush window before dispatcher-owned identity stop; this is dispatch convergence, not acceptance. Broker and brokerless paths are process-group reclaimable. Timeout, manual stop, takeover, and catchable abnormal exit share an identity-bound TERM→bounded wait→KILL→confirmation path; PID-only kills fail closed and confirmed cleanup removes transient PID hints. Compact monitor events expose the phase and finish recommendation but never authorize a kill. Each dispatch writes approximate context/implementation/validation/tail timing to `<task-id>.phase-metrics.json`.
 
 **Worktree-aware CodeGraph:** each dispatch writes `<task-id>.codegraph-worktree.json` after the execution worktree exists. The default `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` rejects a different-worktree or pending index and directs execution to LSP, locator, and targeted reads. Explicit `repair` syncs a matching index or reindexes the execution worktree; `off` disables graph probing. Only `status=ready` permits live CodeGraph use, and warning-bearing graph output must not enter a Context Packet.
 
@@ -1283,9 +1289,9 @@ The installer (`install_workflow.py`) searches for Git Bash explicitly and repor
 
 ## Dispatch Observability
 
-While Claude Code is running, `dispatch-to-claude.sh` now writes a PID artifact and heartbeat log under `.worktrees/`:
+While Claude Code is running, `dispatch-to-claude.sh` writes transient PID hints, durable process identity, and heartbeat evidence under `.worktrees/`:
 
-- `.worktrees/claude-<id>.pid` records the Claude subprocess PID.
+- `.worktrees/claude-<id>.pid` records a transient Claude PID hint and is removed after identity-confirmed terminal cleanup.
 - `.worktrees/claude-<id>.progress.log` records start, heartbeat, timeout, and completion events.
 - Machine-readable status fields after finalization: `overall_running=yes`, `running=no`, `claude=not-running`. Only the dispatcher sets these fields; Claude does not finalize its own status.
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` controls heartbeat frequency; default is `30`.
@@ -1402,7 +1408,7 @@ bash ai/watch-claude.sh claude-20260701-093934 --stale-after 180
 # Require five repeated suspect snapshots before auto-expanding details
 bash ai/watch-claude.sh claude-20260701-093934 --escalation-confirmations 5
 
-# Stop only the Claude process recorded for that dispatch
+# Identity-confirm and stop the complete Claude process tree
 bash ai/kill-claude.sh claude-20260701-093934
 
 # Remove the stopped worktree while preserving .worktrees/claude-<id>.* evidence artifacts

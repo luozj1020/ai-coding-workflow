@@ -122,6 +122,37 @@ class TestUntrackedFileDetected(unittest.TestCase):
             h_after = mod.compute_worktree_state_hash(wt)
             self.assertNotEqual(h_before, h_after)
 
+    def test_empty_untracked_is_strict_by_default_but_ignored_for_progress(self):
+        with tempfile.TemporaryDirectory(prefix="hash_test_") as td:
+            wt = Path(td) / "repo"
+            wt.mkdir()
+            _init_repo(wt)
+            strict_before = mod.compute_worktree_state_hash(wt)
+            progress_before = mod.compute_worktree_state_hash(
+                wt, ignore_empty_untracked=True
+            )
+
+            placeholder = wt / "placeholder.py"
+            placeholder.touch()
+
+            self.assertNotEqual(
+                strict_before, mod.compute_worktree_state_hash(wt)
+            )
+            self.assertEqual(
+                progress_before,
+                mod.compute_worktree_state_hash(
+                    wt, ignore_empty_untracked=True
+                ),
+            )
+
+            placeholder.write_text("value = 1\n", encoding="utf-8")
+            self.assertNotEqual(
+                progress_before,
+                mod.compute_worktree_state_hash(
+                    wt, ignore_empty_untracked=True
+                ),
+            )
+
     def test_different_untracked_content_different_hash(self):
         with tempfile.TemporaryDirectory(prefix="hash_test_") as td:
             wt = Path(td) / "repo"

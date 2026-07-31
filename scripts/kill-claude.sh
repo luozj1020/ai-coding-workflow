@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kill-claude.sh  -  Stop the Claude process for a dispatch run using its PID artifact.
+# kill-claude.sh  -  Identity-confirm and stop a dispatch's Claude process tree.
 #
 # Usage: bash ai/kill-claude.sh <claude-<timestamp>> [--kill-after seconds]
 
@@ -40,46 +40,62 @@ case "$KILL_AFTER" in
         exit 1
         ;;
 esac
-
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-PID_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.pid"
-PROGRESS_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.progress.log"
-
-if [ ! -f "$PID_FILE" ]; then
-    echo "Error: PID file not found: $PID_FILE" >&2
-    exit 1
-fi
-
-PID="$(tr -d '[:space:]' < "$PID_FILE")"
-case "$PID" in
-    ''|*[!0-9]*)
-        echo "Error: invalid PID in $PID_FILE: $PID" >&2
+case "$TASK_ID" in
+    claude-*) ;;
+    *) echo "Error: unsafe Claude task id: $TASK_ID" >&2; exit 1 ;;
+esac
+case "$TASK_ID" in
+    *[!A-Za-z0-9._-]*)
+        echo "Error: unsafe Claude task id: $TASK_ID" >&2
         exit 1
         ;;
 esac
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+PID_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.pid"
+CLAUDE_PID_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.claude.pid"
+IDENTITY_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.claude.process.json"
+PROGRESS_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.progress.log"
+TERMINATION_RECEIPT="${REPO_ROOT}/.worktrees/${TASK_ID}.manual-stop.json"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TERMINATION_HELPER="${SCRIPT_DIR}/prepare-codex-takeover.py"
+
+if [ ! -f "$IDENTITY_FILE" ]; then
+    echo "Error: authoritative Claude process identity not found: $IDENTITY_FILE" >&2
+    echo "Refusing a PID-only kill because the recorded PID may be stale or reused." >&2
+    exit 1
+fi
+
+PYTHON_CMD=""
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+fi
+if [ -z "$PYTHON_CMD" ] || [ ! -f "$TERMINATION_HELPER" ]; then
+    echo "Error: identity-bound process termination helper is unavailable." >&2
+    exit 1
+fi
 
 log() {
     local message="$1"
     printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$message" | tee -a "$PROGRESS_FILE"
 }
 
-if ! kill -0 "$PID" 2>/dev/null; then
-    log "Claude process already stopped: pid=${PID}"
-    exit 0
+log "Requesting identity-bound Claude process-tree stop: task=${TASK_ID}, grace=${KILL_AFTER}s"
+if ! "$PYTHON_CMD" "$TERMINATION_HELPER" terminate-process \
+    --identity "$IDENTITY_FILE" \
+    --task-id "$TASK_ID" \
+    --role claude \
+    --terminate-timeout "$KILL_AFTER" \
+    --reason manual-kill-helper \
+    --output "$TERMINATION_RECEIPT" >/dev/null; then
+    log "Claude process-tree stop failed closed; identity was not authoritative or termination could not be confirmed"
+    exit 2
 fi
 
-log "Sending TERM to Claude process: pid=${PID}"
-kill "$PID" 2>/dev/null || true
-
-elapsed=0
-while kill -0 "$PID" 2>/dev/null && [ "$elapsed" -lt "$KILL_AFTER" ]; do
-    sleep 1
-    elapsed=$((elapsed + 1))
-done
-
-if kill -0 "$PID" 2>/dev/null; then
-    log "Claude still running after ${KILL_AFTER}s; sending KILL to pid=${PID}"
-    kill -9 "$PID" 2>/dev/null || true
-else
-    log "Claude process stopped after TERM: pid=${PID}"
-fi
+# PID-only receipts are operational hints, not durable identity evidence.
+# Remove them only after the identity-bound helper confirms the whole tree is
+# inactive. The process identity and termination receipt remain auditable.
+rm -f "$PID_FILE" "$CLAUDE_PID_FILE"
+log "Claude process tree confirmed inactive; receipt=${TERMINATION_RECEIPT}"

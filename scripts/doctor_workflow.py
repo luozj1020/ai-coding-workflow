@@ -12,6 +12,7 @@ Uses only the Python standard library.
 """
 
 import glob
+import json
 import os
 import shlex
 import shutil
@@ -717,6 +718,84 @@ def _skill_source_tree_files(repo_root, skill_root):
     return drifted
 
 
+def _installed_skill_provenance_drift(skill_root):
+    """Describe drift between an installed Skill and its recorded source.
+
+    The check is intentionally diagnostic: an actively edited source checkout
+    can legitimately be ahead of the installed copy.  Doctor surfaces that
+    condition before dispatch without mutating either tree.
+    """
+    if not skill_root:
+        return None
+    provenance_path = os.path.join(skill_root, ".aiwf-install-provenance.json")
+    if not os.path.isfile(provenance_path):
+        return None
+    try:
+        provenance = json.loads(_read_text(provenance_path))
+    except (OSError, ValueError, TypeError):
+        return {
+            "reason": "installed Skill provenance is unreadable",
+            "source_path": None,
+            "drifted": [],
+        }
+    source_path = provenance.get("source_path")
+    if not isinstance(source_path, str) or not source_path:
+        return {
+            "reason": "installed Skill provenance has no source_path",
+            "source_path": None,
+            "drifted": [],
+        }
+    source_path = os.path.realpath(os.path.expanduser(source_path))
+    if source_path == os.path.realpath(skill_root):
+        return {
+            "reason": "installed Skill provenance is self-referential",
+            "source_path": source_path,
+            "drifted": [],
+        }
+    if not os.path.isdir(source_path):
+        return {
+            "reason": "recorded Skill source checkout is unavailable",
+            "source_path": source_path,
+            "drifted": [],
+        }
+
+    recorded_commit = provenance.get("source_commit")
+    current_commit = None
+    try:
+        result = subprocess.run(
+            ["git", "-C", source_path, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            current_commit = (result.stdout or "").strip() or None
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    drifted = _skill_source_tree_files(source_path, skill_root)
+    reasons = []
+    if recorded_commit and current_commit and recorded_commit != current_commit:
+        reasons.append(
+            "recorded source commit {} differs from current {}".format(
+                str(recorded_commit)[:12], current_commit[:12]
+            )
+        )
+    if drifted:
+        reasons.append(
+            "installed package differs in {}".format(
+                ", ".join(drifted[:4]) + (", ..." if len(drifted) > 4 else "")
+            )
+        )
+    if not reasons:
+        return None
+    return {
+        "reason": "; ".join(reasons),
+        "source_path": source_path,
+        "drifted": drifted,
+    }
+
+
 def _outdated_project_workflow_files(repo_root):
     """Return local workflow files that differ from the installed skill copy."""
     skill_root = _reference_skill_root()
@@ -981,6 +1060,31 @@ def run_doctor(repo_path=None, hash_paths=None):
                              _workflow_bootstrap_command(root, update_workflow_files=True))))
     else:
         findings.append((INFO, "workflow", "Project workflow files are installed"))
+        skill_root = _reference_skill_root()
+        provenance_drift = _installed_skill_provenance_drift(skill_root)
+        if provenance_drift:
+            findings.append((
+                WARN,
+                "skill-provenance",
+                "Installed Skill is behind or detached from its recorded source: {}".format(
+                    provenance_drift["reason"]
+                ),
+            ))
+            source_path = provenance_drift.get("source_path")
+            if source_path and os.path.isfile(
+                os.path.join(source_path, "scripts", "install_for_codex.py")
+            ):
+                findings.append((
+                    INFO,
+                    "skill-provenance",
+                    "Refresh installed Skill first: {} {} --code-search-services skip; "
+                    "then restart Codex and refresh project workflow files.".format(
+                        _quote_cmd_arg(sys.executable or "python"),
+                        _quote_cmd_arg(
+                            os.path.join(source_path, "scripts", "install_for_codex.py")
+                        ),
+                    ),
+                ))
         outdated_workflow = _outdated_project_workflow_files(root)
         if outdated_workflow:
             shown = ", ".join(outdated_workflow[:6])
@@ -996,7 +1100,8 @@ def run_doctor(repo_path=None, hash_paths=None):
             "Trusted-project Codex rule pre-authorizes only "
             "`bash ai/dispatch-to-claude.sh ...` and "
             "`bash ai/run-codex-spark.sh ...`; restart Codex after install/update. "
-            "Environment-wrapped or custom commands keep normal approval handling.",
+            "Use their stable CLI host options. Environment-wrapped or custom "
+            "commands keep normal approval handling.",
         ))
 
     git_path, git_version = _git_available()

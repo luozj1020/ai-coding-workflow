@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # dispatch-to-claude.sh  -  Dispatch a task card to Claude Code in an isolated worktree.
 #
-# Usage: bash ai/dispatch-to-claude.sh <task-card-path> [--empty-api-config-env NAME]
+# Usage: bash ai/dispatch-to-claude.sh <task-card-path>
+#        [--empty-api-config-env NAME] [--execution-env auto|sandbox|host]
+#        [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]
 #
 # This script:
 #   1. Validates that git and claude CLI exist.
@@ -23,13 +25,16 @@ PATH="${PATH}:/usr/bin:/bin:/mingw64/bin"
 export PATH
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME]" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]" >&2
     exit 1
 fi
 
 TASK_CARD="$1"
 shift
 EMPTY_API_CONFIG_ENV=""
+DISPATCH_EXECUTION_ENV="auto"
+RETRY_IN_PLACE_TASK_ID_OPTION=""
+REVIEWED_CONTINUATION_OPTION=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --empty-api-config-env)
@@ -40,12 +45,58 @@ while [ $# -gt 0 ]; do
             EMPTY_API_CONFIG_ENV="$2"
             shift 2
             ;;
+        --execution-env)
+            [ $# -ge 2 ] || {
+                echo "Error: --execution-env requires auto, sandbox, or host." >&2
+                exit 1
+            }
+            DISPATCH_EXECUTION_ENV="$2"
+            case "$DISPATCH_EXECUTION_ENV" in
+                auto|sandbox|host) ;;
+                *)
+                    echo "Error: --execution-env must be auto, sandbox, or host." >&2
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
+        --retry-in-place-task-id)
+            [ $# -ge 2 ] || {
+                echo "Error: --retry-in-place-task-id requires a task id." >&2
+                exit 1
+            }
+            RETRY_IN_PLACE_TASK_ID_OPTION="$2"
+            shift 2
+            ;;
+        --reviewed-continuation)
+            [ $# -ge 2 ] || {
+                echo "Error: --reviewed-continuation requires an approval path." >&2
+                exit 1
+            }
+            REVIEWED_CONTINUATION_OPTION="$2"
+            shift 2
+            ;;
         *)
             echo "Error: unknown option: $1" >&2
             exit 1
             ;;
     esac
 done
+
+if [ -n "$RETRY_IN_PLACE_TASK_ID_OPTION" ]; then
+    case "$RETRY_IN_PLACE_TASK_ID_OPTION" in
+        *[!A-Za-z0-9._-]*)
+            echo "Error: --retry-in-place-task-id contains unsafe characters." >&2
+            exit 1
+            ;;
+    esac
+    CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID="$RETRY_IN_PLACE_TASK_ID_OPTION"
+    export CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID
+fi
+if [ -n "$REVIEWED_CONTINUATION_OPTION" ]; then
+    CLAUDE_CODE_REVIEWED_CONTINUATION="$REVIEWED_CONTINUATION_OPTION"
+    export CLAUDE_CODE_REVIEWED_CONTINUATION
+fi
 
 if [ -n "$EMPTY_API_CONFIG_ENV" ]; then
     case "$EMPTY_API_CONFIG_ENV" in
@@ -112,6 +163,8 @@ CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS="${CLAUDE_CODE_APPROVAL_CONVERGENCE_
 case "$CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS must be a positive integer." >&2; exit 1 ;; esac
 CLAUDE_CODE_TERMINAL_DRAIN_SECONDS="${CLAUDE_CODE_TERMINAL_DRAIN_SECONDS:-1}"
 case "$CLAUDE_CODE_TERMINAL_DRAIN_SECONDS" in ''|*[!0-9]*) echo "Error: CLAUDE_CODE_TERMINAL_DRAIN_SECONDS must be a non-negative integer." >&2; exit 1 ;; esac
+CLAUDE_CODE_TERMINATE_GRACE_SECONDS="${CLAUDE_CODE_TERMINATE_GRACE_SECONDS:-5}"
+case "$CLAUDE_CODE_TERMINATE_GRACE_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_TERMINATE_GRACE_SECONDS must be a positive integer." >&2; exit 1 ;; esac
 CLAUDE_CODE_DIRTY_SOURCE_MODE="${CLAUDE_CODE_DIRTY_SOURCE_MODE:-block}"
 case "$CLAUDE_CODE_DIRTY_SOURCE_MODE" in
     block|snapshot) ;;
@@ -152,6 +205,16 @@ CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS="${CLAUDE_CODE_NETWORK_HEALTHCHE
 CLAUDE_CODE_API_PROBE_MODE="${CLAUDE_CODE_API_PROBE_MODE:-adaptive}"
 CLAUDE_CODE_PROBE_ENVIRONMENT="${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}"
 CLAUDE_CODE_HOST_AUTHORITY="${CLAUDE_CODE_HOST_AUTHORITY:-0}"
+case "$DISPATCH_EXECUTION_ENV" in
+    host)
+        CLAUDE_CODE_HOST_AUTHORITY=1
+        CLAUDE_CODE_PROBE_ENVIRONMENT=host
+        ;;
+    sandbox)
+        CLAUDE_CODE_HOST_AUTHORITY=0
+        CLAUDE_CODE_PROBE_ENVIRONMENT=sandbox
+        ;;
+esac
 CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED="${CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED:-1}"
 CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS="${CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS:-86400}"
 case "$CLAUDE_CODE_HOST_AUTHORITY" in 0|1) ;; *) echo "Error: CLAUDE_CODE_HOST_AUTHORITY must be 0 or 1." >&2; exit 1 ;; esac
@@ -1555,6 +1618,8 @@ CONTROL_ARCHIVE_DIR="${WORKTREE_ROOT}/control-archive/${TASK_ID}"
 DISPATCHER_IDENTITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.process.json"
 CLAUDE_IDENTITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude.process.json"
 CHECKER_IDENTITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker.process.json"
+PROCESS_TERMINATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.process-termination.json"
+ABNORMAL_EXIT_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher-abnormal-exit.json"
 PHASE_METRICS_FILE="${WORKTREE_ROOT}/${TASK_ID}.phase-metrics.json"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 MONITOR_EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.monitor-events.log"
@@ -2308,6 +2373,8 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '    "claude": "%s",\n' "$CLAUDE_IDENTITY_FILE"
     printf '    "checker": "%s"\n' "$CHECKER_IDENTITY_FILE"
     echo "  },"
+    printf '  "process_termination_receipt": "%s",\n' "$PROCESS_TERMINATION_FILE"
+    printf '  "dispatcher_abnormal_exit_receipt": "%s",\n' "$ABNORMAL_EXIT_FILE"
     printf '  "builder_mode": "%s",\n' "$CLAUDE_CODE_BUILDER_MODE"
     printf '  "task_mode": "%s",\n' "${_PARSED_TASK_MODE:-unknown}"
     printf '  "declared_task_mode": "%s",\n' "${_DECLARED_TASK_MODE:-unknown}"
@@ -3535,7 +3602,8 @@ worktree_digest() {
     # continuation diff look like fresh model progress.
     if [ -n "${PYTHON_CMD:-}" ] && [ -f "${SCRIPT_DIR}/worktree_state_hash.py" ]; then
         "$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" \
-            --worktree "${WORKTREE_DIR:-.}" 2>/dev/null || true
+            --worktree "${WORKTREE_DIR:-.}" --ignore-empty-untracked \
+            2>/dev/null || true
         return
     fi
     {
@@ -3592,28 +3660,33 @@ stop_claude() {
         kill "$broker_pid" 2>/dev/null || true
         sleep 5
     else
-        progress_log "Stopping Claude (${reason}) after ${elapsed}s; atomically freezing direct process tree before termination wrapper pid=${CLAUDE_PID} descendants=${descendants:-none}"
+        progress_log "Stopping Claude (${reason}) after ${elapsed}s; identity-confirming direct process tree wrapper pid=${CLAUDE_PID} descendants=${descendants:-none}"
     fi
 
-    if kill -0 "$CLAUDE_PID" 2>/dev/null; then
-        # Freeze every remaining writer before killing any leaf. Killing a
-        # leaf first lets its parent shell resume and perform one final write.
-        descendants=""
-        if command -v pgrep >/dev/null 2>&1; then
-            local frontier="$CLAUDE_PID"
-            local parent children
-            while [ -n "$frontier" ]; do
-                local next_frontier=""
-                for parent in $frontier; do
-                    children="$(pgrep -P "$parent" 2>/dev/null || true)"
-                    if [ -n "$children" ]; then
-                        descendants="${descendants} ${children}"
-                        next_frontier="${next_frontier} ${children}"
-                    fi
-                done
-                frontier="$next_frontier"
-            done
+    local termination_helper="${SCRIPT_DIR}/prepare-codex-takeover.py"
+    if [ -n "${PYTHON_CMD:-}" ] && [ -f "$termination_helper" ] && \
+       [ -f "$CLAUDE_IDENTITY_FILE" ]; then
+        if "$PYTHON_CMD" "$termination_helper" terminate-process \
+            --identity "$CLAUDE_IDENTITY_FILE" \
+            --task-id "$TASK_ID" \
+            --role claude \
+            --terminate-timeout "$CLAUDE_CODE_TERMINATE_GRACE_SECONDS" \
+            --reason "$reason" \
+            --output "$PROCESS_TERMINATION_FILE" >/dev/null; then
+            rm -f "$PID_FILE" "$CLAUDE_PID_FILE"
+            CLAUDE_TERMINATION_CONFIRMED=1
+            progress_log "Claude process tree confirmed inactive: receipt=${PROCESS_TERMINATION_FILE}"
+            return 0
         fi
+        CLAUDE_TERMINATION_FAILED=1
+        progress_log "Claude process-tree termination failed closed: identity visibility or ownership could not be confirmed"
+        return 1
+    fi
+
+    # Compatibility fallback for old standalone fixtures without the identity
+    # helper. Refreshed workflow installs always use the identity-bound path.
+    if kill -0 "$CLAUDE_PID" 2>/dev/null; then
+        progress_log "Warning: identity helper unavailable; using compatibility tree freeze"
         kill -STOP "$CLAUDE_PID" $descendants 2>/dev/null || true
         kill -9 $descendants "$CLAUDE_PID" 2>/dev/null || true
     fi
@@ -3640,6 +3713,12 @@ run_claude() {
     # in direct/inherit and broker/bypass branches.
     # Length check avoids empty-array expansion error under set -u.
     local claude_base_args=(-p --permission-mode acceptEdits --output-format json)
+    local direct_group_prefix=()
+    if [ "${OS:-}" != "Windows_NT" ] && command -v setsid >/dev/null 2>&1; then
+        # Brokered calls already create a new session. Keep the compatibility
+        # direct path equally reclaimable as one task-owned process group.
+        direct_group_prefix=(setsid)
+    fi
     if [ "$CLAUDE_SESSION_MODE_EFFECTIVE" = "resume" ] && [ -n "$CLAUDE_SESSION_ID" ]; then
         claude_base_args+=(--resume "$CLAUDE_SESSION_ID")
     elif [ -n "$CLAUDE_SESSION_ID" ]; then
@@ -3672,13 +3751,15 @@ run_claude() {
         # projects and standalone dispatcher fixtures; refreshed installs use
         # the broker by default.
         if [ "$CLAUDE_CODE_PROXY_MODE" = "inherit" ]; then
-            "${_CLAUDE_SANDBOX_PREFIX[@]}" claude "${claude_base_args[@]}" \
+            "${direct_group_prefix[@]}" "${_CLAUDE_SANDBOX_PREFIX[@]}" \
+                claude "${claude_base_args[@]}" \
                 < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
         else
             (
                 unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
                 unset http_proxy https_proxy all_proxy no_proxy
-                "${_CLAUDE_SANDBOX_PREFIX[@]}" claude "${claude_base_args[@]}" \
+                "${direct_group_prefix[@]}" "${_CLAUDE_SANDBOX_PREFIX[@]}" \
+                    claude "${claude_base_args[@]}" \
                     < CLAUDE_PROMPT.md > "$RESULT_FILE" 2>"${STATUS_FILE}"
             )
         fi
@@ -3712,6 +3793,78 @@ run_claude() {
             )
         fi
     fi
+}
+
+CLAUDE_LAUNCHED=0
+DISPATCH_FINALIZED=0
+DISPATCH_EXIT_HANDLER_ACTIVE=0
+CLAUDE_TERMINATION_CONFIRMED=0
+CLAUDE_TERMINATION_FAILED=0
+
+dispatch_exit_handler() {
+    local original_status="${1:-1}"
+    local final_status="$original_status"
+    trap - EXIT HUP INT TERM
+    if [ "$DISPATCH_EXIT_HANDLER_ACTIVE" -eq 1 ]; then
+        exit "$final_status"
+    fi
+    DISPATCH_EXIT_HANDLER_ACTIVE=1
+
+    if [ "$CLAUDE_LAUNCHED" -eq 1 ] && [ "$DISPATCH_FINALIZED" -ne 1 ]; then
+        set +e
+        stop_claude "dispatcher-abnormal-exit-${original_status}" "unknown"
+        local cleanup_status=$?
+        set -e
+        [ "$cleanup_status" -eq 0 ] || CLAUDE_TERMINATION_FAILED=1
+        if [ -n "${PYTHON_CMD:-}" ]; then
+            "$PYTHON_CMD" - "$ABNORMAL_EXIT_FILE" "$OUTCOME_FILE" "$TASK_ID" \
+                "$original_status" "$cleanup_status" "$PROCESS_TERMINATION_FILE" <<'PYEOF' 2>/dev/null || true
+import json, os, sys, tempfile
+receipt, outcome, task_id, exit_status, cleanup_status, termination = sys.argv[1:]
+value = {
+    "schema_version": 1,
+    "status": "terminal",
+    "task_id": task_id,
+    "dispatch_outcome": "dispatcher-abnormal-exit",
+    "exit_status": int(exit_status),
+    "process_cleanup_confirmed": cleanup_status == "0",
+    "process_termination_receipt": termination if os.path.isfile(termination) else None,
+    "merge_authorized": False,
+}
+def write(path, payload):
+    directory = os.path.dirname(path) or "."
+    fd, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path), dir=directory)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, path)
+write(receipt, value)
+if not os.path.exists(outcome):
+    write(outcome, {
+        **value,
+        "dispatch_success": False,
+        "artifact_valid": False,
+        "validation_success": "unknown",
+        "semantic_acceptance": "not-reviewed",
+        "completion_state": "interrupted",
+    })
+PYEOF
+        fi
+        if [ -n "${MONITOR_EVENT_LOG:-}" ]; then
+            printf '%s\n' "event=terminal running=no terminal=yes exit_status=${original_status} dispatch_outcome=dispatcher-abnormal-exit process_cleanup_confirmed=$([ "$cleanup_status" -eq 0 ] && echo yes || echo no)" \
+                >> "$MONITOR_EVENT_LOG" 2>/dev/null || true
+        fi
+        [ "$final_status" -ne 0 ] || final_status=70
+    fi
+
+    if [ "$DISPATCH_FINALIZED" -eq 1 ] || [ "$CLAUDE_TERMINATION_CONFIRMED" -eq 1 ]; then
+        rm -f "${PID_FILE:-}" "${CLAUDE_PID_FILE:-}" "${CHECKER_PID_FILE:-}"
+    fi
+    rm -f "${DISPATCHER_PID_FILE:-}"
+    [ -z "${_REVIEWED_CONTINUATION_LEASE_DIR:-}" ] || rm -rf "$_REVIEWED_CONTINUATION_LEASE_DIR"
+    [ -z "${_RETRY_RESERVATION_DIR:-}" ] || rm -rf "$_RETRY_RESERVATION_DIR"
+    [ -z "${_ADVISOR_CONTINUE_RESERVATION_DIR:-}" ] || rm -rf "$_ADVISOR_CONTINUE_RESERVATION_DIR"
+    exit "$final_status"
 }
 
 if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
@@ -4083,17 +4236,24 @@ PYEOF
     "$PYTHON_CMD" - "$RESULT_FILE" "$TASK_ID" "$_STARTUP_FAILURE_CATEGORY" \
         "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" \
         "$_STARTUP_NEEDS_HOST_EXECUTION" \
-        "${_REVIEWED_CONTINUATION_APPROVAL:-}" <<'PYEOF'
+        "${_REVIEWED_CONTINUATION_APPROVAL:-}" "$TASK_CARD" <<'PYEOF'
 import json, os, sys
-output, task_id, category, health, classification, needs_host, reviewed_approval = sys.argv[1:]
+output, task_id, category, health, classification, needs_host, reviewed_approval, task_card = sys.argv[1:]
 needs_host_execution = needs_host == "1"
 host_retry_environment = None
+host_retry_args = None
 if needs_host_execution:
+    # Keep the legacy environment receipt for backward compatibility, but
+    # make the preferred retry a stable CLI shape that can match a narrow
+    # persistent host-execution approval rule.
     host_retry_environment = {"CLAUDE_CODE_HOST_AUTHORITY": "1"}
+    host_retry_args = [task_card, "--execution-env", "host"]
     if reviewed_approval:
         host_retry_environment["CLAUDE_CODE_REVIEWED_CONTINUATION"] = reviewed_approval
+        host_retry_args.extend(["--reviewed-continuation", reviewed_approval])
     else:
         host_retry_environment["CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID"] = task_id
+        host_retry_args.extend(["--retry-in-place-task-id", task_id])
 value = {
     "schema_version": 1,
     "task_id": task_id,
@@ -4109,6 +4269,7 @@ value = {
         if needs_host_execution else None
     ),
     "host_retry_environment": host_retry_environment,
+    "host_retry_args": host_retry_args,
 }
 with open(output, "w", encoding="utf-8") as handle:
     json.dump(value, handle, indent=2, sort_keys=True)
@@ -4121,11 +4282,11 @@ PYEOF
     if [ "$_STARTUP_NEEDS_HOST_EXECUTION" -eq 1 ]; then
         echo "needs_host_execution=true" >&2
         echo "host_handoff_required=true" >&2
-        echo "host_retry_environment=CLAUDE_CODE_HOST_AUTHORITY=1" >&2
+        printf 'host_retry_command=bash %q %q --execution-env host' "$0" "$TASK_CARD" >&2
         if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
-            echo "host_retry_reviewed_continuation=${_REVIEWED_CONTINUATION_APPROVAL}" >&2
+            printf ' --reviewed-continuation %q\n' "$_REVIEWED_CONTINUATION_APPROVAL" >&2
         else
-            echo "host_retry_task_id=${TASK_ID}" >&2
+            printf ' --retry-in-place-task-id %q\n' "$TASK_ID" >&2
         fi
         echo "host_retry_limit=1" >&2
     fi
@@ -4176,9 +4337,18 @@ if [ -n "${_REVIEWED_CONTINUATION_LEASE_DIR:-}" ]; then
     _REVIEWED_CONTINUATION_LEASE_DIR=""
 fi
 
+# One lifecycle owner handles normal cleanup and every catchable abnormal exit.
+# SIGKILL cannot run user-space cleanup; its surviving identity receipt remains
+# fail-closed evidence for the takeover path.
+trap 'dispatch_exit_handler $?' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 set +e
 run_claude &
 CLAUDE_PID=$!
+CLAUDE_LAUNCHED=1
 echo "$CLAUDE_PID" > "$PID_FILE"
 echo "$CLAUDE_PID" > "$CLAUDE_PID_FILE"
 if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/process-identity.py" ]; then
@@ -6310,6 +6480,7 @@ else
 fi
 
 monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} dispatch_success=${DISPATCH_SUCCESS} artifact_valid=${ARTIFACT_VALID} validation_success=${VALIDATION_STATUS} semantic_acceptance=${SEMANTIC_ACCEPTANCE} completion_state=${COMPLETION_STATE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED}"
+DISPATCH_FINALIZED=1
 
 echo "Report saved to: $REPORT_FILE"
 

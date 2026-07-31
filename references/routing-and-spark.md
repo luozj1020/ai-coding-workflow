@@ -190,7 +190,9 @@ avoid persisting successful advisory prose.
   Direct stdout is an `aiwf-spark-stdout-v1` envelope: it emits
   `spark_status=started` before the model call and ends with one terminal status
   (`success`, `failed`, or `unavailable`) plus `spark_protocol_end`. Parse it
-  with `aiwf spark-output [FILE] --require-terminal`. A started-only envelope
+  with `aiwf spark-output [FILE] --require-terminal`. An EXIT finalizer turns
+  any wrapper exit after `started` into a terminal `failed` envelope with
+  `spark_failure_class=wrapper-exit-before-terminal`; a started-only envelope
   is not a usable Spark result.
   Control-plane modes also append `spark_decision_json=<compact JSON>`.
   `aiwf spark-output` validates this field and exposes it as

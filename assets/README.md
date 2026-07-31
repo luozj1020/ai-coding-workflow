@@ -59,6 +59,16 @@ confirmation. It deliberately does not allow arbitrary Bash, `scripts/*`
 source helpers, environment-wrapped commands, merge, deployment, or destructive
 actions. Spark remains advisory and Codex retains routing and semantic review.
 Use `--update-workflow-files` to add or refresh this rule in an older project.
+After host authority is granted, keep that stable launcher prefix:
+
+```bash
+bash ai/dispatch-to-claude.sh CARD --execution-env host \
+  --retry-in-place-task-id TASK_ID
+```
+
+Use `--reviewed-continuation APPROVAL` for a reviewed continuation. Legacy
+environment selectors remain compatible, but environment-prefixed commands do
+not match the narrow project rule and can trigger another approval.
 
 If running from the installed Skill while using a separate clone as the update source:
 
@@ -159,7 +169,7 @@ ai/
   status-claude.sh            # Inspect Claude dispatch progress/artifacts
   watch-claude.sh             # Stream Claude progress in a terminal
   monitor-claude.sh           # Block on dispatcher events or request one decision
-  kill-claude.sh              # Stop a Claude dispatch by PID artifact
+  kill-claude.sh              # Identity-confirm and stop a Claude process tree
   cleanup-worktree.sh         # Remove stopped Claude worktrees safely
   pwsh-utf8.ps1                # Configure PowerShell UTF-8 session defaults
   doctor_workflow.py          # Read-only readiness check for dispatch/review loop
@@ -498,7 +508,9 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.usage.txt` | Claude token/cost usage summary |
 | `*.report.md` | Claude modification report for human/Codex review |
 | `*.claude-progress.md` | Claude self-reported milestone progress for status display and review evidence |
-| `*.pid` | Claude subprocess PID for status/kill helpers |
+| `*.pid` | Transient PID hint while active; removed after confirmed cleanup |
+| `*.process-termination.json` | Identity-bound process-tree termination evidence |
+| `*.dispatcher-abnormal-exit.json` | Catchable abnormal-exit terminal evidence |
 | `*.progress.log` | Dispatch heartbeat, timeout, and completion log |
 | `*.review.txt` | Persisted Codex review output |
 | `*.codex-events.jsonl` | Raw Codex JSON events when available |
@@ -981,9 +993,9 @@ The installer treats a missing or broken `bash` as `WARN_SKIPPED`, not as a hard
 
 ## Dispatch Observability
 
-While Claude Code is running, `dispatch-to-claude.sh` now writes a PID artifact and heartbeat log under `.worktrees/`:
+While Claude Code is running, `dispatch-to-claude.sh` writes transient PID hints, durable identities, and heartbeat evidence under `.worktrees/`:
 
-- `.worktrees/claude-<id>.pid` records the Claude subprocess PID.
+- `.worktrees/claude-<id>.pid` records a transient PID hint and is removed after identity-confirmed cleanup.
 - `.worktrees/claude-<id>.<role>.process.json` binds that PID to start time, command line, PID namespace, task, and role so retry checks do not confuse reused or container/host PIDs.
 - `.worktrees/claude-<id>.progress.log` records start, heartbeat, timeout, and completion events.
 - `.worktrees/claude-<id>.dispatch-preflight.json` proves task-relevant dirty paths are present and byte-identical in the execution worktree; stale or missing inputs stop dispatch.

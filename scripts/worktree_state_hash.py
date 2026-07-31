@@ -21,6 +21,7 @@ Usage as module:
 Usage as CLI:
     python scripts/worktree_state_hash.py --worktree /path/to/worktree
     python scripts/worktree_state_hash.py --worktree /path/to/worktree --exclude-extra pattern1 pattern2
+    python scripts/worktree_state_hash.py --worktree /path/to/worktree --ignore-empty-untracked
 """
 from __future__ import annotations
 
@@ -104,6 +105,7 @@ def compute_worktree_state_hash(
     worktree: Path,
     *,
     extra_excludes: Optional[List[str]] = None,
+    ignore_empty_untracked: bool = False,
 ) -> str:
     """Compute a canonical hash of the worktree state.
 
@@ -111,7 +113,8 @@ def compute_worktree_state_hash(
     - HEAD commit identity
     - unstaged tracked diff (full diff content, not stat)
     - staged diff (full diff content)
-    - untracked file paths and bytes (excluding control artifacts)
+    - untracked file paths and bytes (excluding control artifacts, and
+      optionally zero-byte placeholders)
     - binary changes (raw bytes from diff)
 
     Returns a SHA-256 hex digest string.
@@ -156,6 +159,17 @@ def compute_worktree_state_hash(
         name = PurePosixPath(posix).name
         if name in excludes:
             continue
+        full_path = worktree / posix
+        if (
+            ignore_empty_untracked
+            and full_path.is_file()
+            and not full_path.is_symlink()
+        ):
+            try:
+                if full_path.stat().st_size == 0:
+                    continue
+            except OSError:
+                pass
         untracked_paths.append(posix)
 
     # Sort for deterministic ordering
@@ -188,6 +202,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--exclude-extra", nargs="*", default=[],
         help="Additional filenames to exclude from state hash",
     )
+    parser.add_argument(
+        "--ignore-empty-untracked", action="store_true",
+        help=(
+            "Ignore zero-byte untracked placeholders. Intended for progress "
+            "detection only; continuation and ownership bindings should keep "
+            "the default strict behavior."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.worktree.is_dir():
@@ -197,6 +219,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     h = compute_worktree_state_hash(
         args.worktree,
         extra_excludes=args.exclude_extra if args.exclude_extra else None,
+        ignore_empty_untracked=args.ignore_empty_untracked,
     )
     print(h)
     return 0

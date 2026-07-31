@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
@@ -254,6 +255,50 @@ class DoctorWorkflowTests(unittest.TestCase):
                 outdated,
             )
             self.assertIn("source:references/new-policy.md", outdated)
+
+    def test_doctor_detects_installed_skill_provenance_drift(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            source = base / "source"
+            installed = base / "installed"
+            for root in (source, installed):
+                (root / "assets").mkdir(parents=True)
+                (root / "scripts").mkdir()
+                (root / "assets" / "task-card-template.md").write_text(
+                    "template\n", encoding="utf-8"
+                )
+                (root / "assets" / "AGENTS.md").write_text(
+                    "managed\n", encoding="utf-8"
+                )
+                (root / "scripts" / "install_for_codex.py").write_text(
+                    "installer\n", encoding="utf-8"
+                )
+                (root / "SKILL.md").write_text("skill\n", encoding="utf-8")
+            (installed / "scripts" / "dispatch-to-claude.sh").write_text(
+                "old\n", encoding="utf-8"
+            )
+            (source / "scripts" / "dispatch-to-claude.sh").write_text(
+                "new\n", encoding="utf-8"
+            )
+            (installed / ".aiwf-install-provenance.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "source_path": str(source),
+                        "source_commit": "0" * 40,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            drift = module._installed_skill_provenance_drift(str(installed))
+
+            self.assertIsNotNone(drift)
+            self.assertEqual(drift["source_path"], str(source.resolve()))
+            self.assertIn(
+                "source:scripts/dispatch-to-claude.sh", drift["drifted"]
+            )
 
     def test_doctor_exits_nonzero_without_git(self):
         """Doctor exits 1 when no .git is found."""

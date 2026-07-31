@@ -251,9 +251,12 @@ class ClaudeHealthcheckTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('CLAUDE_CODE_HOST_AUTHORITY="${CLAUDE_CODE_HOST_AUTHORITY:-0}"', dispatcher)
+        self.assertIn("--execution-env", dispatcher)
+        self.assertIn("--retry-in-place-task-id", dispatcher)
+        self.assertIn("--reviewed-continuation", dispatcher)
         self.assertIn('echo "needs_host_execution=true" >&2', dispatcher)
         self.assertIn('echo "host_handoff_required=true" >&2', dispatcher)
-        self.assertIn('echo "host_retry_task_id=${TASK_ID}" >&2', dispatcher)
+        self.assertIn("host_retry_command=bash", dispatcher)
         self.assertIn('echo "host_retry_limit=1" >&2', dispatcher)
         self.assertIn('CLAUDE_CODE_PROBE_ENVIRONMENT="host"', dispatcher)
 

@@ -719,9 +719,11 @@ python ai/run-workflow.py task.json --execute --spark-host-authority --spark-hos
 
 Claude 现在使用相同的外层边界协议。受限沙箱中的启动交互失败会在 Builder
 执行前返回 exit 75 和 `needs_host_execution=true`。外层 Codex 必须通过宿主
-执行权限，以 `CLAUDE_CODE_HOST_AUTHORITY=1` 和收据给出的
-`CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID` 原样重放一次 dispatcher 调用，并保留
-任务卡、worktree 和 session lineage。exit 75 是编排请求，不是放弃模型调用的
+执行权限，使用稳定且可匹配项目授权规则的命令
+`bash ai/dispatch-to-claude.sh CARD --execution-env host
+--retry-in-place-task-id TASK_ID` 原样重放一次；reviewed continuation 改用
+`--reviewed-continuation APPROVAL`。旧环境变量形式仍兼容，但 CLI 形式不会改变
+命令前缀，并会保留任务卡、worktree 和 session lineage。exit 75 是编排请求，不是放弃模型调用的
 许可；只有宿主重试也失败后，才能判定当前路由不可用。
 
 revision、收窄、重试、重派、拆分子任务或下一阶段卡必须重复此步骤，并改用对应的 `--routing-event`。只有 Spark 经济建议和确定性 owner gate 都倾向 Codex 时，才直接编辑并省略完整任务卡；否则再编写面向下游的精简执行卡。
@@ -1025,7 +1027,9 @@ CLAUDE_CODE_NETWORK_MONITOR=1 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-1
 | `*.phase-metrics.json` | context、implementation、validation、tail、编辑就绪和产品停滞计时 |
 | `*.codegraph-worktree.json` | CodeGraph 项目/worktree 身份、pending 状态、修复动作和安全使用结论 |
 | `*.runtime.json` | worktree、会话、超时、进程身份和 guard 配置 |
-| `*.pid` | 该次调度记录的 Claude 子进程 PID |
+| `*.pid` | 角色运行期间的临时 PID 提示；确认终态回收后删除 |
+| `*.process-termination.json` | 身份绑定的整棵进程树终止证据 |
+| `*.dispatcher-abnormal-exit.json` | 可捕获异常退出的终态与回收证据 |
 | `*.progress.log` | 调度心跳、超时和完成日志 |
 | `*.review.txt` | 持久化的 Codex 审查输出 |
 | `*.codex-events.jsonl` | 可用时记录的 Codex 原始 JSON 事件 |
@@ -1212,9 +1216,9 @@ Windows PowerShell 的控制台代码页, `$OutputEncoding` 和子进程编码�
 
 ## 调度可观测性
 
-`dispatch-to-claude.sh` 在 Claude Code 运行期间会在 `.worktrees/` 下写入 PID 和心跳日志：
+`dispatch-to-claude.sh` 在 Claude Code 运行期间会在 `.worktrees/` 下写入临时 PID、持久进程身份和心跳证据：
 
-- `.worktrees/claude-<id>.pid` 记录 Claude 子进程 PID。
+- `.worktrees/claude-<id>.pid` 是临时 Claude PID 提示，在身份确认的终态回收后删除。
 - `.worktrees/claude-<id>.progress.log` 记录启动、心跳、超时和完成事件。
 - 最终化后的机器可读状态字段：`overall_running=yes`、`running=no`、`claude=not-running`。只有 dispatcher 设置这些字段；Claude 不自行最终化状态。
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` 控制心跳频率，默认 `30`。
@@ -1308,7 +1312,7 @@ bash ai/monitor-claude.sh decision claude-20260701-093934
 # 仅用于例外情况下的人工诊断：
 bash ai/status-claude.sh claude-20260701-093934 --details
 
-# 只停止该 dispatch 的 PID artifact 记录的 Claude 进程
+# 身份确认后停止该 dispatch 的完整 Claude 进程树
 bash ai/kill-claude.sh claude-20260701-093934
 
 # 移除已停止的 worktree，同时保留 .worktrees/claude-<id>.* 证据 artifact

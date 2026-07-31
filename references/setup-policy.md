@@ -52,6 +52,11 @@ bash ai/run-codex-spark.sh ...
 
 The rule does not authorize arbitrary Bash, `scripts/*` source helpers,
 environment-wrapped commands, merge, deployment, or destructive operations.
+After host authority is granted, keep the approved launcher shape and use
+`--execution-env host`. Claude transport retries add
+`--retry-in-place-task-id <task-id>` or
+`--reviewed-continuation <approval-path>`; do not put environment assignments
+in front of the launcher.
 Spark remains advisory and Codex still performs routing and bounded semantic
 review; actions that require human authority keep their existing approval
 boundary. Existing projects receive or refresh the rule through

@@ -133,6 +133,7 @@ SPARK_PIPELINE_STAGE=""
 SPARK_ROLES_EXECUTED=""
 SPARK_CALLS_USED=0
 DIRECT_ENVELOPE_STARTED="no"
+DIRECT_ENVELOPE_TERMINAL_EMITTED="no"
 SPARK_PROVISIONAL_ACCEPTANCE="not applicable"
 ARTIFACTS=()
 RESULT_MODE="${CODEX_SPARK_RESULT_MODE:-}"
@@ -148,6 +149,31 @@ FAST_PATH_THRESHOLD_EXPLICIT="$([ -n "${CODEX_FAST_PATH_MAX_DIFF_LINES+x}" ] && 
 CONCENTRATED_THRESHOLD_EXPLICIT="$([ -n "${CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES+x}" ] && echo yes || echo no)"
 REPOSITORY_SCALE_REQUESTED="${CODEX_REPOSITORY_SCALE:-auto}"
 ROUTING_EVENT="${CODEX_SPARK_ROUTING_EVENT:-initial}"
+
+spark_exit_handler() {
+    local original_status="${1:-1}"
+    local final_status="$original_status"
+    trap - EXIT
+    if [ "${RESULT_MODE:-}" = "direct" ] && \
+       [ "${DIRECT_ENVELOPE_STARTED:-no}" = "yes" ] && \
+       [ "${DIRECT_ENVELOPE_TERMINAL_EMITTED:-no}" != "yes" ]; then
+        echo "spark_status=failed"
+        echo "spark_auto_disabled=no"
+        echo "spark_disable_reason=wrapper exited before terminal envelope"
+        echo "spark_failure_class=wrapper-exit-before-terminal"
+        echo "spark_model_response_received=${SPARK_MODEL_RESPONSE_RECEIVED:-no}"
+        echo "spark_protocol_end=aiwf-spark-stdout-v1"
+        DIRECT_ENVELOPE_TERMINAL_EMITTED="yes"
+        [ "$final_status" -ne 0 ] || final_status=70
+    fi
+    if declare -F cleanup_temp >/dev/null 2>&1; then
+        cleanup_temp
+    fi
+    if declare -F cleanup_codex_runtime_home >/dev/null 2>&1; then
+        cleanup_codex_runtime_home
+    fi
+    exit "$final_status"
+}
 EXPLICIT_OUTPUT="no"
 EXECUTION_ENV="${CODEX_SPARK_EXECUTION_ENV:-auto}"
 CONTEXT_WORKTREE="${CODEX_SPARK_CONTEXT_WORKTREE:-}"
@@ -792,7 +818,7 @@ if [ "$RESULT_MODE" = "direct" ]; then
             rm -rf "$TEMP_WORK_DIR"
         fi
     }
-    trap cleanup_temp EXIT
+    trap 'spark_exit_handler $?' EXIT
 
     PROMPT_FILE="${TEMP_WORK_DIR}/codex-spark.prompt.md"
     REPORT_FILE="${TEMP_WORK_DIR}/codex-spark.report.md"
@@ -817,7 +843,7 @@ elif [ "$RESULT_MODE" = "minimal" ]; then
             rm -rf "$TEMP_WORK_DIR"
         fi
     }
-    trap cleanup_temp EXIT
+    trap 'spark_exit_handler $?' EXIT
 
     PROMPT_FILE="${TEMP_WORK_DIR}/codex-spark.prompt.md"
     RESULT_FILE="${TEMP_WORK_DIR}/codex-spark.result.txt"
@@ -905,11 +931,7 @@ if is_advisory_mode; then
             rmdir "${REPO_ROOT}/.worktrees" 2>/dev/null || true
         fi
     }
-    if [ -n "$TEMP_WORK_DIR" ]; then
-        trap 'cleanup_temp; cleanup_codex_runtime_home' EXIT
-    else
-        trap cleanup_codex_runtime_home EXIT
-    fi
+    trap 'spark_exit_handler $?' EXIT
     _ORIGINAL_CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
     for _codex_input in auth.json config.toml installation_id models_cache.json version.json; do
         if [ -f "${_ORIGINAL_CODEX_HOME}/${_codex_input}" ]; then
@@ -1229,6 +1251,7 @@ auto_disable_spark() {
         echo "spark_disable_reason=${reason}"
         echo "spark_model_response_received=${SPARK_MODEL_RESPONSE_RECEIVED}"
         echo "spark_protocol_end=aiwf-spark-stdout-v1"
+        DIRECT_ENVELOPE_TERMINAL_EMITTED="yes"
         if [ "$SPARK_HOST_HANDOFF_REQUIRED" = "yes" ]; then
             echo "needs_host_execution=true" >&2
             echo "host_handoff_required=true" >&2
@@ -2634,6 +2657,7 @@ case "$RESULT_MODE" in
             echo "spark_failure_class=${DIAGNOSTIC_FAILURE_CLASS}"
             echo "spark_model_response_received=${SPARK_MODEL_RESPONSE_RECEIVED}"
             echo "spark_protocol_end=aiwf-spark-stdout-v1"
+            DIRECT_ENVELOPE_TERMINAL_EMITTED="yes"
             if [ "$SPARK_HOST_HANDOFF_REQUIRED" = "yes" ]; then
                 echo "needs_host_execution=true" >&2
                 echo "host_handoff_required=true" >&2
@@ -2659,6 +2683,7 @@ case "$RESULT_MODE" in
             echo "spark_failure_class=none"
             echo "spark_model_response_received=${SPARK_MODEL_RESPONSE_RECEIVED}"
             echo "spark_protocol_end=aiwf-spark-stdout-v1"
+            DIRECT_ENVELOPE_TERMINAL_EMITTED="yes"
         fi
         exit "$HELPER_EXIT_STATUS"
         ;;

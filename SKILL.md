@@ -50,6 +50,10 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 - A takeover receipt is only a candidate. `aiwf prepare-takeover` must revoke
   ownership, stop/confirm old process trees, freeze a baseline, and issue the
   single-writer grant; unknown visibility fails closed.
+- Automatic timeout, manual stop, takeover, and catchable dispatcher-exit
+  cleanup must use task-bound process identity for the complete process tree.
+  PID-only kill fails closed; confirmed terminal cleanup removes PID hints but
+  preserves identity and termination receipts.
 - Enforce exact Write paths in real time. `editor-only` removes Bash; required
   enforcement never degrades to post-run auditing.
 - Never poll Claude with `ps`, `tail`, clocks, or Codex turns. Block on

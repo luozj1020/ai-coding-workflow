@@ -49,8 +49,11 @@ when that tool surface is available) and the recorded host-authority flag.
 Do not report Spark unavailable or continue to Claude until that single host
 attempt finishes. If host permission is not already granted, request it once.
 Apply the same rule to Claude `needs_host_execution`, preserving its task card,
-worktree, and session lineage by setting `CLAUDE_CODE_HOST_AUTHORITY=1` plus the
-receipt's `CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID`.
+worktree, and session lineage with the receipt's stable CLI retry:
+`bash ai/dispatch-to-claude.sh <card> --execution-env host
+--retry-in-place-task-id <task-id>` (or `--reviewed-continuation <approval>`).
+Legacy environment selectors remain compatible but are not the preferred
+approval shape.
 
 Use Claude `execution-builder` for a frozen solution, `batch-builder` for
 mechanical work, and `exploratory-builder` for bounded new-feature work whose
@@ -123,6 +126,9 @@ Codex takeover is an atomic single-writer transfer. A threshold receipt is only
 a candidate: revoke/declare absent the Owner Lease, stop and identity-confirm
 old process trees, freeze a stable baseline, then issue the Codex grant. Unknown
 visibility fails closed; its ownership marker forbids later Claude continuation.
+All automatic/manual stops are task-identity-bound process-tree operations;
+PID-only kills fail closed, catchable dispatcher exits write terminal evidence,
+and confirmed terminal runs remove transient PID hints.
 Writing roles use exact paths with real-time read-only-root enforcement when
 required. `editor-only` removes Bash.
 

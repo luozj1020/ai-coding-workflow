@@ -71,6 +71,13 @@ class RunCodexSparkTests(unittest.TestCase):
         self.assertIn("--stdin-brief", result.stderr)
         self.assertIn("--context-worktree", result.stderr)
 
+    def test_direct_envelope_has_exit_finalizer(self):
+        script = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("spark_exit_handler()", script)
+        self.assertIn("trap 'spark_exit_handler $?' EXIT", script)
+        self.assertIn("wrapper-exit-before-terminal", script)
+        self.assertIn('DIRECT_ENVELOPE_TERMINAL_EMITTED="yes"', script)
+
     def test_task_card_audit_inspects_uncommitted_builder_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)

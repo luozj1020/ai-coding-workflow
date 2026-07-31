@@ -43,11 +43,21 @@ A restricted-sandbox interaction failure emits exit 75 plus
 `needs_host_execution=true` before Builder execution. The outer Codex caller
 must immediately replay the identical dispatcher command once through its
 host-execution permission surface (for example,
-`sandbox_permissions=require_escalated`) with
-`CLAUDE_CODE_HOST_AUTHORITY=1` and the emitted
-`CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID`. This preserves the same task card,
-worktree, retry lineage, and session identity. The authorized dispatcher forces
-the probe environment to `host` and removes the inherited sandbox marker; this
+`sandbox_permissions=require_escalated`) using the stable CLI form:
+
+```bash
+bash ai/dispatch-to-claude.sh <task-card> \
+  --execution-env host \
+  --retry-in-place-task-id <task-id>
+```
+
+For reviewed continuation, use `--reviewed-continuation <approval-path>` in
+place of the retry task ID. Legacy `CLAUDE_CODE_HOST_AUTHORITY=1` and
+continuation selector environment variables remain compatible, but the CLI
+shape is preferred because it matches the narrow persistent launcher approval.
+This preserves the same task card, worktree, retry lineage, and session
+identity. The authorized dispatcher forces the probe environment to `host`
+and removes the inherited sandbox marker; this
 is only an assertion of an already-crossed boundary and never grants authority
 by itself. Do not classify Claude as unavailable until this single host attempt
 fails.
@@ -86,11 +96,17 @@ a product delta for Builder), the dispatcher grants
 flush, then identity-stops the child and records `completion_ready_converged`.
 This is dispatch completion only, not validation success or semantic acceptance.
 The standalone monitor still has no kill authority.
-When the dispatcher stops a direct child, it freezes the remaining authenticated
-process tree before terminating any leaf, preventing a parent shell from
-resuming for one last write. Brokered calls instead cancel through the broker,
-which terminates the model process group and records a terminal `cancelled`
-ledger transition before the wrapper is reaped.
+Every refreshed dispatch path is process-group reclaimable. Brokered calls
+cancel through the broker, which terminates the model process group and records
+a terminal `cancelled` ledger transition before the wrapper is reaped.
+Brokerless compatibility calls use their own session/process group. Automatic
+timeout, catchable dispatcher-signal cleanup, takeover, and `kill-claude.sh`
+all use the same identity-bound TERM, bounded wait, KILL, and final identity
+confirmation. PID-only termination fails closed. Once inactivity is confirmed,
+transient PID hints are removed while process-identity and termination receipts
+remain as durable evidence. A catchable abnormal dispatcher exit writes a
+terminal outcome; SIGKILL cannot run cleanup and therefore leaves identity
+evidence for fail-closed takeover.
 
 `Implementation Complete: yes` starts an independent tail/report window.
 `CLAUDE_CODE_TAIL_TIMEOUT_SECONDS` defaults to 90; expiry stops the lingering
