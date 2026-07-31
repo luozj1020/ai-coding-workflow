@@ -605,7 +605,6 @@ esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"
 MONITOR_SCRIPT="${SCRIPT_DIR}/monitor-claude.sh"
 HANDOFF_RECORDER="${SCRIPT_DIR}/record-handoff-event.py"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -3718,8 +3717,7 @@ run_claude() {
 if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
     echo "Invoking Claude Code..."
     echo "Progress log: $PROGRESS_FILE"
-    echo "Watch Progress: bash \"$WATCH_SCRIPT\" \"$TASK_ID\""
-    echo "Watch Details:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"
+    echo "Agent Wait (once): bash \"$MONITOR_SCRIPT\" wait \"$TASK_ID\" --until terminal"
 fi
 cd "$WORKTREE_DIR"
 
@@ -6387,9 +6385,8 @@ echo "Dispatcher PID:  $DISPATCHER_PID_FILE"
 echo "Claude Role PID: $CLAUDE_PID_FILE"
 echo "Checker PID:     $CHECKER_PID_FILE"
 echo "Progress Log:    $PROGRESS_FILE"
-echo "Wait for Event:  bash \"$MONITOR_SCRIPT\" wait \"$TASK_ID\" --until material"
-echo "Watch Progress:  bash \"$WATCH_SCRIPT\" \"$TASK_ID\""
-echo "Watch Details:   bash \"$WATCH_SCRIPT\" \"$TASK_ID\" --details"
+echo "Agent Wait (once): bash \"$MONITOR_SCRIPT\" wait \"$TASK_ID\" --until terminal"
+echo "Manual diagnostics only: bash \"${SCRIPT_DIR}/status-claude.sh\" \"$TASK_ID\" --details"
 echo ""
 echo "Changes have NOT been merged. Review the diff and merge manually."
 if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "reuse-managed" ]; then

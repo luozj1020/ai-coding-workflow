@@ -1304,11 +1304,17 @@ Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones.
 
 `dispatch-to-claude.sh` prints a copy-paste `monitor-claude.sh wait` command. Agent controllers use this single blocking wait instead of repeated status, process, log-tail, or clock calls.
 
-`watch-claude.sh` defaults to a low-cost status panel: running state, elapsed/quiet seconds, a checklist-derived progress bar, the latest milestone, artifact sizes, and a short stuck-run analysis. It prints full progress/status/network tails only when `--details` is explicit. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
+`watch-claude.sh` is a manual terminal diagnostic, not an agent wait API. It
+defaults to a low-cost status panel and prints full progress/status/network
+tails only when `--details` is explicit. On terminal state it writes a
+task-bound observation receipt; another watch of the same terminal event is
+refused so an accidental caller loop cannot keep producing
+`process is not running` noise. Agent controllers use one
+`monitor-claude.sh wait ... --until terminal` call instead.
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, the dispatcher is the only sampling owner and writes material/finalized terminal boundaries to `*.monitor-events.log`. Codex should make one blocking `monitor-claude.sh wait <task-id> --until material|terminal` call; repeated `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On a boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` only for ambiguous `inspect` or `interrupt-candidate` evidence. Spark receives bounded JSON, returns a summary capped at 240 characters plus fixed decision fields, and never receives raw process listings, full logs, network tails, or source diffs. No helper authorizes interruption.
+For agent-driven runs, the dispatcher is the only sampling owner and writes material/finalized terminal boundaries to `*.monitor-events.log`. Codex should make one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated `watch`, `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On the boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` only for ambiguous `inspect` or `interrupt-candidate` evidence. Spark receives bounded JSON, returns a summary capped at 240 characters plus fixed decision fields, and never receives raw process listings, full logs, network tails, or source diffs. No helper authorizes interruption.
 
 Spark routing, Claude monitoring, failure triage, and parallel planning now use
 one strict control protocol. Successful direct calls emit
@@ -1320,10 +1326,10 @@ requires serial reconciliation.
 
 Monitoring priority is intentionally conservative to avoid false kills:
 
-1. L0: compact `watch-claude.sh` heartbeat/progress only.
-2. L1: partial diff review when the worktree is changing; continue waiting if aligned with the task card.
-3. L2: `status-claude.sh` or watch details after repeated suspect snapshots.
-4. L3: corroborate progress, status, diff, process, and optional network diagnostics after the interrupt window.
+1. L0: one blocking `monitor-claude.sh wait ... --until terminal` call.
+2. L1: review the finalized diff, report, outcome, and validation evidence.
+3. L2: use one `monitor-claude.sh decision` only when terminal evidence needs bounded triage.
+4. L3: use `status-claude.sh --details` or manual watch only for exceptional visibility/diagnostic failures.
 5. L4: use `kill-claude.sh` only after multiple evidence sources agree useful progress is unlikely.
 
 On timeout or non-zero Claude exit, the dispatcher still collects diffstat, diff, untracked files, usage fallback, worktree status, and a fallback report when possible.
@@ -1377,11 +1383,10 @@ Use these helper scripts when a Claude run is slow, stuck, or ready to clean up:
 bash ai/status-claude.sh
 bash ai/status-claude.sh claude-20260701-093934
 
-# Stream progress in a terminal while Claude is running
+# Optional manual terminal view; do not use this as an agent wait loop
 bash ai/watch-claude.sh claude-20260701-093934
 
-# Preferred for agent runs: one blocking wait, no repeated ps/tail/status calls
-bash ai/monitor-claude.sh wait claude-20260701-093934 --until material
+# Agent path: one blocking wait, no repeated watch/ps/tail/status calls
 bash ai/monitor-claude.sh wait claude-20260701-093934 --until terminal
 # Optional one-shot local/Spark triage at a review boundary
 bash ai/monitor-claude.sh decision claude-20260701-093934

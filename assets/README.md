@@ -1006,13 +1006,17 @@ Execution-only, batch, and test-writing Checker tasks default to a 120-second du
 
 After child exit, the dispatcher performs one bounded terminal drain and a second sample only when the worktree changes, preventing exit-adjacent files from being omitted from final evidence.
 
-`dispatch-to-claude.sh` prints a copy-paste `Wait for Event` command in its completion summary. Agent controllers should use that single blocking call instead of repeated status/process/log checks.
+`dispatch-to-claude.sh` prints one copy-paste `Agent Wait (once)` command in its completion summary. Agent controllers should use that blocking terminal wait instead of repeated watch/status/process/log checks.
 
-`watch-claude.sh` defaults to a low-cost status panel and prints full progress/status/network tails only when `--details` is explicit. The default escalation rule is three consecutive suspect snapshots; override it with `--escalation-confirmations` or `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS`.
+`watch-claude.sh` is a manual terminal diagnostic, not an agent wait API. It
+prints a low-cost status panel and expands full progress/status/network tails
+only with `--details`. On terminal state it records a task-bound observation
+receipt and refuses another watch of the same terminal event. Agent controllers
+must use one `monitor-claude.sh wait ... --until terminal` call.
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Compact snapshots include `collected_at` plus per-source `observed_at` timestamps and separate process, report, result, and product-diff evidence, so cached fields are not presented as one fresh observation. Watch events additionally expose `execution_phase`, `implementation_complete`, `completion_ready`, and `finish_recommended`. Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, the dispatcher is the only sampling owner and appends material/final terminal boundaries to `*.monitor-events.log`. Use one blocking `monitor-claude.sh wait <task-id> --until material|terminal` call; repeated `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On a boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` to compress ambiguous `inspect` or `interrupt-candidate` evidence before Codex sees it. Spark receives only bounded JSON and returns a summary capped at 240 characters plus fixed decision fields; raw evidence stays file-backed. Neither helper authorizes interruption. If an installed project copy rejects `wait --until`, run `python ai/doctor_workflow.py`; monitor helper drift is now included in the version check and the doctor prints the workflow refresh command.
+For agent-driven runs, the dispatcher is the only sampling owner and appends material/final terminal boundaries to `*.monitor-events.log`. Use one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated `watch`, `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On the terminal boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` to compress ambiguous `inspect` or `interrupt-candidate` evidence before Codex sees it. Spark receives only bounded JSON and returns a summary capped at 240 characters plus fixed decision fields; raw evidence stays file-backed. Neither helper authorizes interruption. If an installed project copy rejects `wait --until`, run `python ai/doctor_workflow.py`; monitor helper drift is now included in the version check and the doctor prints the workflow refresh command.
 
 `Execution Phase: implementation` is only edit readiness and must include `Context Acquisition Complete: yes` plus a non-empty `Planned First Write`. It does not refresh the full active window. A product diff or valid owned report is durable progress. After the first product change, an unchanged product digest defaults to an idle candidate at 180 seconds and stops only after two consecutive confirmations; active validation, declared tail work, and explicit blockers are exempt. Configure these bounds with `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS`, and `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS`.
 
@@ -1022,10 +1026,10 @@ CodeGraph is guarded per execution worktree. The default `CLAUDE_CODE_CODEGRAPH_
 
 Monitoring priority is intentionally conservative to avoid false kills:
 
-1. L0: compact `watch-claude.sh` heartbeat/progress only.
-2. L1: partial diff review when the worktree is changing; continue waiting if aligned with the task card.
-3. L2: `status-claude.sh` or watch details after repeated suspect snapshots.
-4. L3: corroborate progress, status, diff, process, and optional network diagnostics after the interrupt window.
+1. L0: one blocking `monitor-claude.sh wait ... --until terminal`.
+2. L1: review the finalized diff, report, outcome, and validation evidence.
+3. L2: use one `monitor-claude.sh decision` only when terminal evidence needs bounded triage.
+4. L3: use `status-claude.sh --details` or manual watch only for exceptional visibility/diagnostic failures.
 5. L4: use `kill-claude.sh` only after multiple evidence sources agree useful progress is unlikely.
 
 On timeout or non-zero Claude exit, the dispatcher still collects diffstat, diff, untracked files, usage fallback, worktree status, and a fallback report when possible.
@@ -1079,11 +1083,10 @@ Use these helper scripts when a Claude run is slow, stuck, or ready to clean up:
 bash ai/status-claude.sh
 bash ai/status-claude.sh claude-20260701-093934
 
-# Stream progress in a terminal while Claude is running
+# Optional manual terminal view; do not use as an agent wait loop
 bash ai/watch-claude.sh claude-20260701-093934
 
-# Preferred agent path: block once for a material or terminal event
-bash ai/monitor-claude.sh wait claude-20260701-093934 --until material
+# Agent path: block once until the terminal event
 bash ai/monitor-claude.sh wait claude-20260701-093934 --until terminal
 
 # Optional one-shot local/Spark triage at a review boundary

@@ -1233,20 +1233,24 @@ Claude 会在自然里程碑更新 `CLAUDE_PROGRESS.md`。只有同时包含 `Co
 
 `dispatch-to-claude.sh` 会打印可复制的 `monitor-claude.sh wait` 命令。智能体控制器只使用这一次阻塞等待，不重复运行 status、进程、日志尾部或时钟查询。
 
-`watch-claude.sh` 默认展示低成本状态面板：运行状态、elapsed/quiet 秒数、基于 checklist 的进度条、最新里程碑、artifact 大小和简短 stuck-run 分析。只有显式传入 `--details` 才打印完整 progress/status/network 尾部。默认升级规则是连续 3 次可疑快照；可用 `--escalation-confirmations` 或 `CLAUDE_CODE_MONITOR_ESCALATION_CONFIRMATIONS` 调整。
+`watch-claude.sh` 只用于人工终端诊断，不是智能体等待接口。它默认展示低成本
+状态面板，只有显式传入 `--details` 才打印完整 progress/status/network 尾部。
+检测到终态后，它会写入与任务绑定的观察收据；再次 watch 同一个终态会被拒绝，
+避免错误循环持续产生 `process is not running` 噪声。智能体控制器只调用一次
+`monitor-claude.sh wait ... --until terminal`。
 
 `watch-claude.sh` 和 `status-claude.sh` 还会打印机器可读监控字段（`monitor_level`、`action`、`evidence_state`、quiet/elapsed 秒数，以及可用时的 suspect count）。Codex 应优先读取这些低 token 字段，再决定是否展开完整 status、progress 或 network tail。
 
-智能体运行时由 Dispatcher 作为唯一采样者，只把实质变化和完成后的终态写入 `*.monitor-events.log`。Codex 应只发起一次阻塞式 `monitor-claude.sh wait <task-id> --until material|terminal`；禁止重复执行 `ps`、`tail`、status、进程树或纯时钟检查。不再启动分离的 supervisor。到达边界时，`wait` 会附加一次紧凑本地判断；只有本地状态为 `inspect` 或 `interrupt-candidate` 时，才可能调用 Spark `monitor-triage`。Spark 只接收有边界的 JSON，并返回最多 240 字符的摘要和固定决策字段；原始进程列表、完整日志、network tail 和源码 diff 都不会发送给 Spark。任何 helper 都不会授权中断。
+智能体运行时由 Dispatcher 作为唯一采样者，只把实质变化和完成后的终态写入 `*.monitor-events.log`。Codex 应只发起一次阻塞式 `monitor-claude.sh wait <task-id> --until terminal`；禁止重复执行 `watch`、`ps`、`tail`、status、进程树或纯时钟检查。不再启动分离的 supervisor。到达终态边界时，`wait` 会附加一次紧凑本地判断；只有本地状态为 `inspect` 或 `interrupt-candidate` 时，才可能调用 Spark `monitor-triage`。Spark 只接收有边界的 JSON，并返回最多 240 字符的摘要和固定决策字段；原始进程列表、完整日志、network tail 和源码 diff 都不会发送给 Spark。任何 helper 都不会授权中断。
 
 Spark 的路由、Claude 监控、失败归因和并行规划现在共用一套严格控制协议。成功的 direct 调用会输出 `spark_decision_json`，下游直接校验并消费紧凑对象，不再重新阅读建议正文；证据哈希会抑制重复监控判断。Spark 不能授权中断、接管、派发、验收或合并；并行建议最多两个 worker，并且必须串行协调与审查。
 
 监控优先级应保守编排，尽量避免误杀 Claude：
 
-1. L0：先看紧凑版 `watch-claude.sh` heartbeat/progress。
-2. L1：当 worktree 有变化时审查 partial diff；若符合任务卡就继续等待。
-3. L2：连续多次可疑快照后，再调用 `status-claude.sh` 或 watch details。
-4. L3：超过 interrupt window 后，再综合 progress、status、diff、process 和可选 network 诊断。
+1. L0：只执行一次阻塞式 `monitor-claude.sh wait ... --until terminal`。
+2. L1：审查已完成的 diff、报告、outcome 和验证证据。
+3. L2：只有终态证据需要有界 triage 时，才调用一次 `monitor-claude.sh decision`。
+4. L3：仅在可见性或诊断异常时使用 `status-claude.sh --details` 或人工 watch。
 5. L4：只有多个证据源都表明有效进展不太可能时，才使用 `kill-claude.sh`。
 
 即使 Claude 超时或非零退出，调度器仍会尽量收集 diffstat、diff、未跟踪文件、usage fallback、worktree status 和 fallback report。
@@ -1297,8 +1301,7 @@ Claude 内置工具 profile（Bash、Edit、文件操作）是自动可用的。
 bash ai/status-claude.sh
 bash ai/status-claude.sh claude-20260701-093934
 
-# 智能体运行推荐：阻塞等待一次，不重复运行 ps/tail/status
-bash ai/monitor-claude.sh wait claude-20260701-093934 --until material
+# 智能体运行推荐：阻塞等待一次，不重复运行 watch/ps/tail/status
 bash ai/monitor-claude.sh wait claude-20260701-093934 --until terminal
 # 审查边界可选的一次性本地/Spark triage
 bash ai/monitor-claude.sh decision claude-20260701-093934

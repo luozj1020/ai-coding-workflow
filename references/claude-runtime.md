@@ -118,8 +118,8 @@ Do not spend Codex turns polling unchanged heartbeats. The dispatcher is the
 default single sampling owner and appends only `started`, `material-change`,
 `child-exited`, and finalized `terminal` boundaries to
 `<task-id>.monitor-events.log`. An agent must issue one blocking
-`monitor-claude.sh wait <task-id> --until material|terminal` call; repeated
-`ps`, `tail`, status, process-tree, or clock-only commands are forbidden. Read a bounded
+`monitor-claude.sh wait <task-id> --until terminal` call; repeated
+`watch`, `ps`, `tail`, status, process-tree, or clock-only commands are forbidden. Read a bounded
 decision/diff only after that wait returns.
 
 Installed monitor helpers are versioned with the rest of the runtime. If an

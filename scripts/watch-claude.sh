@@ -180,13 +180,13 @@ role_state() {
 # Loop exit check: stay alive as long as any role (dispatcher/Claude/checker) is active.
 # Falls back to legacy .pid file when new PID files don't exist.
 any_role_is_running() {
-    if [ -f "$DISPATCHER_PID_FILE" ] && is_running "$DISPATCHER_PID_FILE"; then return 0; fi
+    if [ -f "$DISPATCHER_PID_FILE" ] && [ "$(role_state "$DISPATCHER_PID_FILE")" = "running" ]; then return 0; fi
     if [ -f "$CLAUDE_PID_FILE" ]; then
-        if is_running "$CLAUDE_PID_FILE"; then return 0; fi
-    elif is_running "$PID_FILE"; then
+        if [ "$(role_state "$CLAUDE_PID_FILE")" = "running" ]; then return 0; fi
+    elif [ "$(role_state "$PID_FILE")" = "running" ]; then
         return 0
     fi
-    if [ -f "$CHECKER_PID_FILE" ] && is_running "$CHECKER_PID_FILE"; then return 0; fi
+    if [ -f "$CHECKER_PID_FILE" ] && [ "$(role_state "$CHECKER_PID_FILE")" = "running" ]; then return 0; fi
     return 1
 }
 
@@ -290,6 +290,8 @@ NETWORK_FILE="${PREFIX}.network.log"
 REPORT_FILE="${PREFIX}.report.md"
 RESULT_FILE="${PREFIX}.result.json"
 DIFF_FILE="${PREFIX}.diff"
+MONITOR_EVENT_LOG="${PREFIX}.monitor-events.log"
+TERMINAL_OBSERVATION_RECEIPT="${PREFIX}.watch-terminal-observed"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
 SEEDED_PROGRESS_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"
 FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
@@ -332,6 +334,42 @@ artifact_baseline_set=0
 printed_header=0
 monitor_suspect_count=0
 LAST_OVERALL_RUNNING="no"
+
+terminal_observation_token() {
+    local terminal_event=""
+    if [ -f "$MONITOR_EVENT_LOG" ]; then
+        terminal_event="$(grep ' terminal=yes\([[:space:]]\|$\)' "$MONITOR_EVENT_LOG" 2>/dev/null | tail -1 || true)"
+    fi
+    if [ -n "$terminal_event" ]; then
+        printf '%s\n' "$terminal_event"
+    else
+        printf 'process-not-running\n'
+    fi
+}
+
+finish_terminal_watch() {
+    local token recorded=""
+    token="$(terminal_observation_token)"
+    if [ -f "$TERMINAL_OBSERVATION_RECEIPT" ]; then
+        recorded="$(cat "$TERMINAL_OBSERVATION_RECEIPT" 2>/dev/null || true)"
+    fi
+    if [ -z "$recorded" ]; then
+        if (set -o noclobber; printf '%s\n' "$token" > "$TERMINAL_OBSERVATION_RECEIPT") 2>/dev/null; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Claude process is not running; watch complete."
+            echo "Terminal state recorded; do not call watch-claude.sh again for this terminal event."
+            return 0
+        fi
+        recorded="$(cat "$TERMINAL_OBSERVATION_RECEIPT" 2>/dev/null || true)"
+    fi
+    if [ -n "$recorded" ] && [ "$recorded" = "$token" ]; then
+        echo "Error: terminal state was already observed for ${TASK_ID}; repeated watch is refused." >&2
+        echo "Review the outcome, report, and diff, or run one monitor-claude.sh decision at a review boundary." >&2
+        return 3
+    fi
+    printf '%s\n' "$token" > "$TERMINAL_OBSERVATION_RECEIPT"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Claude process is not running; watch complete."
+    echo "Terminal state recorded; do not call watch-claude.sh again for this terminal event."
+}
 
 select_claude_progress_file() {
     if [ -f "$LIVE_CLAUDE_PROGRESS_FILE" ]; then
@@ -869,14 +907,13 @@ print_snapshot() {
 
 while true; do
     print_snapshot
-    if [ "$ONCE" -eq 1 ]; then
-        break
-    fi
     if [ "$LAST_OVERALL_RUNNING" = "unknown" ]; then
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] Process visibility is restricted; do not redispatch. Re-run status/watch outside the sandbox."
         break
     elif ! any_role_is_running; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Claude process is not running; watch complete."
+        finish_terminal_watch
+        break
+    elif [ "$ONCE" -eq 1 ]; then
         break
     fi
     sleep "$INTERVAL"

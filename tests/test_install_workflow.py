@@ -603,9 +603,11 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn('runtime timeout', dispatch)
             self.assertIn('Claude Progress:', dispatch)
             self.assertIn('Progress Log:', dispatch)
-            self.assertIn('WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"', dispatch)
-            self.assertIn('Watch Progress:', dispatch)
-            self.assertIn('Watch Details:', dispatch)
+            self.assertNotIn('WATCH_SCRIPT="${SCRIPT_DIR}/watch-claude.sh"', dispatch)
+            self.assertNotIn('Watch Progress:', dispatch)
+            self.assertNotIn('Watch Details:', dispatch)
+            self.assertIn('Agent Wait (once):', dispatch)
+            self.assertIn('--until terminal', dispatch)
             self.assertIn('command -v claude', dispatch)
             self.assertIn('claude CLI is not installed or not in PATH', dispatch)
             self.assertIn('CLAUDE_CODE_ALLOW_DIRTY_SOURCE', dispatch)
@@ -1256,11 +1258,49 @@ class InstallWorkflowTests(unittest.TestCase):
             watch = (repo / "ai" / "watch-claude.sh").read_text(encoding="utf-8")
             dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
             self.assertIn("deferred-machine-monitor", watch)
+            self.assertIn("repeated watch is refused", watch)
             self.assertIn('event=material-change running=yes terminal=no', dispatch)
             self.assertIn('event=terminal running=no terminal=yes', dispatch)
-            self.assertIn('Wait for Event:', dispatch)
+            self.assertIn('Agent Wait (once):', dispatch)
+            self.assertNotIn('Watch Progress:', dispatch)
             self.assertNotIn("ps -o pid,ppid,stat,etime,cmd --ppid", text + watch + dispatch)
             self.assertNotIn("date '+%T'", text + watch + dispatch)
+
+    def test_watch_refuses_repeated_terminal_observation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-terminal-watch"
+            worktrees = repo / ".worktrees"
+            terminal = (
+                f"monitor_event source=dispatcher task_id={task_id} "
+                "event=terminal running=no terminal=yes exit_status=0\n"
+            )
+            (worktrees / f"{task_id}.monitor-events.log").write_text(
+                terminal, encoding="utf-8"
+            )
+            bash_exe = load_module()._find_bash()
+            command = [
+                bash_exe, str(repo / "ai" / "watch-claude.sh"),
+                task_id, "--plain", "--once",
+            ]
+
+            first = subprocess.run(
+                command, cwd=str(repo), text=True, encoding="utf-8",
+                errors="replace", capture_output=True, check=False,
+            )
+            second = subprocess.run(
+                command, cwd=str(repo), text=True, encoding="utf-8",
+                errors="replace", capture_output=True, check=False,
+            )
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertIn("Terminal state recorded", first.stdout)
+            self.assertTrue(
+                (worktrees / f"{task_id}.watch-terminal-observed").exists()
+            )
+            self.assertEqual(second.returncode, 3, second.stdout + second.stderr)
+            self.assertIn("repeated watch is refused", second.stderr)
 
     def test_monitor_wait_returns_existing_terminal_event_once(self):
         with tempfile.TemporaryDirectory() as tmp:
