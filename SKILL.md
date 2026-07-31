@@ -1,6 +1,6 @@
 ---
 name: ai-coding-workflow
-description: Install, update, or operate a Claude-first local coding workflow for non-trivial repository changes when Codex quota is scarce, a cost-efficient Claude Code compatible model is available, durable delegated output is useful, and longer single-task latency is acceptable (especially across multiple user-managed terminals). Do not use it for tiny or urgent edits, ordinary code questions, read-only analysis, tight interactive debugging, latency-sensitive single-task work, or environments without reliable Claude execution, isolation, and review evidence.
+description: Install, update, or run a Claude-first workflow for non-trivial changes when scarce Codex capacity and durable delegated output justify longer latency. Avoid tiny or urgent edits, ordinary questions, read-only or interactive debugging, latency-sensitive work, and environments without reliable Claude isolation or review evidence.
 ---
 
 # AI Coding Workflow
@@ -50,10 +50,9 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 - A takeover receipt is only a candidate. `aiwf prepare-takeover` must revoke
   ownership, stop/confirm old process trees, freeze a baseline, and issue the
   single-writer grant; unknown visibility fails closed.
-- Automatic timeout, manual stop, takeover, and catchable dispatcher-exit
-  cleanup must use task-bound process identity for the complete process tree.
-  PID-only kill fails closed; confirmed terminal cleanup removes PID hints but
-  preserves identity and termination receipts.
+- All automatic/manual stops and catchable dispatcher exits use task-bound
+  identity for the full process tree. PID-only kills fail closed; terminal
+  cleanup removes PID hints while retaining identity and termination receipts.
 - Enforce exact Write paths in real time. `editor-only` removes Bash; required
   enforcement never degrades to post-run auditing.
 - Never poll Claude with `ps`, `tail`, clocks, or Codex turns. Block on
@@ -63,16 +62,14 @@ Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
   stale HEAD blocks. Prefer reviewed same-worktree Claude continuation.
 - The Skill never coordinates portfolio concurrency. Run one repository workflow
   per user-managed terminal; do not create a cross-project DAG or scheduler.
-- Treat Claude wall time as advisory in `claude-first`. Measure accepted output
-  per Codex token; do not reject a productive Claude route merely for exceeding
-  the direct-execution time ratio.
+- In `claude-first`, treat wall time as advisory and measure accepted output per
+  Codex token; latency alone does not reject a productive Claude route.
 - No model merges. Destructive and production-impacting actions require explicit
   human authority.
 - A frozen solution contract is reopened only by a blocking invariant/acceptance
   defect or an explicitly incorporated spec change. Recommendations go to backlog.
-- State-backed continuation, routing, and review must consume hash-bound
-  artifacts and fail closed on missing or stale evidence. Explicit human
-  ownership remains authoritative. Load the matching reference for details.
+- Continuation, routing, and review use hash-bound state and fail closed on
+  missing/stale evidence. Human ownership remains authoritative.
 
 ## Setup
 
