@@ -1094,6 +1094,32 @@ def run_doctor(repo_path=None, hash_paths=None):
             findings.append((INFO, "workflow-version", "Refresh command: {}".format(_workflow_bootstrap_command(root, update_workflow_files=True))))
         else:
             findings.append((INFO, "workflow-version", "Local workflow files match the installed skill"))
+        dispatch_path = os.path.join(root, "ai", "dispatch-to-claude.sh")
+        try:
+            with open(dispatch_path, "r", encoding="utf-8") as handle:
+                dispatch_text = handle.read()
+        except (OSError, UnicodeError):
+            dispatch_text = ""
+        if "--dirty-source-mode" not in dispatch_text:
+            findings.append((
+                WARN,
+                "workflow-cli",
+                "Local dispatcher lacks stable `--dirty-source-mode`; dirty snapshot "
+                "dispatch may require environment-wrapped host commands and repeat approval.",
+            ))
+            findings.append((
+                INFO,
+                "workflow-cli",
+                "Refresh command: {}".format(
+                    _workflow_bootstrap_command(root, update_workflow_files=True)
+                ),
+            ))
+        else:
+            findings.append((
+                INFO,
+                "workflow-cli",
+                "Local dispatcher supports stable dirty-source and host CLI options",
+            ))
         findings.append((
             INFO,
             "codex-rules",

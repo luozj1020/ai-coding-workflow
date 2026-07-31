@@ -642,7 +642,7 @@ Codex 接受 Builder 主体方向后，每个修订仍必须在编写下一张�
 
 权限或审批拦截包括 sandbox 写入被拒、禁止修改的文件、CLI 未认证、网络受限命令、需要人工批准的命令，以及任务卡明确写出的“不要读取或修改”路径。这类情况应写入 progress/report 产物，并按环境或编排 blocker 处理；只有在 Claude 忽略了可用的合规路径时，才应归因为 Claude 执行问题。
 
-dirty source 或 stale HEAD 也应按同类逻辑处理：它会阻止可靠委托，但本身不是 Codex 接管实现的理由。应先恢复委托路径，例如提交已接受阶段、stash/patch 未提交改动、刷新 workflow 文件、从更新后的 HEAD 重新派发、请求明确的 dirty-source 派发批准，或停止等待人工处理。
+dirty source 或 stale HEAD 也应按同类逻辑处理：它会阻止可靠委托，但本身不是 Codex 接管实现的理由。应先恢复委托路径，例如提交已接受阶段、stash/patch 未提交改动、刷新 workflow 文件、从更新后的 HEAD 重新派发、请求明确的 dirty-source 派发批准，或停止等待人工处理。如果明确批准当前未提交状态作为基线，应使用 `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot`；环境变量形式仅用于兼容，因为前置变量赋值无法匹配受托管规则保护的稳定 launcher 前缀。
 
 **步骤 1：初始化项目**（一次性）
 
@@ -722,8 +722,11 @@ Claude 现在使用相同的外层边界协议。受限沙箱中的启动交互�
 执行权限，使用稳定且可匹配项目授权规则的命令
 `bash ai/dispatch-to-claude.sh CARD --execution-env host
 --retry-in-place-task-id TASK_ID` 原样重放一次；reviewed continuation 改用
-`--reviewed-continuation APPROVAL`。旧环境变量形式仍兼容，但 CLI 形式不会改变
-命令前缀，并会保留任务卡、worktree 和 session lineage。exit 75 是编排请求，不是放弃模型调用的
+`--reviewed-continuation APPROVAL`。snapshot 交接还必须携带
+`--dirty-source-mode snapshot`；首次 dirty-source 派发也应使用该选项，使两次命令
+都保留可信 launcher 前缀。旧环境变量形式仍兼容，但 CLI 形式不会改变
+命令前缀，并会保留任务卡、worktree 和 session lineage。交接收据将
+`host_retry_args` 标记为权威参数，环境变量映射仅为兼容证据。exit 75 是编排请求，不是放弃模型调用的
 许可；只有宿主重试也失败后，才能判定当前路由不可用。
 
 revision、收窄、重试、重派、拆分子任务或下一阶段卡必须重复此步骤，并改用对应的 `--routing-event`。只有 Spark 经济建议和确定性 owner gate 都倾向 Codex 时，才直接编辑并省略完整任务卡；否则再编写面向下游的精简执行卡。

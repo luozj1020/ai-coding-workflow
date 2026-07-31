@@ -3,6 +3,7 @@
 #
 # Usage: bash ai/dispatch-to-claude.sh <task-card-path>
 #        [--empty-api-config-env NAME] [--execution-env auto|sandbox|host]
+#        [--dirty-source-mode block|snapshot]
 #        [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]
 #
 # This script:
@@ -25,7 +26,7 @@ PATH="${PATH}:/usr/bin:/bin:/mingw64/bin"
 export PATH
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]" >&2
     exit 1
 fi
 
@@ -33,6 +34,7 @@ TASK_CARD="$1"
 shift
 EMPTY_API_CONFIG_ENV=""
 DISPATCH_EXECUTION_ENV="auto"
+DIRTY_SOURCE_MODE_OPTION=""
 RETRY_IN_PLACE_TASK_ID_OPTION=""
 REVIEWED_CONTINUATION_OPTION=""
 while [ $# -gt 0 ]; do
@@ -55,6 +57,21 @@ while [ $# -gt 0 ]; do
                 auto|sandbox|host) ;;
                 *)
                     echo "Error: --execution-env must be auto, sandbox, or host." >&2
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
+        --dirty-source-mode)
+            [ $# -ge 2 ] || {
+                echo "Error: --dirty-source-mode requires block or snapshot." >&2
+                exit 1
+            }
+            DIRTY_SOURCE_MODE_OPTION="$2"
+            case "$DIRTY_SOURCE_MODE_OPTION" in
+                block|snapshot) ;;
+                *)
+                    echo "Error: --dirty-source-mode must be block or snapshot." >&2
                     exit 1
                     ;;
             esac
@@ -96,6 +113,10 @@ fi
 if [ -n "$REVIEWED_CONTINUATION_OPTION" ]; then
     CLAUDE_CODE_REVIEWED_CONTINUATION="$REVIEWED_CONTINUATION_OPTION"
     export CLAUDE_CODE_REVIEWED_CONTINUATION
+fi
+if [ -n "$DIRTY_SOURCE_MODE_OPTION" ]; then
+    CLAUDE_CODE_DIRTY_SOURCE_MODE="$DIRTY_SOURCE_MODE_OPTION"
+    export CLAUDE_CODE_DIRTY_SOURCE_MODE
 fi
 
 if [ -n "$EMPTY_API_CONFIG_ENV" ]; then
@@ -4217,6 +4238,8 @@ PYEOF
             echo "needs_host_execution=true"
             echo "host_handoff_required=true"
             echo "host_handoff_action=rerun-identical-dispatch-on-authorized-host-once"
+            echo "host_retry_command_form=stable-cli"
+            echo "host_retry_dirty_source_mode=${CLAUDE_CODE_DIRTY_SOURCE_MODE}"
             if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
                 echo "host_retry_reviewed_continuation=${_REVIEWED_CONTINUATION_APPROVAL}"
             else
@@ -4236,9 +4259,10 @@ PYEOF
     "$PYTHON_CMD" - "$RESULT_FILE" "$TASK_ID" "$_STARTUP_FAILURE_CATEGORY" \
         "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" \
         "$_STARTUP_NEEDS_HOST_EXECUTION" \
-        "${_REVIEWED_CONTINUATION_APPROVAL:-}" "$TASK_CARD" <<'PYEOF'
+        "${_REVIEWED_CONTINUATION_APPROVAL:-}" "$TASK_CARD" \
+        "$CLAUDE_CODE_DIRTY_SOURCE_MODE" <<'PYEOF'
 import json, os, sys
-output, task_id, category, health, classification, needs_host, reviewed_approval, task_card = sys.argv[1:]
+output, task_id, category, health, classification, needs_host, reviewed_approval, task_card, dirty_source_mode = sys.argv[1:]
 needs_host_execution = needs_host == "1"
 host_retry_environment = None
 host_retry_args = None
@@ -4248,6 +4272,9 @@ if needs_host_execution:
     # persistent host-execution approval rule.
     host_retry_environment = {"CLAUDE_CODE_HOST_AUTHORITY": "1"}
     host_retry_args = [task_card, "--execution-env", "host"]
+    if dirty_source_mode == "snapshot":
+        host_retry_environment["CLAUDE_CODE_DIRTY_SOURCE_MODE"] = "snapshot"
+        host_retry_args.extend(["--dirty-source-mode", "snapshot"])
     if reviewed_approval:
         host_retry_environment["CLAUDE_CODE_REVIEWED_CONTINUATION"] = reviewed_approval
         host_retry_args.extend(["--reviewed-continuation", reviewed_approval])
@@ -4269,7 +4296,10 @@ value = {
         if needs_host_execution else None
     ),
     "host_retry_environment": host_retry_environment,
+    "host_retry_environment_legacy": needs_host_execution,
     "host_retry_args": host_retry_args,
+    "host_retry_args_authoritative": needs_host_execution,
+    "host_retry_command_form": "stable-cli" if needs_host_execution else None,
 }
 with open(output, "w", encoding="utf-8") as handle:
     json.dump(value, handle, indent=2, sort_keys=True)
@@ -4283,6 +4313,9 @@ PYEOF
         echo "needs_host_execution=true" >&2
         echo "host_handoff_required=true" >&2
         printf 'host_retry_command=bash %q %q --execution-env host' "$0" "$TASK_CARD" >&2
+        if [ "$CLAUDE_CODE_DIRTY_SOURCE_MODE" = "snapshot" ]; then
+            printf ' --dirty-source-mode snapshot' >&2
+        fi
         if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
             printf ' --reviewed-continuation %q\n' "$_REVIEWED_CONTINUATION_APPROVAL" >&2
         else

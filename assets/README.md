@@ -63,12 +63,15 @@ After host authority is granted, keep that stable launcher prefix:
 
 ```bash
 bash ai/dispatch-to-claude.sh CARD --execution-env host \
+  --dirty-source-mode snapshot \
   --retry-in-place-task-id TASK_ID
 ```
 
-Use `--reviewed-continuation APPROVAL` for a reviewed continuation. Legacy
+Include `--dirty-source-mode snapshot` only for a snapshot handoff. Use
+`--reviewed-continuation APPROVAL` for a reviewed continuation. Legacy
 environment selectors remain compatible, but environment-prefixed commands do
-not match the narrow project rule and can trigger another approval.
+not match the narrow project rule and can trigger another approval. Handoff
+receipts mark CLI retry args authoritative and the environment map legacy.
 
 If running from the installed Skill while using a separate clone as the update source:
 
@@ -143,7 +146,7 @@ When Claude appears stuck, first classify the cause before blaming execution: ta
 
 Permission or approval blockers include sandbox write denial, forbidden files, missing CLI authentication, network-restricted commands, commands that need human approval, and configured "do not read or modify" paths. These should be recorded in progress/report artifacts and handled as environment or orchestration blockers unless Claude ignored an available allowed path.
 
-Dirty source or stale HEAD is handled the same way: it blocks reliable delegation, but it is not by itself permission for Codex to take over implementation. Prefer a clean accepted base. When the uncommitted tracked/untracked state is intentionally the baseline, `CLAUDE_CODE_DIRTY_SOURCE_MODE=snapshot` creates a hash-bound ephemeral commit through a temporary index, leaves source HEAD/index untouched, and records a receipt before starting a fresh isolated worktree.
+Dirty source or stale HEAD is handled the same way: it blocks reliable delegation, but it is not by itself permission for Codex to take over implementation. Prefer a clean accepted base. When the uncommitted tracked/untracked state is intentionally the baseline, `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot` creates a hash-bound ephemeral commit through a temporary index, leaves source HEAD/index untouched, and records a receipt before starting a fresh isolated worktree. The environment selector remains compatibility-only because a prefixed assignment cannot match the narrow trusted-project launcher rule.
 
 ## Directory Structure
 

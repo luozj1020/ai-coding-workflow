@@ -770,9 +770,12 @@ outer Codex caller must replay the identical dispatcher invocation once with
 host execution permission using the stable approved launcher:
 `bash ai/dispatch-to-claude.sh CARD --execution-env host
 --retry-in-place-task-id TASK_ID`. Reviewed continuation uses
-`--reviewed-continuation APPROVAL` instead. Legacy environment selectors remain
+`--reviewed-continuation APPROVAL` instead. A snapshot handoff also carries
+`--dirty-source-mode snapshot`; use that option on the initial dirty-source
+dispatch so both attempts retain the trusted launcher prefix. Legacy environment selectors remain
 compatible, but the CLI form avoids changing the command prefix and preserves
-the task card, worktree, and session lineage. Exit 75 is a request for
+the task card, worktree, and session lineage. The handoff receipt marks
+`host_retry_args` authoritative and the environment map legacy. Exit 75 is a request for
 orchestration, not permission to
 abandon the model call; only a failed host attempt establishes that the current
 route is unavailable.
@@ -1342,7 +1345,7 @@ On timeout or non-zero Claude exit, the dispatcher still collects diffstat, diff
 
 For complex or repeatedly revised work, add an `## Execution Phases` table to the task card. Claude must use it as the outer execution contract, update progress at phase boundaries, and write `CLAUDE_REPORT.md` before long-running validation or before crossing a stop gate.
 
-Dirty-source guard: dispatch blocks when the source worktree has tracked changes, staged changes, or unrelated untracked files because Claude would run from stale `HEAD`. The current task card may be untracked. Use `CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1` only for intentional advanced dispatch.
+Dirty-source guard: dispatch blocks when the source worktree has tracked changes, staged changes, or unrelated untracked files because Claude would run from stale `HEAD`. The current task card may be untracked. When the dirty state is the explicitly approved baseline, use `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot`; the environment selector remains compatibility-only. Use `CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1` only for intentional legacy advanced dispatch.
 
 ```bash
 CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=420 \

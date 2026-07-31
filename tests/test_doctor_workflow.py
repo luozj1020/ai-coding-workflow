@@ -135,6 +135,9 @@ class DoctorWorkflowTests(unittest.TestCase):
             text = "\n".join("{} [{}] {}".format(*f) for f in findings)
             self.assertIn("workflow-version", text)
             self.assertIn("ai/dispatch-to-claude.sh", text)
+            self.assertIn("workflow-cli", text)
+            self.assertIn("--dirty-source-mode", text)
+            self.assertIn("repeat approval", text)
             self.assertIn("--update-workflow-files", text)
 
     def test_doctor_detects_outdated_monitor_helper(self):

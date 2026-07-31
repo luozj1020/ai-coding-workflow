@@ -12,6 +12,7 @@ prefix_rule(
     match = [
         "bash ai/dispatch-to-claude.sh task-card.md",
         "bash ai/dispatch-to-claude.sh /tmp/task-card.md",
+        "bash ai/dispatch-to-claude.sh task-card.md --dirty-source-mode snapshot",
         "bash ai/dispatch-to-claude.sh task-card.md --execution-env host --retry-in-place-task-id claude-123",
     ],
     not_match = [

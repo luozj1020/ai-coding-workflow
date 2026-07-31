@@ -52,6 +52,8 @@ Apply the same rule to Claude `needs_host_execution`, preserving its task card,
 worktree, and session lineage with the receipt's stable CLI retry:
 `bash ai/dispatch-to-claude.sh <card> --execution-env host
 --retry-in-place-task-id <task-id>` (or `--reviewed-continuation <approval>`).
+When the handoff receipt names a dirty snapshot, add
+`--dirty-source-mode snapshot`; do not prepend its legacy environment selector.
 Legacy environment selectors remain compatible but are not the preferred
 approval shape.
 

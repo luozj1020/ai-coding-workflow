@@ -48,13 +48,17 @@ host-execution permission surface (for example,
 ```bash
 bash ai/dispatch-to-claude.sh <task-card> \
   --execution-env host \
+  --dirty-source-mode snapshot \
   --retry-in-place-task-id <task-id>
 ```
 
-For reviewed continuation, use `--reviewed-continuation <approval-path>` in
+Include `--dirty-source-mode snapshot` only when the handoff receipt names
+snapshot mode. For reviewed continuation, use `--reviewed-continuation <approval-path>` in
 place of the retry task ID. Legacy `CLAUDE_CODE_HOST_AUTHORITY=1` and
-continuation selector environment variables remain compatible, but the CLI
+continuation/dirty-source selector environment variables remain compatible, but the CLI
 shape is preferred because it matches the narrow persistent launcher approval.
+The receipt marks `host_retry_args_authoritative=true` and the environment map
+as legacy; outer orchestration must reconstruct the command from the CLI args.
 This preserves the same task card, worktree, retry lineage, and session
 identity. The authorized dispatcher forces the probe environment to `host`
 and removes the inherited sandbox marker; this

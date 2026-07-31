@@ -431,6 +431,11 @@ class InstallWorkflowTests(unittest.TestCase):
 
         rule = ROOT / "assets" / "codex" / "ai-coding-workflow.rules"
         dispatch = check(rule, "bash", "ai/dispatch-to-claude.sh", "/tmp/card.md")
+        dirty_snapshot = check(
+            rule,
+            "bash", "ai/dispatch-to-claude.sh", "/tmp/card.md",
+            "--dirty-source-mode", "snapshot",
+        )
         spark = check(
             rule,
             "bash",
@@ -455,6 +460,7 @@ class InstallWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(dispatch["decision"], "allow")
+        self.assertEqual(dirty_snapshot["decision"], "allow")
         self.assertEqual(spark["decision"], "allow")
         self.assertEqual(wrapped["matchedRules"], [])
         self.assertEqual(source_helper["matchedRules"], [])
@@ -1953,6 +1959,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("validate_retry_in_place", dispatch)
             self.assertIn("CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID", dispatch)
             self.assertIn("--execution-env", dispatch)
+            self.assertIn("--dirty-source-mode", dispatch)
             self.assertIn("--retry-in-place-task-id", dispatch)
             self.assertIn("--reviewed-continuation", dispatch)
             self.assertIn("host_retry_args", dispatch)

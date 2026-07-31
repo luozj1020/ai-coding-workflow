@@ -1032,7 +1032,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         (self.repo / "src/headless/main.ts").write_text("new module\n", encoding="utf-8")
         source_head = self._run(["git", "rev-parse", "HEAD"]).stdout.strip()
 
-        result = self._dispatch(extra_env={"CLAUDE_CODE_DIRTY_SOURCE_MODE": "snapshot"})
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_DIRTY_SOURCE_MODE": "block"},
+            extra_args=["--dirty-source-mode", "snapshot"],
+        )
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         receipt_path = next((self.repo / ".worktrees").glob("claude-*.dirty-snapshot.json"))
@@ -1046,6 +1049,64 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(runtime["source_base_commit"], source_head)
         self.assertEqual(runtime["execution_base_commit"], receipt["snapshot_commit"])
         self.assertEqual(self._run(["git", "rev-parse", "HEAD"]).stdout.strip(), source_head)
+
+    def test_dirty_snapshot_environment_selector_remains_compatible(self):
+        card = self._write_task_card()
+        card.write_text(card.read_text(encoding="utf-8") + "\nTarget: `src/headless/`\n", encoding="utf-8")
+        (self.repo / "src/headless").mkdir(parents=True)
+        (self.repo / "src/headless/main.ts").write_text("new module\n", encoding="utf-8")
+
+        result = self._dispatch(extra_env={"CLAUDE_CODE_DIRTY_SOURCE_MODE": "snapshot"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        self.assertEqual(runtime["dirty_source_mode"], "snapshot")
+
+    def test_dirty_source_mode_cli_rejects_invalid_value(self):
+        self._write_task_card()
+        result = self._dispatch(extra_args=["--dirty-source-mode", "unsafe"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--dirty-source-mode must be block or snapshot", result.stderr)
+
+    def test_dirty_snapshot_host_handoff_uses_stable_cli_retry_shape(self):
+        card = self._write_task_card()
+        card.write_text(card.read_text(encoding="utf-8") + "\nTarget: `src/headless/`\n", encoding="utf-8")
+        (self.repo / "src/headless").mkdir(parents=True)
+        (self.repo / "src/headless/main.ts").write_text("new module\n", encoding="utf-8")
+
+        result = self._dispatch(
+            extra_env={
+                "CLAUDE_CODE_API_PROBE_MODE": "always",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
+                "CODEX_SANDBOX_NETWORK_DISABLED": "1",
+                "FAKE_CLAUDE_HEALTHCHECK_FAIL": "1",
+            },
+            extra_args=["--dirty-source-mode", "snapshot"],
+        )
+
+        self.assertEqual(result.returncode, 75, result.stderr + result.stdout)
+        self.assertIn("host_retry_command=bash", result.stderr)
+        self.assertIn("--execution-env host --dirty-source-mode snapshot", result.stderr)
+        result_path = next((self.repo / ".worktrees").glob("claude-*.result.json"))
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["host_retry_command_form"], "stable-cli")
+        self.assertTrue(payload["host_retry_args_authoritative"])
+        self.assertTrue(payload["host_retry_environment_legacy"])
+        self.assertEqual(
+            payload["host_retry_args"],
+            [
+                "task-cards/PROJ.md",
+                "--execution-env", "host",
+                "--dirty-source-mode", "snapshot",
+                "--retry-in-place-task-id", payload["task_id"],
+            ],
+        )
+        self.assertEqual(
+            payload["host_retry_environment"]["CLAUDE_CODE_DIRTY_SOURCE_MODE"],
+            "snapshot",
+        )
 
     def test_dirty_snapshot_retry_reuses_execution_base_not_source_head(self):
         card = self._write_task_card()
