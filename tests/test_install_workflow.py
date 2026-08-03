@@ -180,6 +180,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "summarize-loop-run.py").exists())
             self.assertTrue((repo / "ai" / "benchmark-loop-runs.py").exists())
             self.assertTrue((repo / "ai" / "model-usage.py").exists())
+            self.assertTrue((repo / "ai" / "run-approved-validation.py").exists())
             self.assertTrue((repo / "ai" / "economics-experiment.py").exists())
             self.assertTrue((repo / "ai" / "init-spec.py").exists())
             self.assertTrue((repo / "ai" / "plan-to-task-cards.py").exists())

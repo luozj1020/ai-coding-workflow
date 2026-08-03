@@ -198,6 +198,23 @@ current validation command changes. Phases are `exploring`, `editing`,
 `validating`, and `reporting`; these Claude-authored signals are advisory and
 never satisfy completion by themselves.
 
+## Stable Tool Contract
+
+Task-card validation commands are audited before launch but are not embedded
+individually in Claude's `allowedTools` schema. When at least one command is
+accepted, Claude receives the fixed `ai/run-approved-validation.py run` entry
+point. The helper re-reads `CLAUDE_TASK_CARD.md`, rejects unsafe composition,
+length overflow, or command overflow, splits each command into an argv, and
+executes it without a shell. A rejected command prevents the dispatch and the
+runner from executing any assigned validation.
+
+Exact-write entries use the fixed repository-relative writer path and the
+literal `$AI_WORKFLOW_WRITE_SCOPE_RECEIPT` reference. The dispatcher binds that
+environment variable to the current task receipt; bubblewrap and the receipt
+still enforce exact declared targets. This removes per-task absolute paths from
+the tool schema without broadening write authority. Cache attribution hashes
+the final allowed-tools contract after both runner and writer entries exist.
+
 ## Reports
 
 Seeded/fallback reports are not Claude-owned completion. Before progress or completion use, `validate-claude-report.py` requires the standard title and report sections and rejects seeded/progress markers, progress/report role swaps, oversized reports, and source-dominated bodies. Missing reports may be reconstructed when the diff matches the card and assigned checks pass. The dispatcher then runs `verify-claude-report.py`; changed-file/count/cleanliness claims are mandatory. Assigned tests additionally require a test diff and a claimed count that matches detected added test declarations. Assigned validation requires its exact command and exit code, but model-authored claims remain `claimed-unverified` until a deterministic receipt exists. A revision `RESOLVED` claim binds finding ID, changed file, symbol, and exact test name. Prose-only, missing, or contradictory claims produce `needs-review`.

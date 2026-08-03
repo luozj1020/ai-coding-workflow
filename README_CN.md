@@ -885,6 +885,12 @@ Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`co
 
 **可观测性取舍：** `direct` 模式仍不生成 Spark 报告、产物目录和 manifest，但每次终止调用都会尝试向 `.ai-workflow/model-usage.jsonl` 追加一条紧凑记录。只有需要长期保留 advisor 结果本身时才选择 `minimal` 或 `full`；Token/耗时聚合不再要求完整 Spark 产物目录。
 
+Claude 用量记录还会保存仅含哈希的缓存归因：provider route、稳定提示前缀、解析后的工具契约、任务后缀、缓存通道和会话模式。Ledger 不会复制提示正文或工具命令正文。运行 `python ai/aiwf.py usage aggregate .ai-workflow/model-usage.jsonl` 可查看整体和分通道的 Token 加权缓存命中率，以及 `cold-start`、`prefix-drift`、`tool-profile-change`、`provider-route-change`、`resume-failed`、`provider-unknown` 等保守分类。这些标签只解释 Harness 可观测到的变化，不推断服务端 TTL、淘汰或后端路由。
+
+为保持工具 schema 可复用，冻结的验证命令不再逐条嵌入 `allowedTools`，而是统一由固定入口 `ai/run-approved-validation.py run` 执行。精确写入命令也通过环境绑定的收据引用目标，不再写入任务专属绝对收据路径。Helper 会重新解析不可变任务卡、拒绝 shell 组合并以无 shell 的参数数组运行命令；只读根仍负责强制声明的写入范围。
+
+缓存回归应比较同一契约的 warm continuation，而不是所有调用的混合百分比。可通过 `--minimum-warm-cache-calls 5 --minimum-warm-cache-hit-rate 0.95` 生成 `pass`、`regression-candidate` 或 `insufficient-evidence` 结论；仅在受控 benchmark/CI 中再增加 `--require-cache-gate`。`by_model_cache_lane` 会进一步隔离不同模型。默认不启用阈值，因此普通派发不会被任意全局缓存目标阻断。
+
 **Spark 诊断（`--diagnostics`）：** 当 direct 模式调用产生不可用结果（空响应、可用性/执行失败、或 schema-invalid 估算器输出）时，`--diagnostics failure`（默认）在唯一的 `.worktrees/spark-diagnostic-<timestamp>-<suffix>/` 下写入紧凑脱敏记录，避免同秒失败互相覆盖。stderr 摘要中的密钥会被剥离。`--diagnostics off` 禁用所有持久化。`--diagnostics full` 将全部证据复制到永久目录以供复现。成功调用保持零持久化。
 
 direct stdout 使用 `aiwf-spark-stdout-v1` envelope：阻塞调用前输出 `spark_status=started`，完成后输出唯一终态。使用 `python ai/parse-spark-output.py FILE --require-terminal` 解析。broker 默认用 `CODEX_SPARK_CALL_TIMEOUT_SECONDS=75` 管理模型进程组，并在 wrapper 结束前写入 terminal ledger。

@@ -97,6 +97,121 @@ class ModelUsageTests(unittest.TestCase):
         self.assertTrue(result["by_role"]["claude"]["usage_complete"])
         self.assertFalse(result["by_role"]["spark"]["usage_complete"])
 
+    def test_claude_cache_rate_is_token_weighted_and_grouped_by_lane(self):
+        records = [
+            usage.parse_claude({"is_error": False, "usage": {
+                "input_tokens": 10, "cache_read_input_tokens": 90,
+                "cache_creation_input_tokens": 0, "output_tokens": 1,
+            }}, call_id="a", cache_lane="lane-a"),
+            usage.parse_claude({"is_error": False, "usage": {
+                "input_tokens": 90, "cache_read_input_tokens": 10,
+                "cache_creation_input_tokens": 100, "output_tokens": 1,
+            }}, call_id="b", cache_lane="lane-b"),
+        ]
+        result = usage.aggregate(records)
+        self.assertAlmostEqual(result["totals"]["cache_hit_rate"], 100 / 300)
+        self.assertEqual(result["totals"]["cache_eligible_input_tokens"], 300)
+        self.assertAlmostEqual(result["by_cache_lane"]["lane-a"]["cache_hit_rate"], 0.9)
+        self.assertAlmostEqual(result["by_cache_lane"]["lane-b"]["cache_hit_rate"], 0.05)
+        self.assertIn("unknown::unknown::lane-a", result["by_model_cache_lane"])
+
+    def test_cache_classification_uses_observable_component_drift(self):
+        base = {
+            "role": "claude", "model": "mimo", "input_tokens": 10,
+            "cached_input_tokens": 90, "cache_creation_input_tokens": 0,
+            "cache_lane": "lane", "stable_prefix_sha256": "sha256:prefix-a",
+            "tool_schema_sha256": "sha256:tools-a",
+            "provider_route_sha256": "sha256:route-a", "session_mode": "resume",
+        }
+        self.assertEqual(usage._classify_cache(dict(base), []), "cold-start")
+        previous = [dict(base)]
+        self.assertEqual(usage._classify_cache(dict(base), previous), "warm-hit")
+        prefix_changed = {**base, "stable_prefix_sha256": "sha256:prefix-b"}
+        self.assertEqual(usage._classify_cache(prefix_changed, previous), "prefix-drift")
+        tools_changed = {**base, "tool_schema_sha256": "sha256:tools-b"}
+        self.assertEqual(usage._classify_cache(tools_changed, previous), "tool-profile-change")
+        route_changed = {**base, "provider_route_sha256": "sha256:route-b"}
+        self.assertEqual(usage._classify_cache(route_changed, previous), "provider-route-change")
+        new_lane = {**base, "cache_lane": "another-lane"}
+        self.assertEqual(usage._classify_cache(new_lane, previous), "cold-start")
+        resumed_fresh = {**base, "session_resume_status": "resume-failed-session-not-found-fresh-fallback"}
+        self.assertEqual(usage._classify_cache(resumed_fresh, previous), "resume-failed")
+        unknown = {**base, "session_mode": "new", "cached_input_tokens": 0}
+        self.assertEqual(usage._classify_cache(unknown, previous), "provider-unknown")
+
+    def test_append_persists_hashes_not_component_bodies(self):
+        with tempfile.TemporaryDirectory() as raw:
+            ledger = Path(raw) / "usage.jsonl"
+            record = usage.parse_claude({"is_error": False, "usage": {
+                "input_tokens": 5, "cache_read_input_tokens": 5, "output_tokens": 1,
+            }}, call_id="cache-call", cache_lane="cache-lane:abc",
+                stable_prefix_sha256="sha256:prefix", tool_schema_sha256="sha256:tools",
+                task_suffix_sha256="sha256:suffix", session_mode="new")
+            self.assertTrue(usage.append_once(ledger, record))
+            stored = json.loads(ledger.read_text(encoding="utf-8"))
+            self.assertEqual(stored["cache_miss_classification"], "cold-start")
+            self.assertEqual(stored["stable_prefix_sha256"], "sha256:prefix")
+            self.assertNotIn("prompt", stored)
+            self.assertNotIn("tool_schema", stored)
+
+    def test_cache_evaluation_separates_comparable_warm_continuations(self):
+        def row(call_id, *, cached, session_mode, prefix="sha256:p", tools="sha256:t"):
+            return usage.parse_claude({"is_error": False, "usage": {
+                "input_tokens": 10, "cache_read_input_tokens": cached, "output_tokens": 1,
+            }}, call_id=call_id, model="mimo", cache_lane="lane",
+                stable_prefix_sha256=prefix, tool_schema_sha256=tools,
+                provider_route_sha256="sha256:route",
+                session_mode=session_mode)
+
+        records = [
+            row("cold", cached=90, session_mode="new"),
+            row("warm-1", cached=90, session_mode="resume"),
+            row("warm-2", cached=0, session_mode="resume"),
+            row("changed", cached=90, session_mode="resume", tools="sha256:new-tools"),
+        ]
+        result = usage.cache_evaluation(
+            records, minimum_warm_calls=2, minimum_warm_hit_rate=0.4,
+        )
+        self.assertEqual(result["warm"]["calls"], 2)
+        self.assertEqual(result["cold_or_changed"]["calls"], 2)
+        self.assertAlmostEqual(result["warm"]["cache_hit_rate"], 90 / 110)
+        self.assertEqual(result["status"], "pass")
+
+        regression = usage.cache_evaluation(
+            records, minimum_warm_calls=2, minimum_warm_hit_rate=0.9,
+        )
+        self.assertEqual(regression["status"], "regression-candidate")
+        insufficient = usage.cache_evaluation(
+            records, minimum_warm_calls=3, minimum_warm_hit_rate=0.4,
+        )
+        self.assertEqual(insufficient["status"], "insufficient-evidence")
+
+    def test_cache_gate_cli_requires_explicit_threshold_and_fails_regression(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ledger = root / "usage.jsonl"
+            base = {
+                "schema_version": 1, "role": "claude", "model": "mimo",
+                "cache_lane": "lane", "stable_prefix_sha256": "sha256:p",
+                "tool_schema_sha256": "sha256:t", "provider_route_sha256": "sha256:r",
+                "input_tokens": 100,
+                "cached_input_tokens": 0, "cache_creation_input_tokens": 0,
+                "output_tokens": 1, "usage_complete": True,
+            }
+            rows = [
+                {**base, "call_id": "cold", "session_mode": "new"},
+                {**base, "call_id": "warm", "session_mode": "resume"},
+            ]
+            ledger.write_text("\n".join(json.dumps(item) for item in rows) + "\n", encoding="utf-8")
+            result = subprocess.run([
+                sys.executable, str(ROOT / "scripts" / "model-usage.py"),
+                "aggregate", str(ledger), "--minimum-warm-cache-calls", "1",
+                "--minimum-warm-cache-hit-rate", "0.9", "--require-cache-gate",
+            ], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(json.loads(result.stdout)["cache_evaluation"]["status"],
+                             "regression-candidate")
+
     def test_external_pricing_separates_calculated_and_provider_cost(self):
         pricing = {
             "schema_version": 1,

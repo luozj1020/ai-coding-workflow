@@ -20,6 +20,11 @@ NUMERIC_FIELDS = (
 )
 SUM_FIELDS = NUMERIC_FIELDS
 TOKEN_FIELDS = ("input_tokens", "output_tokens")
+CACHE_IDENTITY_FIELDS = (
+    "cache_lane", "stable_prefix_sha256", "tool_schema_sha256",
+    "task_suffix_sha256", "provider_route_sha256", "session_mode",
+    "session_resume_status",
+)
 
 
 def load_pricing(path: Path) -> dict[str, Any]:
@@ -121,6 +126,14 @@ def _record(**values: Any) -> dict[str, Any]:
         "usage_source": None,
         "usage_complete": False,
         "result": None,
+        "cache_lane": None,
+        "stable_prefix_sha256": None,
+        "tool_schema_sha256": None,
+        "task_suffix_sha256": None,
+        "provider_route_sha256": None,
+        "session_mode": None,
+        "session_resume_status": None,
+        "cache_miss_classification": None,
     }
     record.update(values)
     record["usage_complete"] = all(record.get(key) is not None for key in TOKEN_FIELDS)
@@ -132,11 +145,77 @@ def _metadata(record: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any
         "run_id", "task_id", "call_id", "experiment_arm", "role", "stage",
         "model", "started_at", "finished_at", "first_progress_ms", "result",
         "wall_time_ms", "api_time_ms",
+        *CACHE_IDENTITY_FIELDS,
     ):
         if metadata.get(key) is not None:
             record[key] = metadata[key]
     record["usage_complete"] = all(record.get(key) is not None for key in TOKEN_FIELDS)
     return record
+
+
+def _cache_denominator(record: dict[str, Any]) -> Optional[float]:
+    """Return Claude-style disjoint input tokens eligible for prompt caching."""
+    if record.get("role") != "claude":
+        return None
+    uncached = record.get("input_tokens")
+    cached = record.get("cached_input_tokens")
+    created = record.get("cache_creation_input_tokens")
+    if not isinstance(uncached, (int, float)) or isinstance(uncached, bool):
+        return None
+    if not isinstance(cached, (int, float)) or isinstance(cached, bool):
+        return None
+    if created is None:
+        created = 0
+    if not isinstance(created, (int, float)) or isinstance(created, bool):
+        return None
+    denominator = uncached + cached + created
+    return denominator if denominator > 0 else None
+
+
+def _classify_cache(record: dict[str, Any], previous: list[dict[str, Any]]) -> Optional[str]:
+    """Classify only observable harness-side cache conditions.
+
+    The result is deliberately conservative: provider TTL, eviction, and
+    backend routing remain ``provider-unknown`` rather than inferred causes.
+    """
+    if _cache_denominator(record) is None:
+        return None
+    resume_status = str(record.get("session_resume_status") or "")
+    if resume_status.startswith("resume-failed"):
+        return "resume-failed"
+    comparable = [
+        row for row in previous
+        if row.get("role") == record.get("role")
+        and row.get("model") == record.get("model")
+    ]
+    if not comparable:
+        return "cold-start"
+    prior = comparable[-1]
+    current_route = record.get("provider_route_sha256")
+    prior_route = prior.get("provider_route_sha256")
+    if current_route and prior_route and current_route != prior_route:
+        return "provider-route-change"
+    current_tool = record.get("tool_schema_sha256")
+    prior_tool = prior.get("tool_schema_sha256")
+    if current_tool and prior_tool and current_tool != prior_tool:
+        return "tool-profile-change"
+    same_lane = [
+        row for row in comparable
+        if record.get("cache_lane") and row.get("cache_lane") == record.get("cache_lane")
+    ]
+    if not same_lane:
+        return "cold-start"
+    prior = same_lane[-1]
+    current_prefix = record.get("stable_prefix_sha256")
+    prior_prefix = prior.get("stable_prefix_sha256")
+    if current_prefix and prior_prefix and current_prefix != prior_prefix:
+        return "prefix-drift"
+    if (record.get("session_mode") == "resume"
+            and record.get("cache_lane")
+            and record.get("cache_lane") == prior.get("cache_lane")
+            and record.get("cached_input_tokens", 0) > 0):
+        return "warm-hit"
+    return "provider-unknown"
 
 
 def parse_claude(value: dict[str, Any], **metadata: Any) -> dict[str, Any]:
@@ -290,6 +369,8 @@ def append_once(path: Path, record: dict[str, Any]) -> bool:
         existing = load_records(path, strict=True)
         if any(row.get("call_id") == call_id for row in existing):
             return False
+        if record.get("cache_miss_classification") is None:
+            record["cache_miss_classification"] = _classify_cache(record, existing)
         with path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
             handle.flush()
@@ -306,6 +387,17 @@ def _group(records: list[dict[str, Any]], pricing: Optional[dict[str, Any]] = No
     for field in SUM_FIELDS:
         values = [row[field] for row in records if isinstance(row.get(field), (int, float)) and not isinstance(row.get(field), bool)]
         result[field] = sum(values) if values else None
+    cache_rows = [(row, _cache_denominator(row)) for row in records]
+    cache_rows = [(row, denominator) for row, denominator in cache_rows if denominator is not None]
+    result["cache_observed_calls"] = len(cache_rows)
+    result["cache_eligible_input_tokens"] = (
+        sum(denominator for _, denominator in cache_rows) if cache_rows else None
+    )
+    result["cache_hit_rate"] = (
+        sum(row["cached_input_tokens"] for row, _ in cache_rows)
+        / result["cache_eligible_input_tokens"]
+        if cache_rows and result["cache_eligible_input_tokens"] else None
+    )
     result["provider_cost_complete"] = bool(records) and all(
         isinstance(row.get("cost_usd"), (int, float)) and not isinstance(row.get("cost_usd"), bool)
         for row in records
@@ -320,22 +412,101 @@ def _group(records: list[dict[str, Any]], pricing: Optional[dict[str, Any]] = No
     return result
 
 
-def aggregate(records: list[dict[str, Any]], pricing: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def _cache_contract_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        record.get("role"), record.get("model"), record.get("cache_lane"),
+        record.get("provider_route_sha256"), record.get("stable_prefix_sha256"),
+        record.get("tool_schema_sha256"),
+    )
+
+
+def cache_evaluation(
+    records: list[dict[str, Any]], *, minimum_warm_calls: int = 3,
+    minimum_warm_hit_rate: Optional[float] = None,
+) -> dict[str, Any]:
+    """Separate comparable warm continuations from cold or changed contracts."""
+    seen: set[tuple[Any, ...]] = set()
+    warm: list[dict[str, Any]] = []
+    cold_or_changed: list[dict[str, Any]] = []
+    for row in records:
+        if _cache_denominator(row) is None:
+            continue
+        key = _cache_contract_key(row)
+        is_bound = all(value not in (None, "") for value in key)
+        if row.get("session_mode") == "resume" and is_bound and key in seen:
+            warm.append(row)
+        else:
+            cold_or_changed.append(row)
+        if is_bound:
+            seen.add(key)
+
+    warm_group = _group(warm)
+    cold_group = _group(cold_or_changed)
+    if minimum_warm_hit_rate is None:
+        status = "observed-only"
+    elif len(warm) < minimum_warm_calls:
+        status = "insufficient-evidence"
+    elif warm_group["cache_hit_rate"] is None:
+        status = "insufficient-evidence"
+    elif warm_group["cache_hit_rate"] >= minimum_warm_hit_rate:
+        status = "pass"
+    else:
+        status = "regression-candidate"
+    return {
+        "status": status,
+        "minimum_warm_calls": minimum_warm_calls,
+        "minimum_warm_hit_rate": minimum_warm_hit_rate,
+        "warm": warm_group,
+        "cold_or_changed": cold_group,
+    }
+
+
+def aggregate(
+    records: list[dict[str, Any]], pricing: Optional[dict[str, Any]] = None, *,
+    minimum_warm_calls: int = 3, minimum_warm_hit_rate: Optional[float] = None,
+) -> dict[str, Any]:
     roles: dict[str, list[dict[str, Any]]] = defaultdict(list)
     stages: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    cache_lanes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    model_cache_lanes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    cache_classifications: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in records:
         roles[str(row.get("role") or "unknown")].append(row)
         stages[str(row.get("stage") or "unknown")].append(row)
+        cache_lanes[str(row.get("cache_lane") or "unknown")].append(row)
+        model_cache_lanes[
+            "{}::{}::{}".format(
+                row.get("model") or "unknown", row.get("provider_route_sha256") or "unknown",
+                row.get("cache_lane") or "unknown",
+            )
+        ].append(row)
+        cache_classifications[str(row.get("cache_miss_classification") or "unknown")].append(row)
     return {
         "schema_version": SCHEMA_VERSION,
         "totals": _group(records, pricing),
         "by_role": {key: _group(value, pricing) for key, value in sorted(roles.items())},
         "by_stage": {key: _group(value, pricing) for key, value in sorted(stages.items())},
+        "by_cache_lane": {key: _group(value, pricing) for key, value in sorted(cache_lanes.items())},
+        "by_model_cache_lane": {
+            key: _group(value, pricing) for key, value in sorted(model_cache_lanes.items())
+        },
+        "by_cache_classification": {
+            key: _group(value, pricing) for key, value in sorted(cache_classifications.items())
+        },
+        "cache_evaluation": cache_evaluation(
+            records, minimum_warm_calls=minimum_warm_calls,
+            minimum_warm_hit_rate=minimum_warm_hit_rate,
+        ),
     }
 
 
 def _metadata_args(parser: argparse.ArgumentParser) -> None:
-    for name in ("run-id", "task-id", "call-id", "experiment-arm", "role", "stage", "model", "started-at", "finished-at", "result"):
+    for name in (
+        "run-id", "task-id", "call-id", "experiment-arm", "role", "stage",
+        "model", "started-at", "finished-at", "result", "cache-lane",
+        "stable-prefix-sha256", "tool-schema-sha256", "task-suffix-sha256",
+        "provider-route-sha256", "session-mode", "session-resume-status",
+    ):
         parser.add_argument("--" + name)
     parser.add_argument("--first-progress-ms", type=int)
     parser.add_argument("--wall-time-ms", type=int)
@@ -359,12 +530,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary.add_argument("--output", type=Path)
     summary.add_argument("--pricing", type=Path,
                          help="Versioned API price catalog used for a separate calculated cost")
+    summary.add_argument("--minimum-warm-cache-calls", type=int, default=3)
+    summary.add_argument("--minimum-warm-cache-hit-rate", type=float)
+    summary.add_argument("--require-cache-gate", action="store_true",
+                         help="Exit non-zero unless the explicitly configured warm-cache gate passes")
     args = parser.parse_args(argv)
+    if getattr(args, "minimum_warm_cache_calls", 3) < 1:
+        parser.error("--minimum-warm-cache-calls must be positive")
+    minimum_rate = getattr(args, "minimum_warm_cache_hit_rate", None)
+    if minimum_rate is not None and not 0 <= minimum_rate <= 1:
+        parser.error("--minimum-warm-cache-hit-rate must be between 0 and 1")
+    if getattr(args, "require_cache_gate", False) and minimum_rate is None:
+        parser.error("--require-cache-gate requires --minimum-warm-cache-hit-rate")
+    exit_code = 0
     if args.command == "capture":
         metadata = {key: value for key, value in vars(args).items() if key in {
             "run_id", "task_id", "call_id", "experiment_arm", "role", "stage", "model",
             "started_at", "finished_at", "first_progress_ms", "wall_time_ms",
             "api_time_ms", "result",
+            *CACHE_IDENTITY_FIELDS,
         } and value is not None}
         record = parse_file(args.source, args.input, **metadata)
         appended = append_once(args.ledger, record) if args.ledger else None
@@ -377,14 +561,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise ValueError("record must be a JSON object")
         payload = {"appended": append_once(args.ledger, record)}
     else:
-        payload = aggregate(load_records(args.ledger), load_pricing(args.pricing) if args.pricing else None)
+        payload = aggregate(
+            load_records(args.ledger), load_pricing(args.pricing) if args.pricing else None,
+            minimum_warm_calls=args.minimum_warm_cache_calls,
+            minimum_warm_hit_rate=args.minimum_warm_cache_hit_rate,
+        )
+        if args.require_cache_gate and payload["cache_evaluation"]["status"] != "pass":
+            exit_code = 2
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     if getattr(args, "output", None):
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text, encoding="utf-8")
     else:
         print(text, end="")
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

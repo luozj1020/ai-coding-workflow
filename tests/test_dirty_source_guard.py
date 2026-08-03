@@ -33,6 +33,7 @@ PREPARE_WRITE_SANDBOX = ROOT / "scripts" / "prepare-write-sandbox.py"
 WRITE_APPROVED_FILE = ROOT / "scripts" / "write-approved-file.py"
 OWNER_LEASE = ROOT / "scripts" / "owner_lease.py"
 MODEL_USAGE = ROOT / "scripts" / "model-usage.py"
+RUN_APPROVED_VALIDATION = ROOT / "scripts" / "run-approved-validation.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -106,6 +107,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(WRITE_APPROVED_FILE, self.repo / "scripts" / "write-approved-file.py")
         shutil.copy2(OWNER_LEASE, self.repo / "scripts" / "owner_lease.py")
         shutil.copy2(MODEL_USAGE, self.repo / "scripts" / "model-usage.py")
+        shutil.copy2(RUN_APPROVED_VALIDATION, self.repo / "scripts" / "run-approved-validation.py")
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
                    "scripts/dispatch-preflight.py", "scripts/process-identity.py",
@@ -120,6 +122,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self._run(["git", "add", "scripts/prepare-write-sandbox.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/write-approved-file.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/model-usage.py"], cwd=self.repo)
+        self._run(["git", "add", "scripts/run-approved-validation.py"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
     def tearDown(self):
@@ -714,7 +717,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self._run(["git", "add", "task-cards/PROJ.md"], cwd=self.repo)
         self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
 
-        result = self._dispatch()
+        result = self._dispatch(extra_env={"ANTHROPIC_BASE_URL": "https://cache-route.invalid/v1"})
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Dispatch Complete", result.stdout)
@@ -728,7 +731,14 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("terminal=yes", events[-1])
         rows = (self.repo / ".ai-workflow" / "model-usage.jsonl").read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(rows), 1)
-        self.assertEqual(json.loads(rows[0])["role"], "claude")
+        usage_row = json.loads(rows[0])
+        self.assertEqual(usage_row["role"], "claude")
+        self.assertRegex(usage_row["cache_lane"], r"^cache-lane:[0-9a-f]{64}$")
+        for field in ("stable_prefix_sha256", "tool_schema_sha256", "task_suffix_sha256"):
+            self.assertRegex(usage_row[field], r"^sha256:[0-9a-f]{64}$")
+        self.assertRegex(usage_row["provider_route_sha256"], r"^sha256:[0-9a-f]{64}$")
+        self.assertNotIn("cache-route.invalid", rows[0])
+        self.assertIn(usage_row["session_mode"], ("new", "resume"))
 
     def test_untracked_task_card_only_succeeds(self):
         self._write_task_card()
@@ -1230,9 +1240,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "- Forbidden paths: deploy/\n",
             encoding="utf-8",
         )
+        argv_log = self.case_root / "argv-write-scope.log"
         result = self._dispatch(
             "task-cards/BUILDER.md",
-            {"CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "auto"},
+            {
+                "CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "auto",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_ARGV_LOG": str(argv_log),
+            },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(
@@ -1259,9 +1275,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertFalse(runtime["runtime_tool_inventory_verified"])
         self.assertTrue((self.case_root / "home" / ".claude" / "session-env").is_dir())
         prompt = pathlib.Path(runtime["worktree"]) / "CLAUDE_PROMPT.md"
-        self.assertIn("EXACT APPROVED FILE WRITER", prompt.read_text(encoding="utf-8"))
-        self.assertIn("write-approved-file.py", prompt.read_text(encoding="utf-8"))
-        self.assertIn("--replace-old-source", prompt.read_text(encoding="utf-8"))
+        prompt_text = prompt.read_text(encoding="utf-8")
+        self.assertIn("EXACT APPROVED FILE WRITER", prompt_text)
+        self.assertIn("write-approved-file.py", prompt_text)
+        self.assertIn("--replace-old-source", prompt_text)
+        self.assertIn("$AI_WORKFLOW_WRITE_SCOPE_RECEIPT", prompt_text)
+        self.assertNotIn(str(self.repo / ".worktrees" / f"{runtime['task_id']}.write-scope-enforcement.json"), prompt_text)
+        argv_text = argv_log.read_text(encoding="utf-8")
+        self.assertIn("$AI_WORKFLOW_WRITE_SCOPE_RECEIPT", argv_text)
+        self.assertNotIn(str(self.repo / ".worktrees"), argv_text)
 
     def test_workspace_trust_preflight_stops_before_builder_window(self):
         self._write_task_card()
@@ -3156,15 +3178,16 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("allowlist_accepted=2", result.stdout)
         if argv_log.exists():
             argv_content = argv_log.read_text(encoding="utf-8")
-            self.assertIn("Bash(python -m pytest -q)", argv_content)
-            self.assertIn("Bash(git diff --check)", argv_content)
+            self.assertIn("Bash(scripts/run-approved-validation.py run)", argv_content)
+            self.assertNotIn("Bash(python -m pytest -q)", argv_content)
+            self.assertNotIn("Bash(git diff --check)", argv_content)
         worktree = self._artifact_path(result.stdout, "Worktree")
         execution_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
         self.assertIn(
-            "exact assigned validation command is pre-authorized", execution_card
+            "task-card validation runner is pre-authorized", execution_card
         )
         self.assertIn(
-            "Report a sandbox/permission blocker only after an actual invocation is denied",
+            "Report a sandbox/permission blocker only after that invocation is denied",
             execution_card,
         )
 
@@ -3186,7 +3209,34 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("allowlist_accepted=1", result.stdout)
         if argv_log.exists():
             argv_content = argv_log.read_text(encoding="utf-8")
-            self.assertIn("Bash(bash -n scripts/dispatch-to-claude.sh)", argv_content)
+            self.assertIn("Bash(scripts/run-approved-validation.py run)", argv_content)
+
+    def test_different_validation_commands_share_final_tool_contract_hash(self):
+        env = {
+            "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+            "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+        }
+        self._write_checker_card_with_validation([
+            ("validation", "python -m pytest tests/test_one.py -q\n"),
+        ])
+        first = self._dispatch("task-cards/CHECKER_TP.md", env)
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+
+        self._write_checker_card_with_validation([
+            ("validation", "git diff --check\n"),
+        ])
+        second = self._dispatch("task-cards/CHECKER_TP.md", env)
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+
+        rows = [
+            json.loads(line) for line in
+            (self.repo / ".ai-workflow" / "model-usage.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["tool_schema_sha256"], rows[1]["tool_schema_sha256"])
+        self.assertEqual(rows[0]["cache_lane"], rows[1]["cache_lane"])
+        self.assertEqual(rows[0]["stable_prefix_sha256"], rows[1]["stable_prefix_sha256"])
+        self.assertNotEqual(rows[0]["task_suffix_sha256"], rows[1]["task_suffix_sha256"])
 
     def test_builder_exact_validation_command_is_allowlisted_when_supported(self):
         task = self._write_builder_task_card()
@@ -3208,7 +3258,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("allowlist_accepted=1", result.stdout)
-        self.assertIn("Bash(python -m pytest tests/test_one.py -q)", argv_log.read_text())
+        self.assertIn("Bash(scripts/run-approved-validation.py run)", argv_log.read_text())
 
     def test_comments_and_blank_lines_ignored_in_validation(self):
         """Comments and blank lines in validation fences are ignored."""
@@ -3325,8 +3375,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             argv_content = argv_log.read_text(encoding="utf-8")
             self.assertNotIn("Bash(*)", argv_content)
             self.assertNotIn("--dangerously-skip-permissions", argv_content)
-            # Should have specific Bash(true) not wildcard
-            self.assertIn("Bash(true)", argv_content)
+            # One fixed helper is allowed; task-card commands are not embedded
+            # in the tool schema.
+            self.assertIn("Bash(scripts/run-approved-validation.py run)", argv_content)
 
     def test_default_profile_preserves_legacy_invocation(self):
         """Default/unsupported profile preserves legacy invocation with no profile flags."""

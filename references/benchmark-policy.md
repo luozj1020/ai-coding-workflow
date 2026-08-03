@@ -34,6 +34,15 @@ Signals:
 
 - Canonical `.ai-workflow/model-usage.jsonl` records for Claude, Codex, and Spark.
 - Per-role token/cache/cost totals and `usage_complete`; unavailable fields stay null.
+- Token-weighted Claude cache hit rate, grouped by hash-only cache lane. Preserve
+  provider-route, stable-prefix, tool-contract, task-suffix, and session identities as hashes;
+  never persist their bodies. Harness-observable drift may be classified, while
+  provider TTL, eviction, and backend routing remain `provider-unknown`.
+- Evaluate cache regressions only from comparable `resume` calls whose model,
+  provider-route hash, lane, stable-prefix hash, and tool-contract hash match an earlier observation.
+  Keep cold/changed calls separate. Thresholds and minimum sample counts must be
+  explicit; ordinary dispatch has no default cache gate, and too few warm calls
+  produce `insufficient-evidence` rather than pass or failure.
 - Legacy Claude/Codex usage summaries only when no canonical ledger is present.
 - Number of turns when available.
 - Task-card and review-packet bytes.

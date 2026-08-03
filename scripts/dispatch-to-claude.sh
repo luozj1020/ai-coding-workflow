@@ -3038,6 +3038,27 @@ Context Packet:
 --- CLAUDE EXECUTION CARD ---
 EOF
 fi
+
+# Capture only component identities for cache attribution.  This point is
+# intentionally before the dynamic CodeGraph/worktree block and task card are
+# appended, so the stable-prefix hash detects real template drift rather than
+# expected per-task suffix changes.  Prompt bodies are never written to usage
+# telemetry.
+_CACHE_STABLE_PREFIX_SHA256=""
+_CACHE_TASK_SUFFIX_SHA256=""
+if [ -n "$PYTHON_CMD" ]; then
+    IFS=$'\t' read -r _CACHE_STABLE_PREFIX_SHA256 _CACHE_TASK_SUFFIX_SHA256 < <(
+        "$PYTHON_CMD" - "${WORKTREE_DIR}/CLAUDE_PROMPT.md" "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md" <<'PYEOF'
+import hashlib, sys
+
+def digest(path):
+    with open(path, "rb") as handle:
+        return "sha256:" + hashlib.sha256(handle.read()).hexdigest()
+
+print(digest(sys.argv[1]) + "\t" + digest(sys.argv[2]))
+PYEOF
+    )
+fi
 cat >> "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<EOF
 
 CodeGraph worktree identity:
@@ -4005,6 +4026,8 @@ _CLAUDE_TOOLS_ARGS=()
 _CLAUDE_ALLOWED_ARGS=()
 _TOOL_PROFILE_AVAILABLE_TOOLS=""
 _TOOL_PROFILE_ALLOWLIST_COUNT=0
+_CACHE_TOOL_SCHEMA_SHA256=""
+_CACHE_LANE=""
 
 if [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && [ "$CLAUDE_CODE_TOOL_PROFILE" != "default" ]; then
     case "$CLAUDE_CODE_TOOL_PROFILE" in
@@ -4054,98 +4077,28 @@ if [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && [ "$CLAUDE_CODE_TOOL_PROFILE" != "def
     _TOOL_PROFILE_ALLOWLIST_UNSAFE=0
     _TOOL_PROFILE_ALLOWLIST_OVERSIZED=0
     _TOOL_PROFILE_ALLOWLIST_OVERFLOW=0
+    _VALIDATION_LAUNCHER=""
     if [[ "${_TOOL_PROFILE_AVAILABLE_TOOLS}" == *Bash* ]] && [ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" = "1" ]; then
         _TASK_CARD_FILE="${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
-        if [ -f "$_TASK_CARD_FILE" ] && [ -n "$PYTHON_CMD" ]; then
-            _VALIDATION_SUMMARY_FILE="$(mktemp 2>/dev/null || echo "")"
-            _VALIDATION_CMDS="$("$PYTHON_CMD" - "$_TASK_CARD_FILE" "$_VALIDATION_SUMMARY_FILE" <<'PYEOF' 2>/dev/null || echo ""
-import json, re, sys
-
-MAX_COMMANDS = 12
-MAX_CMD_LEN = 500
-# Unsafe shell composition/redirection operators
-UNSAFE_RE = re.compile(r'[;&|`><\x00-\x08\x0e-\x1f]')
-
-text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-summary_path = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
-
-# Find fenced blocks whose info string contains "validation" or "check"
-blocks = re.finditer(r'```[^\n]*(?:validation|check)[^\n]*\n(.*?)```', text, re.I | re.S)
-
-commands = []
-unsafe_count = 0
-oversized_count = 0
-overflow_count = 0
-for block in blocks:
-    for line in block.group(1).splitlines():
-        line = line.strip()
-        # Skip empty lines and comments
-        if not line or line.startswith('#'):
-            continue
-        # Reject unsafe commands
-        if UNSAFE_RE.search(line):
-            unsafe_count += 1
-            continue
-        # Bound by length
-        if len(line) > MAX_CMD_LEN:
-            oversized_count += 1
-            continue
-        if len(commands) >= MAX_COMMANDS:
-            overflow_count += 1
-            continue
-        commands.append(line)
-
-# Also accept the canonical single-line Validation Contract field. It remains
-# subject to the same shell-composition and size checks as fenced commands.
-for match in re.finditer(r'(?im)^\s*-\s*Exact narrow command:\s*`?([^`\n]+?)`?\s*$', text):
-    line = match.group(1).strip()
-    if not line or line.lower() in {"none", "not-required", "not required", "tbd"}:
-        continue
-    if UNSAFE_RE.search(line):
-        unsafe_count += 1
-    elif len(line) > MAX_CMD_LEN:
-        oversized_count += 1
-    elif len(commands) >= MAX_COMMANDS:
-        overflow_count += 1
-    elif line not in commands:
-        commands.append(line)
-
-for cmd in commands:
-    print(cmd)
-
-# Write aggregate summary (no command bodies or secrets)
-if summary_path:
-    try:
-        with open(summary_path, 'w', encoding='utf-8') as f:
-            json.dump({
-                "accepted": len(commands),
-                "unsafe": unsafe_count,
-                "oversized": oversized_count,
-                "overflow": overflow_count,
-            }, f)
-    except OSError:
-        pass
-PYEOF
-)"
-
-            if [ -n "$_VALIDATION_SUMMARY_FILE" ] && [ -f "$_VALIDATION_SUMMARY_FILE" ]; then
-                _VALIDATION_SUMMARY="$(cat "$_VALIDATION_SUMMARY_FILE" 2>/dev/null || echo "")"
-                rm -f "$_VALIDATION_SUMMARY_FILE"
-                if [ -n "$_VALIDATION_SUMMARY" ] && [ -n "$PYTHON_CMD" ]; then
-                    _TOOL_PROFILE_ALLOWLIST_UNSAFE="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('unsafe',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
-                    _TOOL_PROFILE_ALLOWLIST_OVERSIZED="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('oversized',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
-                    _TOOL_PROFILE_ALLOWLIST_OVERFLOW="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('overflow',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
-                fi
-            else
-                rm -f "$_VALIDATION_SUMMARY_FILE" 2>/dev/null || true
+        _VALIDATION_HELPER="${SCRIPT_DIR}/run-approved-validation.py"
+        if [ ! -f "$_VALIDATION_HELPER" ]; then
+            echo "Error: task validation allowlist requires run-approved-validation.py; refresh workflow runtime files." >&2
+            echo "failure_category=workflow-runtime-mismatch" >&2
+            exit 1
+        fi
+        if [ -f "$_TASK_CARD_FILE" ] && [ -n "$PYTHON_CMD" ] && [ -f "$_VALIDATION_HELPER" ]; then
+            _VALIDATION_SUMMARY="$("$PYTHON_CMD" "$_VALIDATION_HELPER" audit \
+                --task-card "$_TASK_CARD_FILE" 2>/dev/null || echo "")"
+            if [ -n "$_VALIDATION_SUMMARY" ]; then
+                _TOOL_PROFILE_ALLOWLIST_COUNT="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('accepted',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
+                _TOOL_PROFILE_ALLOWLIST_UNSAFE="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('unsafe',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
+                _TOOL_PROFILE_ALLOWLIST_OVERSIZED="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('oversized',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
+                _TOOL_PROFILE_ALLOWLIST_OVERFLOW="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('overflow',0))" "$_VALIDATION_SUMMARY" 2>/dev/null || echo 0)"
+                _VALIDATION_LAUNCHER="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('first_launcher') or '')" "$_VALIDATION_SUMMARY" 2>/dev/null || echo '')"
             fi
-
-            if [ -n "$_VALIDATION_CMDS" ]; then
-                while IFS= read -r _vcmd; do
-                    [ -z "$_vcmd" ] && continue
-                    _allow_parts+=("Bash(${_vcmd})")
-                    _TOOL_PROFILE_ALLOWLIST_COUNT=$((_TOOL_PROFILE_ALLOWLIST_COUNT + 1))
-                done <<< "$_VALIDATION_CMDS"
+            if [ "$_TOOL_PROFILE_ALLOWLIST_COUNT" -gt 0 ]; then
+                _VALIDATION_HELPER_REL="$(basename "$SCRIPT_DIR")/run-approved-validation.py"
+                _allow_parts+=("Bash(${_VALIDATION_HELPER_REL} run)")
             fi
         fi
     fi
@@ -4231,6 +4184,8 @@ PYEOF
             echo "Error: required write-scope runtime needs HOME and write-approved-file.py." >&2
             exit 1
         fi
+        _WRITE_APPROVED_HELPER_REL="$(basename "$SCRIPT_DIR")/write-approved-file.py"
+        export AI_WORKFLOW_WRITE_SCOPE_RECEIPT="$WRITE_SCOPE_RECEIPT_FILE"
         mkdir -p "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET" \
             "$_CLAUDE_PROJECTS_SOURCE" "$_CLAUDE_PROJECTS_TARGET" || {
             echo "Error: could not prepare Claude session environment/transcript write mounts." >&2
@@ -4277,12 +4232,12 @@ absent in some Claude Code versions. For a new file, or an existing path listed
 under \`Full file replacement paths\`, first create the complete content under
 \`\$TMPDIR\`, then run exactly:
 
-\`${PYTHON_CMD} ${SCRIPT_DIR}/write-approved-file.py --receipt ${WRITE_SCOPE_RECEIPT_FILE} --path REPOSITORY_RELATIVE_PATH --source \$TMPDIR/REPLACEMENT_FILE\`
+\`${_WRITE_APPROVED_HELPER_REL} --receipt \$AI_WORKFLOW_WRITE_SCOPE_RECEIPT --path REPOSITORY_RELATIVE_PATH --source \$TMPDIR/REPLACEMENT_FILE\`
 
 For a narrow edit, put the exact old and new byte fragments in two temporary
 files and use the unique-match mode:
 
-\`${PYTHON_CMD} ${SCRIPT_DIR}/write-approved-file.py --receipt ${WRITE_SCOPE_RECEIPT_FILE} --path REPOSITORY_RELATIVE_PATH --replace-old-source \$TMPDIR/OLD_FRAGMENT --replace-new-source \$TMPDIR/NEW_FRAGMENT\`
+\`${_WRITE_APPROVED_HELPER_REL} --receipt \$AI_WORKFLOW_WRITE_SCOPE_RECEIPT --path REPOSITORY_RELATIVE_PATH --replace-old-source \$TMPDIR/OLD_FRAGMENT --replace-new-source \$TMPDIR/NEW_FRAGMENT\`
 
 Unique replacement fails without writing unless the old fragment occurs
 exactly once.
@@ -4295,8 +4250,8 @@ The receipt rejects every undeclared path. Do not use Edit after an atomic-temp
 failure and do not create repository-local helper files.
 EOF
         if [[ "${_TOOL_PROFILE_AVAILABLE_TOOLS}" == *Bash* ]] && [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ]; then
-            _approved_writer_allow="Bash(${PYTHON_CMD} ${SCRIPT_DIR}/write-approved-file.py --receipt ${WRITE_SCOPE_RECEIPT_FILE} --path * --source *)"
-            _approved_fragment_writer_allow="Bash(${PYTHON_CMD} ${SCRIPT_DIR}/write-approved-file.py --receipt ${WRITE_SCOPE_RECEIPT_FILE} --path * --replace-old-source * --replace-new-source *)"
+            _approved_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --receipt \$AI_WORKFLOW_WRITE_SCOPE_RECEIPT --path * --source *)"
+            _approved_fragment_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --receipt \$AI_WORKFLOW_WRITE_SCOPE_RECEIPT --path * --replace-old-source * --replace-new-source *)"
             if [ ${#_CLAUDE_ALLOWED_ARGS[@]} -gt 0 ]; then
                 _CLAUDE_ALLOWED_ARGS[1]="${_CLAUDE_ALLOWED_ARGS[1]},${_approved_writer_allow},${_approved_fragment_writer_allow}"
             else
@@ -4305,6 +4260,39 @@ EOF
         fi
         _WRITE_SCOPE_EFFECTIVE="required"
     fi
+fi
+
+# Hash the final tool contract only after validation and exact-writer entries
+# have been added. Task-specific values are supplied through environment-bound
+# receipts, keeping the allowed-tools schema stable without widening writes.
+if [ -n "$PYTHON_CMD" ]; then
+    IFS=$'\t' read -r _CACHE_TOOL_SCHEMA_SHA256 _CACHE_LANE < <(
+        "$PYTHON_CMD" - \
+            "$CLAUDE_CODE_PROXY_MODE" "$CLAUDE_CODE_PROMPT_PROFILE" \
+            "$CLAUDE_CODE_TOOL_PROFILE" "$CLAUDE_CODE_BUILDER_MODE" \
+            "${_PARSED_TASK_MODE:-unknown}" "${_TOOL_PROFILE_AVAILABLE_TOOLS:-}" \
+            "${_CLAUDE_ALLOWED_ARGS[*]:-}" <<'PYEOF'
+import hashlib, json, sys
+
+route, prompt_profile, tool_profile, builder_mode, task_mode, tools, allowed = sys.argv[1:]
+tool_contract = json.dumps(
+    {"profile": tool_profile, "tools": tools, "allowed": allowed},
+    ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+).encode("utf-8")
+lane_contract = json.dumps(
+    {
+        "route": route, "prompt_profile": prompt_profile,
+        "tool_profile": tool_profile, "builder_mode": builder_mode,
+        "task_mode": task_mode,
+    },
+    ensure_ascii=True, sort_keys=True, separators=(",", ":"),
+).encode("utf-8")
+print(
+    "sha256:" + hashlib.sha256(tool_contract).hexdigest()
+    + "\tcache-lane:" + hashlib.sha256(lane_contract).hexdigest()
+)
+PYEOF
+    )
 fi
 progress_log "Write scope enforcement resolved: requested=${_WRITE_SCOPE_REQUESTED}, effective=${_WRITE_SCOPE_EFFECTIVE}, receipt=${WRITE_SCOPE_RECEIPT_FILE}"
 
@@ -4318,7 +4306,7 @@ sync_write_scope_staging() {
 # This gives Claude concrete evidence that Python/pytest is executable in the
 # dispatch environment without introducing product-side effects.
 if [ -n "$PYTHON_CMD" ]; then
-    _CAPABILITY_COMMAND="$(printf '%s\n' "${_VALIDATION_CMDS:-}" | sed -n '1p')"
+    _CAPABILITY_COMMAND="${_VALIDATION_LAUNCHER:-}"
     "$PYTHON_CMD" - "$VALIDATION_CAPABILITY_FILE" "$_CAPABILITY_COMMAND" \
         "${_TOOL_PROFILE_ALLOWLIST_COUNT:-0}" <<'PYEOF'
 import json, os, shlex, shutil, subprocess, sys, tempfile
@@ -4339,7 +4327,8 @@ if resolved:
     except (OSError, subprocess.TimeoutExpired):
         probe = "launcher-failed"
 value = {
-    "schema_version": 1, "exact_command": command or None,
+    "schema_version": 1, "exact_command": None,
+    "assigned_command_body_stored": False,
     "launcher": launcher or None, "resolved_launcher": resolved,
     "allowlisted_command_count": int(allowlisted),
     "capability_status": probe, "probe_exit_code": exit_code,
@@ -4360,8 +4349,9 @@ PYEOF
         echo "- Exact assigned commands allowlisted: ${_TOOL_PROFILE_ALLOWLIST_COUNT:-0}"
         echo "- Receipt: ${VALIDATION_CAPABILITY_FILE}"
         if [ "${_TOOL_PROFILE_ALLOWLIST_COUNT:-0}" -gt 0 ]; then
-            echo "- Permission decision: the exact assigned validation command is pre-authorized through the Checker Bash allowlist."
-            echo "- Execute that exact command without requesting another approval. Report a sandbox/permission blocker only after an actual invocation is denied, including the rejected command and original denial."
+            echo "- Permission decision: the task-card validation runner is pre-authorized through the Checker Bash allowlist."
+            echo "- Execute \`${_VALIDATION_HELPER_REL} run\` without requesting another approval. It reads and runs only the shell-free commands frozen in this card."
+            echo "- Report a sandbox/permission blocker only after that invocation is denied, including the original denial."
         fi
         echo "- Launcher probing does not execute the assigned tests; run them and report the real exit code."
     } >> "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
@@ -6313,11 +6303,55 @@ fi
 MODEL_USAGE_HELPER="${SCRIPT_DIR}/model-usage.py"
 MODEL_USAGE_LEDGER="${AI_WORKFLOW_MODEL_USAGE_LEDGER:-${REPO_ROOT}/.ai-workflow/model-usage.jsonl}"
 if [ -n "$PYTHON_CMD" ] && [ -f "$MODEL_USAGE_HELPER" ] && [ -f "$RESULT_FILE" ]; then
+    _CACHE_PROVIDER_ROUTE_SHA256="$("$PYTHON_CMD" - \
+        "${ANTHROPIC_BASE_URL:-}" "$STARTUP_INTERACTION_HEALTH_FILE" "$INTERACTION_HEALTH_FILE" <<'PYEOF' 2>/dev/null || true
+import hashlib, json, sys
+from urllib.parse import urlsplit
+
+route = sys.argv[1]
+for path in sys.argv[2:]:
+    try:
+        value = json.load(open(path, encoding="utf-8"))
+        route = value.get("base_url_origin") or route
+    except (OSError, ValueError, TypeError):
+        pass
+if route:
+    parsed = urlsplit(route)
+    origin = "{}://{}".format(parsed.scheme.lower(), parsed.netloc.lower()) if parsed.netloc else route
+    print("sha256:" + hashlib.sha256(origin.encode("utf-8")).hexdigest())
+PYEOF
+)"
+    _CACHE_MODEL_HINT="$("$PYTHON_CMD" - \
+        "$STARTUP_INTERACTION_HEALTH_FILE" "$INTERACTION_HEALTH_FILE" <<'PYEOF' 2>/dev/null || true
+import json, sys
+
+model = ""
+for path in sys.argv[1:]:
+    try:
+        value = json.load(open(path, encoding="utf-8"))
+        model = value.get("model") or model
+    except (OSError, ValueError, TypeError):
+        pass
+print(model)
+PYEOF
+)"
     MODEL_USAGE_ARGS=(
         --source claude --input "$RESULT_FILE" --ledger "$MODEL_USAGE_LEDGER"
         --task-id "${AI_WORKFLOW_TASK_ID:-$TASK_ID}" --call-id "$TASK_ID" --role claude
         --stage "${_PARSED_TASK_MODE:-builder}" --result "$DISPATCH_OUTCOME"
+        --cache-lane "$_CACHE_LANE"
+        --stable-prefix-sha256 "$_CACHE_STABLE_PREFIX_SHA256"
+        --tool-schema-sha256 "$_CACHE_TOOL_SCHEMA_SHA256"
+        --task-suffix-sha256 "$_CACHE_TASK_SUFFIX_SHA256"
+        --session-mode "$CLAUDE_SESSION_MODE_EFFECTIVE"
+        --session-resume-status "$CLAUDE_SESSION_RESUME_STATUS"
     )
+    if [ -n "$_CACHE_PROVIDER_ROUTE_SHA256" ]; then
+        MODEL_USAGE_ARGS+=(--provider-route-sha256 "$_CACHE_PROVIDER_ROUTE_SHA256")
+    fi
+    if [ -n "$_CACHE_MODEL_HINT" ]; then
+        MODEL_USAGE_ARGS+=(--model "$_CACHE_MODEL_HINT")
+    fi
     if [ -n "${FIRST_PROGRESS_ELAPSED_SECONDS:-}" ]; then
         MODEL_USAGE_ARGS+=(--first-progress-ms "$((FIRST_PROGRESS_ELAPSED_SECONDS * 1000))")
     fi

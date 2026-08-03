@@ -948,6 +948,37 @@ When `--output` is passed without an explicit `--result-mode`, the helper select
 
 **Observability tradeoff:** `direct` mode still avoids a Spark report, artifact directory, and manifest, but every terminal call now attempts one compact append to `.ai-workflow/model-usage.jsonl`. Choose `minimal` or `full` when the advisor result itself must remain auditable; token/timing aggregation no longer requires a full Spark artifact directory.
 
+Claude usage rows also carry hash-only cache attribution: provider route,
+stable prompt-prefix, resolved tool contract, task suffix, cache lane, and session mode. No prompt or
+tool-command body is copied into the ledger. `python ai/aiwf.py usage aggregate .ai-workflow/model-usage.jsonl` reports token-weighted cache hit rates overall
+and by lane, plus conservative classifications such as `cold-start`,
+`prefix-drift`, `tool-profile-change`, `provider-route-change`, `resume-failed`, and `provider-unknown`.
+These labels explain observable harness changes; they do not claim knowledge of
+provider TTL, eviction, or backend routing.
+
+To keep the tool schema reusable, frozen validation commands are executed by
+the fixed `ai/run-approved-validation.py run` entry point instead of being
+embedded one-by-one in `allowedTools`. Exact-write commands likewise refer to
+an environment-bound receipt rather than a task-specific absolute receipt path.
+The helper re-parses the immutable task card, rejects shell composition, and
+runs argument vectors without a shell; the read-only-root write boundary still
+enforces the declared paths.
+
+Cache regression checks should use comparable warm continuations rather than
+the all-call percentage. A report-only threshold can be added with
+`--minimum-warm-cache-hit-rate`; add `--require-cache-gate` only in a controlled
+benchmark or CI policy:
+
+```bash
+python ai/aiwf.py usage aggregate .ai-workflow/model-usage.jsonl \
+  --minimum-warm-cache-calls 5 --minimum-warm-cache-hit-rate 0.95
+```
+
+The result is `pass`, `regression-candidate`, or `insufficient-evidence`.
+Different models are also separated in `by_model_cache_lane`. No threshold is
+enabled by default, so normal dispatch is never blocked by an arbitrary global
+cache target.
+
 **Spark diagnostics (`--diagnostics`):** when a direct-mode call produces an unusable result (empty response, availability/execution failure, or schema-invalid estimator output), `--diagnostics failure` (default) writes a compact redacted record under a unique `.worktrees/spark-diagnostic-<timestamp>-<suffix>/` directory. Secrets are stripped from stderr excerpts. `--diagnostics off` disables all persistence. `--diagnostics full` copies all evidence into the permanent directory for reproduction. Successful calls remain zero-persistence. Estimator output classified as `schema-invalid` auto-disables Spark (exits 0) unless `--require-spark` is set.
 
 Direct stdout uses the `aiwf-spark-stdout-v1` envelope. It emits `spark_status=started` before the blocking call and one terminal status afterward; parse it with `python ai/parse-spark-output.py FILE --require-terminal`. If the wrapper exits after `started` without its normal terminal path, an EXIT finalizer emits `failed` with `spark_failure_class=wrapper-exit-before-terminal`. The broker enforces `CODEX_SPARK_CALL_TIMEOUT_SECONDS=75` by default, terminates the model process group, and records a terminal ledger transition before the wrapper finishes.
