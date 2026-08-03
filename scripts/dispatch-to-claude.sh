@@ -3112,7 +3112,7 @@ record_api_availability() {
         inventory_args+=(--tool-inventory-verified)
         while IFS= read -r _tool; do
             [ -n "$_tool" ] && inventory_args+=(--tool-inventory "$_tool")
-        done < <(printf '%s' "$_LAST_TOOL_INVENTORY" | tr ',' '\n')
+        done < <(printf '%s\n' "$_LAST_TOOL_INVENTORY" | tr ',' '\n')
     fi
     "$PYTHON_CMD" "$API_AVAILABILITY_HELPER" record \
         --state "$API_AVAILABILITY_STATE_FILE" --repository "$REPO_ROOT" \
@@ -4945,7 +4945,7 @@ while claude_is_running; do
                 fi
             fi
             ACTIVE_WINDOW_REFRESHED=1
-            progress_log "First substantive progress detected: signal=${_FP_SIGNAL}, elapsed_seconds=${ELAPSED}, active_window_refreshed=yes, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+            progress_log "First substantive progress detected: signal=${_FP_SIGNAL}, first_progress_detected=1, elapsed_seconds=${ELAPSED}, active_window_refreshed=yes, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
         elif [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
              [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ]; then
             if [ "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" = "observe" ]; then
