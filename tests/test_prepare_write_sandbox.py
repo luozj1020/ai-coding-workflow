@@ -106,7 +106,11 @@ class PrepareWriteSandboxTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
     def test_read_only_root_blocks_bash_write_outside_bind(self) -> None:
-        self.card.write_text("- Write paths: allowed.txt\n", encoding="utf-8")
+        self.card.write_text(
+            "- Write paths: allowed.txt\n"
+            "- Full file replacement paths: allowed.txt\n",
+            encoding="utf-8",
+        )
         value = MOD.prepare(self.card, self.worktree, self.output)
         allowed = self.worktree / "allowed.txt"
         denied = self.worktree / "denied.txt"
@@ -144,7 +148,11 @@ class PrepareWriteSandboxTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
     def test_session_env_and_receipt_writer_work_inside_final_read_only_layout(self) -> None:
-        self.card.write_text("- Write paths: allowed.txt\n", encoding="utf-8")
+        self.card.write_text(
+            "- Write paths: allowed.txt\n"
+            "- Full file replacement paths: allowed.txt\n",
+            encoding="utf-8",
+        )
         (self.worktree / "allowed.txt").write_text("old\n", encoding="utf-8")
         value = MOD.prepare(self.card, self.worktree, self.output)
         binding = next(item for item in value["bindings"] if item["relative_path"] == "allowed.txt")

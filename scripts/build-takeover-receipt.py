@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Dict, List
 
 
-COUNTED_FAILURES = {"model-no-progress", "acknowledgement-only", "direction-deviation"}
+COUNTED_FAILURES = {
+    "model-no-progress", "acknowledgement-only", "direction-deviation",
+    "report-evidence-mismatch",
+}
 
 
 def _hash(path: Path) -> str:

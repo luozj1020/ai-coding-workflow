@@ -39,6 +39,11 @@ Signals:
 - Task-card and review-packet bytes.
 - Control-plane seconds before implementation.
 - Model calls by role and whether Checker was actually dispatched.
+- Codex input/output usage grouped by repository discovery, intent freeze,
+  planning review, monitoring, diff review, revision drafting, and final review;
+  unmatched stages remain explicitly unclassified.
+- Codex input/output tokens per accepted acceptance item when both usage and the
+  accepted-item count are complete. Missing evidence remains null.
 - Approximate Claude diff reuse: normalized Claude-added lines retained in the
   final accepted diff. This is a routing signal, not semantic correctness proof.
 - Observed Handoff Tax components: serialization bytes, seconds to first
@@ -74,7 +79,7 @@ python ai/aiwf.py economics record \
   --metrics RUN/run-metrics.json \
   --claude-diff RUN/claude.diff --final-diff RUN/final.diff \
   --task-type core-semantic --repository-scale large \
-  --owner claude-builder --accepted yes \
+  --owner claude-builder --accepted yes --accepted-acceptance-count 4 \
   --append-history .ai-workflow/economics-history.jsonl
 ```
 

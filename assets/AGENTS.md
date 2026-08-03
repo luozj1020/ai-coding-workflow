@@ -160,6 +160,10 @@ override observed facts, a valid lease, or explicit human ownership.
   sync/reindex cost.
 - Keep artifacts file-backed under `.worktrees/` or `ai/plans/<task-id>/`; return
   compact summaries and paths, not full logs.
+- Skill feedback is user-triggered and read-only. Summarize the current
+  conversation plus minimum necessary runtime receipts; do not persist
+  telemetry, invoke Spark/Claude, create a task card, or start remediation
+  until the user separately requests changes.
 - Spark is advisory, normally direct-output, and cannot satisfy acceptance,
   replace Claude implicitly, interrupt a process, approve review, or authorize merge.
 - External MCP/plugins are default-off and do not widen Bash/Edit authority.
@@ -181,5 +185,5 @@ Load only the relevant installed skill reference:
 | retrieval/context budgets | `references/mcp-policy.md` |
 | setup/update/doctor | `references/setup-policy.md` |
 | metrics/regressions | `references/benchmark-policy.md` |
-| local usage feedback/privacy | `references/feedback-policy.md` |
+| user-triggered Skill feedback | `references/feedback-policy.md` |
 <!-- AI-CODING-WORKFLOW:END managed -->

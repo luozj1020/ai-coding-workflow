@@ -58,6 +58,18 @@ def _card_paths(text: str) -> List[str]:
     raise SandboxError("task card has no Write paths")
 
 
+def _full_replacement_paths(text: str) -> List[str]:
+    match = re.search(
+        r"(?im)^-[ \t]*Full file replacement paths:[ \t]*(.*)$", text
+    )
+    if not match:
+        return []
+    value = match.group(1).strip()
+    if value.lower() in {"", "none", "not assigned", "n/a"}:
+        return []
+    return [item.strip().strip("`") for item in value.split(",") if item.strip()]
+
+
 def normalize(raw: str, worktree: Path) -> str:
     value = raw.replace("\\", "/").strip()
     if not value or any(ord(char) < 32 for char in value) or UNSAFE_PATTERN.search(value):
@@ -105,6 +117,17 @@ def prepare(
     text = card.read_text(encoding="utf-8", errors="replace")
     raw_paths = allowed_paths if allowed_paths else _card_paths(text)
     declared = [normalize(value, worktree) for value in raw_paths]
+    explicit_full_replacements = {
+        normalize(value, worktree).rstrip("/") for value in _full_replacement_paths(text)
+    }
+    undeclared_full = explicit_full_replacements.difference(
+        value.rstrip("/") for value in declared
+    )
+    if undeclared_full:
+        raise SandboxError(
+            "Full file replacement path is not an exact declared Write path: "
+            + ", ".join(sorted(undeclared_full))
+        )
     if not declared:
         raise SandboxError("a writing task requires at least one exact Write path")
     values = sorted(set(declared + list(CONTROL_WRITES)))
@@ -156,6 +179,10 @@ def prepare(
             "source": str(stage.resolve()),
             "target": str(target.resolve()),
             "target_preexisted": target_preexisted,
+            "complete_file_write_allowed": (
+                not target_preexisted or relative in explicit_full_replacements
+                or relative in CONTROL_WRITES
+            ),
         })
     value: Dict[str, object] = {
         "schema_version": 1,
@@ -170,6 +197,7 @@ def prepare(
         "bind_targets": bind_targets,
         "staging_root": str(staging_root),
         "bindings": bindings,
+        "complete_file_write_policy": "new-files-or-explicit-paths-only",
         "bash_cannot_bypass_scope": True,
     }
     atomic_json(output, value)
@@ -191,6 +219,13 @@ def sync_receipt(receipt: Path) -> Dict[str, object]:
             if not source.is_file() or source.is_symlink():
                 raise SandboxError(f"staged file is unavailable: {source}")
             target.parent.mkdir(parents=True, exist_ok=True)
+            if not binding.get("target_preexisted") and source.stat().st_size == 0:
+                # Bubblewrap needs a mount destination, but an interrupted run
+                # must not leave an evidence-free zero-byte product file.
+                if target.exists() and target.is_file() and target.stat().st_size == 0:
+                    target.unlink()
+                synced.append(str(binding.get("relative_path", "")))
+                continue
             fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.aiwf-sync-", dir=str(target.parent))
             os.close(fd)
             try:

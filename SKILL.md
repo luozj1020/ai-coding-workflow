@@ -44,6 +44,11 @@ references preemptively.
 6. Review bounded evidence and return accept, revise, split, or reject. Humans
    perform final merge.
 
+When the user explicitly requests Skill feedback, produce a read-only
+retrospective from the current conversation and the minimum necessary runtime
+receipts. Do not persist telemetry, invoke a model, create a task card, or start
+remediation until the user separately asks for changes.
+
 ## Reference Router
 
 | Operation | Load |
@@ -58,6 +63,6 @@ references preemptively.
 | retrieval order and context budgets | `references/mcp-policy.md` |
 | compatibility loop state machine | `references/loop-model.md` |
 | metrics, calibration, regression comparison | `references/benchmark-policy.md` |
-| local usage feedback and privacy | `references/feedback-policy.md` |
+| user-triggered Skill feedback | `references/feedback-policy.md` |
 
 For command syntax, prefer installed `ai/README.md`.

@@ -73,6 +73,22 @@ class ClassifyClaudeAttemptTests(unittest.TestCase):
         self.assertEqual(result["failure_class"], "model-no-progress")
         self.assertTrue(result["counts_toward_takeover"])
 
+    def test_builder_report_without_product_delta_is_no_progress(self):
+        result = classify(
+            exit_code=0, outcome="success", valid_report=True,
+            progress="none", task_mode="builder", report_consistency="matched",
+        )
+        self.assertEqual(result["failure_class"], "model-no-progress")
+        self.assertTrue(result["counts_toward_takeover"])
+
+    def test_report_role_mismatch_without_diff_counts(self):
+        result = classify(
+            outcome="execution_timeout", valid_report=True, task_mode="builder",
+            report_consistency="role-mismatch",
+        )
+        self.assertEqual(result["failure_class"], "report-evidence-mismatch")
+        self.assertTrue(result["counts_toward_takeover"])
+
     def test_canary_model_failure_requires_reroute_without_takeover(self):
         result = classify(exit_code=0, outcome="success", delegation_mode="canary")
         self.assertTrue(result["economic_stop_loss"])

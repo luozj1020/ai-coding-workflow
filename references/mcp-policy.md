@@ -94,6 +94,13 @@ Claude must not return large pasted content to Codex. Instead:
 - Provide pass/fail counts, not full test output.
 - Record actual token budget used in the evidence packet.
 
+Cache reusable locator/LSP/graph evidence with repository identity, not a
+caller-supplied label alone. `context-cache.py --repo` binds HEAD, exact file
+hashes, symbols, and tool version into the content key. A dirty file, new HEAD,
+symbol-set change, or tool-version change must produce a miss rather than reuse
+stale context. Legacy unbound cache records remain readable only through the
+legacy invocation and are marked `legacy-unverified`.
+
 ### Delegation checklist for task cards
 
 The monolithic compatibility card may include a `## High-Token Work Routing Gate`; short component cards include only material routing/context facts. Record why high-token work belongs to Codex, local tools, or Claude. The reviewer checks economic value and durable output rather than enforcing delegation by size.

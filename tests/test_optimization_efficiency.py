@@ -19,6 +19,17 @@ class OptimizationEfficiencyTests(unittest.TestCase):
  def test_context_cache_roundtrip_and_bound(self):
   with tempfile.TemporaryDirectory() as d:
    meta=Path(d)/'m';content=Path(d)/'c';meta.write_text(json.dumps({"commit":"a","targets":["x"]}));content.write_text('x'*100);put=run('context-cache.py','put','--cache',d,'--meta',meta,'--content',content,'--max-bytes','10');dest=Path(put.stdout.strip());self.assertEqual(len(json.loads(dest.read_text())['content']),10)
+ def test_context_cache_hash_binds_head_files_symbols_and_tool(self):
+  with tempfile.TemporaryDirectory() as d:
+   root=Path(d);repo=root/'repo';repo.mkdir();subprocess.run(['git','init','-q'],cwd=repo,check=True);subprocess.run(['git','config','user.email','test@example.com'],cwd=repo,check=True);subprocess.run(['git','config','user.name','Test'],cwd=repo,check=True);(repo/'a.py').write_text('value = 1\n');subprocess.run(['git','add','a.py'],cwd=repo,check=True);subprocess.run(['git','commit','-qm','base'],cwd=repo,check=True)
+   meta=root/'meta.json';content=root/'content.txt';cache=root/'cache';meta.write_text(json.dumps({'files':['a.py'],'symbols':['A.run']}));content.write_text('bounded context')
+   put=run('context-cache.py','put','--cache',cache,'--meta',meta,'--content',content,'--repo',repo,'--tool-version','locator-v1');record=json.loads(Path(put.stdout.strip()).read_text());self.assertEqual(record['validation_status'],'hash-bound');self.assertIn('a.py',record['repository_identity']['file_hashes']);self.assertEqual(record['repository_identity']['symbols'],['A.run'])
+   self.assertEqual(run('context-cache.py','get','--cache',cache,'--meta',meta,'--repo',repo,'--tool-version','locator-v1').returncode,0)
+   (repo/'a.py').write_text('value = 2\n');self.assertEqual(run('context-cache.py','get','--cache',cache,'--meta',meta,'--repo',repo,'--tool-version','locator-v1',check=False).returncode,2)
+ def test_acceptance_bundle_drives_review_tier_and_deterministic_skips(self):
+  with tempfile.TemporaryDirectory() as d:
+   path=Path(d)/'bundle.json';path.write_text(json.dumps({'lane':'standard','acceptance_index':[{'id':'AC-1','status':'supported'}],'review_selection':{'expanded_acceptance_ids':[],'deep_codex_review_required':False},'unresolved_risks':[]}));value=json.loads(run('select-review-tier.py',path).stdout);self.assertEqual(value['tier'],'L0-local');self.assertTrue(value['codex_deep_review_skipped']);self.assertEqual(value['checker_skip_reason'],'checker skipped: deterministic evidence sufficient')
+   path.write_text(json.dumps({'lane':'standard','acceptance_index':[{'id':'AC-1','status':'reopened'}],'review_selection':{'expanded_acceptance_ids':['AC-1'],'deep_codex_review_required':True},'unresolved_risks':['semantic']}));value=json.loads(run('select-review-tier.py',path).stdout);self.assertEqual(value['tier'],'L2-codex');self.assertEqual(value['evidence_expansion'],'on-demand')
  def test_handoff_batches_targets_and_ingest(self):
   with tempfile.TemporaryDirectory() as d:
    run('generate-handoff.py','T','--output-dir',d,'--repo-url','u','--branch','b','--sha','abcdef1','--target','//a:a','--target','//b:b');text=(Path(d)/'remote-validate.sh').read_text();self.assertEqual(text.count('bazel test'),1);self.assertTrue((Path(d)/'remote-update.sh').exists())

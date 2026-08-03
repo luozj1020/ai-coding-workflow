@@ -12,14 +12,18 @@ WRITER = ROOT / "scripts" / "write-approved-file.py"
 
 
 class ApprovedFileWriterTests(unittest.TestCase):
-    def _receipt(self, root: pathlib.Path) -> pathlib.Path:
+    def _receipt(self, root: pathlib.Path, *, allow_full: bool = True) -> pathlib.Path:
         worktree = root / "worktree"
         staging = root / "staging"
         worktree.mkdir()
         (worktree / "src").mkdir()
         (worktree / "src" / "allowed.py").write_text("old\n", encoding="utf-8")
         card = root / "card.md"
-        card.write_text("## Scope\n\n- Write paths: src/allowed.py\n", encoding="utf-8")
+        card.write_text(
+            "## Scope\n\n- Write paths: src/allowed.py\n"
+            + ("- Full file replacement paths: src/allowed.py\n" if allow_full else ""),
+            encoding="utf-8",
+        )
         receipt = root / "receipt.json"
         subprocess.run(
             [sys.executable, str(PREPARE), "--task-card", str(card),
@@ -90,6 +94,20 @@ class ApprovedFileWriterTests(unittest.TestCase):
             self.assertEqual(pathlib.Path(binding["source"]).read_text(), "updated\n")
             self.assertEqual(value["operation"], "unique-fragment-replacement")
             self.assertEqual(value["matches"], 1)
+
+    def test_existing_file_complete_write_requires_explicit_declaration(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            receipt = self._receipt(root, allow_full=False)
+            replacement = root / "replacement"
+            replacement.write_text("unrelated rewrite\n", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(WRITER), "--receipt", str(receipt),
+                 "--path", "src/allowed.py", "--source", str(replacement)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("unique-fragment-replacement", result.stderr)
 
     def test_unique_replacement_rejects_zero_and_multiple_matches_without_writing(self):
         for initial, old_text, expected_matches in (

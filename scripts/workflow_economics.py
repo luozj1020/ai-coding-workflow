@@ -187,6 +187,63 @@ def _usage_summary(path: Optional[Path]) -> Dict[str, Any]:
     return module.aggregate(module.load_records(path))
 
 
+CODEX_RESPONSIBILITIES = (
+    "repository-discovery",
+    "intent-freeze",
+    "planning-review",
+    "monitoring",
+    "diff-review",
+    "revision-drafting",
+    "final-review",
+)
+
+
+def _codex_token_hotspots(
+    path: Optional[Path], accepted_acceptance_count: Optional[int],
+) -> Dict[str, Any]:
+    empty = {
+        "responsibilities": {},
+        "unclassified": {},
+        "usage_complete": False,
+        "input_tokens_per_accepted_acceptance": None,
+        "output_tokens_per_accepted_acceptance": None,
+    }
+    if path is None or not path.is_file():
+        return empty
+    helper = Path(__file__).with_name("model-usage.py")
+    spec = importlib.util.spec_from_file_location("aiwf_model_usage_hotspots", helper)
+    if spec is None or spec.loader is None:
+        return empty
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    records = [row for row in module.load_records(path) if row.get("role") == "codex"]
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in records:
+        grouped[str(row.get("stage") or "unknown")].append(row)
+    responsibilities = {
+        name: module.aggregate(grouped.pop(name))["totals"]
+        for name in CODEX_RESPONSIBILITIES if grouped.get(name)
+    }
+    unclassified_records = [row for values in grouped.values() for row in values]
+    unclassified = module.aggregate(unclassified_records)["totals"] if unclassified_records else {}
+    totals = module.aggregate(records)["totals"] if records else {}
+    complete = totals.get("usage_complete") is True
+    count = accepted_acceptance_count if accepted_acceptance_count and accepted_acceptance_count > 0 else None
+    return {
+        "responsibilities": responsibilities,
+        "unclassified": unclassified,
+        "usage_complete": complete,
+        "input_tokens_per_accepted_acceptance": (
+            round(totals["input_tokens"] / count, 4)
+            if complete and count and totals.get("input_tokens") is not None else None
+        ),
+        "output_tokens_per_accepted_acceptance": (
+            round(totals["output_tokens"] / count, 4)
+            if complete and count and totals.get("output_tokens") is not None else None
+        ),
+    }
+
+
 def _read_json(path: Optional[Path]) -> Dict[str, Any]:
     if path is None or not path.is_file():
         return {}
@@ -336,6 +393,9 @@ def build_record(args: argparse.Namespace) -> Dict[str, Any]:
     calls = metrics.get("model_calls", []) if isinstance(metrics.get("model_calls"), list) else []
     counts = Counter(str(call.get("role", "unknown")) for call in calls if isinstance(call, dict))
     usage = _usage_summary(args.usage_ledger)
+    codex_hotspots = _codex_token_hotspots(
+        args.usage_ledger, args.accepted_acceptance_count,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": metrics.get("run_id", ""),
@@ -351,6 +411,7 @@ def build_record(args: argparse.Namespace) -> Dict[str, Any]:
         "model_calls": dict(sorted(counts.items())),
         "model_usage": usage,
         "model_usage_complete": usage.get("totals", {}).get("usage_complete") if usage else None,
+        "codex_token_hotspots": codex_hotspots,
         "task_card_bytes": args.task_card.stat().st_size if args.task_card and args.task_card.is_file() else None,
         "review_packet_bytes": args.review_packet.stat().st_size if args.review_packet and args.review_packet.is_file() else None,
         "worktree_setup_seconds": metrics.get("worktree_setup_seconds"),
@@ -380,6 +441,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     rec.add_argument("--final-diff", type=Path)
     rec.add_argument("--task-card", type=Path)
     rec.add_argument("--review-packet", type=Path)
+    rec.add_argument("--accepted-acceptance-count", type=int)
     rec.add_argument("--task-id")
     rec.add_argument("--task-type", default="unknown")
     rec.add_argument("--repository-scale", default="unknown")

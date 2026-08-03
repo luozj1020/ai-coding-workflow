@@ -19,7 +19,7 @@ Default to complete evidence. For large repositories, explicitly select `fast-la
 
 CodeGraph indexes and results from the source worktree do not automatically transfer to a fresh execution worktree. After worktree creation the dispatcher writes a CodeGraph identity receipt. A mismatch or pending index defaults to deterministic local fallback and graph output is excluded from execution evidence. Set `CLAUDE_CODE_CODEGRAPH_POLICY=repair` only when explicitly accepting the index/sync cost; continuation may reuse a `ready` index in the same worktree.
 
-After interruption, use `python ai/clean_runtime.py --task-id ...` to preview or remove only that run's stopped artifacts. Preserve useful dirty isolated worktrees for same-worktree continuation or review. Ensure `.worktrees/*` is ignored while `.worktrees/.gitkeep` remains trackable; local-only installs may use `.git/info/exclude`.
+After interruption, use `python ai/clean_runtime.py --task-id ...` to preview or remove only that run's stopped artifacts. `--mark-cleanup-eligible` writes a state-bound receipt only when the run is terminal, its worktree HEAD is merged into current HEAD, and no modified or untracked product path remains. Apply recomputes the worktree status, repository/worktree HEADs, terminal-receipt hash, and process identity; a missing or stale receipt preserves the complete task bundle rather than deleting adjacent recovery evidence. `.session-store`, archived evidence, and control snapshots are lifecycle-managed stores and never generic cleanup candidates. A lineage session store is removed only after an eligible worktree removal proves no other lineage worktree remains. Use `--json` for a machine-readable preview. Preserve useful dirty isolated worktrees for same-worktree continuation or review. Ensure `.worktrees/*` is ignored while `.worktrees/.gitkeep` remains trackable; local-only installs may use `.git/info/exclude`.
 
 Before source dirty-state classification, recognized untracked root control
 files are hash-snapshotted under `.worktrees/control-archive/<task-id>/` and
@@ -58,6 +58,14 @@ After each reviewed continuation, a later continuation may be prepared again
 from the latest runtime only after Codex reviews the new state. Every approval
 is one-use and rebinds the current content hash, task-card hash, role/session,
 and exact paths; runtime `reuse_count` increases across the lineage.
+
+When an Acceptance Graph is available, prepare continuation with a validated
+revision `--delta-review-packet`, bounded `--unresolved-finding` values, and
+immutable `--new-validation-ref sha256:...` evidence. The approval records only
+the baseline hash, selected acceptance IDs, new diff/test refs, unresolved
+findings, and new validation refs; it explicitly records that the full prior
+task card was not repeated. Packet hash, worktree state, and next-card drift
+continue to fail closed.
 
 Checker worktree reuse requires every Checker Reuse Risk Gate row to be explicit `no`. Missing/unknown/high risk, DAG, parallel, or shared-contract work stays fresh. Environment overrides remain explicit.
 

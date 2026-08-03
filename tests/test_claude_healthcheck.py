@@ -15,12 +15,17 @@ spec.loader.exec_module(health)
 
 class ClaudeHealthcheckTests(unittest.TestCase):
     def test_interaction_probe_uses_fixed_minimal_prompt(self):
-        completed = mock.Mock(returncode=0, stdout="你好！\n", stderr="")
+        completed = mock.Mock(returncode=0, stdout=json.dumps({
+            "type": "result", "result": "你好！"
+        }) + "\n", stderr="")
         with mock.patch.object(health.subprocess, "run", return_value=completed) as run, \
              mock.patch.dict(os.environ, {"HTTPS_PROXY": "http://proxy.invalid"}, clear=True):
             result = health.interaction_probe("direct", 40, "你好")
         self.assertTrue(result["success"])
-        self.assertEqual(run.call_args.args[0], ["claude", "-p", "你好", "--bare", "--no-session-persistence", "--output-format", "json"])
+        self.assertEqual(run.call_args.args[0], [
+            "claude", "-p", "你好", "--bare", "--no-session-persistence",
+            "--output-format", "stream-json", "--verbose",
+        ])
         self.assertNotIn("HTTPS_PROXY", run.call_args.kwargs["env"])
 
     def test_interaction_probe_classifies_workspace_trust_without_raw_output(self):
@@ -44,12 +49,13 @@ class ClaudeHealthcheckTests(unittest.TestCase):
         completed = mock.Mock(
             returncode=0,
             stdout=json.dumps({
+                "type": "result",
                 "result": "secret response text",
                 "usage": {"input_tokens": 4, "output_tokens": 2},
                 "total_cost_usd": 0.02,
                 "duration_ms": 120,
                 "model": "test-model",
-            }),
+            }) + "\n",
             stderr="",
         )
         with mock.patch.object(health.subprocess, "run", return_value=completed):
@@ -73,6 +79,23 @@ class ClaudeHealthcheckTests(unittest.TestCase):
                                               "--interaction-route", "inherit", "--json"]), 0)
         self.assertEqual(probe_call.call_args.args[2], "你好")
         self.assertEqual(probe_call.call_args.args[1], 60.0)
+
+    def test_interaction_probe_records_runtime_tool_inventory(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout="\n".join((
+                json.dumps({"type": "system", "subtype": "init", "tools": ["Read", "Bash", "Read"]}),
+                json.dumps({"type": "result", "result": "ok"}),
+            )) + "\n",
+            stderr="",
+        )
+        with mock.patch.object(health.subprocess, "run", return_value=completed) as run:
+            result = health.interaction_probe("inherit", 40, "你好", "Read,Bash")
+        self.assertTrue(result["tool_inventory_verified"])
+        self.assertEqual(result["tool_inventory"], ["Bash", "Read"])
+        self.assertEqual(run.call_args.args[0][-4:], [
+            "Read,Bash", "--output-format", "stream-json", "--verbose",
+        ])
 
     def test_config_is_redacted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -195,12 +218,13 @@ class ClaudeHealthcheckTests(unittest.TestCase):
         completed = mock.Mock(
             returncode=0,
             stdout=json.dumps({
+                "type": "result",
                 "result": "response text",
                 "usage": {"input_tokens": 7, "output_tokens": 3},
                 "total_cost_usd": 0.015,
                 "duration_ms": 90,
                 "model": "probe-model",
-            }),
+            }) + "\n",
             stderr="",
         )
         with mock.patch.object(health.subprocess, "run", return_value=completed) as run, \
@@ -213,7 +237,7 @@ class ClaudeHealthcheckTests(unittest.TestCase):
         self.assertIn("--bare", cmd)
         self.assertIn("--no-session-persistence", cmd)
         self.assertIn("--output-format", cmd)
-        self.assertIn("json", cmd)
+        self.assertIn("stream-json", cmd)
         # Usage extraction preserved.
         self.assertTrue(result["success"])
         self.assertTrue(result["usage_extracted"])

@@ -194,6 +194,32 @@ class ModelUsageTests(unittest.TestCase):
             self.assertEqual(value["model_usage"]["by_role"]["claude"]["input_tokens"], 8)
             self.assertTrue(value["model_usage_complete"])
 
+    def test_workflow_economics_attributes_codex_token_hotspots(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            ledger = root / "model-usage.jsonl"
+            output = root / "economics.json"
+            records = [
+                {"schema_version": 1, "call_id": "c1", "role": "codex",
+                 "stage": "repository-discovery", "input_tokens": 60,
+                 "output_tokens": 10, "usage_complete": True},
+                {"schema_version": 1, "call_id": "c2", "role": "codex",
+                 "stage": "final-review", "input_tokens": 40,
+                 "output_tokens": 6, "usage_complete": True},
+            ]
+            ledger.write_text("\n".join(json.dumps(row) for row in records) + "\n", encoding="utf-8")
+            result = subprocess.run([
+                sys.executable, str(ROOT / "scripts" / "workflow_economics.py"),
+                "record", "--usage-ledger", str(ledger),
+                "--owner", "codex-fast-path", "--accepted", "yes",
+                "--accepted-acceptance-count", "2", "--output", str(output),
+            ], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            hotspots = json.loads(output.read_text(encoding="utf-8"))["codex_token_hotspots"]
+            self.assertEqual(hotspots["responsibilities"]["repository-discovery"]["input_tokens"], 60)
+            self.assertEqual(hotspots["responsibilities"]["final-review"]["input_tokens"], 40)
+            self.assertEqual(hotspots["input_tokens_per_accepted_acceptance"], 50.0)
+
 
 if __name__ == "__main__":
     unittest.main()

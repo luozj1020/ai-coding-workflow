@@ -25,12 +25,16 @@ def timestamp(value: datetime) -> str:
     return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def context_hash(repository: Path, route: str, environment: str, claude_command: str) -> str:
+def context_hash(
+    repository: Path, route: str, environment: str, claude_command: str,
+    tool_profile: str = "",
+) -> str:
     payload = {
         "claude_command": str(Path(claude_command).resolve()) if claude_command else "unavailable",
         "environment": environment,
         "repository": str(repository.resolve()),
         "route": route,
+        "tool_profile": tool_profile or "default",
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
@@ -60,7 +64,10 @@ def atomic_write(path: Path, value: dict[str, Any]) -> None:
 def common(args: argparse.Namespace) -> tuple[str, str]:
     if args.route not in VALID_ROUTES:
         raise ValueError("route must be direct or inherit")
-    return args.route, context_hash(args.repository, args.route, args.environment, args.claude_command)
+    return args.route, context_hash(
+        args.repository, args.route, args.environment, args.claude_command,
+        getattr(args, "tool_profile", ""),
+    )
 
 
 def check(args: argparse.Namespace) -> int:
@@ -98,6 +105,8 @@ def check(args: argparse.Namespace) -> int:
                     interaction_conclusion="available",
                     cache_valid=True,
                     source=record.get("source", "unknown"),
+                    tool_inventory=record.get("tool_inventory", []),
+                    tool_inventory_verified=bool(record.get("tool_inventory_verified")),
                 )
                 print(json.dumps(result, sort_keys=True))
                 return 0
@@ -116,6 +125,8 @@ def record(args: argparse.Namespace) -> int:
         "context_hash": identity,
         "recorded_at": timestamp(now_utc()),
         "source": args.source,
+        "tool_inventory": sorted(set(args.tool_inventory or [])),
+        "tool_inventory_verified": bool(args.tool_inventory_verified),
     }
     atomic_write(args.state, value)
     print(json.dumps({**value, "state_file": str(args.state)}, sort_keys=True))
@@ -145,6 +156,7 @@ def add_context(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--route", choices=sorted(VALID_ROUTES), required=True)
     parser.add_argument("--environment", default="auto")
     parser.add_argument("--claude-command", default="")
+    parser.add_argument("--tool-profile", default="")
 
 
 def main() -> int:
@@ -156,6 +168,8 @@ def main() -> int:
     record_parser = commands.add_parser("record")
     add_context(record_parser)
     record_parser.add_argument("--source", required=True)
+    record_parser.add_argument("--tool-inventory", action="append", default=[])
+    record_parser.add_argument("--tool-inventory-verified", action="store_true")
     invalidate_parser = commands.add_parser("invalidate")
     invalidate_parser.add_argument("--state", type=Path, required=True)
     invalidate_parser.add_argument("--reason", required=True)

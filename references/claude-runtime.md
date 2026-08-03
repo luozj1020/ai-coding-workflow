@@ -16,7 +16,7 @@ Builder implements and reports direction. Codex reviews direction. Checker/Test 
 
 ## Failure Attribution
 
-Run `ai/classify-claude-attempt.py` before retry/takeover accounting. Transport failure before acknowledgement/diff/report/progress is `transient-transport`: preserve the worktree, retry in place at most once, and do not count it toward takeover. Runtime metadata records the lineage root and retry ordinal. Ordinal one exhausts the same-worktree transport retry; a second transport failure must return `fallback-local-or-reroute` instead of recommending another retry. Approval/sandbox blockers, including an untrusted Claude workspace, also do not count. Acknowledgement-only, clean exit without progress, and confirmed direction deviation count.
+Run `ai/classify-claude-attempt.py` before retry/takeover accounting. Transport failure before acknowledgement/diff/report/progress is `transient-transport`: preserve the worktree, retry in place at most once, and do not count it toward takeover. Runtime metadata records the lineage root and retry ordinal. Ordinal one exhausts the same-worktree transport retry; a second transport failure must return `fallback-local-or-reroute` instead of recommending another retry. Approval/sandbox blockers, including an untrusted Claude workspace, also do not count. Acknowledgement-only, clean exit without progress, confirmed direction deviation, and a report/product role mismatch with zero product delta count. A successful interaction followed by context timeout and zero durable product output is model no-progress even when retry budget is exhausted; two consecutive counted receipts remain sufficient for the takeover candidate.
 
 Before classifying zero usable output as model no-progress, run one fixed interaction diagnostic in the same resolved route:
 
@@ -28,7 +28,11 @@ Its fixed prompt is `你好`. The default `adaptive` mode performs this minimal
 interaction only when no recent success is available for the same repository,
 resolved route, probe environment, and Claude executable. A success is cached
 for 24 hours by default (`CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS`) and useful
-model-owned dispatch evidence refreshes it. Later zero output, socket/transport
+model-owned dispatch evidence refreshes it. The probe uses Claude's stream-init
+event to record the actual runtime tool inventory, bound to the requested tool
+profile. A missing required tool fails before Builder execution; when Bash and
+exact-write enforcement are both present, missing Edit/Write may resolve only
+to the receipt-validated exact-writer fallback. Later zero output, socket/transport
 symptoms, an inconclusive probe, or a changed execution context invalidates or
 bypasses the cache and triggers a live probe. `always` remains an explicit
 diagnostic mode; `failure-only` defers probing until suspicious terminal
@@ -88,14 +92,20 @@ paths back to the worktree, and fails as
 `write-sandbox-allowed-path-read-only` if the effective mount is still
 read-only. Required enforcement never degrades to post-run-only auditing;
 `editor-only` removes Bash rather than merely discouraging it. Claude's
-`~/.claude/session-env` is separately mapped to a
-task-scoped temporary directory so Bash initialization does not need a writable
-home. Because built-in Edit may require a neighboring temporary file, the
+`~/.claude/session-env` is separately mapped to a task-scoped temporary
+directory so Bash initialization does not need a writable home. The lineage's
+`~/.claude/projects` transcript store is mapped to
+`.worktrees/.session-store/<lineage>/projects`, allowing a real same-session
+resume without opening the rest of the home directory. Both mounts receive a
+write probe before launch. Because built-in Edit may require a neighboring temporary file, the
 prompt supplies `write-approved-file.py`: it accepts either complete replacement
 content or old/new fragment files from `$TMPDIR`, validates the exact target
 against the immutable receipt, and writes only its staged binding. Fragment
 replacement fails without writing unless the old bytes occur exactly once.
-Placeholder mount targets do not count as product progress.
+Complete replacement is allowed by default only for new files; an existing file
+must use unique-fragment replacement unless its exact path appears under `Full
+file replacement paths`. Empty mount-only placeholders are removed during
+synchronization and do not survive a preflight-only failure.
 
 ## Progress and Monitoring
 
@@ -135,7 +145,7 @@ child, preserves and drains evidence, and records `tail-timeout`. A useful diff
 with missing prose produces `<task-id>.recovered-completion.json` for bounded
 Codex review rather than being discarded.
 
-`Execution Phase: implementation` is an edit-readiness declaration, not durable progress. It is accepted only with `Context Acquisition Complete: yes` and a non-empty `Planned First Write`, meaning repository scanning, requirement understanding, and local planning are complete. The dispatcher grants a bounded edit-ready bridge (`CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, default 120) but refreshes the full active window only after product content changes or a valid owned report appears.
+`Execution Phase: implementation` is an edit-readiness declaration, not durable progress. It is accepted only with `Context Acquisition Complete: yes` and a non-empty `Planned First Write`, meaning repository scanning, requirement understanding, and local planning are complete. The dispatcher grants a bounded edit-ready bridge (`CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, default 120) but refreshes a Builder's full active window only after product content changes. A report without a Builder product delta never refreshes that implementation window.
 
 Before launch, the dispatcher freezes a full product-content baseline. Existing
 dirty content in a reviewed continuation never counts as first progress; only a
@@ -158,6 +168,11 @@ default single sampling owner and appends only `started`, `material-change`,
 `monitor-claude.sh wait <task-id> --until terminal` call; repeated
 `watch`, `ps`, `tail`, status, process-tree, or clock-only commands are forbidden. Read a bounded
 decision/diff only after that wait returns.
+
+The human-readable progress log likewise emits running detail only after a
+phase/file/result/report change or when a timeout threshold is near. Unchanged
+30-second heartbeat text is suppressed; `CLAUDE_CODE_WORKTREE_PROGRESS=verbose`
+is the explicit diagnostic override.
 
 Installed monitor helpers are versioned with the rest of the runtime. If an
 older project copy does not recognize `wait --until`, run
@@ -185,7 +200,7 @@ never satisfy completion by themselves.
 
 ## Reports
 
-Seeded/fallback reports are not Claude-owned completion. Missing reports may be reconstructed when the diff matches the card and assigned checks pass. The dispatcher runs `verify-claude-report.py`; changed-file/count/cleanliness claims are mandatory. Assigned tests additionally require a test diff and a claimed count that matches detected added test declarations. Assigned validation requires its exact command and exit code, but model-authored claims remain `claimed-unverified` until a deterministic receipt exists. A revision `RESOLVED` claim binds finding ID, changed file, symbol, and exact test name. Prose-only, missing, or contradictory claims produce `needs-review`.
+Seeded/fallback reports are not Claude-owned completion. Before progress or completion use, `validate-claude-report.py` requires the standard title and report sections and rejects seeded/progress markers, progress/report role swaps, oversized reports, and source-dominated bodies. Missing reports may be reconstructed when the diff matches the card and assigned checks pass. The dispatcher then runs `verify-claude-report.py`; changed-file/count/cleanliness claims are mandatory. Assigned tests additionally require a test diff and a claimed count that matches detected added test declarations. Assigned validation requires its exact command and exit code, but model-authored claims remain `claimed-unverified` until a deterministic receipt exists. A revision `RESOLVED` claim binds finding ID, changed file, symbol, and exact test name. Prose-only, missing, or contradictory claims produce `needs-review`.
 
 Treat `<task-id>.outcome.json` as the terminal control-plane summary. Keep
 `dispatch_success`, `artifact_valid`, `validation_success`, and

@@ -79,7 +79,9 @@ ai-coding-workflow bootstraps repositories with:
 - Task-card and evidence-packet templates
 - Safe dispatch/review/loop scripts for Codex + Claude Code workflows
 - Opt-in Spark structured routing/monitoring with direct short output; long preflight remains diagnostic-only
+- Stable Spark/Claude launcher forms for authorized host retries, dirty snapshots, and approval-prefix reuse
 - Two-stage Claude progress semantics: edit readiness is advisory, while durable product writes drive active/idle decisions
+- Real-time exact-path write enforcement with a read-only root, external staging, task-local session state, and a receipt-validated byte-preserving writer
 - Worktree-aware CodeGraph receipts that reject stale or different-worktree graph evidence
 - Execution profiles for token-saving balanced dispatch, safe full-context dispatch, and explicit fast large-repository dispatch
 - Large-repository dispatch options for managed worktree reuse and reduced expensive untracked-file scans
@@ -88,21 +90,56 @@ ai-coding-workflow bootstraps repositories with:
 - Direction / boundary acknowledgement gates with anti-loop rules
 - Managed blocks for idempotent updates
 
+## Codex token-efficient review
+
+The terminal acceptance bundle is the default compact Codex entry point. When
+an Acceptance Graph, revision delta packet, invariant matrix, or symbol summary
+is available, pass its path through `AI_WORKFLOW_ACCEPTANCE_GRAPH_FILE`,
+`AI_WORKFLOW_DELTA_REVIEW_PACKET_FILE`, `AI_WORKFLOW_INVARIANT_MATRIX_FILE`, or
+`AI_WORKFLOW_SYMBOL_SUMMARY_FILE`. The dispatcher keeps full artifacts
+file-backed and emits an acceptance index that expands only changed,
+unsupported, contradictory, reopened, uncovered, or semantic-risk items.
+
+`aiwf review-tier` consumes that index. Closed deterministic evidence records a
+Checker skip and avoids deep Codex diff review; semantic-risk deltas select
+compact L2 Codex review with on-demand evidence expansion. Reviewed continuation
+can bind `--delta-review-packet`, bounded `--unresolved-finding`, and immutable
+`--new-validation-ref` values instead of repeating prior task context.
+
+For reusable repository understanding, `aiwf cache put|get --repo ... --file
+... --symbol ... --tool-version ...` binds cache identity to HEAD, file hashes,
+symbols, and tool version; dirty or changed evidence becomes a miss. Economics
+records may add `--accepted-acceptance-count` and report Codex usage for
+repository discovery, intent freeze, planning review, monitoring, diff review,
+revision drafting, and final review. These are measurements and routing inputs;
+they do not impose a hard Codex token/input budget.
+
 ## Workflow at a glance
 
 ```mermaid
 flowchart TD
     U[Human · goal / Task JSON] --> L[Local tools · lint / compose / validate]
     L --> F[Codex · observe repository facts]
+    F <--> CC[Hash-bound context cache · HEAD / files / symbols / tool version]
     F --> R{Codex · deterministic owner route}
     R -- explicit / confirmed high-risk core --> CD[Codex · bounded direct implementation]
     CD --> E
     R -- default source-writing --> C[Local composer · selected short task card]
-    C --> CPL[Claude Solution Planner · one structured contract]
+    C --> SA{Spark task-card audit gate}
+    SA -- Express / explicitly off --> DI[Dispatcher · stable CLI and host retry]
+    SA -- advisory terminal receipt / auto-disable --> DI
+    SA -. needs host execution .-> SH[Stable Spark host launcher · cached preference]
+    SH --> SA
+    DI -. pre-model host blocker .-> CH[Stable Claude host retry · same task / worktree / lineage]
+    CH --> DI
+    DI --> IW[Isolated worktree · clean HEAD or hash-bound dirty snapshot]
+    IW --> WG[Real-time write gate · read-only root / external staging / task-local session-env]
+    WG --> ROLE{Claude role}
+    ROLE -- open multi-phase goal --> CPL[Claude Solution Planner · one structured contract]
     CPL --> CAR[Codex · one adversarial planning review]
     CAR --> CF[Local tools · freeze contract / defer non-blocking findings]
-    CF --> D
-    C --> D[Claude Exploratory/Batch/Execution Builder · isolated work]
+    CF --> C
+    ROLE -- frozen or bounded slice --> D[Claude Exploratory/Batch/Execution Builder · isolated work]
     R -. explicit uncertain candidate .-> S0[Spark · short structured estimator]
     S0 --> R
     D -. material / terminal events .-> MON[Dispatcher event log · single sampling owner]
@@ -118,7 +155,8 @@ flowchart TD
     CV -- deterministic evidence sufficient --> E
     CV -- tests / long validation / large evidence --> CT[Claude Checker/Test · tests and narrow validation]
     CT --> E[Local tools · automatic evidence]
-    E --> A{Local tools · deterministic acceptance}
+    E --> AB[Compact acceptance index · changed / failing / semantic-risk items]
+    AB --> A{Local tools · deterministic acceptance and review tier}
     A -- Mechanical failure --> LR[Claude · scoped revision]
     A -- Semantic gap --> S[Spark · L1 advisory review]
     S --> X[Codex · required L2 final review]
@@ -129,11 +167,12 @@ flowchart TD
     H -- Yes --> RH[Local tools + Human · Bazel handoff / remote validation]
     H -- No --> M[Human · review and merge]
     RH --> M
-    D -. hashed manifests .-> RS[Control plane · resume from dispatch / diff / review / decision]
+    D -. baseline + delta hashes / unresolved findings .-> RS[Control plane · reviewed same-worktree continuation]
     E -. executed cases .-> BM[Deterministic fake-adapter benchmark gates]
+    FD -. Codex responsibility usage .-> KM[Economics · token hotspots per accepted acceptance]
 ```
 
-The control loop is **OBSERVE → ROUTE → PLAN → EXECUTE → VERIFY → REVIEW**.
+The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW**.
 ROUTE defaults source-writing to Claude. Codex direct is explicit or reserved for
 confirmed high-risk core semantics and deterministic reviewed corrections.
 Checker/Test remains conditional; humans merge.
@@ -1365,7 +1404,9 @@ temporary storage and supplies a receipt-validated exact-file replacement
 helper for clients whose Edit implementation needs a writable parent directory
 or whose runtime omits Write. The helper supports complete-file writes and
 unique old/new fragment replacement; zero matches, multiple matches, and
-undeclared targets fail without writing.
+undeclared targets fail without writing. Its descriptor stays in binary mode on
+Windows, so staged bytes and mixed LF/CRLF content are copied exactly rather
+than passing through text newline translation.
 
 ```bash
 CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=420 \
@@ -1444,8 +1485,8 @@ python ai/clean_runtime.py --task-id claude-20260701-093934
 python ai/clean_runtime.py --task-id claude-20260701-093934 --apply
 ```
 
-`cleanup-worktree.sh` refuses to run while the recorded Claude PID is still alive. Use `--force` only when `git worktree remove` needs it for a broken or dirty worktree.
-`clean_runtime.py --task-id ...` is useful for large repositories because it avoids broad root artifact cleanup and preserves unrelated dispatches.
+`cleanup-worktree.sh` verifies task-bound process identities before the legacy PID fallback. Use `--force` only when `git worktree remove` needs it for a broken or dirty worktree.
+`clean_runtime.py --task-id ...` is useful for large repositories because it avoids broad root artifact cleanup and preserves unrelated dispatches. Registered worktrees require a current `cleanup-eligible` receipt; missing/stale receipts preserve the whole task bundle.
 
 ---
 
@@ -1529,22 +1570,27 @@ python ai/clean_runtime.py --task-id claude-20260709-120000
 
 # Large repos: remove only that stopped dispatch's runtime artifacts
 python ai/clean_runtime.py --task-id claude-20260709-120000 --apply
+
+# After human merge, mark only terminal + merged + product-clean worktrees
+python ai/clean_runtime.py --mark-cleanup-eligible
+
+# Machine-readable grouped preview
+python ai/clean_runtime.py --json
 ```
+
+Cleanup eligibility receipts bind repository/worktree HEADs, status, terminal evidence, and process
+state; apply rejects stale receipts. Session stores and archived/control evidence
+are excluded from generic cleanup; a session store is removed only after its last
+eligible lineage worktree is removed. Receipts never authorize merge or
+force-remove a dirty worktree.
 
 `doctor_workflow.py` runs in preview-only mode: it shows count, size, and age of runtime artifacts. It does not automatically delete anything.
 
-**Local workflow feedback:**
-
-```bash
-aiwf feedback --preview --task-id TASK_ID
-aiwf feedback --record --task-id TASK_ID --issue false-progress --rating efficiency=4
-aiwf feedback --bundle
-```
-
-Preview and bundle are read-only by default. Records stay under
-`.ai-workflow/feedback/`; no model, network, API configuration, prompt, source,
-diff, or raw log is used. See `references/feedback-policy.md` for the evidence
-and privacy boundary.
+**Workflow feedback:** Ask Codex explicitly for a read-only Skill retrospective
+after relevant interactions. It summarizes the current conversation and only
+the minimum necessary runtime receipts; it does not persist telemetry, start a
+model, create a task card, or modify code. Remediation starts only after a
+separate user request. See `references/feedback-policy.md`.
 
 **Check context tools:**
 

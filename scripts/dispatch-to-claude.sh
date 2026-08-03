@@ -3079,15 +3079,26 @@ fi
 API_AVAILABILITY_HELPER="${SCRIPT_DIR}/claude-api-availability.py"
 _CLAUDE_COMMAND_PATH="$(command -v claude 2>/dev/null || true)"
 _STARTUP_PROBE_SOURCE="not-run"
+_LAST_TOOL_INVENTORY=""
+_LAST_TOOL_INVENTORY_VERIFIED="no"
+_RUNTIME_TOOL_INVENTORY_STATUS="unverified"
 
 record_api_availability() {
     local source="$1"
     [ -n "$PYTHON_CMD" ] && [ -f "$API_AVAILABILITY_HELPER" ] || return 0
+    local inventory_args=()
+    if [ "$_LAST_TOOL_INVENTORY_VERIFIED" = "yes" ]; then
+        inventory_args+=(--tool-inventory-verified)
+        while IFS= read -r _tool; do
+            [ -n "$_tool" ] && inventory_args+=(--tool-inventory "$_tool")
+        done < <(printf '%s' "$_LAST_TOOL_INVENTORY" | tr ',' '\n')
+    fi
     "$PYTHON_CMD" "$API_AVAILABILITY_HELPER" record \
         --state "$API_AVAILABILITY_STATE_FILE" --repository "$REPO_ROOT" \
         --route "$CLAUDE_CODE_PROXY_MODE" --environment "$CLAUDE_CODE_PROBE_ENVIRONMENT" \
         --claude-command "$_CLAUDE_COMMAND_PATH" \
-        --source "$source" >/dev/null 2>&1 || true
+        --tool-profile "${CLAUDE_CODE_TOOL_PROFILE:-default}" \
+        --source "$source" "${inventory_args[@]}" >/dev/null 2>&1 || true
 }
 
 invalidate_api_availability() {
@@ -3104,6 +3115,7 @@ load_cached_api_availability() {
         --state "$API_AVAILABILITY_STATE_FILE" --repository "$REPO_ROOT" \
         --route "$CLAUDE_CODE_PROXY_MODE" --environment "$CLAUDE_CODE_PROBE_ENVIRONMENT" \
         --claude-command "$_CLAUDE_COMMAND_PATH" \
+        --tool-profile "${CLAUDE_CODE_TOOL_PROFILE:-default}" \
         --ttl "$CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS" > "$artifact_file" 2>/dev/null
 }
 
@@ -3225,6 +3237,9 @@ run_interaction_probe() {
     if [ -n "${CLAUDE_CODE_PROBE_ENVIRONMENT:-}" ] && [ "$CLAUDE_CODE_PROBE_ENVIRONMENT" != "auto" ]; then
         probe_env_args=(--probe-environment "$CLAUDE_CODE_PROBE_ENVIRONMENT")
     fi
+    if [ -n "${_TOOL_PROFILE_AVAILABLE_TOOLS:-}" ]; then
+        probe_env_args+=(--tools "$_TOOL_PROFILE_AVAILABLE_TOOLS")
+    fi
     progress_log "Interaction probe (${phase}): checking Claude API with fixed prompt via route=${CLAUDE_CODE_PROXY_MODE}, environment=${CLAUDE_CODE_PROBE_ENVIRONMENT:-auto}"
     "$PYTHON_CMD" "$helper" --interaction-route "$CLAUDE_CODE_PROXY_MODE" \
         --timeout "$CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS" --prompt '你好' --json \
@@ -3244,6 +3259,19 @@ except (OSError, ValueError, TypeError):
     print("unavailable-in-current-environment")
 PYEOF
 )"
+    IFS=$'\t' read -r _LAST_TOOL_INVENTORY_VERIFIED _LAST_TOOL_INVENTORY < <(
+        "$PYTHON_CMD" - "$artifact_file" <<'PYEOF' 2>/dev/null || printf 'no\t\n'
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    successful = [p for p in value.get("interaction_probes", []) if p.get("success")]
+    probe = successful[-1] if successful else {}
+    verified = probe.get("tool_inventory_verified") is True
+    print(("yes" if verified else "no") + "\t" + ",".join(probe.get("tool_inventory", [])))
+except (OSError, ValueError, TypeError):
+    print("no\t")
+PYEOF
+    )
     if [ "$_LAST_PROBE_CONCLUSION" = "available" ]; then
         _LAST_PROBE_AUTHORITATIVE="yes"
         record_api_availability "${phase}-probe"
@@ -3529,12 +3557,18 @@ progress_is_growing() {
 valid_claude_report_file() {
     local file="$1"
     [ -s "$file" ] || return 1
-    if file_contains "$file" "$SEEDED_REPORT_MARKER|$FALLBACK_REPORT_MARKER"; then
-        return 1
+    local validator="${SCRIPT_DIR}/validate-claude-report.py"
+    if [ -n "${PYTHON_CMD:-}" ] && [ -f "$validator" ]; then
+        "$PYTHON_CMD" "$validator" "$file" >/dev/null 2>&1
+        return $?
     fi
-    if file_contains "$file" "Dispatcher-created draft|fallback report was generated|did not produce a Claude-owned CLAUDE_REPORT.md"; then
-        return 1
-    fi
+    # Compatibility fallback for an old partial installation. It remains
+    # conservative and requires the standard report structure.
+    file_contains "$file" "$SEEDED_REPORT_MARKER|$SEEDED_PROGRESS_MARKER|$FALLBACK_REPORT_MARKER" && return 1
+    for heading in "Requirements Summary" "Files Changed" "Acceptance Criteria Mapping" \
+                   "Out-of-Scope Confirmation" "Plan Match" "Checks Run"; do
+        grep -Fqi "## ${heading}" "$file" 2>/dev/null || return 1
+    done
     return 0
 }
 
@@ -4116,6 +4150,18 @@ PYEOF
         fi
     fi
 
+    if [ "${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}" -gt 0 ] || \
+       [ "${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}" -gt 0 ] || \
+       [ "${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}" -gt 0 ]; then
+        echo "Error: task validation commands cannot be fully pre-authorized; refusing to start Claude." >&2
+        echo "failure_category=validation-allowlist-preflight" >&2
+        echo "allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}" >&2
+        echo "allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}" >&2
+        echo "allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}" >&2
+        echo "Use one shell-free command per validation entry or a workflow validation helper." >&2
+        exit 1
+    fi
+
     if [ ${#_allow_parts[@]} -gt 0 ]; then
         _CLAUDE_ALLOWED_ARGS=(--allowedTools "$(IFS=,; echo "${_allow_parts[*]}")")
     fi
@@ -4132,6 +4178,8 @@ _WRITE_SCOPE_EFFECTIVE="off"
 _WRITE_SCOPE_STAGING_ROOT="${TASK_TMPDIR}/write-sandbox"
 _CLAUDE_SESSION_ENV_SOURCE="${TASK_TMPDIR}/claude-session-env"
 _CLAUDE_SESSION_ENV_TARGET="${HOME:-}/.claude/session-env"
+_CLAUDE_PROJECTS_SOURCE="${WORKTREE_ROOT}/.session-store/${_LINEAGE_ROOT_TASK_ID:-$TASK_ID}/projects"
+_CLAUDE_PROJECTS_TARGET="${HOME:-}/.claude/projects"
 _WRITE_SCOPE_SYNC_FAILED=0
 _WRITING_RUNTIME_ROLE=0
 if { [ "$_PARSED_TASK_MODE" = "builder" ] || [ "$_PARSED_TASK_MODE" = "checker-test" ]; } && \
@@ -4183,9 +4231,10 @@ PYEOF
             echo "Error: required write-scope runtime needs HOME and write-approved-file.py." >&2
             exit 1
         fi
-        mkdir -p "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET" || {
-            echo "Error: could not prepare Claude session environment write mount." >&2
-            echo "failure_category=write-sandbox-session-env-unavailable" >&2
+        mkdir -p "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET" \
+            "$_CLAUDE_PROJECTS_SOURCE" "$_CLAUDE_PROJECTS_TARGET" || {
+            echo "Error: could not prepare Claude session environment/transcript write mounts." >&2
+            echo "failure_category=write-sandbox-session-storage-unavailable" >&2
             exit 1
         }
         _CLAUDE_SANDBOX_PREFIX=(
@@ -4193,6 +4242,7 @@ PYEOF
             --dev-bind /dev /dev --proc /proc
             --bind "$TASK_TMPDIR" "$TASK_TMPDIR"
             --bind "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET"
+            --bind "$_CLAUDE_PROJECTS_SOURCE" "$_CLAUDE_PROJECTS_TARGET"
             --chdir "$WORKTREE_DIR"
         )
         while IFS=$'\t' read -r _write_bind_source _write_bind_target; do
@@ -4204,6 +4254,13 @@ PYEOF
             fi
         done <<< "$_WRITE_BIND_OUTPUT"
         _CLAUDE_SANDBOX_PREFIX+=(--)
+        if ! "${_CLAUDE_SANDBOX_PREFIX[@]}" sh -c \
+            ': > "$HOME/.claude/session-env/.aiwf-probe" && : > "$HOME/.claude/projects/.aiwf-probe"'; then
+            echo "Error: Claude session environment/transcript storage is not writable in the sandbox." >&2
+            echo "failure_category=write-sandbox-session-storage-read-only" >&2
+            exit 1
+        fi
+        rm -f "$_CLAUDE_SESSION_ENV_SOURCE/.aiwf-probe" "$_CLAUDE_PROJECTS_SOURCE/.aiwf-probe"
         if [ -z "$_WRITE_SCOPE_PROBE_TARGET" ] || \
            ! "${_CLAUDE_SANDBOX_PREFIX[@]}" sh -c ': >> "$1"' aiwf-write-probe \
                 "$_WRITE_SCOPE_PROBE_TARGET"; then
@@ -4216,8 +4273,9 @@ PYEOF
 --- EXACT APPROVED FILE WRITER ---
 The repository parent directories are intentionally read-only. Built-in Edit
 may fail because it creates a neighboring temporary file, and Write may be
-absent in some Claude Code versions. For a complete replacement, first create
-the content under \`\$TMPDIR\`, then run exactly:
+absent in some Claude Code versions. For a new file, or an existing path listed
+under \`Full file replacement paths\`, first create the complete content under
+\`\$TMPDIR\`, then run exactly:
 
 \`${PYTHON_CMD} ${SCRIPT_DIR}/write-approved-file.py --receipt ${WRITE_SCOPE_RECEIPT_FILE} --path REPOSITORY_RELATIVE_PATH --source \$TMPDIR/REPLACEMENT_FILE\`
 
@@ -4228,6 +4286,10 @@ files and use the unique-match mode:
 
 Unique replacement fails without writing unless the old fragment occurs
 exactly once.
+
+Existing files default to unique-fragment replacement. Complete replacement of
+an existing file is rejected unless the task card explicitly authorizes that
+exact path; do not use complete replacement merely to work around Edit.
 
 The receipt rejects every undeclared path. Do not use Edit after an atomic-temp
 failure and do not create repository-local helper files.
@@ -4317,6 +4379,14 @@ if [ "$CLAUDE_CODE_API_PROBE_MODE" != "always" ] && \
     _STARTUP_PROBE_CONCLUSION="available"
     _STARTUP_PROBE_SOURCE="cache"
     _LAST_PROBE_AUTHORITATIVE="yes"
+    IFS=$'\t' read -r _LAST_TOOL_INVENTORY_VERIFIED _LAST_TOOL_INVENTORY < <(
+        "$PYTHON_CMD" - "$STARTUP_INTERACTION_HEALTH_FILE" <<'PYEOF' 2>/dev/null || printf 'no\t\n'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+verified = value.get("tool_inventory_verified") is True
+print(("yes" if verified else "no") + "\t" + ",".join(value.get("tool_inventory", [])))
+PYEOF
+    )
     progress_log "Startup API availability reused: conclusion=available, source=cache, ttl_seconds=${CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS}, artifact=${STARTUP_INTERACTION_HEALTH_FILE}"
 elif [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ] || \
      [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ]; then
@@ -4324,6 +4394,60 @@ elif [ "$CLAUDE_CODE_API_PROBE_MODE" = "always" ] || \
     _STARTUP_PROBE_CONCLUSION="$_LAST_PROBE_CONCLUSION"
     _STARTUP_PROBE_SOURCE="live"
     progress_log "Startup interaction probe: conclusion=${_STARTUP_PROBE_CONCLUSION}, required=${CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED}"
+fi
+
+# Fail before the Builder call when the actual stream init inventory cannot
+# satisfy the requested profile. Exact-write mode may replace missing Edit or
+# Write only when Bash itself is present and receipt enforcement is active.
+if [ "${_STARTUP_PROBE_CONCLUSION}" = "available" ] && \
+   [ -n "${_TOOL_PROFILE_AVAILABLE_TOOLS:-}" ]; then
+    _TOOL_INVENTORY_MISSING="$({
+        "$PYTHON_CMD" - "$_TOOL_PROFILE_AVAILABLE_TOOLS" \
+            "$_LAST_TOOL_INVENTORY_VERIFIED" "$_LAST_TOOL_INVENTORY" \
+            "$_WRITE_SCOPE_EFFECTIVE" <<'PYEOF'
+import sys
+requested, verified, observed, write_scope = sys.argv[1:]
+if verified != "yes":
+    print("inventory-unverified")
+    raise SystemExit
+available = set(filter(None, observed.split(",")))
+missing = set(filter(None, requested.split(","))) - available
+if write_scope == "required" and "Bash" in available:
+    missing.difference_update({"Edit", "Write"})
+print(",".join(sorted(missing)))
+PYEOF
+    } 2>/dev/null)"
+    if [ -n "$_TOOL_INVENTORY_MISSING" ]; then
+        _RUNTIME_TOOL_INVENTORY_STATUS="mismatch:${_TOOL_INVENTORY_MISSING}"
+        echo "Error: Claude runtime tool inventory does not satisfy the task profile." >&2
+        echo "failure_category=tool-capability-mismatch" >&2
+        echo "missing_runtime_tools=${_TOOL_INVENTORY_MISSING}" >&2
+        sync_write_scope_staging >/dev/null 2>&1 || true
+        exit 1
+    fi
+    _RUNTIME_TOOL_INVENTORY_STATUS="verified"
+    if [ "$_WRITE_SCOPE_EFFECTIVE" = "required" ] && \
+       { ! printf ',%s,' "$_LAST_TOOL_INVENTORY" | grep -Fq ',Edit,' || \
+         ! printf ',%s,' "$_LAST_TOOL_INVENTORY" | grep -Fq ',Write,'; }; then
+        _RUNTIME_TOOL_INVENTORY_STATUS="verified-exact-writer-fallback"
+    fi
+fi
+
+if [ -n "$PYTHON_CMD" ] && [ -s "$RUNTIME_JSON" ]; then
+    "$PYTHON_CMD" - "$RUNTIME_JSON" "$_LAST_TOOL_INVENTORY_VERIFIED" \
+        "$_LAST_TOOL_INVENTORY" "$_RUNTIME_TOOL_INVENTORY_STATUS" <<'PYEOF' 2>/dev/null || true
+import json, os, sys, tempfile
+path, verified, inventory, status = sys.argv[1:]
+value = json.load(open(path, encoding="utf-8"))
+value["runtime_tool_inventory_verified"] = verified == "yes"
+value["runtime_tool_inventory"] = sorted(set(filter(None, inventory.split(","))))
+value["runtime_tool_inventory_status"] = status
+fd, temporary = tempfile.mkstemp(prefix=".runtime-tools-", dir=os.path.dirname(path))
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(temporary, path)
+PYEOF
 fi
 
 if [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ] && \
@@ -4432,6 +4556,9 @@ with open(output, "w", encoding="utf-8") as handle:
 PYEOF
     progress_log "Dispatch preflight blocked: category=${_STARTUP_FAILURE_CATEGORY}, conclusion=${_STARTUP_PROBE_CONCLUSION}, builder_started=no"
     monitor_event "event=terminal running=no terminal=yes exit_status=75 dispatch_outcome=preflight-blocked failure_category=${_STARTUP_FAILURE_CATEGORY}"
+    # Remove mount-only placeholders for never-created product files before a
+    # host retry inspects the worktree. Seeded control artifacts remain intact.
+    sync_write_scope_staging >/dev/null 2>&1 || true
     echo "Error: Claude dispatch preflight failed (${_STARTUP_FAILURE_CATEGORY})." >&2
     echo "Evidence: ${STARTUP_INTERACTION_HEALTH_FILE}" >&2
     if [ "$_STARTUP_NEEDS_HOST_EXECUTION" -eq 1 ]; then
@@ -4658,7 +4785,20 @@ while claude_is_running; do
     fi
     QUIET_SECONDS=$((NOW_EPOCH - LAST_ACTIVITY_EPOCH))
     NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" "$QUIET_SECONDS")"
-    progress_log "Claude still running: pid=${CLAUDE_PID}, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE}, first_progress_detected=${FIRST_PROGRESS_DETECTED}, edit_ready=${EDIT_READY_DETECTED}, execution_state=${EXECUTION_ACTIVITY_STATE}, product_idle_seconds=${PRODUCT_IDLE_SECONDS}, idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT}, ${NETWORK_SUMMARY}"
+    _EMIT_HEARTBEAT=0
+    if [ "$CLAUDE_CODE_WORKTREE_PROGRESS" = "verbose" ] || \
+       [ "$RESULT_STATUS_CHANGED" -eq 1 ] || [ "$REPORT_CHANGED" -eq 1 ] || \
+       [ "$PROGRESS_SEMANTIC_CHANGED" -eq 1 ] || [ "$WORKTREE_CHANGED" -eq 1 ]; then
+        _EMIT_HEARTBEAT=1
+    elif { [ "$HARD_TIMEOUT_DEADLINE" -gt 0 ] && \
+           [ $((HARD_TIMEOUT_DEADLINE - NOW_EPOCH)) -le "$CLAUDE_CODE_HEARTBEAT_SECONDS" ]; } || \
+         { [ "$CONTEXT_ACQUISITION_DEADLINE" -gt 0 ] && [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && \
+           [ $((CONTEXT_ACQUISITION_DEADLINE - NOW_EPOCH)) -le "$CLAUDE_CODE_HEARTBEAT_SECONDS" ]; }; then
+        _EMIT_HEARTBEAT=1
+    fi
+    if [ "$_EMIT_HEARTBEAT" -eq 1 ]; then
+        progress_log "Claude still running: pid=${CLAUDE_PID}, state_change_or_threshold=yes, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE}, first_progress_detected=${FIRST_PROGRESS_DETECTED}, edit_ready=${EDIT_READY_DETECTED}, execution_state=${EXECUTION_ACTIVITY_STATE}, product_idle_seconds=${PRODUCT_IDLE_SECONDS}, idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT}, ${NETWORK_SUMMARY}"
+    fi
 
     VALIDATION_EVIDENCE_ACTIVE=0
     # Stage markers are Claude-authored advisory evidence. They never stop the
@@ -4795,7 +4935,8 @@ while claude_is_running; do
                 _FP_SIGNAL="solution_contract_substantive"
             fi
         fi
-        if [ -z "$_FP_SIGNAL" ] && valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
+        if [ -z "$_FP_SIGNAL" ] && [ "$_PARSED_TASK_MODE" != "builder" ] && \
+           valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
             _FP_SIGNAL="valid_report"
         fi
         if [ -n "$_FP_SIGNAL" ]; then
@@ -6090,8 +6231,21 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/build-acceptance-bundle.py" ]; th
         --write-scope "$WRITE_SCOPE_RECEIPT_FILE"
         --checker-contract "$CHECKER_CONTRACT_RECEIPT_FILE"
         --recovered-completion "$RECOVERED_COMPLETION_FILE"
+        --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md"
         --output "$ACCEPTANCE_BUNDLE_FILE"
     )
+    if [ -s "${AI_WORKFLOW_ACCEPTANCE_GRAPH_FILE:-}" ]; then
+        _ACCEPTANCE_BUNDLE_ARGS+=(--acceptance-graph "$AI_WORKFLOW_ACCEPTANCE_GRAPH_FILE")
+    fi
+    if [ -s "${AI_WORKFLOW_DELTA_REVIEW_PACKET_FILE:-}" ]; then
+        _ACCEPTANCE_BUNDLE_ARGS+=(--delta-review-packet "$AI_WORKFLOW_DELTA_REVIEW_PACKET_FILE")
+    fi
+    if [ -s "${AI_WORKFLOW_INVARIANT_MATRIX_FILE:-}" ]; then
+        _ACCEPTANCE_BUNDLE_ARGS+=(--invariant-matrix "$AI_WORKFLOW_INVARIANT_MATRIX_FILE")
+    fi
+    if [ -s "${AI_WORKFLOW_SYMBOL_SUMMARY_FILE:-}" ]; then
+        _ACCEPTANCE_BUNDLE_ARGS+=(--symbol-summary "$AI_WORKFLOW_SYMBOL_SUMMARY_FILE")
+    fi
     if "$PYTHON_CMD" "${SCRIPT_DIR}/build-acceptance-bundle.py" \
         "${_ACCEPTANCE_BUNDLE_ARGS[@]}" >/dev/null; then
         progress_log "Acceptance bundle saved: ${ACCEPTANCE_BUNDLE_FILE}"
@@ -6188,7 +6342,8 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; th
         _ATTEMPT_PROGRESS="acknowledgement"
     elif [ "${BLOCKER_RECORDED:-0}" -eq 1 ]; then
         _ATTEMPT_PROGRESS="blocker"
-    elif [ "$IMPLEMENTATION_CHANGES" -gt 0 ] || [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then
+    elif [ "$IMPLEMENTATION_CHANGES" -gt 0 ] || \
+         { [ "$VALID_CLAUDE_REPORT" -eq 1 ] && [ "$_PARSED_TASK_MODE" != "builder" ]; }; then
         _ATTEMPT_PROGRESS="useful"
     fi
     _ATTEMPT_ARGS=(
@@ -6198,6 +6353,8 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; th
         --blocker-kind "$ADVISOR_BLOCKER_KIND"
         --delegation-mode "${AI_WORKFLOW_DELEGATION_MODE:-unknown}"
         --retry-ordinal "${_RETRY_ORDINAL:-0}"
+        --task-mode "${_PARSED_TASK_MODE:-unknown}"
+        --report-consistency "${REPORT_CONSISTENCY_STATUS:-not-run}"
     )
     if [ "$ADVISOR_USED" = "true" ]; then _ATTEMPT_ARGS+=(--advisor-used); fi
     if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then _ATTEMPT_ARGS+=(--valid-report); fi

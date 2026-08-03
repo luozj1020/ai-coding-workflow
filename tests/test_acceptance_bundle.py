@@ -66,6 +66,61 @@ class AcceptanceBundleTests(unittest.TestCase):
             "inspect-validation-environment",
         )
 
+    def test_acceptance_index_expands_only_delta_and_semantic_risk(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            graph = root / "graph.json"
+            delta = root / "delta.json"
+            matrix = root / "matrix.json"
+            symbols = root / "symbols.json"
+            graph.write_text(json.dumps({"acceptance_items": [
+                {"id": "AC-1", "graph_status": "supported", "evidence_paths": ["src/a.py"],
+                 "implementation_refs": ["d1"], "test_refs": ["t1"], "result_refs": ["r1"],
+                 "unverified_claims": []},
+                {"id": "AC-2", "graph_status": "reopened", "evidence_paths": ["src/b.py"],
+                 "implementation_refs": ["d2"], "test_refs": [], "result_refs": [],
+                 "unverified_claims": ["no-deterministic-or-semantic-support"]},
+            ]}), encoding="utf-8")
+            delta.write_text(json.dumps({
+                "acceptance_items": [{"id": "AC-2"}],
+                "omitted_unchanged_accepted": ["AC-1"],
+            }), encoding="utf-8")
+            matrix.write_text(json.dumps({"rows": [
+                {"invariant_id": "INV-1", "acceptance_ids": ["AC-1"], "coverage_status": "covered"},
+                {"invariant_id": "INV-2", "acceptance_ids": ["AC-2"], "coverage_status": "uncovered"},
+            ], "errors": []}), encoding="utf-8")
+            symbols.write_text(json.dumps({"changed_symbols": ["Registry.add"]}), encoding="utf-8")
+            args = argparse.Namespace(
+                worktree=root, outcome=root / "missing-outcome.json",
+                report_consistency=None, write_scope=None, checker_contract=None,
+                recovered_completion=None, acceptance_graph=graph,
+                delta_review_packet=delta, invariant_matrix=matrix,
+                symbol_summary=symbols, task_card=None,
+            )
+            value = module.build(args)
+            self.assertEqual(value["review_selection"]["expanded_acceptance_ids"], ["AC-2"])
+            self.assertEqual(value["review_selection"]["omitted_unchanged_accepted"], ["AC-1"])
+            self.assertTrue(value["review_selection"]["deep_codex_review_required"])
+            self.assertEqual(value["changed_symbols"], ["Registry.add"])
+            self.assertIn("invariant:INV-2:uncovered", value["unresolved_risks"])
+
+    def test_closed_acceptance_index_skips_checker_and_deep_review(self):
+        module = load_module()
+        graph = {"acceptance_items": [{
+            "id": "AC-1", "graph_status": "supported", "evidence_paths": ["src/a.py"],
+            "implementation_refs": ["d1"], "test_refs": ["t1"], "result_refs": ["r1"],
+            "unverified_claims": [],
+        }]}
+        index, selection, risks = module._acceptance_index(
+            graph, {"acceptance_items": [], "omitted_unchanged_accepted": ["AC-1"]}, None,
+        )
+        self.assertEqual(len(index), 1)
+        self.assertEqual(selection["expanded_acceptance_ids"], [])
+        self.assertFalse(selection["deep_codex_review_required"])
+        self.assertEqual(risks, [])
+
 
 if __name__ == "__main__":
     unittest.main()

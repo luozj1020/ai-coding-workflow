@@ -23,7 +23,7 @@ def _normalized_relative(raw: str) -> str:
     return path.as_posix()
 
 
-def _approved_staged_file(receipt_path: Path, relative_path: str) -> tuple[str, Path]:
+def _approved_staged_file(receipt_path: Path, relative_path: str) -> tuple[str, Path, dict[str, object]]:
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     if receipt.get("status") != "ready":
         raise ApprovedWriteError("write-sandbox receipt is not ready")
@@ -46,7 +46,7 @@ def _approved_staged_file(receipt_path: Path, relative_path: str) -> tuple[str, 
     if not stat.S_ISREG(metadata.st_mode) or staged.is_symlink() or metadata.st_nlink != 1:
         raise ApprovedWriteError("approved staged file is not a private regular file")
 
-    return relative_path, staged
+    return relative_path, staged, binding
 
 
 def _open_private_file(staged: Path) -> int:
@@ -82,7 +82,12 @@ def _replace_descriptor_content(descriptor: int, content: bytes) -> None:
 
 
 def write_approved(receipt_path: Path, relative_path: str, content: bytes) -> dict[str, object]:
-    relative_path, staged = _approved_staged_file(receipt_path, relative_path)
+    relative_path, staged, binding = _approved_staged_file(receipt_path, relative_path)
+    if not binding.get("complete_file_write_allowed"):
+        raise ApprovedWriteError(
+            "complete-file replacement is allowed only for new files or an explicit "
+            "Full file replacement paths declaration; use unique-fragment-replacement"
+        )
     descriptor = _open_private_file(staged)
     try:
         _replace_descriptor_content(descriptor, content)
@@ -103,7 +108,7 @@ def replace_unique_approved(
 ) -> dict[str, object]:
     if not old:
         raise ApprovedWriteError("unique replacement requires a non-empty old fragment")
-    relative_path, staged = _approved_staged_file(receipt_path, relative_path)
+    relative_path, staged, _binding = _approved_staged_file(receipt_path, relative_path)
     descriptor = _open_private_file(staged)
     try:
         size = os.fstat(descriptor).st_size

@@ -108,6 +108,22 @@ class InstallWorkflowTests(unittest.TestCase):
                 "ai/dispatch-to-claude.sh (content mismatch)", mismatches
             )
 
+    def test_update_removes_retired_feedback_telemetry_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            (repo / "ai" / "schemas").mkdir(parents=True)
+            collector = repo / "ai" / "collect-workflow-feedback.py"
+            schema = repo / "ai" / "schemas" / "workflow-feedback-v1.schema.json"
+            collector.write_text("# retired\n", encoding="utf-8")
+            schema.write_text("{}\n", encoding="utf-8")
+
+            result = self.run_installer(repo, "--update-workflow-files")
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(collector.exists())
+            self.assertFalse(schema.exists())
+            self.assertIn("retired workflow helper", result.stdout)
+
     def test_update_mode_returns_nonzero_when_postcondition_fails(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -353,8 +369,6 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("updated: ai/dispatch-to-claude.sh", second.stdout)
             self.assertIn("You are the executor in a Codex/Claude Code workflow.", dispatch.read_text(encoding="utf-8"))
             self.assertTrue((repo / "ai" / "write-approved-file.py").is_file())
-            self.assertTrue((repo / "ai" / "collect-workflow-feedback.py").is_file())
-            self.assertTrue((repo / "ai" / "schemas" / "workflow-feedback-v1.schema.json").is_file())
 
     def test_project_rule_allows_only_standard_workflow_entrypoints(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1998,12 +2012,15 @@ class InstallWorkflowTests(unittest.TestCase):
             repo = pathlib.Path(tmp) / "repo"
             self.run_installer(repo)
             helper = repo / "ai" / "verify-claude-report.py"
+            artifact_validator = repo / "ai" / "validate-claude-report.py"
             dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
             aiwf = (repo / "ai" / "aiwf.py").read_text(encoding="utf-8")
 
             self.assertTrue(helper.is_file())
+            self.assertTrue(artifact_validator.is_file())
             self.assertIn("REPORT_CONSISTENCY_FILE", dispatch)
             self.assertIn("verify-claude-report.py", dispatch)
+            self.assertIn("validate-claude-report.py", dispatch)
             self.assertIn('"verify-claude-report":"verify-claude-report.py"', aiwf)
 
     def test_installs_repository_scale_helper_and_worktree_timing(self):

@@ -20,9 +20,14 @@ def classify(
     valid_report: bool, progress: str, direction: str, error_text: str,
     blocker_kind: str = "none", advisor_used: bool = False,
     delegation_mode: str = "unknown", retry_ordinal: int = 0,
+    task_mode: str = "unknown", report_consistency: str = "not-run",
 ) -> dict:
-    useful = diff_changes > 0 or valid_report or progress == "useful"
-    interacted = useful or progress in {"acknowledgement", "blocker"}
+    report_mismatch = report_consistency in {"contradictory", "error", "role-mismatch"}
+    report_useful = valid_report and not report_mismatch and (
+        diff_changes > 0 or task_mode in {"checker-test", "control-plane", "solution-planning"}
+    )
+    useful = diff_changes > 0 or report_useful or progress == "useful"
+    interacted = useful or valid_report or progress in {"acknowledgement", "blocker"}
     transport = outcome != "execution_timeout" and (bool(TRANSPORT_RE.search(error_text)) or outcome in {
         "api_error", "api_error_without_diff", "network_error", "timeout"
     })
@@ -30,12 +35,14 @@ def classify(
 
     if direction == "off-plan":
         failure, action, counts = "direction-deviation", "interrupt-and-narrow", True
+    elif report_mismatch and diff_changes == 0:
+        failure, action, counts = "report-evidence-mismatch", "narrow-and-redispatch-once", True
     elif useful:
         failure = "none" if outcome in {"success", "passed"} else "recoverable-evidence"
         action, counts = "review-existing-evidence", False
     elif approval:
         failure, action, counts = "external-approval-blocker", "preserve-and-rerun-exact-command", False
-    elif outcome == "execution_timeout" and not interacted:
+    elif outcome == "execution_timeout" and not useful and progress != "blocker":
         failure, action, counts = "model-no-progress", "narrow-and-redispatch-once", True
     elif transport and not interacted:
         failure, counts = "transient-transport", False
@@ -86,6 +93,8 @@ def classify(
         "economic_stop_loss": economic_stop_loss,
         "reroute_required": economic_stop_loss,
         "takeover_authorized": False,
+        "task_mode": task_mode,
+        "report_consistency": report_consistency,
     }
 
 
@@ -102,6 +111,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--advisor-used", action="store_true")
     p.add_argument("--delegation-mode", choices=["unknown", "unproven", "canary", "proven", "explicit", "direct", "rejected"], default="unknown")
     p.add_argument("--retry-ordinal", type=int, default=0)
+    p.add_argument("--task-mode", default="unknown")
+    p.add_argument("--report-consistency", default="not-run")
     p.add_argument("--error-text-file", type=Path)
     args = p.parse_args(argv)
     error_text = ""
@@ -113,6 +124,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         direction=args.direction, error_text=error_text,
         blocker_kind=args.blocker_kind, advisor_used=args.advisor_used,
         delegation_mode=args.delegation_mode, retry_ordinal=max(0, args.retry_ordinal),
+        task_mode=args.task_mode, report_consistency=args.report_consistency,
     ), sort_keys=True))
     return 0
 

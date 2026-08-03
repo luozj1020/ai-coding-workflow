@@ -1,6 +1,7 @@
 """Tests for reviewed dirty-worktree continuation approval and enforcement."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -177,6 +178,43 @@ class ReviewedContinuationTest(unittest.TestCase):
             "--next-task-card", str(self.card),
         )
         self.assertEqual(validated.returncode, 0)
+
+    def test_prepare_binds_delta_review_findings_and_new_validation_refs(self) -> None:
+        packet = {
+            "schema_version": 1, "packet_id": "", "mode": "revision",
+            "state_id": "sha256:" + "1" * 64,
+            "graph_id": "sha256:" + "2" * 64,
+            "acceptance_items": [{"id": "AC-2"}],
+            "unsupported_acceptance": ["AC-2"],
+            "contradictory_evidence": [], "reopened_acceptance": [],
+            "changed_decisions": [],
+            "new_diff_refs": ["sha256:" + "3" * 64],
+            "new_test_refs": ["sha256:" + "4" * 64],
+            "omitted_unchanged_accepted": ["AC-1"],
+        }
+        material = dict(packet)
+        material.pop("packet_id")
+        packet["packet_id"] = "sha256:" + hashlib.sha256(json.dumps(
+            material, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        packet_path = self.repo / "delta-review.json"
+        packet_path.write_text(json.dumps(packet), encoding="utf-8")
+        result = self.helper(
+            "prepare", "--prior-task-id", self.task_id,
+            "--next-task-card", str(self.card), "--next-role", "builder",
+            "--decision", "accepted-direction",
+            "--accepted-existing-path", "src.txt",
+            "--allow-new-write-path", "src.txt",
+            "--delta-review-packet", str(packet_path),
+            "--unresolved-finding", "AC-2 lacks deterministic evidence",
+            "--new-validation-ref", "sha256:" + "4" * 64,
+            "--output", str(self.approval),
+        )
+        delta = json.loads(result.stdout)["delta_continuation"]
+        self.assertEqual(delta["delta_review_packet"]["acceptance_ids"], ["AC-2"])
+        self.assertEqual(delta["unresolved_findings"], ["AC-2 lacks deterministic evidence"])
+        self.assertEqual(delta["new_validation_refs"], ["sha256:" + "4" * 64])
+        self.assertFalse(delta["full_prior_task_card_repeated"])
 
     def test_reviewed_continuation_can_be_rebound_from_latest_hash(self) -> None:
         runtime_path = self.repo / ".worktrees" / f"{self.task_id}.runtime.json"

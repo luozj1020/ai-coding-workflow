@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import pathlib
 import subprocess
@@ -10,6 +11,8 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "clean_runtime.py"
 INSTALLER = ROOT / "scripts" / "install_workflow.py"
+PROCESS_IDENTITY = ROOT / "scripts" / "process-identity.py"
+CLEANUP_WORKTREE = ROOT / "scripts" / "cleanup-worktree.sh"
 
 
 def load_module():
@@ -169,6 +172,9 @@ class CleanRuntimeTests(unittest.TestCase):
             (repo / ".worktrees").mkdir(exist_ok=True)
             (repo / ".worktrees" / ".gitkeep").write_text("", encoding="utf-8")
             (repo / ".worktrees" / "claude-one.result.json").write_text("{}", encoding="utf-8")
+            (repo / ".worktrees" / "claude-one.runtime.json").write_text(
+                '{"task_id":"claude-one","task_mode":"builder"}', encoding="utf-8"
+            )
             (repo / ".worktrees" / "claude-one.diff").write_text("diff", encoding="utf-8")
             (repo / ".worktrees" / "claude-two.result.json").write_text("{}", encoding="utf-8")
             (repo / "tmp-something").mkdir()
@@ -182,6 +188,7 @@ class CleanRuntimeTests(unittest.TestCase):
             self.assertTrue((repo / ".worktrees" / "claude-two.result.json").exists())
             self.assertTrue((repo / "tmp-something").exists())
             self.assertTrue((repo / ".worktrees" / ".gitkeep").exists())
+            self.assertFalse((repo / ".ai-workflow" / "feedback").exists())
 
     def test_apply_preserves_gitkeep(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -264,6 +271,82 @@ class CleanRuntimeTests(unittest.TestCase):
             self.assertTrue((repo / ".worktrees" / "claude-active").exists())
             self.assertTrue((repo / ".worktrees" / "claude-active.pid").exists())
             self.assertTrue((repo / ".worktrees" / "claude-active.result.json").exists())
+
+    def test_identity_receipt_prevents_pid_reuse_false_active(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            root = repo / ".worktrees"
+            root.mkdir(exist_ok=True)
+            task_id = "claude-reused"
+            (root / f"{task_id}.pid").write_text(str(os.getpid()), encoding="utf-8")
+            identity = root / f"{task_id}.dispatcher.process.json"
+            captured = subprocess.run(
+                [sys.executable, str(PROCESS_IDENTITY), "capture", "--pid", str(os.getpid()),
+                 "--task-id", task_id, "--role", "dispatcher", "--output", str(identity)],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+            value = json.loads(identity.read_text(encoding="utf-8"))
+            value["cmdline_sha256"] = "sha256:" + "0" * 64
+            identity.write_text(json.dumps(value), encoding="utf-8")
+            artifact = root / f"{task_id}.result.json"
+            artifact.write_text("{}", encoding="utf-8")
+
+            result = self.run_clean(repo, ["--apply"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(artifact.exists())
+
+    def test_active_identity_without_pid_hint_protects_task_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            root = repo / ".worktrees"
+            root.mkdir(exist_ok=True)
+            task_id = "claude-identity-active"
+            identity = root / f"{task_id}.dispatcher.process.json"
+            captured = subprocess.run(
+                [sys.executable, str(PROCESS_IDENTITY), "capture", "--pid", str(os.getpid()),
+                 "--task-id", task_id, "--role", "dispatcher", "--output", str(identity)],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+            artifact = root / f"{task_id}.result.json"
+            artifact.write_text("{}", encoding="utf-8")
+
+            result = self.run_clean(repo, ["--apply"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(identity.exists())
+            self.assertTrue(artifact.exists())
+
+    def test_cleanup_worktree_shell_fails_closed_on_active_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            task_id = "claude-shell-active"
+            wt_dir = self._add_worktree(repo, task_id)
+            identity = repo / ".worktrees" / f"{task_id}.dispatcher.process.json"
+            captured = subprocess.run(
+                [sys.executable, str(PROCESS_IDENTITY), "capture", "--pid", str(os.getpid()),
+                 "--task-id", task_id, "--role", "dispatcher", "--output", str(identity)],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(captured.returncode, 0, captured.stderr)
+
+            result = subprocess.run(
+                ["bash", str(CLEANUP_WORKTREE), task_id], cwd=str(repo),
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("process identity is still active", result.stderr)
+            self.assertTrue(wt_dir.exists())
 
     # --- Installer inclusion ---
 
@@ -365,7 +448,7 @@ class CleanRuntimeTests(unittest.TestCase):
         )
         return wt_dir
 
-    def test_apply_removes_clean_registered_worktree(self):
+    def test_apply_requires_then_consumes_cleanup_eligibility_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
             repo.mkdir()
@@ -374,12 +457,31 @@ class CleanRuntimeTests(unittest.TestCase):
             wt_dir = self._add_worktree(repo, "claude-clean")
             self.assertTrue(wt_dir.exists())
 
+            (repo / ".worktrees" / "claude-clean.outcome.json").write_text(
+                '{"dispatch_outcome":"success"}', encoding="utf-8"
+            )
+            (repo / ".worktrees" / "claude-clean.runtime.json").write_text(
+                json.dumps({"task_id": "claude-clean", "lineage_root_task_id": "claude-clean"}),
+                encoding="utf-8",
+            )
+            session_store = repo / ".worktrees" / ".session-store" / "claude-clean" / "projects"
+            session_store.mkdir(parents=True)
+            (session_store / "transcript").write_text("session", encoding="utf-8")
+            blocked = self.run_clean(repo, ["--apply"])
+            self.assertEqual(blocked.returncode, 0, blocked.stderr)
+            self.assertIn("requires a valid cleanup-eligible receipt", blocked.stdout)
+            self.assertTrue(wt_dir.exists())
+
+            marked = self.run_clean(repo, ["--mark-cleanup-eligible"])
+            self.assertEqual(marked.returncode, 0, marked.stderr)
             result = self.run_clean(repo, ["--apply"])
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("removed: .worktrees/claude-clean (worktree)", result.stdout)
+            self.assertIn("orphan session store", result.stdout)
             # Worktree directory should be gone
             self.assertFalse(wt_dir.exists())
+            self.assertFalse(session_store.exists())
 
     def test_apply_skips_dirty_registered_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -413,11 +515,27 @@ class CleanRuntimeTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Dry-run", result.stdout)
-            self.assertIn(".worktrees/claude-dry (worktree)", result.stdout)
+            self.assertIn(".worktrees/claude-dry (worktree; cleanup-eligible=no:", result.stdout)
             # Should not have deleted anything
             self.assertTrue(wt_dir.exists())
 
-    def test_adjacent_artifacts_cleaned_when_worktree_skipped(self):
+    def test_marks_only_terminal_merged_product_clean_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            wt_dir = self._add_worktree(repo, "claude-eligible")
+            (repo / ".worktrees" / "claude-eligible.outcome.json").write_text(
+                '{"dispatch_outcome":"success"}', encoding="utf-8"
+            )
+            result = self.run_clean(repo, ["--mark-cleanup-eligible"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            receipt = repo / ".worktrees" / "claude-eligible.cleanup-eligible.json"
+            self.assertTrue(receipt.is_file())
+            self.assertTrue(json.loads(receipt.read_text())["eligible"])
+
+    def test_adjacent_artifacts_preserved_when_worktree_bundle_is_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
             repo.mkdir()
@@ -436,9 +554,94 @@ class CleanRuntimeTests(unittest.TestCase):
             # Dirty worktree should be skipped
             self.assertIn("skipped: .worktrees/claude-mixed", result.stdout)
             self.assertTrue(wt_dir.exists())
-            # Adjacent artifacts should still be cleaned
-            self.assertFalse((repo / ".worktrees" / "claude-mixed.result.json").exists())
-            self.assertFalse((repo / ".worktrees" / "claude-mixed.pid").exists())
+            # Recovery evidence belongs to the blocked task bundle and must survive.
+            self.assertTrue((repo / ".worktrees" / "claude-mixed.result.json").exists())
+            self.assertTrue((repo / ".worktrees" / "claude-mixed.pid").exists())
+
+    def test_stale_cleanup_receipt_blocks_worktree_and_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            wt_dir = self._add_worktree(repo, "claude-stale")
+            outcome = repo / ".worktrees" / "claude-stale.outcome.json"
+            outcome.write_text('{"dispatch_outcome":"success"}', encoding="utf-8")
+            marked = self.run_clean(repo, ["--mark-cleanup-eligible"])
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+            outcome.write_text('{"dispatch_outcome":"failed"}', encoding="utf-8")
+
+            result = self.run_clean(repo, ["--apply"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("cleanup-eligible receipt; stale", result.stdout)
+            self.assertTrue(wt_dir.exists())
+            self.assertTrue(outcome.exists())
+
+    def test_session_store_survives_while_lineage_worktree_remains(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            root = repo / ".worktrees"
+            root.mkdir(exist_ok=True)
+            first = self._add_worktree(repo, "claude-lineage")
+            second = self._add_worktree(repo, "claude-lineage-next")
+            (root / "claude-lineage.outcome.json").write_text(
+                '{"dispatch_outcome":"success"}', encoding="utf-8"
+            )
+            (root / "claude-lineage.runtime.json").write_text(json.dumps({
+                "task_id": "claude-lineage", "lineage_root_task_id": "claude-lineage",
+                "worktree": str(first),
+            }), encoding="utf-8")
+            (root / "claude-lineage-next.runtime.json").write_text(json.dumps({
+                "task_id": "claude-lineage-next", "lineage_root_task_id": "claude-lineage",
+                "worktree": str(second),
+            }), encoding="utf-8")
+            store = root / ".session-store" / "claude-lineage" / "projects"
+            store.mkdir(parents=True)
+            (store / "transcript").write_text("keep", encoding="utf-8")
+            marked = self.run_clean(repo, ["--task-id", "claude-lineage", "--mark-cleanup-eligible"])
+            self.assertEqual(marked.returncode, 0, marked.stderr)
+
+            result = self.run_clean(repo, ["--task-id", "claude-lineage", "--apply"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(first.exists())
+            self.assertTrue(second.exists())
+            self.assertTrue(store.exists())
+
+    def test_preserves_session_store_and_archive_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            root = repo / ".worktrees"
+            for name in (".session-store", "archive", "control-archive"):
+                (root / name).mkdir(parents=True, exist_ok=True)
+                (root / name / "evidence").write_text("keep", encoding="utf-8")
+
+            result = self.run_clean(repo, ["--apply"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for name in (".session-store", "archive", "control-archive"):
+                self.assertTrue((root / name / "evidence").exists())
+
+    def test_json_preview_groups_worktree_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            _init_repo(repo)
+            (repo / ".worktrees").mkdir(exist_ok=True)
+            self._add_worktree(repo, "claude-json")
+
+            result = self.run_clean(repo, ["--json"])
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            row = next(item for item in payload["candidates"] if item["kind"] == "worktree")
+            self.assertEqual(row["receipt_state"], "missing")
+            self.assertFalse(row["cleanup_eligible"])
 
 
 if __name__ == "__main__":

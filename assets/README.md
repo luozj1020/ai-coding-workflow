@@ -414,6 +414,13 @@ python ai/validate-review-receipt.py --receipt REVIEW_RECEIPT.json \
   --graph ACCEPTANCE_GRAPH.json --packet DELTA_REVIEW_PACKET.json
 ```
 
+Pass these artifacts to `build-acceptance-bundle.py` (or export the matching
+`AI_WORKFLOW_*_FILE` paths for dispatch) to produce the compact Codex entry
+point. `aiwf review-tier` expands only changed, failing, contradictory,
+reopened, uncovered, or semantic-risk acceptance IDs. Fully supported unchanged
+items record deterministic Checker/deep-review skips while full evidence stays
+file-backed.
+
 For a revision or test fix, create a strict ownership request and select the
 continuation before opening another model session:
 
@@ -428,6 +435,13 @@ resume as a non-model failure and automatically makes exactly one fresh-session
 attempt with the same owner, task, worktree, and write scope. Other resume
 failures remain terminal. Advisor is skipped without semantic blockers and
 Reviewer is skipped without new immutable evidence.
+
+Reviewed continuation may additionally bind `--delta-review-packet`, bounded
+`--unresolved-finding`, and immutable `--new-validation-ref sha256:...` values.
+The one-use approval records baseline/delta hashes and does not repeat the full
+prior task card. Repository context cache entries created with `--repo`,
+`--file`, `--symbol`, and `--tool-version` fail reuse after HEAD, content,
+symbol-set, or tool-version drift.
 
 Exact-path write enforcement stages writable copies outside the worktree and
 binds only those copies over the declared destinations inside the read-only
@@ -537,6 +551,7 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.review.txt` | Persisted Codex review output |
 | `*.codex-events.jsonl` | Raw Codex JSON events when available |
 | `*.codex-usage.txt` | Codex review token/cost usage summary when available |
+| `*.acceptance-bundle.json` | Compact acceptance index, review expansion reasons, deterministic skip recommendation, and file-backed evidence pointers |
 
 It does **not** merge automatically.
 
@@ -1146,24 +1161,20 @@ python ai/clean_runtime.py --task-id claude-20260701-093934
 
 # Remove only one stopped dispatch's runtime artifacts
 python ai/clean_runtime.py --task-id claude-20260701-093934 --apply
+
+# Mark only terminal, merged, product-clean worktrees after human merge
+python ai/clean_runtime.py --mark-cleanup-eligible
 ```
 
 `cleanup-worktree.sh` refuses to run while the recorded Claude PID is still alive. Use `--force` only when `git worktree remove` needs it for a broken or dirty worktree.
-`clean_runtime.py --task-id ...` is useful for large repositories because it avoids broad root artifact cleanup and preserves unrelated dispatches.
+`clean_runtime.py --task-id ...` is useful for large repositories because it avoids broad root artifact cleanup and preserves unrelated dispatches. Cleanup-eligible receipts do not authorize merge or force-remove dirty worktrees.
 
 `doctor_workflow.py` runs in preview-only mode: it shows count, size, and age of runtime artifacts. It does not automatically delete anything.
 
-Local usage feedback is also read-only by default:
-
-```bash
-aiwf feedback --preview --task-id TASK_ID
-aiwf feedback --record --task-id TASK_ID --issue false-progress --rating efficiency=4
-aiwf feedback --bundle
-```
-
-Records stay under `.ai-workflow/feedback/`; bundles exclude comments and raw
-records. The collector never invokes a model or network and never reads API
-configuration, prompts, source, diffs, or raw logs. See the installed
+For Skill feedback, the user explicitly asks Codex for a read-only retrospective
+after relevant interactions. Codex uses the current conversation and only the
+minimum necessary runtime receipts; it does not persist telemetry, invoke a
+model, create a task card, or modify code. See the installed
 `references/feedback-policy.md` for the normative boundary.
 
 ---

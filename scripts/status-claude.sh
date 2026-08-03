@@ -197,12 +197,22 @@ select_claude_progress_file() {
 valid_report_file() {
     local file="$1"
     [ -s "$file" ] || return 1
-    if file_contains "$file" "$SEEDED_REPORT_MARKER|$FALLBACK_REPORT_MARKER"; then
-        return 1
+    local validator="${SCRIPT_DIR}/validate-claude-report.py"
+    local python_cmd=""
+    if command -v python3 >/dev/null 2>&1; then
+        python_cmd="python3"
+    elif command -v python >/dev/null 2>&1; then
+        python_cmd="python"
     fi
-    if file_contains "$file" "Dispatcher-created draft|fallback report was generated|did not produce a valid Claude-owned CLAUDE_REPORT.md|did not produce a Claude-owned CLAUDE_REPORT.md"; then
-        return 1
+    if [ -n "$python_cmd" ] && [ -f "$validator" ]; then
+        "$python_cmd" "$validator" "$file" >/dev/null 2>&1
+        return $?
     fi
+    file_contains "$file" "$SEEDED_REPORT_MARKER|$FALLBACK_REPORT_MARKER" && return 1
+    for heading in "Requirements Summary" "Files Changed" "Acceptance Criteria Mapping" \
+                   "Out-of-Scope Confirmation" "Plan Match" "Checks Run"; do
+        grep -Fqi "## ${heading}" "$file" 2>/dev/null || return 1
+    done
     return 0
 }
 

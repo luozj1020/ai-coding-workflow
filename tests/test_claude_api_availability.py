@@ -24,6 +24,9 @@ class ClaudeApiAvailabilityTests(unittest.TestCase):
             "route": "direct",
             "environment": "auto",
             "claude_command": "/usr/bin/claude",
+            "tool_profile": "locator-builder",
+            "tool_inventory": ["Read", "Bash"],
+            "tool_inventory_verified": True,
             "source": "test-probe",
             "ttl": 3600,
             "reason": "transport-suspected",
@@ -41,6 +44,8 @@ class ClaudeApiAvailabilityTests(unittest.TestCase):
             value = json.loads(output.call_args.args[0])
             self.assertTrue(value["cache_valid"])
             self.assertEqual(value["interaction_conclusion"], "available")
+            self.assertTrue(value["tool_inventory_verified"])
+            self.assertEqual(value["tool_inventory"], ["Bash", "Read"])
 
             mismatch = self.args(root, route="inherit")
             with mock.patch("builtins.print"):

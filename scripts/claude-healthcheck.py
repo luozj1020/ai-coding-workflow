@@ -75,15 +75,21 @@ def probe(origin: str, timeout: float) -> Dict[str, Any]:
         return {"status": "unreachable", "http_status": None, "error": "timeout"}
 
 
-def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]:
+def interaction_probe(
+    route: str, timeout: float, prompt: str, tools: Optional[str] = None,
+) -> Dict[str, Any]:
     env = os.environ.copy()
     if route == "direct":
         for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
             env.pop(name, None)
     started = time.monotonic()
     try:
+        command = ["claude", "-p", prompt, "--bare", "--no-session-persistence"]
+        if tools:
+            command.extend(["--tools", tools])
+        command.extend(["--output-format", "stream-json", "--verbose"])
         result = subprocess.run(
-            ["claude", "-p", prompt, "--bare", "--no-session-persistence", "--output-format", "json"],
+            command,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, env=env,
         )
@@ -106,12 +112,37 @@ def interaction_probe(route: str, timeout: float, prompt: str) -> Dict[str, Any]
             "exit_code": result.returncode, "elapsed_seconds": elapsed, "timed_out": False,
             "failure_category": failure_category,
         }
-        # Extract usage/cost from JSON output when available.
+        # Stream initialization is the runtime's authoritative inventory, not
+        # the launcher's requested --tools value or a model-authored claim.
+        events = []
+        for line in result.stdout.splitlines():
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                events.append(value)
+        init = next(
+            (value for value in events
+             if value.get("type") == "system" and value.get("subtype") == "init"),
+            None,
+        )
+        inventory = init.get("tools") if isinstance(init, dict) else None
+        if isinstance(inventory, list) and all(isinstance(item, str) for item in inventory):
+            probe["tool_inventory"] = sorted(set(inventory))
+            probe["tool_inventory_verified"] = True
+        else:
+            probe["tool_inventory_verified"] = False
+
+        # Extract usage/cost from the terminal result event when available.
         # A non-empty legacy response may still establish interaction with
         # usage explicitly unavailable.
         if success and result.stdout.strip():
             try:
-                data = json.loads(result.stdout)
+                data = next(
+                    (value for value in reversed(events) if value.get("type") == "result"),
+                    events[-1] if events else json.loads(result.stdout),
+                )
                 usage = data.get("usage", {})
                 model_usage = data.get("modelUsage", {})
                 cost = data.get("total_cost_usd")
@@ -184,6 +215,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="Run a real minimal interaction; auto tries the alternate only after failure.")
     parser.add_argument("--prompt", default="你好")
     parser.add_argument(
+        "--tools",
+        help="Restrict the probe to the requested runtime tools and verify the init inventory.",
+    )
+    parser.add_argument(
         "--probe-environment",
         choices=["auto", "host", "sandbox"],
         default="auto",
@@ -225,7 +260,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             routes = [args.interaction_route]
         interactions = []
         for route in routes:
-            value = interaction_probe(route, args.timeout, args.prompt)
+            if args.tools:
+                value = interaction_probe(route, args.timeout, args.prompt, args.tools)
+            else:
+                value = interaction_probe(route, args.timeout, args.prompt)
             interactions.append(value)
             if args.interaction_route == "auto" and value["success"]:
                 break

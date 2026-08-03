@@ -53,6 +53,11 @@ remains an environment failure, not an assertion failure.
 The execution card also records whether the exact command was pre-authorized by
 the Checker Bash allowlist. Claude must attempt an authorized command before
 claiming a sandbox or permission blocker and must preserve the original denial.
+Task-card preflight fails before Claude starts when an assigned validation
+command contains shell control syntax, exceeds the bounded command size/count,
+or otherwise cannot enter the Bash allowlist. Split it into shell-free entries
+or use a workflow validation helper; dispatch must not silently reduce the
+frozen validation set.
 Checker cards prefer parameterized or table-driven cases and reuse the strict
 source-of-truth fixture/layout named in the Context Packet. The dispatcher emits
 a non-blocking `*.change-size-advisory.json` when tracked or newly created test
@@ -184,7 +189,7 @@ transfer and produces the actual grant only after old-process termination and a
 stable baseline. Codex stays inside the grant's hash-bound
 `allowed_write_paths` and runs the bound narrow validation.
 
-No-progress evidence, an early Claude exit, invalid result JSON, missing report, or a single failed implementation does not by itself satisfy the threshold. In those cases Codex should produce a smaller revision task with clearer acceptance criteria, stronger stop conditions, and required evidence for Claude.
+No-progress evidence, an early Claude exit, invalid result JSON, missing report, or a single failed implementation does not by itself satisfy the threshold. However, a successful interaction that reaches context timeout with zero product delta is a counted `model-no-progress` round, and a role-mismatched/contradictory report with zero delta is counted `report-evidence-mismatch`; two consecutive counted rounds must not deadlock merely because the transport retry budget is zero. In single-round cases Codex should produce a smaller revision task with clearer acceptance criteria, stronger stop conditions, and required evidence for Claude.
 
 Under `claude-first`, useful on-plan evidence gets one same-worktree continuation
 before takeover review. Transport and approval failures remain recoverable
@@ -261,6 +266,20 @@ contradictory, reopened, or changed items remain in scope. Use
 `--mode revision` to emit only failing/reopened subgraphs. Missing, stale,
 unknown, unreadable, permission-denied, or contradictory evidence fails closed;
 a bounded lexical candidate cannot support Acceptance by itself.
+
+Feed the graph and delta packet into the terminal acceptance bundle rather than
+concatenating their full evidence. Its compact index carries paths, evidence
+counts, invariant coverage, unresolved risks, and explicit expansion reasons.
+`select-review-tier.py` records deterministic Checker/deep-review skips only
+when every indexed item is supported and no semantic-risk delta remains.
+Unsupported or uncovered mechanical items use L1 compression; contradictory,
+reopened, or unverified semantic items require compact L2 Codex review. Full
+evidence stays file-backed and is read only for selected IDs.
+
+Codex output remains bounded by responsibility, not by a hard token limit:
+intent freeze contains goal/invariants/acceptance/forbidden paths, planning
+review contains blocking findings, and final review contains a decision plus
+evidence-bound findings.
 
 When Codex/GPT reviews an evidence packet, it must produce a structured decision with the following fields:
 

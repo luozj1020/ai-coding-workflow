@@ -133,6 +133,55 @@ def load_json(path: Path) -> Dict[str, Any]:
     return value
 
 
+def bind_delta_review(path: Optional[Path]) -> Optional[Dict[str, Any]]:
+    if path is None:
+        return None
+    path = path.resolve()
+    packet = load_json(path)
+    packet_id = str(packet.get("packet_id", ""))
+    material = dict(packet)
+    material.pop("packet_id", None)
+    encoded = json.dumps(
+        material, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    expected = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    if packet_id != expected:
+        raise ContinuationError("delta review packet hash is invalid")
+    if packet.get("mode") != "revision":
+        raise ContinuationError("continuation requires a revision delta review packet")
+    items = packet.get("acceptance_items")
+    if not isinstance(items, list):
+        raise ContinuationError("delta review packet acceptance_items must be an array")
+    acceptance_ids = sorted({
+        str(item.get("id")) for item in items
+        if isinstance(item, dict) and item.get("id")
+    })
+    return {
+        "path": str(path),
+        "sha256": sha256_file(path),
+        "packet_id": packet_id,
+        "state_id": packet.get("state_id"),
+        "graph_id": packet.get("graph_id"),
+        "acceptance_ids": acceptance_ids,
+        "new_diff_refs": packet.get("new_diff_refs", []),
+        "new_test_refs": packet.get("new_test_refs", []),
+    }
+
+
+def bounded_findings(values: Iterable[str]) -> List[str]:
+    findings = sorted({str(value).strip() for value in values if str(value).strip()})
+    if len(findings) > 20 or any(len(value) > 240 for value in findings):
+        raise ContinuationError("unresolved findings exceed the bounded continuation summary")
+    return findings
+
+
+def evidence_refs(values: Iterable[str]) -> List[str]:
+    refs = sorted({str(value).strip() for value in values if str(value).strip()})
+    if any(not re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in refs):
+        raise ContinuationError("new validation evidence must use immutable sha256: refs")
+    return refs
+
+
 def live_pid_file(path: Path) -> bool:
     try:
         value = int(path.read_text(encoding="utf-8").strip())
@@ -331,6 +380,9 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
         raise ContinuationError("at least one --allow-new-write-path is required")
     approval_id = uuid.uuid4().hex
     source_head = git(root, "rev-parse", "HEAD").strip()
+    delta_review = bind_delta_review(args.delta_review_packet)
+    unresolved_findings = bounded_findings(args.unresolved_finding)
+    new_validation_refs = evidence_refs(args.new_validation_ref)
     value: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "approval_id": approval_id,
@@ -362,6 +414,13 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
         "accepted_existing_paths": accepted,
         "allow_new_write_paths": allowed,
         "accepted_path_state": accepted_state,
+        "delta_continuation": {
+            "baseline_worktree_state_hash": compute_worktree_state_hash(worktree),
+            "delta_review_packet": delta_review,
+            "unresolved_findings": unresolved_findings,
+            "new_validation_refs": new_validation_refs,
+            "full_prior_task_card_repeated": False,
+        },
     }
     atomic_json(args.output, value)
     return value
@@ -449,6 +508,9 @@ def parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--decision", required=True)
     prepare_parser.add_argument("--accepted-existing-path", action="append", default=[], required=True)
     prepare_parser.add_argument("--allow-new-write-path", action="append", default=[], required=True)
+    prepare_parser.add_argument("--delta-review-packet", type=Path)
+    prepare_parser.add_argument("--unresolved-finding", action="append", default=[])
+    prepare_parser.add_argument("--new-validation-ref", action="append", default=[])
     prepare_parser.add_argument("--output", type=Path, required=True)
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("--approval", type=Path, required=True)

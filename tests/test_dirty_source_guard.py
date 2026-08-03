@@ -157,7 +157,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "if [[ \"$*\" == *\"你好\"* ]]; then\n"
                 "  if [ \"${FAKE_CLAUDE_HEALTHCHECK_TRUST:-0}\" = 1 ]; then echo 'this workspace has not been trusted' >&2; exit 42; fi\n"
                 "  if [ \"${FAKE_CLAUDE_HEALTHCHECK_FAIL:-0}\" = 1 ]; then exit 42; fi\n"
-                "  printf '你好！\\n'\n"
+                "  if [[ \"$*\" == *\"stream-json\"* ]]; then\n"
+                "    printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"tools\":[\"Read\",\"Edit\",\"Write\",\"Grep\",\"Glob\",\"Bash\"]}' '{\"type\":\"result\",\"result\":\"ok\"}'\n"
+                "  else\n"
+                "    printf '你好！\\n'\n"
+                "  fi\n"
                 "  exit 0\n"
                 "fi\n"
                 "if [ -n \"${FAKE_CLAUDE_INVOCATION_LOG:-}\" ]; then printf 'invoke\\n' >> \"${FAKE_CLAUDE_INVOCATION_LOG}\"; fi\n"
@@ -2258,7 +2262,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotIn("First substantive progress detected", progress)
         self.assertIn("context acquisition timeout", progress)
 
-    def test_valid_report_prevents_first_progress_timeout(self):
+    def test_valid_report_without_builder_delta_does_not_refresh_first_progress(self):
         self._write_builder_task_card()
         result = self._dispatch(
             "task-cards/BUILDER.md",
@@ -2270,8 +2274,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
-        self.assertIn("first_progress_detected=1", progress)
-        self.assertIn("signal=valid_report", progress)
+        self.assertNotIn("First substantive progress detected", progress)
+        self.assertIn("first_progress_timeout", progress)
 
     def test_builder_editing_readiness_does_not_count_as_durable_progress(self):
         self._write_builder_task_card()
@@ -3247,10 +3251,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
             },
         )
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        # Only "true" should be accepted
-        self.assertIn("allowlist_accepted=1", result.stdout)
-        self.assertIn("allowlist_unsafe=7", result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("failure_category=validation-allowlist-preflight", result.stderr)
+        self.assertIn("allowlist_unsafe=7", result.stderr)
 
     def test_oversized_commands_rejected_in_validation(self):
         """Commands over 500 characters are rejected and counted."""
@@ -3265,9 +3268,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
             },
         )
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("allowlist_accepted=1", result.stdout)
-        self.assertIn("allowlist_oversized=1", result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_oversized=1", result.stderr)
 
     def test_accepted_commands_beyond_12_overflow(self):
         """More than 12 accepted commands count as overflow."""
@@ -3280,9 +3282,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
             },
         )
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("allowlist_accepted=12", result.stdout)
-        self.assertIn("allowlist_overflow=3", result.stdout)
+        self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_overflow=3", result.stderr)
 
     def test_logs_contain_only_aggregate_counts_not_command_bodies(self):
         """Progress logs contain aggregate counts, never rejected command bodies."""
@@ -3299,14 +3300,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
             },
         )
-        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
-        # Aggregate counts should appear
-        self.assertIn("allowlist_accepted=2", progress)
-        self.assertIn("allowlist_unsafe=1", progress)
-        # Rejected command bodies should NOT appear in progress
-        self.assertNotIn("secret_password_12345", progress)
-        self.assertNotIn("rm -rf", progress)
+        self.assertNotEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("allowlist_unsafe=1", result.stderr)
+        # Rejected command bodies should not be echoed by the preflight.
+        self.assertNotIn("secret_password_12345", result.stderr)
+        self.assertNotIn("rm -rf", result.stderr)
 
     def test_no_wildcard_bash_or_permission_bypass_in_argv(self):
         """No wildcard Bash(*) or permission bypass flags appear in constructed argv."""
@@ -3434,11 +3432,16 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_API_PROBE_MODE": "always",
                 "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
                 "FAKE_CLAUDE_MODE": "seed-only",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertIn("Startup interaction probe: conclusion=", progress)
+        runtime = json.loads(next((self.repo / ".worktrees").glob("claude-*.runtime.json")).read_text())
+        self.assertTrue(runtime["runtime_tool_inventory_verified"])
+        self.assertEqual(runtime["runtime_tool_inventory_status"], "verified")
 
     def test_adaptive_probe_reuses_recent_context_bound_success(self):
         self._write_builder_task_card()
@@ -3446,6 +3449,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "CLAUDE_CODE_API_PROBE_MODE": "adaptive",
             "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
             "FAKE_CLAUDE_MODE": "success",
+            "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+            "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
         }
         first = self._dispatch("task-cards/BUILDER.md", env)
         self.assertEqual(first.returncode, 0, first.stderr + first.stdout)

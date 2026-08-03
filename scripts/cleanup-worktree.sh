@@ -36,13 +36,42 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 WORKTREE_DIR="${REPO_ROOT}/.worktrees/${TASK_ID}"
 PID_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.pid"
 PROGRESS_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.progress.log"
+PROCESS_IDENTITY_HELPER="${REPO_ROOT}/ai/process-identity.py"
+[ -f "$PROCESS_IDENTITY_HELPER" ] || PROCESS_IDENTITY_HELPER="${SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}/process-identity.py"
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD=python3
+else
+    PYTHON_CMD=python
+fi
 
 if [ ! -d "$WORKTREE_DIR" ]; then
     echo "Error: worktree directory not found: $WORKTREE_DIR" >&2
     exit 1
 fi
 
-if [ -f "$PID_FILE" ]; then
+IDENTITY_FOUND=0
+for ROLE in dispatcher claude checker; do
+    IDENTITY_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.${ROLE}.process.json"
+    [ -f "$IDENTITY_FILE" ] || continue
+    IDENTITY_FOUND=1
+    set +e
+    "$PYTHON_CMD" "$PROCESS_IDENTITY_HELPER" check \
+        --identity "$IDENTITY_FILE" --task-id "$TASK_ID" --role "$ROLE" >/dev/null
+    IDENTITY_STATUS=$?
+    set -e
+    if [ "$IDENTITY_STATUS" -eq 0 ]; then
+        echo "Error: ${ROLE} process identity is still active for ${TASK_ID}. Stop it first with kill-claude.sh." >&2
+        exit 1
+    fi
+    if [ "$IDENTITY_STATUS" -ne 1 ]; then
+        echo "Error: ${ROLE} process identity cannot be verified for ${TASK_ID}; cleanup fails closed." >&2
+        exit 1
+    fi
+done
+
+# PID-only probing is retained solely for runtime artifacts created before
+# process identity receipts existed.
+if [ "$IDENTITY_FOUND" -eq 0 ] && [ -f "$PID_FILE" ]; then
     PID="$(tr -d '[:space:]' < "$PID_FILE")"
     if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
         echo "Error: Claude process is still running (pid=$PID). Stop it first with kill-claude.sh." >&2

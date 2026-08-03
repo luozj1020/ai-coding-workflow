@@ -105,7 +105,6 @@ PYTHON_SCRIPTS = [
     ("prepare-codex-takeover.py", "ai/prepare-codex-takeover.py"),
     ("prepare-write-sandbox.py", "ai/prepare-write-sandbox.py"),
     ("write-approved-file.py", "ai/write-approved-file.py"),
-    ("collect-workflow-feedback.py", "ai/collect-workflow-feedback.py"),
     ("build-invariant-acceptance-matrix.py", "ai/build-invariant-acceptance-matrix.py"),
     ("change-size-advisory.py", "ai/change-size-advisory.py"),
     ("archive-terminal-runtime.py", "ai/archive-terminal-runtime.py"),
@@ -114,6 +113,7 @@ PYTHON_SCRIPTS = [
     ("compare-transfer-pilot.py", "ai/compare-transfer-pilot.py"),
     ("classify-claude-attempt.py", "ai/classify-claude-attempt.py"),
     ("verify-claude-report.py", "ai/verify-claude-report.py"),
+    ("validate-claude-report.py", "ai/validate-claude-report.py"),
     ("validate-revision-card.py", "ai/validate-revision-card.py"),
     ("repository-scale.py", "ai/repository-scale.py"),
     ("prepare-advisor-continuation.py", "ai/prepare-advisor-continuation.py"),
@@ -214,7 +214,6 @@ PYTHON_SCRIPTS = [
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)
 SCHEMA_ASSETS = [
-    ("schemas/workflow-feedback-v1.schema.json", "ai/schemas/workflow-feedback-v1.schema.json"),
     ("schemas/task-card-v1.schema.json", "ai/schemas/task-card-v1.schema.json"),
     ("schemas/review-decision-v1.schema.json", "ai/schemas/review-decision-v1.schema.json"),
     ("schemas/run-event-v2.schema.json", "ai/schemas/run-event-v2.schema.json"),
@@ -262,6 +261,8 @@ WORKTREES_GITIGNORE_LINES = [
 
 RETIRED_WORKFLOW_FILES = [
     "ai/claude-monitor-supervisor.py",
+    "ai/collect-workflow-feedback.py",
+    "ai/schemas/workflow-feedback-v1.schema.json",
 ]
 
 LOCAL_ONLY_EXCLUDE_LINES = [
