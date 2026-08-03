@@ -722,6 +722,7 @@ def run_command(
             # the current interpreter so the CI fixture works cross-platform.
             effective_command.insert(0, sys.executable)
 
+    process: Optional[subprocess.Popen[bytes]] = None
     try:
         popen_kwargs: Dict[str, Any] = {}
         if os.name == "nt":
@@ -761,12 +762,15 @@ def run_command(
             raise CommandTimeout(
                 f"model command timed out after {timeout_seconds:g}s"
             ) from exc
-        except BaseException:
-            # External dispatcher cancellation must not orphan a model process
-            # that can keep writing after ownership has transferred.
-            terminate_process_group()
-            raise
         return process.returncode
+    except BaseException:
+        # Cover the complete lifetime after Popen succeeds, including the
+        # narrow interval before communicate() installs its own wait state.
+        # Otherwise a cancellation in that interval can orphan a model process
+        # that keeps the broker's output pipes open.
+        if process is not None:
+            terminate_process_group()
+        raise
     finally:
         if output_path and out_fh is not None:
             out_fh.close()
@@ -820,97 +824,113 @@ def execute(
     # 3. Acquire lock and validate
     lock = LedgerLock(ledger_path.with_suffix(".lock"))
 
-    with lock:
-        records = load_ledger(ledger_path)
-        validate_ledger_history(records)
-        check_budget(records, plan, role, stage)
-        check_duplicate(
-            records, plan["task_id"], role, input_hash, evidence_hash, retry_failed
-        )
-        check_request_idempotency(
-            records, plan["task_id"], request_id, call_cap
-        )
-
-        if dry_run:
-            budget_key = f"{role}_calls"
-            folded = fold_by_reservation(records, plan["task_id"], role)
-            used = sum(1 for r in folded.values() if budget_consuming(r))
-            print(json.dumps({
-                "dry_run": True,
-                "role": role,
-                "stage": stage,
-                "task_id": plan["task_id"],
-                "input_hash": input_hash,
-                "evidence_hash": evidence_hash,
-                "request_id": request_id,
-                "call_cap": call_cap,
-                "call_type": call_type,
-                "budget_used": used,
-                "budget_max": plan["budget"].get(budget_key, 0),
-                "command": command,
-            }, sort_keys=True, indent=2))
-            return 0
-
-        # 4. Allocate reservation (append 'reserved' transition)
-        reserved_record = allocate_reservation(
-            records, plan, role, stage, input_hash, evidence_hash,
-            run_id, reservation_id,
-            request_id=request_id,
-            call_cap=call_cap,
-            call_type=call_type,
-        )
-        append_ledger(ledger_path, reserved_record)
-
-        # 5. Append 'running' transition
-        running_record = {
-            **reserved_record,
-            "state": "running",
-            "timestamp": int(time.time()),
-        }
-        append_ledger(ledger_path, running_record)
-
-    # 6. Execute command (lock released)
-    input_data = input_path.read_bytes() if input_path is not None else None
+    running_record: Optional[Dict[str, Any]] = None
     start = time.monotonic()
-
     try:
+        with lock:
+            records = load_ledger(ledger_path)
+            validate_ledger_history(records)
+            check_budget(records, plan, role, stage)
+            check_duplicate(
+                records, plan["task_id"], role, input_hash, evidence_hash, retry_failed
+            )
+            check_request_idempotency(
+                records, plan["task_id"], request_id, call_cap
+            )
+
+            if dry_run:
+                budget_key = f"{role}_calls"
+                folded = fold_by_reservation(records, plan["task_id"], role)
+                used = sum(1 for r in folded.values() if budget_consuming(r))
+                print(json.dumps({
+                    "dry_run": True,
+                    "role": role,
+                    "stage": stage,
+                    "task_id": plan["task_id"],
+                    "input_hash": input_hash,
+                    "evidence_hash": evidence_hash,
+                    "request_id": request_id,
+                    "call_cap": call_cap,
+                    "call_type": call_type,
+                    "budget_used": used,
+                    "budget_max": plan["budget"].get(budget_key, 0),
+                    "command": command,
+                }, sort_keys=True, indent=2))
+                return 0
+
+            # 4. Allocate reservation (append 'reserved' transition)
+            reserved_record = allocate_reservation(
+                records, plan, role, stage, input_hash, evidence_hash,
+                run_id, reservation_id,
+                request_id=request_id,
+                call_cap=call_cap,
+                call_type=call_type,
+            )
+            append_ledger(ledger_path, reserved_record)
+
+            # 5. Append 'running' transition. Assign the record before the
+            # append so cancellation during the durable write can still repair
+            # the transition under the ledger lock.
+            running_record = {
+                **reserved_record,
+                "state": "running",
+                "timestamp": int(time.time()),
+            }
+            append_ledger(ledger_path, running_record)
+
+        # 6. Execute command (lock released)
+        input_data = input_path.read_bytes() if input_path is not None else None
         exit_code = run_command(
             command, input_data, output_path, stderr_path, timeout_seconds
         )
+
+        elapsed = time.monotonic() - start
+
+        # 7. Record final state while the same cancellation guard remains
+        # active, leaving no running-to-final signal window.
+        final_state = "succeeded" if exit_code == 0 else "failed"
+        with lock:
+            final_record = {
+                **running_record,
+                "state": final_state,
+                "timestamp": int(time.time()),
+                "elapsed_seconds": round(elapsed, 3),
+                "exit_code": exit_code,
+                "output_path": str(output_path) if output_path else None,
+                "stderr_path": str(stderr_path) if stderr_path else None,
+            }
+            append_ledger(ledger_path, final_record)
+
+        return exit_code
     except BaseException as exc:
         # Record failures and operator interrupts so reservations never remain
-        # indefinitely in the running state.
+        # indefinitely in the running state. Re-read while locked because the
+        # signal may have interrupted either durable transition append.
+        if running_record is None:
+            raise
         elapsed = time.monotonic() - start
         interrupted = isinstance(exc, (KeyboardInterrupt, SystemExit))
         with lock:
-            fail_record = {
-                **running_record,
-                "state": "cancelled" if interrupted else "failed",
-                "timestamp": int(time.time()),
-                "elapsed_seconds": round(elapsed, 3),
-                "exit_code": -1,
-                "error": str(exc),
-            }
-            append_ledger(ledger_path, fail_record)
+            current_records = load_ledger(ledger_path)
+            matching = [
+                record for record in current_records
+                if record.get("reservation_id") == running_record["reservation_id"]
+            ]
+            current_state = matching[-1].get("state") if matching else None
+            if current_state == "reserved":
+                append_ledger(ledger_path, running_record)
+                current_state = "running"
+            if current_state == "running":
+                fail_record = {
+                    **running_record,
+                    "state": "cancelled" if interrupted else "failed",
+                    "timestamp": int(time.time()),
+                    "elapsed_seconds": round(elapsed, 3),
+                    "exit_code": -1,
+                    "error": str(exc),
+                }
+                append_ledger(ledger_path, fail_record)
         raise
-
-    elapsed = time.monotonic() - start
-
-    # 7. Record final state
-    final_state = "succeeded" if exit_code == 0 else "failed"
-    with lock:
-        final_record = {
-            **running_record,
-            "state": final_state,
-            "timestamp": int(time.time()),
-            "elapsed_seconds": round(elapsed, 3),
-            "exit_code": exit_code,
-            "output_path": str(output_path) if output_path else None,
-            "stderr_path": str(stderr_path) if stderr_path else None,
-        }
-        append_ledger(ledger_path, final_record)
-
-    return exit_code
 
 
 # ---------------------------------------------------------------------------
