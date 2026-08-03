@@ -202,7 +202,9 @@ class InstallForCodexTests(unittest.TestCase):
         self.assertIn("Checker/Test", content)
         self.assertIn("claude-runtime.md", content)
         self.assertIn("review-policy.md", content)
-        self.assertIn("Dirty source requires clean restoration or an explicit hash-bound snapshot", content)
+        self.assertNotIn("Dirty source requires clean restoration or an explicit hash-bound snapshot", content)
+        worktree_policy = (ROOT / "references" / "worktree-and-parallel.md").read_text(encoding="utf-8")
+        self.assertIn("Dirty source or stale HEAD blocks reliable delegation", worktree_policy)
 
     def test_skill_entrypoint_stays_within_default_context_budget(self):
         content = (ROOT / "SKILL.md").read_text(encoding="utf-8")
@@ -319,6 +321,28 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn(str(installer), cmd)
             self.assertIn("--bootstrap-repo", cmd)
             self.assertIn("/tmp/repo", cmd)
+
+    def test_update_skill_refreshes_bootstrapped_current_repo_by_default(self):
+        helper = ROOT / "scripts" / "update_skill.py"
+        spec = importlib.util.spec_from_file_location("update_skill", helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            (repo / "ai").mkdir(parents=True)
+            (repo / "ai" / "dispatch-to-claude.sh").write_text(
+                "old dispatcher\n", encoding="utf-8"
+            )
+            args = module.parse_args([])
+            cmd = module.build_install_command("/skill/install_for_codex.py", args, str(repo))
+            self.assertIn("--bootstrap-current", cmd)
+
+            skill_only = module.parse_args(["--skill-only"])
+            cmd = module.build_install_command(
+                "/skill/install_for_codex.py", skill_only, str(repo)
+            )
+            self.assertNotIn("--bootstrap-current", cmd)
 
 
 class TestParseArgsAutoSetup(unittest.TestCase):

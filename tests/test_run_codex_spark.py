@@ -3041,7 +3041,7 @@ class SparkExecutionEnvTests(unittest.TestCase):
                 cwd=str(repo), env=env,
                 text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
-            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.returncode, 75, result.stderr + result.stdout)
             report = (repo / ".worktrees" / "spark-test" / "codex-spark.report.md").read_text(
                 encoding="utf-8"
             )
@@ -3052,6 +3052,9 @@ class SparkExecutionEnvTests(unittest.TestCase):
             self.assertIn("re-run with --execution-env host", report)
             # Resolved environment should reflect restricted sandbox
             self.assertIn("| Execution environment resolved | sandbox-restricted |", report)
+            self.assertIn("host_retry_command_form=stable-cli", result.stderr)
+            self.assertIn("--execution-env host", result.stderr)
+            self.assertNotIn("env -u", result.stderr)
 
     def test_restricted_auto_required_exits_nonzero(self):
         """Restricted auto required: non-zero exit, zero fake calls."""
@@ -3069,13 +3072,16 @@ class SparkExecutionEnvTests(unittest.TestCase):
                 cwd=str(repo), env=env,
                 text=True, encoding="utf-8", errors="replace", capture_output=True,
             )
-            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.returncode, 75)
             self.assertIn("network-restricted", result.stderr)
             self.assertNotIn("SENSITIVE_BRIEF_SENTINEL", result.stderr)
+            self.assertIn("host_retry_command_form=stable-cli", result.stderr)
+            self.assertIn("host_retry_command_omitted=sensitive-inline-input", result.stderr)
+            self.assertNotIn("env -u", result.stderr)
             report = (repo / ".worktrees" / "spark-test" / "codex-spark.report.md").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("<args>", report)
+            self.assertIn("<same args>", report)
             self.assertNotIn("SENSITIVE_BRIEF_SENTINEL", report)
             self.assertIn("| Spark invoked? | no |", report)
             self.assertIn("| Spark calls used | 0 |", report)
@@ -3211,11 +3217,13 @@ class SparkExecutionEnvTests(unittest.TestCase):
                 capture_output=True,
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.returncode, 75, result.stderr + result.stdout)
             self.assertIn("spark_status=unavailable", result.stdout)
             self.assertIn("needs_host_execution=true", result.stderr)
             self.assertIn("host_handoff_required=true", result.stderr)
             self.assertIn("execution_env_resolved=auto-unrestricted", result.stderr)
+            self.assertIn("host_retry_command_form=stable-cli", result.stderr)
+            self.assertIn("--execution-env host", result.stderr)
 
     def test_compact_diagnostic_under_explicit_sandbox_persists_redacted(self):
         """Compact diagnostic under explicit sandbox/direct mode persists head+tail
@@ -3279,11 +3287,14 @@ class SparkExecutionEnvTests(unittest.TestCase):
                 errors="replace",
                 capture_output=True,
             )
-            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.returncode, 75, result.stderr + result.stdout)
             self.assertIn("needs_host_execution=true", result.stderr)
             self.assertIn("host_handoff_required=true", result.stderr)
             self.assertIn("execution_env_requested=auto", result.stderr)
             self.assertIn("execution_env_resolved=sandbox-restricted", result.stderr)
+            self.assertIn("host_retry_command_form=stable-cli", result.stderr)
+            self.assertIn("--execution-env host", result.stderr)
+            self.assertNotIn("CODEX_SPARK_HOST_AUTHORITY=", result.stderr)
 
     def test_restricted_auto_report_marks_host_handoff_without_invocation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3311,11 +3322,33 @@ class SparkExecutionEnvTests(unittest.TestCase):
                 errors="replace",
                 capture_output=True,
             )
-            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertEqual(result.returncode, 75, result.stderr + result.stdout)
             report = (output_dir / "codex-spark.report.md").read_text(encoding="utf-8")
             self.assertIn("| Host handoff required? | yes |", report)
             self.assertIn("| Spark invoked? | no |", report)
             self.assertIn("| Spark calls used | 0 |", report)
+
+    def test_implementation_routing_event_normalizes_to_next_phase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(tmp_path, output_text="audit ok")
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                    "--mode", "task-card-audit",
+                    "--routing-event", "implementation",
+                    "--result-mode", "direct",
+                    "--execution-env", "host",
+                ],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("spark_routing_event=next-phase", result.stdout)
+            self.assertIn("spark_routing_event_requested=implementation", result.stdout)
 
 
 if __name__ == "__main__":

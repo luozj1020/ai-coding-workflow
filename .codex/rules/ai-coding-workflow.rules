@@ -13,6 +13,7 @@ prefix_rule(
         "bash ai/dispatch-to-claude.sh task-card.md",
         "bash ai/dispatch-to-claude.sh /tmp/task-card.md",
         "bash ai/dispatch-to-claude.sh task-card.md --dirty-source-mode snapshot",
+        "bash ai/dispatch-to-claude.sh task-card.md --execution-env host --dirty-source-mode snapshot",
         "bash ai/dispatch-to-claude.sh task-card.md --execution-env host --retry-in-place-task-id claude-123",
     ],
     not_match = [
@@ -29,6 +30,7 @@ prefix_rule(
     match = [
         "bash ai/run-codex-spark.sh task-card.md --mode task-card-audit --result-mode direct",
         "bash ai/run-codex-spark.sh task-card.md --mode task-card-audit --result-mode direct --execution-env host",
+        "bash ai/run-codex-spark.sh task-card.md --mode task-card-audit --routing-event implementation --result-mode direct --execution-env host --empty-api-config-env PROJECT_API_CONFIG_FILE",
     ],
     not_match = [
         "bash scripts/run-codex-spark.sh task-card.md",

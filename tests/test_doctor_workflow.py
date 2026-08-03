@@ -114,7 +114,7 @@ class DoctorWorkflowTests(unittest.TestCase):
             self.assertIn(".codex/rules/ai-coding-workflow.rules", text)
             self.assertIn("--update-workflow-files", text)
 
-    def test_doctor_warns_when_local_workflow_files_are_outdated(self):
+    def test_doctor_errors_when_local_dispatcher_cannot_use_stable_host_cli(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
@@ -131,7 +131,7 @@ class DoctorWorkflowTests(unittest.TestCase):
             finally:
                 module._candidate_skill_roots = old_roots
 
-            self.assertFalse(has_error)
+            self.assertTrue(has_error)
             text = "\n".join("{} [{}] {}".format(*f) for f in findings)
             self.assertIn("workflow-version", text)
             self.assertIn("ai/dispatch-to-claude.sh", text)
@@ -161,6 +161,29 @@ class DoctorWorkflowTests(unittest.TestCase):
             text = "\n".join("{} [{}] {}".format(*f) for f in findings)
             self.assertIn("workflow-version", text)
             self.assertIn("ai/monitor-claude.sh", text)
+            self.assertIn("--update-workflow-files", text)
+
+    def test_doctor_errors_when_spark_launcher_lacks_stable_host_handoff(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            (repo / "ai" / "run-codex-spark.sh").write_text(
+                "#!/usr/bin/env bash\n# old spark launcher\n", encoding="utf-8"
+            )
+
+            old_roots = module._candidate_skill_roots
+            try:
+                module._candidate_skill_roots = lambda: [str(ROOT)]
+                findings, has_error = module.run_doctor(str(repo))
+            finally:
+                module._candidate_skill_roots = old_roots
+
+            self.assertTrue(has_error)
+            text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+            self.assertIn("stable exit-75 host retry protocol", text)
+            self.assertIn("implementation routing-event", text)
             self.assertIn("--update-workflow-files", text)
 
     def test_doctor_detects_outdated_agents_managed_block(self):

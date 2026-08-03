@@ -162,7 +162,8 @@ The selected role reaches runtime directly: `solution-planner` maps to
 | **Guided setup repo (preview)** | Preview guided setup for a specific repository | `python scripts/update_skill.py --setup-repo /path/to/repo` |
 | **Guided setup repo (apply)** | Run guided setup for a specific repository | `python scripts/update_skill.py --setup-repo /path/to/repo --apply` |
 | **Install Skill** | Once per computer | `python scripts/install_for_codex.py` |
-| **Update Skill** | After pulling a newer checkout | `python scripts/update_skill.py --bootstrap-current` |
+| **Update Skill** | After pulling a newer checkout; refresh an already-bootstrapped current repo automatically | `python scripts/update_skill.py` |
+| **Update Skill only** | Explicitly leave project-local `ai/` files unchanged | `python scripts/update_skill.py --skill-only` |
 | **Bootstrap project** | Once per repository | `python scripts/install_workflow.py .` |
 | **Bootstrap local-only** | Repositories that should not commit workflow control-plane files | `python scripts/install_workflow.py . --local-only` |
 | **Auto-setup repo** | Detect profiles and plan LSP/CodeGraph/Zoekt | `python scripts/install_for_codex.py --auto-setup /path/to/repo` |
@@ -208,6 +209,13 @@ prefix and use the bounded wrapper option:
 bash ai/run-codex-spark.sh CARD ... --empty-api-config-env PROJECT_API_CONFIG_FILE
 bash ai/dispatch-to-claude.sh CARD --empty-api-config-env PROJECT_API_CONFIG_FILE
 ```
+
+Spark host handoff exits `75` and emits a stable retry command beginning with
+`bash ai/run-codex-spark.sh`; Claude uses the matching
+`bash ai/dispatch-to-claude.sh` form. The compatibility event
+`--routing-event implementation` normalizes to `next-phase`. If doctor reports
+a stale launcher, refresh the project instead of using an environment-prefixed
+fallback command.
 
 This narrow rule does not authorize arbitrary Bash, merge, deployment,
 destructive actions, or product decisions. Spark remains advisory and Codex
@@ -422,7 +430,7 @@ python scripts/update_skill.py --bootstrap-current
 python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
-`python scripts/update_skill.py` updates only the user-level Codex Skill. `--bootstrap-current` and `--bootstrap-repo` additionally refresh the target repository's local workflow files with `--update-workflow-files`, so existing projects receive new dispatcher, review prompt, template, and helper behavior.
+`python scripts/update_skill.py` updates the user-level Codex Skill and automatically refreshes the current repository when it is already bootstrapped. `--bootstrap-current` makes that intent explicit, `--bootstrap-repo` targets another repository, and `--skill-only` intentionally leaves project-local workflow files unchanged.
 
 The installed updater records and reuses the real source checkout rather than
 silently using the installed Skill as its own update source. Missing or invalid
@@ -1347,6 +1355,18 @@ For complex or repeatedly revised work, add an `## Execution Phases` table to th
 
 Dirty-source guard: dispatch blocks when the source worktree has tracked changes, staged changes, or unrelated untracked files because Claude would run from stale `HEAD`. The current task card may be untracked. When the dirty state is the explicitly approved baseline, use `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot`; the environment selector remains compatibility-only. Use `CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1` only for intentional legacy advanced dispatch.
 
+For retry-in-place and reviewed continuation, a missing Claude conversation is
+recorded as a non-model resume failure and triggers one automatic fresh-session
+attempt with the same owner, task, worktree, and write scope. Exact-path write
+enforcement uses external writable staging plus a pre-model write probe, so an
+incorrectly read-only `/mnt/*` mount fails before model interaction rather than
+after a long run. The sandbox maps Claude's session environment to task-local
+temporary storage and supplies a receipt-validated exact-file replacement
+helper for clients whose Edit implementation needs a writable parent directory
+or whose runtime omits Write. The helper supports complete-file writes and
+unique old/new fragment replacement; zero matches, multiple matches, and
+undeclared targets fail without writing.
+
 ```bash
 CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=420 \
 CLAUDE_CODE_TIMEOUT_SECONDS=600 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS=300 \
@@ -1512,6 +1532,19 @@ python ai/clean_runtime.py --task-id claude-20260709-120000 --apply
 ```
 
 `doctor_workflow.py` runs in preview-only mode: it shows count, size, and age of runtime artifacts. It does not automatically delete anything.
+
+**Local workflow feedback:**
+
+```bash
+aiwf feedback --preview --task-id TASK_ID
+aiwf feedback --record --task-id TASK_ID --issue false-progress --rating efficiency=4
+aiwf feedback --bundle
+```
+
+Preview and bundle are read-only by default. Records stay under
+`.ai-workflow/feedback/`; no model, network, API configuration, prompt, source,
+diff, or raw log is used. See `references/feedback-policy.md` for the evidence
+and privacy boundary.
 
 **Check context tools:**
 

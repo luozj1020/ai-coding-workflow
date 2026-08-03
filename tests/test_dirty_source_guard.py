@@ -30,6 +30,7 @@ WORKTREE_STATE_HASH = ROOT / "scripts" / "worktree_state_hash.py"
 PREPARE_WORKTREE_CONTINUATION = ROOT / "scripts" / "prepare-worktree-continuation.py"
 PREPARE_CODEX_TAKEOVER = ROOT / "scripts" / "prepare-codex-takeover.py"
 PREPARE_WRITE_SANDBOX = ROOT / "scripts" / "prepare-write-sandbox.py"
+WRITE_APPROVED_FILE = ROOT / "scripts" / "write-approved-file.py"
 OWNER_LEASE = ROOT / "scripts" / "owner_lease.py"
 MODEL_USAGE = ROOT / "scripts" / "model-usage.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
@@ -102,6 +103,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(PREPARE_WORKTREE_CONTINUATION, self.repo / "scripts" / "prepare-worktree-continuation.py")
         shutil.copy2(PREPARE_CODEX_TAKEOVER, self.repo / "scripts" / "prepare-codex-takeover.py")
         shutil.copy2(PREPARE_WRITE_SANDBOX, self.repo / "scripts" / "prepare-write-sandbox.py")
+        shutil.copy2(WRITE_APPROVED_FILE, self.repo / "scripts" / "write-approved-file.py")
         shutil.copy2(OWNER_LEASE, self.repo / "scripts" / "owner_lease.py")
         shutil.copy2(MODEL_USAGE, self.repo / "scripts" / "model-usage.py")
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
@@ -116,6 +118,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                    "scripts/worktree_state_hash.py", "scripts/prepare-worktree-continuation.py",
                    "scripts/prepare-codex-takeover.py", "scripts/owner_lease.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/prepare-write-sandbox.py"], cwd=self.repo)
+        self._run(["git", "add", "scripts/write-approved-file.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/model-usage.py"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
@@ -160,6 +163,14 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "if [ -n \"${FAKE_CLAUDE_INVOCATION_LOG:-}\" ]; then printf 'invoke\\n' >> \"${FAKE_CLAUDE_INVOCATION_LOG}\"; fi\n"
                 "if [ -n \"${FAKE_CLAUDE_ARGV_LOG:-}\" ]; then printf '%s\\n' \"$*\" >> \"${FAKE_CLAUDE_ARGV_LOG}\"; fi\n"
                 "if [ -n \"${FAKE_CLAUDE_ARGV_NUL_LOG:-}\" ]; then printf '%s\\0' \"$@\" > \"${FAKE_CLAUDE_ARGV_NUL_LOG}\"; fi\n"
+                "if [ \"${FAKE_CLAUDE_MODE:-}\" = resume-missing-once ]; then\n"
+                "  if [[ \"$*\" == *\"--resume\"* ]] && [ ! -e \"${FAKE_CLAUDE_RESUME_MARKER}\" ]; then\n"
+                "    : > \"${FAKE_CLAUDE_RESUME_MARKER}\"\n"
+                "    echo 'No conversation found for session' >&2\n"
+                "    exit 42\n"
+                "  fi\n"
+                "  FAKE_CLAUDE_MODE=success\n"
+                "fi\n"
                 "if [ -n \"${FAKE_CLAUDE_PROMPT_CAPTURE:-}\" ]; then\n"
                 "  cat > \"${FAKE_CLAUDE_PROMPT_CAPTURE}\"\n"
                 "else\n"
@@ -597,6 +608,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
     def _dispatch(self, task_arg="task-cards/PROJ.md", extra_env=None, extra_args=None):
         env = {
             "PATH": str(self.fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+            "HOME": str(self.case_root / "home"),
             "CLAUDE_CODE_TIMEOUT_SECONDS": "30",
             "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
             "CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS": "0",
@@ -609,6 +621,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             # Enforcement-specific tests override this and use scoped cards.
             "CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "off",
         }
+        (self.case_root / "home").mkdir(exist_ok=True)
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
@@ -1238,6 +1251,13 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(receipt["declared_write_paths"], ["README.md"])
         self.assertTrue(receipt["bash_cannot_bypass_scope"])
+        self.assertEqual(runtime["tool_profile_evidence"], "cli-flag-support-only")
+        self.assertFalse(runtime["runtime_tool_inventory_verified"])
+        self.assertTrue((self.case_root / "home" / ".claude" / "session-env").is_dir())
+        prompt = pathlib.Path(runtime["worktree"]) / "CLAUDE_PROMPT.md"
+        self.assertIn("EXACT APPROVED FILE WRITER", prompt.read_text(encoding="utf-8"))
+        self.assertIn("write-approved-file.py", prompt.read_text(encoding="utf-8"))
+        self.assertIn("--replace-old-source", prompt.read_text(encoding="utf-8"))
 
     def test_workspace_trust_preflight_stops_before_builder_window(self):
         self._write_task_card()
@@ -1445,6 +1465,37 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotEqual(third.returncode, 0)
         self.assertIn("retry budget exhausted", third.stderr)
 
+    def test_missing_resume_session_records_failure_and_retries_fresh_same_owner(self):
+        _, _, first_runtime = self._do_fresh_dispatch()
+        prior_task_id = first_runtime["task_id"]
+        invocation_log = self.case_root / "resume-invocations.log"
+        marker = self.case_root / "resume-missing.marker"
+
+        result = self._dispatch(extra_env={
+            "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id,
+            "FAKE_CLAUDE_MODE": "resume-missing-once",
+            "FAKE_CLAUDE_RESUME_MARKER": str(marker),
+            "FAKE_CLAUDE_INVOCATION_LOG": str(invocation_log),
+        })
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        receipt = self.repo / ".worktrees" / f"{runtime['task_id']}.session-resume-failure.json"
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        self.assertEqual(value["failure_category"], "session-not-found")
+        self.assertFalse(value["counts_as_model_failure"])
+        self.assertTrue(value["fresh_same_owner_retry_authorized"])
+        self.assertTrue(value["task_card_sha256"].startswith("sha256:"))
+        self.assertEqual(value["source_base_commit"], first_runtime["source_base_commit"])
+        self.assertEqual(
+            invocation_log.read_text(encoding="utf-8").splitlines(),
+            ["invoke", "invoke"],
+        )
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("retrying once with same owner and fresh session", progress)
+
     def test_two_linked_execution_timeouts_issue_bounded_takeover_receipt(self):
         task = self._write_builder_task_card()
         with task.open("a", encoding="utf-8") as handle:
@@ -1515,6 +1566,23 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("retry-in-place", result.stdout)
+
+    def test_retry_in_place_ignores_zero_byte_untracked_report_placeholders(self):
+        _, first_worktree, first_runtime = self._do_fresh_dispatch()
+        prior_task_id = first_runtime["task_id"]
+        reports = first_worktree / "reports"
+        reports.mkdir()
+        (reports / "specified-progress.md").touch()
+        (reports / "specified-report.md").touch()
+
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id}
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("retry-in-place", result.stdout)
+        self.assertTrue((reports / "specified-progress.md").exists())
+        self.assertTrue((reports / "specified-report.md").exists())
 
     def test_retry_in_place_rejects_managed_prior_strategy(self):
         self._write_task_card()

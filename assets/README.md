@@ -46,10 +46,10 @@ python $env:USERPROFILE\.codex\skills\ai-coding-workflow\scripts\install_workflo
 For routine updates, use the convenience wrapper from a cloned `ai-coding-workflow` checkout:
 
 ```bash
-python scripts/update_skill.py --bootstrap-current
+python scripts/update_skill.py
 ```
 
-Updating the user-level Skill and updating this repository's local workflow files are separate operations. `update_skill.py --bootstrap-current` does both: it refreshes the Codex Skill and then runs the repository bootstrap with `--update-workflow-files` so existing `ai/*` workflow files receive new dispatcher, review prompt, template, and helper behavior. Running `install_workflow.py` without that flag reports outdated local files but does not overwrite them.
+`update_skill.py` refreshes the user-level Skill and, when the current repository is already bootstrapped, its local workflow files too. Use `--skill-only` only when intentionally leaving project-local `ai/*` files unchanged. Running `install_workflow.py` without its update flag still reports outdated local files without overwriting them.
 
 Bootstrap also manages `.codex/rules/ai-coding-workflow.rules`. Once the project
 is trusted and Codex is restarted, the rule allows the exact standard
@@ -59,6 +59,10 @@ confirmation. It deliberately does not allow arbitrary Bash, `scripts/*`
 source helpers, environment-wrapped commands, merge, deployment, or destructive
 actions. Spark remains advisory and Codex retains routing and semantic review.
 Use `--update-workflow-files` to add or refresh this rule in an older project.
+Sandbox/network handoff exits 75 and prints a stable host retry beginning with
+the same approved launcher prefix. Spark accepts
+`--routing-event implementation` as a `next-phase` alias. Doctor treats stale
+launchers as an error; refresh them instead of prepending environment variables.
 After host authority is granted, keep that stable launcher prefix:
 
 ```bash
@@ -418,10 +422,25 @@ python ai/select-continuation-owner.py --request OWNER_REQUEST.json \
   --previous-lease OWNER_LEASE.previous.json -o OWNER_LEASE.json
 ```
 
-`resume-required` means the recorded session must be resumed first. A new
-same-owner session is granted only after `resume_status=failed`. Advisor is
-skipped without semantic blockers and Reviewer is skipped without new immutable
-evidence.
+`resume-required` means the recorded session must be resumed first. If Claude
+returns conversation/session not found, the dispatcher records that failed
+resume as a non-model failure and automatically makes exactly one fresh-session
+attempt with the same owner, task, worktree, and write scope. Other resume
+failures remain terminal. Advisor is skipped without semantic blockers and
+Reviewer is skipped without new immutable evidence.
+
+Exact-path write enforcement stages writable copies outside the worktree and
+binds only those copies over the declared destinations inside the read-only
+sandbox. Before model interaction, the dispatcher performs a real write probe
+through that final mount layout. A read-only allowed path therefore terminates
+as an environment blocker instead of consuming a Claude round; only
+receipt-listed staged paths are synchronized back. The task also receives a
+writable `~/.claude/session-env` mount. When built-in Edit needs a neighboring
+temporary file or Write is unavailable, the generated prompt directs Claude to
+create complete replacement content under `$TMPDIR` and invoke the
+receipt-validated `write-approved-file.py`. It also supports old/new fragment
+files, but writes only when the old bytes match exactly once. Zero matches,
+multiple matches, and undeclared files fail without writing.
 
 Estimate Handoff Tax from observed run events, then calibrate it with an
 explicit reviewed cost policy:
@@ -1133,6 +1152,19 @@ python ai/clean_runtime.py --task-id claude-20260701-093934 --apply
 `clean_runtime.py --task-id ...` is useful for large repositories because it avoids broad root artifact cleanup and preserves unrelated dispatches.
 
 `doctor_workflow.py` runs in preview-only mode: it shows count, size, and age of runtime artifacts. It does not automatically delete anything.
+
+Local usage feedback is also read-only by default:
+
+```bash
+aiwf feedback --preview --task-id TASK_ID
+aiwf feedback --record --task-id TASK_ID --issue false-progress --rating efficiency=4
+aiwf feedback --bundle
+```
+
+Records stay under `.ai-workflow/feedback/`; bundles exclude comments and raw
+records. The collector never invokes a model or network and never reads API
+configuration, prompts, source, diffs, or raw logs. See the installed
+`references/feedback-policy.md` for the normative boundary.
 
 ---
 

@@ -304,7 +304,7 @@ Fast path rules:
 | Repository scale detected / routing scale | <!-- small/medium/large/giant --> |
 | Historical worktree setup cost | <!-- unknown/low/medium/high + median seconds/sample count --> |
 | Task role | core-semantic / auxiliary / mixed / unknown |
-| Routing event | initial / revision / narrow / retry / next-phase |
+| Routing event | initial / revision / narrow / retry / next-phase (`implementation` CLI alias) |
 | Estimate calibration multiplier | 1.5 default / 2.0 orchestration-test-cross-platform |
 | Calibrated predicted diff high | <!-- ceil(raw high × multiplier) --> |
 | Estimated direct work units | <!-- positive integer; relative, not token accounting --> |

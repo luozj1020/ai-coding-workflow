@@ -153,7 +153,8 @@ Claude 是默认实现者：`exploratory-builder` 负责边界明确但路径不
 | **指定仓库配置（预览）** | 预览其他仓库的配置计划 | `python scripts/update_skill.py --setup-repo /path/to/repo` |
 | **指定仓库配置（执行）** | 对其他仓库执行完整配置 | `python scripts/update_skill.py --setup-repo /path/to/repo --apply` |
 | **安装 Skill** | 每台电脑一次 | `python scripts/install_for_codex.py` |
-| **更新 Skill** | 拉取新版本后 | `python scripts/update_skill.py --bootstrap-current` |
+| **更新 Skill** | 拉取新版本后；当前目录已引导时自动刷新项目 `ai/` | `python scripts/update_skill.py` |
+| **仅更新 Skill** | 明确保留项目内现有 `ai/` 文件 | `python scripts/update_skill.py --skill-only` |
 | **引导项目** | 每个仓库一次 | `python scripts/install_workflow.py .` |
 | **本地控制面引导** | 不希望提交 workflow 控制面文件的仓库 | `python scripts/install_workflow.py . --local-only` |
 | **自动配置仓库（预览）** | 检测语言、规模以及 LSP/CodeGraph/Zoekt 计划 | `python scripts/install_for_codex.py --auto-setup /path/to/repo` |
@@ -195,6 +196,12 @@ bash ai/dispatch-to-claude.sh ...
 bash ai/run-codex-spark.sh CARD ... --empty-api-config-env PROJECT_API_CONFIG_FILE
 bash ai/dispatch-to-claude.sh CARD --empty-api-config-env PROJECT_API_CONFIG_FILE
 ```
+
+Spark 的宿主交接统一返回 `75`，并输出以
+`bash ai/run-codex-spark.sh` 开头的稳定重试命令；Claude 使用对应的
+`bash ai/dispatch-to-claude.sh` 形式。兼容事件
+`--routing-event implementation` 会规范化为 `next-phase`。doctor 若报告
+launcher 陈旧，应先刷新项目，不得退回前置环境变量命令。
 
 这条窄规则不会授权任意 Bash、合并、部署、破坏性操作或产品决策。Spark 仍然
 只是 advisory，路由和有界语义审查仍由 Codex 负责。
@@ -397,7 +404,7 @@ python scripts/update_skill.py --bootstrap-current
 python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
-`python scripts/update_skill.py` 只更新用户级 Codex Skill。`--bootstrap-current` 和 `--bootstrap-repo` 会额外使用 `--update-workflow-files` 刷新目标仓库本地 workflow 文件，因此旧项目也能拿到新的 dispatcher、review prompt、模板和辅助脚本行为。
+`python scripts/update_skill.py` 更新用户级 Codex Skill，并在当前仓库已经引导时自动刷新项目内 workflow 文件。`--bootstrap-current` 可显式指定当前仓库，`--bootstrap-repo` 用于其他仓库，`--skill-only` 才会有意保留项目内旧文件。
 
 已安装的更新器会记录并复用真实源码 checkout，不会再静默地把已安装 Skill
 目录当成自己的更新源。来源记录缺失、过期、自引用或不再指向 Git checkout
@@ -643,6 +650,8 @@ Codex 接受 Builder 主体方向后，每个修订仍必须在编写下一张�
 权限或审批拦截包括 sandbox 写入被拒、禁止修改的文件、CLI 未认证、网络受限命令、需要人工批准的命令，以及任务卡明确写出的“不要读取或修改”路径。这类情况应写入 progress/report 产物，并按环境或编排 blocker 处理；只有在 Claude 忽略了可用的合规路径时，才应归因为 Claude 执行问题。
 
 dirty source 或 stale HEAD 也应按同类逻辑处理：它会阻止可靠委托，但本身不是 Codex 接管实现的理由。应先恢复委托路径，例如提交已接受阶段、stash/patch 未提交改动、刷新 workflow 文件、从更新后的 HEAD 重新派发、请求明确的 dirty-source 派发批准，或停止等待人工处理。如果明确批准当前未提交状态作为基线，应使用 `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot`；环境变量形式仅用于兼容，因为前置变量赋值无法匹配受托管规则保护的稳定 launcher 前缀。
+
+对于原地重试和 reviewed continuation，若 Claude 返回 conversation/session not found，dispatcher 会先将其记录为不计模型失败的恢复故障，再以同一 owner、任务、worktree 和写入范围自动尝试一次新会话；其他恢复错误仍然终止。精确路径写入约束使用工作树外的可写 staging，并在模型交互前通过最终挂载布局执行真实写探针，因此错误的只读 `/mnt/*` 挂载会在启动模型前作为环境阻断退出，而不会消耗一个长回合。沙箱还会把 Claude 的 `~/.claude/session-env` 映射到任务临时目录；当内置 Edit 需要在目标旁创建临时文件或运行时没有 Write 时，生成的提示会要求先在 `$TMPDIR` 生成完整内容，再调用受写范围收据校验的 `write-approved-file.py`。该工具也支持 old/new 片段文件，但只有旧片段恰好匹配一次才写入；零匹配、多匹配和未声明路径均失败关闭。
 
 **步骤 1：初始化项目**（一次性）
 
@@ -1416,6 +1425,16 @@ python ai/clean_runtime.py --task-id claude-20260709-120000 --apply
 ```
 
 `doctor_workflow.py` 以预览模式运行：显示运行时产物的数量、大小和年龄。它不会自动删除任何内容。
+
+**本地工作流反馈：**
+
+```bash
+aiwf feedback --preview --task-id TASK_ID
+aiwf feedback --record --task-id TASK_ID --issue false-progress --rating efficiency=4
+aiwf feedback --bundle
+```
+
+preview 和 bundle 默认只读；记录仅保存在 `.ai-workflow/feedback/`。收集器不调用模型或网络，不读取 API 配置，也不包含 prompt、源码、diff 或原始日志。完整证据和隐私边界见 `references/feedback-policy.md`。
 
 **检查上下文工具：**
 

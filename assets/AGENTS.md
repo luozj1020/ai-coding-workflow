@@ -56,6 +56,12 @@ When the handoff receipt names a dirty snapshot, add
 `--dirty-source-mode snapshot`; do not prepend its legacy environment selector.
 Legacy environment selectors remain compatible but are not the preferred
 approval shape.
+If either local launcher lacks these stable CLI options or Spark's exit-75 host
+handoff, refresh the bootstrapped project workflow before any model call. Never
+work around a stale launcher by prepending environment assignments. The Skill
+updater refreshes an already-bootstrapped current repository by default;
+`--skill-only` is the explicit opt-out. Treat Spark routing event
+`implementation` as the `next-phase` compatibility alias.
 
 Use Claude `execution-builder` for a frozen solution, `batch-builder` for
 mechanical work, and `exploratory-builder` for bounded new-feature work whose
@@ -175,4 +181,5 @@ Load only the relevant installed skill reference:
 | retrieval/context budgets | `references/mcp-policy.md` |
 | setup/update/doctor | `references/setup-policy.md` |
 | metrics/regressions | `references/benchmark-policy.md` |
+| local usage feedback/privacy | `references/feedback-policy.md` |
 <!-- AI-CODING-WORKFLOW:END managed -->

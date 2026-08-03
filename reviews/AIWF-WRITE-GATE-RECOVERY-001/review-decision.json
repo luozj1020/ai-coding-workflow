@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "decision": "reject",
+  "scope": "phase",
+  "reasoning": "Reject the reported Claude implementation: the externally observed seven-file delta contained broad unrelated rewrites and a syntax error at line 73 of an unspecified test file. The delta was not merged. The external diff itself is unavailable in this repository, so its object hash and exact path list are intentionally not asserted.",
+  "direction": {
+    "status": "rejected"
+  },
+  "acceptance": [
+    {
+      "id": "AC-SCOPE",
+      "status": "failed",
+      "evidence": [
+        "user-reported external run: seven changed files with broad unrelated rewrites"
+      ]
+    },
+    {
+      "id": "AC-SYNTAX",
+      "status": "failed",
+      "evidence": [
+        "user-reported external run: syntax error at line 73 of an unspecified test file"
+      ]
+    },
+    {
+      "id": "AC-MERGE",
+      "status": "satisfied",
+      "evidence": [
+        "local observation on 2026-08-03: main and origin/main both referenced 3ef3c5b before the current uncommitted control-plane repair"
+      ]
+    }
+  ],
+  "validation": {
+    "status": "failed",
+    "failed_checks": [
+      "reported-syntax-check:test-path-unknown:line-73",
+      "reported-scope-review:seven-file-delta"
+    ]
+  },
+  "next_task": {
+    "mode": "control-plane",
+    "goal": "Apply the saved split plan using narrow, independently validated slices without reusing the rejected implementation delta.",
+    "acceptance": [
+      {
+        "id": "NEXT-1",
+        "description": "Each slice declares exact paths and contains no unrelated rewrites."
+      },
+      {
+        "id": "NEXT-2",
+        "description": "Each changed test file passes syntax/import validation before the next slice starts."
+      },
+      {
+        "id": "NEXT-3",
+        "description": "The rejected external delta is never merged or used as an accepted baseline."
+      }
+    ],
+    "scope": {
+      "plan": "reviews/AIWF-WRITE-GATE-RECOVERY-001/task_plan.md",
+      "evidence_boundary": "reviews/AIWF-WRITE-GATE-RECOVERY-001/evidence-boundary.json"
+    },
+    "profile": "claude-first-narrow-slices"
+  },
+  "lessons": [
+    "A model completion claim does not override syntax, scope, or merge evidence.",
+    "Large corrective deltas should be split by responsibility and validated one file or slice at a time.",
+    "Unavailable external artifacts must be recorded as unknown rather than assigned invented hashes or paths."
+  ]
+}

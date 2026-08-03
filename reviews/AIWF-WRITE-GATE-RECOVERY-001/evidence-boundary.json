@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "task_id": "AIWF-WRITE-GATE-RECOVERY-001",
+  "recorded_at": "2026-08-03",
+  "reported_external_attempt": {
+    "source": "user-feedback",
+    "changed_file_count": 7,
+    "unrelated_rewrites": true,
+    "syntax_error": {
+      "reported": true,
+      "line": 73,
+      "path": "unknown"
+    },
+    "merged": false,
+    "diff_sha256": "unknown",
+    "changed_paths": "unknown"
+  },
+  "local_observations": {
+    "repository": "/mnt/e/ai-coding-workflow",
+    "main_commit_before_current_repair": "3ef3c5b",
+    "origin_main_commit_before_current_repair": "3ef3c5b",
+    "matching_external_diff_artifact_found": false
+  },
+  "claim_policy": "User-reported facts are retained with provenance; unavailable external hashes, paths, logs, and receipts remain unknown."
+}

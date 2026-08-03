@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+# Preserve the caller's argv so a sandbox/network handoff can emit one stable
+# CLI retry without reconstructing the request through environment prefixes.
+SPARK_ORIGINAL_ARGS=("$@")
+
 PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
 export PATH
 
@@ -43,7 +47,8 @@ Options:
   --repository-scale SCALE
                     auto, small, medium, large, or giant (default auto)
   --routing-event EVENT
-                    Pre-card event: initial, revision, narrow, retry, or next-phase
+                    Pre-card event: initial, revision, narrow, retry, next-phase,
+                    or implementation (compatibility alias for next-phase)
   --model MODEL     Codex model slug (default: gpt-5.3-codex-spark)
   --sandbox MODE    read-only or workspace-write (default: read-only)
   --budget-mode     aggressive, balanced, or conservative (default: balanced)
@@ -99,7 +104,7 @@ Environment:
   CODEX_FULL_REREVIEW_FAST_PATH_MAX_DIFF_LINES=800
   CODEX_FULL_REREVIEW_FAST_PATH_MAX_FILES=8
   CODEX_REPOSITORY_SCALE=auto
-  CODEX_SPARK_ROUTING_EVENT=initial|revision|narrow|retry|next-phase
+  CODEX_SPARK_ROUTING_EVENT=initial|revision|narrow|retry|next-phase|implementation
   CODEX_SPARK_EXECUTION_ENV=auto|host|sandbox
 EOF
 }
@@ -462,9 +467,11 @@ if [ "$FULL_REREVIEW_FAST_PATH_MAX_FILES" -gt 10 ]; then
     echo "Error: CODEX_FULL_REREVIEW_FAST_PATH_MAX_FILES must be between 1 and 10." >&2
     exit 1
 fi
+ROUTING_EVENT_REQUESTED="$ROUTING_EVENT"
 case "$ROUTING_EVENT" in
+    implementation) ROUTING_EVENT="next-phase" ;;
     initial|revision|narrow|retry|next-phase) ;;
-    *) echo "Error: --routing-event must be initial, revision, narrow, retry, or next-phase." >&2; exit 1 ;;
+    *) echo "Error: --routing-event must be initial, revision, narrow, retry, next-phase, or implementation." >&2; exit 1 ;;
 esac
 
 case "$EXECUTION_ENV" in
@@ -1237,6 +1244,42 @@ if [ "$MODE" = "micro-builder" ]; then
     fi
 fi
 
+emit_host_retry_guidance() {
+    echo "needs_host_execution=true" >&2
+    echo "host_handoff_required=true" >&2
+    echo "execution_env_requested=${EXECUTION_ENV}" >&2
+    echo "execution_env_resolved=${RESOLVED_EXECUTION_ENV}" >&2
+    echo "host_retry_command_form=stable-cli" >&2
+    echo "host_retry_limit=1" >&2
+
+    # Inline/stdin briefs may contain sensitive text. The outer orchestrator
+    # already owns the original argv and can retry it directly, but must not
+    # serialize that text into logs merely to print copy/paste guidance.
+    if [ "$INPUT_KIND" != "task-card" ]; then
+        echo "host_retry_command_omitted=sensitive-inline-input" >&2
+        return
+    fi
+
+    local -a retry_args=()
+    local index=0
+    while [ "$index" -lt "${#SPARK_ORIGINAL_ARGS[@]}" ]; do
+        if [ "${SPARK_ORIGINAL_ARGS[$index]}" = "--execution-env" ]; then
+            index=$((index + 2))
+            continue
+        fi
+        retry_args+=("${SPARK_ORIGINAL_ARGS[$index]}")
+        index=$((index + 1))
+    done
+    retry_args+=("--execution-env" "host")
+
+    printf 'host_retry_command=bash %q' "$0" >&2
+    local arg
+    for arg in "${retry_args[@]}"; do
+        printf ' %q' "$arg" >&2
+    done
+    printf '\n' >&2
+}
+
 auto_disable_spark() {
     local reason="$1"
     local codex_exit="${2:-not-run}"
@@ -1244,6 +1287,9 @@ auto_disable_spark() {
     SPARK_DISABLE_REASON="$reason"
     SPARK_CHECKS_RUN="not run"
     HELPER_EXIT_STATUS=0
+    if [ "$SPARK_HOST_HANDOFF_REQUIRED" = "yes" ]; then
+        HELPER_EXIT_STATUS=75
+    fi
     if [ "$RESULT_MODE" = "direct" ]; then
         emit_direct_envelope_start
         echo "spark_status=unavailable"
@@ -1253,10 +1299,7 @@ auto_disable_spark() {
         echo "spark_protocol_end=aiwf-spark-stdout-v1"
         DIRECT_ENVELOPE_TERMINAL_EMITTED="yes"
         if [ "$SPARK_HOST_HANDOFF_REQUIRED" = "yes" ]; then
-            echo "needs_host_execution=true" >&2
-            echo "host_handoff_required=true" >&2
-            echo "execution_env_requested=${EXECUTION_ENV}" >&2
-            echo "execution_env_resolved=${RESOLVED_EXECUTION_ENV}" >&2
+            emit_host_retry_guidance
         fi
         echo "Codex Spark auto-disabled: ${reason}" >&2
         exit "$HELPER_EXIT_STATUS"
@@ -1267,10 +1310,17 @@ auto_disable_spark() {
         echo ""
         echo "Codex Spark was auto-disabled for this run: ${reason}."
         echo ""
-        echo "Spark is auxiliary in the workflow, so the helper exits 0 by default and the main Claude/Codex flow may continue."
+        if [ "$SPARK_HOST_HANDOFF_REQUIRED" = "yes" ]; then
+            echo "The helper exits 75 so the outer orchestrator performs the single authorized host retry before Claude starts."
+        else
+            echo "Spark is auxiliary in the workflow, so the helper exits 0 by default and the main Claude/Codex flow may continue."
+        fi
         echo ""
         echo "Strong-model fallback is disabled by this helper; re-run explicitly with another model only after human approval."
     } >> "$REPORT_FILE"
+    if [ "$SPARK_HOST_HANDOFF_REQUIRED" = "yes" ]; then
+        emit_host_retry_guidance
+    fi
     echo "Codex Spark auto-disabled: ${reason}" >&2
     echo "Codex Spark report: $REPORT_FILE" >&2
     exit "$HELPER_EXIT_STATUS"
@@ -1328,6 +1378,7 @@ emit_direct_envelope_start() {
     echo "spark_status=started"
     echo "spark_mode=${MODE}"
     echo "spark_routing_event=${ROUTING_EVENT}"
+    echo "spark_routing_event_requested=${ROUTING_EVENT_REQUESTED}"
     DIRECT_ENVELOPE_STARTED="yes"
 }
 
@@ -1658,9 +1709,11 @@ if [ "$EXECUTION_ENV" = "auto" ] && [ "$_NETWORK_RESTRICTED" = "yes" ]; then
         SPARK_INVOKED="no"
         SPARK_CHECKS_RUN="not run"
         HELPER_EXIT_STATUS=1
+        SPARK_HOST_HANDOFF_REQUIRED="yes"
         if [ "$RESULT_MODE" = "direct" ]; then
-            echo "Error: Spark required but execution environment is network-restricted (CODEX_SANDBOX_NETWORK_DISABLED is set). Re-run from a host terminal: env -u CODEX_SANDBOX_NETWORK_DISABLED bash $0 <args>" >&2
-            exit 1
+            echo "Error: Spark required but execution environment is network-restricted (CODEX_SANDBOX_NETWORK_DISABLED is set)." >&2
+            emit_host_retry_guidance
+            exit 75
         fi
         write_report_header "1" "no"
         {
@@ -1671,15 +1724,16 @@ if [ "$EXECUTION_ENV" = "auto" ] && [ "$_NETWORK_RESTRICTED" = "yes" ]; then
             echo "CODEX_SANDBOX_NETWORK_DISABLED is set in the inherited environment."
             echo "The sandbox cannot grant external network authority."
             echo ""
-            echo "Re-run from a host terminal with the marker unset:"
+            echo "Re-run from an authorized host boundary with the stable helper CLI:"
             echo ""
             echo '```'
-            echo "env -u CODEX_SANDBOX_NETWORK_DISABLED bash $0 <args>"
+            echo "bash ai/run-codex-spark.sh <same args> --execution-env host"
             echo '```'
         } >> "$REPORT_FILE"
         echo "Error: Spark required but execution environment is network-restricted." >&2
         echo "Codex Spark report: $REPORT_FILE" >&2
-        exit 1
+        emit_host_retry_guidance
+        exit 75
     fi
     SPARK_INVOKED="no"
     SPARK_HOST_HANDOFF_REQUIRED="yes"
@@ -2254,6 +2308,7 @@ if [ "$CODEX_STATUS" -ne 0 ] && [ "$REQUIRE_SPARK" != "1" ] && spark_unavailable
     HELPER_EXIT_STATUS=0
     if [ "$EXECUTION_ENV" != "host" ] && spark_network_environment_failure; then
         SPARK_HOST_HANDOFF_REQUIRED="yes"
+        HELPER_EXIT_STATUS=75
     fi
 fi
 
@@ -2659,10 +2714,7 @@ case "$RESULT_MODE" in
             echo "spark_protocol_end=aiwf-spark-stdout-v1"
             DIRECT_ENVELOPE_TERMINAL_EMITTED="yes"
             if [ "$SPARK_HOST_HANDOFF_REQUIRED" = "yes" ]; then
-                echo "needs_host_execution=true" >&2
-                echo "host_handoff_required=true" >&2
-                echo "execution_env_requested=${EXECUTION_ENV}" >&2
-                echo "execution_env_resolved=${RESOLVED_EXECUTION_ENV}" >&2
+                emit_host_retry_guidance
             fi
         fi
         # Auto-disable reporting goes to stderr for direct mode
@@ -2706,6 +2758,7 @@ case "$RESULT_MODE" in
             echo "| Estimate calibration multiplier | ${COST_CALIBRATION_MULTIPLIER} |"
             echo "| Calibrated diff lines (high) | ${COST_CALIBRATED_DIFF_HIGH} |"
             echo "| Routing event | ${ROUTING_EVENT} |"
+            echo "| Routing event requested | ${ROUTING_EVENT_REQUESTED} |"
             echo "| Predicted files | ${COST_PREDICTED_FILES} |"
             echo "| Context scope | ${COST_CONTEXT_SCOPE} |"
             echo "| Validation complexity | ${COST_VALIDATION_COMPLEXITY} |"
@@ -2783,6 +2836,7 @@ case "$RESULT_MODE" in
             echo "| Estimate calibration multiplier | ${COST_CALIBRATION_MULTIPLIER} |"
             echo "| Calibrated diff lines (high) | ${COST_CALIBRATED_DIFF_HIGH} |"
             echo "| Routing event | ${ROUTING_EVENT} |"
+            echo "| Routing event requested | ${ROUTING_EVENT_REQUESTED} |"
             echo "| Predicted files | ${COST_PREDICTED_FILES} |"
             echo "| Context scope | ${COST_CONTEXT_SCOPE} |"
             echo "| Validation complexity | ${COST_VALIDATION_COMPLEXITY} |"

@@ -13,7 +13,7 @@ python scripts/install_for_codex.py
 Update the skill and refresh the current repository's managed workflow files:
 
 ```bash
-python scripts/update_skill.py --bootstrap-current
+python scripts/update_skill.py
 ```
 
 An updater run from the installed Skill never treats that installed directory
@@ -110,7 +110,11 @@ python scripts/install_for_codex.py --auto-setup /path/to/repo --apply
 
 The helper detects Python, Node, Go, and Rust profiles; chooses safe user-level package managers; plans LSP tools; initializes CodeGraph only when warranted; and installs Zoekt only for sufficiently large repositories. Missing safe managers are reported as `manual/blocked`, not guessed around.
 
-After bootstrap, run `python ai/doctor_workflow.py`. If it reports `workflow-version` warnings, run the printed refresh command or `update_skill.py --bootstrap-current`.
+After bootstrap, run `python ai/doctor_workflow.py`. A normal `update_skill.py`
+run automatically refreshes an already-bootstrapped current repository; use
+`--skill-only` only as an explicit opt-out. If doctor reports workflow-version
+drift or a stale launcher error, run the printed refresh command before any
+model call. Never compensate with an environment-prefixed launcher.
 
 ## Search Services
 

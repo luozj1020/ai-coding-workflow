@@ -78,7 +78,24 @@ failures never contribute.
 
 When useful on-plan work has exactly one semantic blocker, `aiwf advisor-continuation` may prepare a one-call same-worktree continuation. It does not invoke a model or dispatch by itself. Bind request/evidence, state hash, allowed and forbidden paths, and one-call idempotency.
 
-Worktree continuity and model memory are separate. Initial dispatch assigns an explicit Claude session UUID. Retry-in-place, reviewed continuation, and advisor continuation resume that UUID from the prior runtime receipt when valid; otherwise runtime records `unavailable-file-backed-fallback` and starts a new named session. `--bare` disables auto-memory/customization, not explicit conversation persistence. Never describe file-only continuation as restored model memory.
+Worktree continuity and model memory are separate. Initial dispatch assigns an explicit Claude session UUID. Retry-in-place, reviewed continuation, and advisor continuation resume that UUID from the prior runtime receipt when valid. If Claude rejects that UUID with a conversation/session-not-found result, the dispatcher writes a hash-bound `session-resume-failure.json` receipt with `counts_as_model_failure=false`, then makes exactly one fresh-session attempt with the same owner, task, worktree, and write scope. Other resume failures remain terminal. When no resumable UUID exists, runtime records `unavailable-file-backed-fallback` and starts a new named session. `--bare` disables auto-memory/customization, not explicit conversation persistence. Never describe file-only continuation as restored model memory.
+
+Required exact-path write enforcement uses writable staging sources outside the
+worktree and binds only those sources over their declared destinations inside
+the read-only sandbox. The dispatcher performs a real write probe through the
+final sandbox command before starting Claude, synchronizes only receipt-listed
+paths back to the worktree, and fails as
+`write-sandbox-allowed-path-read-only` if the effective mount is still
+read-only. Required enforcement never degrades to post-run-only auditing;
+`editor-only` removes Bash rather than merely discouraging it. Claude's
+`~/.claude/session-env` is separately mapped to a
+task-scoped temporary directory so Bash initialization does not need a writable
+home. Because built-in Edit may require a neighboring temporary file, the
+prompt supplies `write-approved-file.py`: it accepts either complete replacement
+content or old/new fragment files from `$TMPDIR`, validates the exact target
+against the immutable receipt, and writes only its staged binding. Fragment
+replacement fails without writing unless the old bytes occur exactly once.
+Placeholder mount targets do not count as product progress.
 
 ## Progress and Monitoring
 

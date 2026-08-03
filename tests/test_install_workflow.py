@@ -352,6 +352,9 @@ class InstallWorkflowTests(unittest.TestCase):
 
             self.assertIn("updated: ai/dispatch-to-claude.sh", second.stdout)
             self.assertIn("You are the executor in a Codex/Claude Code workflow.", dispatch.read_text(encoding="utf-8"))
+            self.assertTrue((repo / "ai" / "write-approved-file.py").is_file())
+            self.assertTrue((repo / "ai" / "collect-workflow-feedback.py").is_file())
+            self.assertTrue((repo / "ai" / "schemas" / "workflow-feedback-v1.schema.json").is_file())
 
     def test_project_rule_allows_only_standard_workflow_entrypoints(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -436,6 +439,12 @@ class InstallWorkflowTests(unittest.TestCase):
             "bash", "ai/dispatch-to-claude.sh", "/tmp/card.md",
             "--dirty-source-mode", "snapshot",
         )
+        host_dirty_snapshot = check(
+            rule,
+            "bash", "ai/dispatch-to-claude.sh", "/tmp/card.md",
+            "--execution-env", "host",
+            "--dirty-source-mode", "snapshot",
+        )
         spark = check(
             rule,
             "bash",
@@ -443,6 +452,15 @@ class InstallWorkflowTests(unittest.TestCase):
             "/tmp/card.md",
             "--mode",
             "task-card-audit",
+        )
+        spark_host = check(
+            rule,
+            "bash", "ai/run-codex-spark.sh", "/tmp/card.md",
+            "--mode", "task-card-audit",
+            "--routing-event", "implementation",
+            "--result-mode", "direct",
+            "--execution-env", "host",
+            "--empty-api-config-env", "PROJECT_API_CONFIG_FILE",
         )
         wrapped = check(
             rule,
@@ -461,7 +479,9 @@ class InstallWorkflowTests(unittest.TestCase):
 
         self.assertEqual(dispatch["decision"], "allow")
         self.assertEqual(dirty_snapshot["decision"], "allow")
+        self.assertEqual(host_dirty_snapshot["decision"], "allow")
         self.assertEqual(spark["decision"], "allow")
+        self.assertEqual(spark_host["decision"], "allow")
         self.assertEqual(wrapped["matchedRules"], [])
         self.assertEqual(source_helper["matchedRules"], [])
 

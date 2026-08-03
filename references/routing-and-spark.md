@@ -203,7 +203,26 @@ avoid persisting successful advisory prose.
 
 Source-writing modes force `full`. Diagnostics default to `failure`, persisting only a compact redacted record for unusable direct results; unique diagnostic directories prevent same-second evidence overwrite. `off` persists nothing and `full` preserves reproduction evidence. Every optional direct failure also emits `spark_status=unavailable` and related machine fields on stdout, so exit 0 can never mean silent absence. Missing CLI/model/auth/network/quota or helper initialization auto-disables optional Spark without strong-model fallback. `--require-spark` makes failure hard.
 
-When `CODEX_SANDBOX_NETWORK_DISABLED=1` is inherited, `--execution-env auto` emits a machine-readable `needs_host_execution` handoff before a model call. Do not probe. Direct callers use `--execution-env host` only through an already-authorized outside-sandbox boundary. `dispatch-efficient.py --host-authority`, `run-workflow.py --spark-host-authority`, or `CODEX_SPARK_HOST_AUTHORITY=1` lets that already-authorized outer caller retry the identical Spark request exactly once; bound it with the corresponding host retry timeout. The dispatcher records both attempts in `spark-dispatch.json` and never uses a stronger-model fallback. Without explicit authority it stops before Claude with exit 75 (integrated lifecycle: `dispatch/needs-host-execution`) and persists the handoff. A successful host execution records a context-bound preference in `.ai-workflow/spark-execution-availability.json`; for its bounded TTL, later dispatches go directly to the authorized host boundary instead of repeating the known-failing sandbox attempt. A host failure marks availability suspect but retains the host preference; it does not send work back into the restricted sandbox. Merely unsetting the marker inside a restricted sandbox is not a bypass.
+When `CODEX_SANDBOX_NETWORK_DISABLED=1` is inherited, `--execution-env auto`
+emits a machine-readable `needs_host_execution` handoff before a model call and
+exits 75 even when Spark is otherwise optional. Do not probe or continue to
+Claude. The emitted retry begins with the stable
+`bash ai/run-codex-spark.sh` launcher and replaces the execution environment
+with `--execution-env host`; it never uses `env -u` or a prefixed authority
+assignment. Direct callers use that retry only through an already-authorized
+outside-sandbox boundary. `implementation` is accepted as a compatibility
+routing event and normalized to `next-phase`. `dispatch-efficient.py
+--host-authority`, `run-workflow.py --spark-host-authority`, or the legacy
+`CODEX_SPARK_HOST_AUTHORITY=1` lets an already-authorized outer caller retry the
+identical Spark request exactly once; bound it with the corresponding host retry
+timeout. The dispatcher records both attempts in `spark-dispatch.json` and never
+uses a stronger-model fallback. A successful host execution records a
+context-bound preference in `.ai-workflow/spark-execution-availability.json`;
+for its bounded TTL, later dispatches go directly to the authorized host
+boundary instead of repeating the known-failing sandbox attempt. A host failure
+marks availability suspect but retains the host preference; it does not send
+work back into the restricted sandbox. Merely unsetting the marker inside a
+restricted sandbox is not a bypass.
 
 Exit 75 is an orchestration request, not a terminal model result. The outer
 Codex caller must consume it in the same turn by replaying the exact invocation

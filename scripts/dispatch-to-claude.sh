@@ -882,6 +882,13 @@ validate_retry_in_place() {
         local _unknown_untracked=""
         while IFS= read -r _uf; do
             [ -z "$_uf" ] && continue
+            # A regular zero-byte placeholder carries no implementation or
+            # report evidence. Preserve it in the same worktree but do not
+            # force manual deletion before retry; if Claude writes content,
+            # the normal path/scope checks apply to the resulting file.
+            if [ -f "$wt/$_uf" ] && [ ! -s "$wt/$_uf" ]; then
+                continue
+            fi
             case "$_uf" in
                 TASK_CARD.md|TASK_CARD_FULL.md|CLAUDE_TASK_CARD.md|CLAUDE_PROMPT.md|CLAUDE_REPORT.md|CLAUDE_PROGRESS.md|ADVISOR_REQUEST.json|advisor-packet.json|advisor-packet.md|advisor-response-*.json|advisor-decision.json)
                     ;; # known dispatcher control file; allowed
@@ -2124,6 +2131,7 @@ export TMP="$TASK_TMPDIR"
 CLAUDE_SESSION_MODE_EFFECTIVE="new"
 CLAUDE_SESSION_RESUME_STATUS="not-requested"
 CLAUDE_SESSION_PRIOR_TASK_ID=""
+_CLAUDE_RESUME_FALLBACK_USED=0
 CLAUDE_SESSION_ID="${CLAUDE_CODE_RESUME_SESSION_ID:-}"
 if [ -z "$PYTHON_CMD" ]; then
     CLAUDE_SESSION_ID=""
@@ -2402,6 +2410,8 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "tool_profile": "%s",\n' "$CLAUDE_CODE_TOOL_PROFILE"
     printf '  "tool_profile_derivation": "%s",\n' "$_TOOL_PROFILE_DERIVATION"
     printf '  "tool_profile_supported": %s,\n' "$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo true || echo false)"
+    printf '  "tool_profile_evidence": "cli-flag-support-only",\n'
+    printf '  "runtime_tool_inventory_verified": false,\n'
     printf '  "write_scope_enforcement": "%s",\n' "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT"
     printf '  "write_scope_receipt": "%s",\n' "$WRITE_SCOPE_RECEIPT_FILE"
     printf '  "product_baseline_receipt": "%s",\n' "$PRODUCT_BASELINE_FILE"
@@ -3814,6 +3824,58 @@ run_claude() {
             )
         fi
     fi
+    local command_status=$?
+    if [ "$command_status" -ne 0 ] && \
+       [ "$CLAUDE_SESSION_MODE_EFFECTIVE" = "resume" ] && \
+       [ "$_CLAUDE_RESUME_FALLBACK_USED" -eq 0 ] && \
+       grep -Eiq 'No conversation found|conversation.*not found|session.*not found' "$STATUS_FILE" 2>/dev/null; then
+        _CLAUDE_RESUME_FALLBACK_USED=1
+        local failed_session_id="$CLAUDE_SESSION_ID"
+        local resume_failure_file="${WORKTREE_ROOT}/${TASK_ID}.session-resume-failure.json"
+        if [ -n "$PYTHON_CMD" ]; then
+            "$PYTHON_CMD" - "$resume_failure_file" "$TASK_ID" "$failed_session_id" \
+                "$TASK_CARD" "$BASE_COMMIT" "$WORKTREE_START_COMMIT" "$WRITE_SCOPE_RECEIPT_FILE" <<'PYEOF'
+import hashlib, json, os, sys, tempfile
+path, task_id, session_id, task_card, base_commit, worktree_start_commit, write_scope = sys.argv[1:]
+with open(task_card, "rb") as handle:
+    task_card_sha256 = "sha256:" + hashlib.sha256(handle.read()).hexdigest()
+value = {
+    "schema_version": 1,
+    "status": "resume-failed",
+    "task_id": task_id,
+    "session_id": session_id,
+    "task_card_sha256": task_card_sha256,
+    "source_base_commit": base_commit,
+    "worktree_start_commit": worktree_start_commit,
+    "write_scope_receipt": write_scope if os.path.isfile(write_scope) else None,
+    "failure_category": "session-not-found",
+    "counts_as_model_failure": False,
+    "fresh_same_owner_retry_authorized": True,
+}
+directory = os.path.dirname(path) or "."
+fd, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path), dir=directory)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(temporary, path)
+PYEOF
+            CLAUDE_SESSION_ID="$("$PYTHON_CMD" - <<'PYEOF'
+import uuid
+print(uuid.uuid4())
+PYEOF
+)"
+        else
+            CLAUDE_SESSION_ID=""
+        fi
+        CLAUDE_SESSION_MODE_EFFECTIVE="new"
+        CLAUDE_SESSION_RESUME_STATUS="resume-failed-session-not-found-fresh-fallback"
+        : > "$RESULT_FILE"
+        : > "$STATUS_FILE"
+        progress_log "Claude resume failed: session-not-found; recorded ${resume_failure_file}; retrying once with same owner and fresh session"
+        run_claude
+        return $?
+    fi
+    return "$command_status"
 }
 
 CLAUDE_LAUNCHED=0
@@ -4059,7 +4121,7 @@ PYEOF
     fi
 fi
 
-progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), available_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}"
+progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, derivation=${_TOOL_PROFILE_DERIVATION}, cli_flags_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), requested_tools=${_TOOL_PROFILE_AVAILABLE_TOOLS:-none}, runtime_tool_inventory_verified=no, allowlist_accepted=${_TOOL_PROFILE_ALLOWLIST_COUNT}, allowlist_unsafe=${_TOOL_PROFILE_ALLOWLIST_UNSAFE:-0}, allowlist_oversized=${_TOOL_PROFILE_ALLOWLIST_OVERSIZED:-0}, allowlist_overflow=${_TOOL_PROFILE_ALLOWLIST_OVERFLOW:-0}, allowlist_enabled=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}"
 
 # Enforce exact Write paths before Claude starts. Bubblewrap makes the whole
 # host filesystem read-only inside the model process and remounts only declared
@@ -4067,6 +4129,10 @@ progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, deriva
 # repository writes attempted through Bash, not only Edit/Write tool calls.
 _CLAUDE_SANDBOX_PREFIX=()
 _WRITE_SCOPE_EFFECTIVE="off"
+_WRITE_SCOPE_STAGING_ROOT="${TASK_TMPDIR}/write-sandbox"
+_CLAUDE_SESSION_ENV_SOURCE="${TASK_TMPDIR}/claude-session-env"
+_CLAUDE_SESSION_ENV_TARGET="${HOME:-}/.claude/session-env"
+_WRITE_SCOPE_SYNC_FAILED=0
 _WRITING_RUNTIME_ROLE=0
 if { [ "$_PARSED_TASK_MODE" = "builder" ] || [ "$_PARSED_TASK_MODE" = "checker-test" ]; } && \
    [ "$CLAUDE_CODE_TOOL_PROFILE" != "diagnostic" ]; then
@@ -4092,7 +4158,8 @@ if [ "$_WRITING_RUNTIME_ROLE" -eq 1 ]; then
             --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
             --worktree "$WORKTREE_DIR" \
             --output "$WRITE_SCOPE_RECEIPT_FILE" \
-            --print-paths
+            --staging-root "$_WRITE_SCOPE_STAGING_ROOT" \
+            --print-bindings
         )
         if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
             while IFS= read -r _approved_write_path; do
@@ -4111,21 +4178,79 @@ PYEOF
                 echo "Error: required write-scope enforcement could not be prepared: ${_WRITE_BIND_OUTPUT}" >&2
                 exit 1
             }
+        _WRITE_SCOPE_PROBE_TARGET=""
+        if [ -z "${HOME:-}" ] || [ ! -f "${SCRIPT_DIR}/write-approved-file.py" ]; then
+            echo "Error: required write-scope runtime needs HOME and write-approved-file.py." >&2
+            exit 1
+        fi
+        mkdir -p "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET" || {
+            echo "Error: could not prepare Claude session environment write mount." >&2
+            echo "failure_category=write-sandbox-session-env-unavailable" >&2
+            exit 1
+        }
         _CLAUDE_SANDBOX_PREFIX=(
             bwrap --die-with-parent --ro-bind / /
             --dev-bind /dev /dev --proc /proc
             --bind "$TASK_TMPDIR" "$TASK_TMPDIR"
+            --bind "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET"
             --chdir "$WORKTREE_DIR"
         )
-        while IFS= read -r _write_bind_path; do
-            [ -n "$_write_bind_path" ] || continue
-            _CLAUDE_SANDBOX_PREFIX+=(--bind "$_write_bind_path" "$_write_bind_path")
+        while IFS=$'\t' read -r _write_bind_source _write_bind_target; do
+            [ -n "$_write_bind_source" ] || continue
+            [ -n "$_write_bind_target" ] || continue
+            _CLAUDE_SANDBOX_PREFIX+=(--bind "$_write_bind_source" "$_write_bind_target")
+            if [ -z "$_WRITE_SCOPE_PROBE_TARGET" ] && [ -f "$_write_bind_source" ]; then
+                _WRITE_SCOPE_PROBE_TARGET="$_write_bind_target"
+            fi
         done <<< "$_WRITE_BIND_OUTPUT"
         _CLAUDE_SANDBOX_PREFIX+=(--)
+        if [ -z "$_WRITE_SCOPE_PROBE_TARGET" ] || \
+           ! "${_CLAUDE_SANDBOX_PREFIX[@]}" sh -c ': >> "$1"' aiwf-write-probe \
+                "$_WRITE_SCOPE_PROBE_TARGET"; then
+            echo "Error: required write-scope enforcement mounted approved paths read-only; refusing to start Claude." >&2
+            echo "failure_category=write-sandbox-allowed-path-read-only" >&2
+            exit 1
+        fi
+        cat >> "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<EOF
+
+--- EXACT APPROVED FILE WRITER ---
+The repository parent directories are intentionally read-only. Built-in Edit
+may fail because it creates a neighboring temporary file, and Write may be
+absent in some Claude Code versions. For a complete replacement, first create
+the content under \`\$TMPDIR\`, then run exactly:
+
+\`${PYTHON_CMD} ${SCRIPT_DIR}/write-approved-file.py --receipt ${WRITE_SCOPE_RECEIPT_FILE} --path REPOSITORY_RELATIVE_PATH --source \$TMPDIR/REPLACEMENT_FILE\`
+
+For a narrow edit, put the exact old and new byte fragments in two temporary
+files and use the unique-match mode:
+
+\`${PYTHON_CMD} ${SCRIPT_DIR}/write-approved-file.py --receipt ${WRITE_SCOPE_RECEIPT_FILE} --path REPOSITORY_RELATIVE_PATH --replace-old-source \$TMPDIR/OLD_FRAGMENT --replace-new-source \$TMPDIR/NEW_FRAGMENT\`
+
+Unique replacement fails without writing unless the old fragment occurs
+exactly once.
+
+The receipt rejects every undeclared path. Do not use Edit after an atomic-temp
+failure and do not create repository-local helper files.
+EOF
+        if [[ "${_TOOL_PROFILE_AVAILABLE_TOOLS}" == *Bash* ]] && [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ]; then
+            _approved_writer_allow="Bash(${PYTHON_CMD} ${SCRIPT_DIR}/write-approved-file.py --receipt ${WRITE_SCOPE_RECEIPT_FILE} --path * --source *)"
+            _approved_fragment_writer_allow="Bash(${PYTHON_CMD} ${SCRIPT_DIR}/write-approved-file.py --receipt ${WRITE_SCOPE_RECEIPT_FILE} --path * --replace-old-source * --replace-new-source *)"
+            if [ ${#_CLAUDE_ALLOWED_ARGS[@]} -gt 0 ]; then
+                _CLAUDE_ALLOWED_ARGS[1]="${_CLAUDE_ALLOWED_ARGS[1]},${_approved_writer_allow},${_approved_fragment_writer_allow}"
+            else
+                _CLAUDE_ALLOWED_ARGS=(--allowedTools "${_approved_writer_allow},${_approved_fragment_writer_allow}")
+            fi
+        fi
         _WRITE_SCOPE_EFFECTIVE="required"
     fi
 fi
 progress_log "Write scope enforcement resolved: requested=${_WRITE_SCOPE_REQUESTED}, effective=${_WRITE_SCOPE_EFFECTIVE}, receipt=${WRITE_SCOPE_RECEIPT_FILE}"
+
+sync_write_scope_staging() {
+    [ "$_WRITE_SCOPE_EFFECTIVE" = "required" ] || return 0
+    "$PYTHON_CMD" "${SCRIPT_DIR}/prepare-write-sandbox.py" \
+        --sync-receipt "$WRITE_SCOPE_RECEIPT_FILE" >/dev/null
+}
 
 # Verify only the launcher/capability, never run the assigned test suite twice.
 # This gives Claude concrete evidence that Python/pytest is executable in the
@@ -4478,6 +4603,13 @@ while claude_is_running; do
     ELAPSED=$((NOW_EPOCH - START_EPOCH))
 
     if ! claude_is_running; then
+        break
+    fi
+
+    if ! sync_write_scope_staging; then
+        _WRITE_SCOPE_SYNC_FAILED=1
+        progress_log "Write scope staging synchronization failed; stopping task fail-closed"
+        stop_claude "write scope staging synchronization failed" "$ELAPSED"
         break
     fi
 
@@ -4896,6 +5028,11 @@ done
 
 wait "$CLAUDE_PID"
 CLAUDE_STATUS=$?
+if ! sync_write_scope_staging; then
+    _WRITE_SCOPE_SYNC_FAILED=1
+    CLAUDE_STATUS=1
+    progress_log "Final write scope staging synchronization failed"
+fi
 set -e
 if [ "$CLAUDE_COMPLETION_CONVERGED" -eq 1 ]; then
     CLAUDE_CONVERGENCE_PROCESS_STATUS="$CLAUDE_STATUS"

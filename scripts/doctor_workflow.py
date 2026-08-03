@@ -55,6 +55,9 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/plan-progress-template.md",
     "ai/README.md",
     "ai/dispatch-to-claude.sh",
+    "ai/prepare-write-sandbox.py",
+    "ai/write-approved-file.py",
+    "ai/collect-workflow-feedback.py",
     "ai/check-worktree.sh",
     "ai/review-with-codex.sh",
     "ai/run-codex-spark.sh",
@@ -95,6 +98,7 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/plan-to-task-cards.py",
     "ai/solution-contract.py",
     "ai/schemas/solution-contract-v1.schema.json",
+    "ai/schemas/workflow-feedback-v1.schema.json",
     "ai/init-plan.py",
     "ai/session-catchup.py",
     "ai/run-workflow.py",
@@ -174,6 +178,9 @@ WORKFLOW_PLAIN_FILE_SOURCES = [
     ("assets/plan-progress-template.md", "ai/plan-progress-template.md"),
     ("assets/README.md", "ai/README.md"),
     ("scripts/dispatch-to-claude.sh", "ai/dispatch-to-claude.sh"),
+    ("scripts/prepare-write-sandbox.py", "ai/prepare-write-sandbox.py"),
+    ("scripts/write-approved-file.py", "ai/write-approved-file.py"),
+    ("scripts/collect-workflow-feedback.py", "ai/collect-workflow-feedback.py"),
     ("scripts/compose_task_card.py", "ai/compose_task_card.py"),
     ("scripts/check-worktree.sh", "ai/check-worktree.sh"),
     ("scripts/review-with-codex.sh", "ai/review-with-codex.sh"),
@@ -212,6 +219,7 @@ WORKFLOW_PLAIN_FILE_SOURCES = [
     ("scripts/plan-to-task-cards.py", "ai/plan-to-task-cards.py"),
     ("scripts/solution-contract.py", "ai/solution-contract.py"),
     ("schemas/solution-contract-v1.schema.json", "ai/schemas/solution-contract-v1.schema.json"),
+    ("schemas/workflow-feedback-v1.schema.json", "ai/schemas/workflow-feedback-v1.schema.json"),
     ("scripts/init-plan.py", "ai/init-plan.py"),
     ("scripts/session-catchup.py", "ai/session-catchup.py"),
     ("scripts/run-workflow.py", "ai/run-workflow.py"),
@@ -1102,11 +1110,12 @@ def run_doctor(repo_path=None, hash_paths=None):
             dispatch_text = ""
         if "--dirty-source-mode" not in dispatch_text:
             findings.append((
-                WARN,
+                ERROR,
                 "workflow-cli",
                 "Local dispatcher lacks stable `--dirty-source-mode`; dirty snapshot "
-                "dispatch may require environment-wrapped host commands and repeat approval.",
+                "dispatch would require an environment-wrapped host command and repeat approval.",
             ))
+            has_error = True
             findings.append((
                 INFO,
                 "workflow-cli",
@@ -1119,6 +1128,36 @@ def run_doctor(repo_path=None, hash_paths=None):
                 INFO,
                 "workflow-cli",
                 "Local dispatcher supports stable dirty-source and host CLI options",
+            ))
+        spark_path = os.path.join(root, "ai", "run-codex-spark.sh")
+        try:
+            with open(spark_path, "r", encoding="utf-8") as handle:
+                spark_text = handle.read()
+        except (OSError, UnicodeError):
+            spark_text = ""
+        if (
+            "host_retry_command_form=stable-cli" not in spark_text
+            or 'implementation) ROUTING_EVENT="next-phase"' not in spark_text
+        ):
+            findings.append((
+                ERROR,
+                "workflow-cli",
+                "Local Spark launcher lacks the stable exit-75 host retry protocol "
+                "or the implementation routing-event compatibility alias.",
+            ))
+            findings.append((
+                INFO,
+                "workflow-cli",
+                "Refresh command: {}".format(
+                    _workflow_bootstrap_command(root, update_workflow_files=True)
+                ),
+            ))
+            has_error = True
+        else:
+            findings.append((
+                INFO,
+                "workflow-cli",
+                "Local Spark launcher supports stable host retry and implementation routing",
             ))
         findings.append((
             INFO,

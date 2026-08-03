@@ -169,7 +169,7 @@
 |-------|-------|
 | Fast path used? | yes/no |
 | Claude dispatch skipped? | yes/no |
-| Routing event | initial / revision / narrow / retry / next-phase |
+| Routing event | initial / revision / narrow / retry / next-phase (`implementation` CLI alias) |
 | Repository scale detected / routing scale | small/medium/large/giant / small/medium/large/giant |
 | Tracked/source files and worktree cost | counts / unknown-low-medium-high + median/sample count |
 | Task role | core-semantic / auxiliary / mixed / unknown |

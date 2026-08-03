@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -59,7 +60,7 @@ def _card_paths(text: str) -> List[str]:
 
 def normalize(raw: str, worktree: Path) -> str:
     value = raw.replace("\\", "/").strip()
-    if not value or UNSAFE_PATTERN.search(value):
+    if not value or any(ord(char) < 32 for char in value) or UNSAFE_PATTERN.search(value):
         raise SandboxError(f"Write path must be exact and glob-free: {raw!r}")
     pure = PurePosixPath(value.rstrip("/"))
     if pure.is_absolute() or ".." in pure.parts or value in {".", "./"}:
@@ -96,6 +97,7 @@ def atomic_json(path: Path, value: Dict[str, object]) -> None:
 def prepare(
     card: Path, worktree: Path, output: Path,
     allowed_paths: Optional[List[str]] = None,
+    staging_root: Optional[Path] = None,
 ) -> Dict[str, object]:
     worktree = worktree.resolve()
     if not worktree.is_dir():
@@ -107,6 +109,11 @@ def prepare(
         raise SandboxError("a writing task requires at least one exact Write path")
     values = sorted(set(declared + list(CONTROL_WRITES)))
     bind_targets: List[str] = []
+    bindings: List[Dict[str, object]] = []
+    staging_root = (staging_root or output.parent / f".{output.stem}.staging").resolve()
+    if staging_root == worktree or worktree in staging_root.parents:
+        raise SandboxError("write staging root must be outside the worktree")
+    staging_root.mkdir(parents=True, exist_ok=True)
     for value in values:
         directory = value.endswith("/")
         relative = value.rstrip("/")
@@ -118,17 +125,38 @@ def prepare(
                 raise SandboxError(f"symlink component in Write path is forbidden: {relative}")
             if not cursor.exists():
                 break
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target_preexisted = target.exists()
+        stage = staging_root / relative
+        stage.parent.mkdir(parents=True, exist_ok=True)
         if directory:
+            if target.exists():
+                shutil.copytree(target, stage, symlinks=True, dirs_exist_ok=True)
+            else:
+                stage.mkdir(parents=True, exist_ok=True)
+            # bubblewrap requires an existing mount destination.
             target.mkdir(parents=True, exist_ok=True)
-        elif not target.exists():
-            target.touch()
+        else:
+            if target.exists():
+                shutil.copy2(target, stage)
+            else:
+                stage.touch()
+                # The destination placeholder is not evidence and is ignored
+                # by retry-in-place until staged content is synchronized.
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
         if directory != target.is_dir():
             expected = "directory" if directory else "file"
             raise SandboxError(f"Write path is not the declared {expected}: {relative}")
         if target.is_file() and target.stat().st_nlink != 1:
             raise SandboxError(f"hard-linked Write path is forbidden: {relative}")
         bind_targets.append(str(target.resolve()))
+        bindings.append({
+            "relative_path": relative,
+            "kind": "directory" if directory else "file",
+            "source": str(stage.resolve()),
+            "target": str(target.resolve()),
+            "target_preexisted": target_preexisted,
+        })
     value: Dict[str, object] = {
         "schema_version": 1,
         "status": "ready",
@@ -140,29 +168,77 @@ def prepare(
         "declared_write_paths": declared,
         "control_write_paths": list(CONTROL_WRITES),
         "bind_targets": bind_targets,
+        "staging_root": str(staging_root),
+        "bindings": bindings,
         "bash_cannot_bypass_scope": True,
     }
     atomic_json(output, value)
     return value
 
 
+def sync_receipt(receipt: Path) -> Dict[str, object]:
+    value = json.loads(receipt.read_text(encoding="utf-8"))
+    if value.get("status") != "ready":
+        raise SandboxError("write sandbox receipt is not ready")
+    synced: List[str] = []
+    for binding in value.get("bindings", []):
+        if not isinstance(binding, dict):
+            raise SandboxError("write sandbox receipt has an invalid binding")
+        source = Path(str(binding.get("source", "")))
+        target = Path(str(binding.get("target", "")))
+        kind = binding.get("kind")
+        if kind == "file":
+            if not source.is_file() or source.is_symlink():
+                raise SandboxError(f"staged file is unavailable: {source}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.aiwf-sync-", dir=str(target.parent))
+            os.close(fd)
+            try:
+                shutil.copy2(source, temporary)
+                os.replace(temporary, target)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+        elif kind == "directory":
+            if not source.is_dir() or source.is_symlink():
+                raise SandboxError(f"staged directory is unavailable: {source}")
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, target, symlinks=True, dirs_exist_ok=True)
+        else:
+            raise SandboxError("write sandbox receipt has an invalid binding kind")
+        synced.append(str(binding.get("relative_path", "")))
+    return {"status": "synced", "synced_paths": synced}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task-card", type=Path, required=True)
-    parser.add_argument("--worktree", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--task-card", type=Path)
+    parser.add_argument("--worktree", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--staging-root", type=Path)
+    parser.add_argument("--sync-receipt", type=Path)
     parser.add_argument("--allow-path", action="append", default=[])
     parser.add_argument("--print-paths", action="store_true")
+    parser.add_argument("--print-bindings", action="store_true")
     args = parser.parse_args()
     try:
+        if args.sync_receipt:
+            print(json.dumps(sync_receipt(args.sync_receipt.resolve()), sort_keys=True))
+            return 0
+        if not args.task_card or not args.worktree or not args.output:
+            parser.error("--task-card, --worktree, and --output are required for preparation")
         value = prepare(
             args.task_card.resolve(), args.worktree, args.output.resolve(),
             args.allow_path or None,
+            args.staging_root.resolve() if args.staging_root else None,
         )
     except (OSError, ValueError, SandboxError) as exc:
         print(f"write sandbox: {exc}", file=os.sys.stderr)
         return 2
-    if args.print_paths:
+    if args.print_bindings:
+        for binding in value["bindings"]:
+            print(f"{binding['source']}\t{binding['target']}")
+    elif args.print_paths:
         for path in value["bind_targets"]:
             print(path)
     else:

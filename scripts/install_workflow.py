@@ -104,6 +104,8 @@ PYTHON_SCRIPTS = [
     ("build-takeover-receipt.py", "ai/build-takeover-receipt.py"),
     ("prepare-codex-takeover.py", "ai/prepare-codex-takeover.py"),
     ("prepare-write-sandbox.py", "ai/prepare-write-sandbox.py"),
+    ("write-approved-file.py", "ai/write-approved-file.py"),
+    ("collect-workflow-feedback.py", "ai/collect-workflow-feedback.py"),
     ("build-invariant-acceptance-matrix.py", "ai/build-invariant-acceptance-matrix.py"),
     ("change-size-advisory.py", "ai/change-size-advisory.py"),
     ("archive-terminal-runtime.py", "ai/archive-terminal-runtime.py"),
@@ -212,6 +214,7 @@ PYTHON_SCRIPTS = [
 
 # Structured assets: schemas (source relative to repo root, dest relative to repo root)
 SCHEMA_ASSETS = [
+    ("schemas/workflow-feedback-v1.schema.json", "ai/schemas/workflow-feedback-v1.schema.json"),
     ("schemas/task-card-v1.schema.json", "ai/schemas/task-card-v1.schema.json"),
     ("schemas/review-decision-v1.schema.json", "ai/schemas/review-decision-v1.schema.json"),
     ("schemas/run-event-v2.schema.json", "ai/schemas/run-event-v2.schema.json"),

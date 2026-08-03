@@ -14,10 +14,10 @@ Usage:
     python ~/.codex/skills/ai-coding-workflow/scripts/update_skill.py --source /path/to/ai-coding-workflow --bootstrap-current
 
 By default this updates the Codex skill from the local source tree that
-contains this script. Bootstrap options also refresh existing project-local
-workflow files with install_workflow.py --update-workflow-files. Use --source
-when running the helper from an installed skill but updating from a separate
-cloned repository.
+contains this script and refreshes the current repository when it is already
+bootstrapped. Bootstrap options select an explicit target; --skill-only opts
+out of project-local refresh. Use --source when running the helper from an
+installed skill but updating from a separate cloned repository.
 
 Guided setup (--setup-current / --setup-repo) coordinates all steps in one
 command: skill update, workflow bootstrap/refresh, environment-aware tool
@@ -75,6 +75,14 @@ def parse_args(argv=None):
         help="After updating the skill, bootstrap and refresh workflow files in the given repository path.",
     )
     parser.add_argument(
+        "--skill-only",
+        action="store_true",
+        help=(
+            "Update only the user-level Skill. By default, an already-bootstrapped "
+            "current repository is refreshed too so local ai/ launchers cannot drift."
+        ),
+    )
+    parser.add_argument(
         "--setup-current",
         action="store_true",
         help="Guided setup for the current working directory: preview all phases, then --apply to run.",
@@ -92,6 +100,8 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.bootstrap_current and args.bootstrap_repo:
         parser.error("--bootstrap-current and --bootstrap-repo are mutually exclusive")
+    if args.skill_only and (args.bootstrap_current or args.bootstrap_repo):
+        parser.error("--skill-only and --bootstrap-* are mutually exclusive")
     if args.setup_current and args.setup_repo:
         parser.error("--setup-current and --setup-repo are mutually exclusive")
     if args.apply and not (args.setup_current or args.setup_repo):
@@ -197,12 +207,16 @@ def maybe_pull(source, enabled):
     subprocess.run(["git", "-C", source, "pull", "--ff-only"], check=True)
 
 
-def build_install_command(installer, args):
+def build_install_command(installer, args, current_dir=None):
     cmd = [sys.executable or "python", installer]
     if args.bootstrap_current:
         cmd.append("--bootstrap-current")
     elif args.bootstrap_repo:
         cmd.extend(["--bootstrap-repo", args.bootstrap_repo])
+    elif not args.skill_only:
+        current_dir = os.path.abspath(current_dir or os.getcwd())
+        if os.path.isfile(os.path.join(current_dir, "ai", "dispatch-to-claude.sh")):
+            cmd.append("--bootstrap-current")
     return cmd
 
 
@@ -329,8 +343,10 @@ def main(argv=None):
         print_guided_preview(source, repo_path, phases)
         return 0
 
-    # Legacy path: update skill + optional bootstrap
-    cmd = build_install_command(installer, args)
+    # Update the Skill and automatically refresh an already-bootstrapped current
+    # repository. This prevents a new managed policy from driving stale ai/
+    # launchers that lack stable host/snapshot CLI parameters.
+    cmd = build_install_command(installer, args, current_dir=os.getcwd())
     print("Updating ai-coding-workflow:")
     print("  Source: {}".format(source))
     print("  Command: {}".format(" ".join(cmd)))
