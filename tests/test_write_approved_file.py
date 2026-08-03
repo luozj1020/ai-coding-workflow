@@ -50,6 +50,24 @@ class ApprovedFileWriterTests(unittest.TestCase):
             self.assertEqual(value["relative_path"], "src/allowed.py")
             self.assertEqual(value["operation"], "complete-file")
 
+    def test_complete_write_preserves_source_bytes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            receipt = self._receipt(root)
+            replacement = root / "replacement"
+            expected = b"first\r\nsecond\n"
+            replacement.write_bytes(expected)
+            subprocess.run(
+                [sys.executable, str(WRITER), "--receipt", str(receipt),
+                 "--path", "src/allowed.py", "--source", str(replacement)],
+                check=True, capture_output=True, text=True,
+            )
+            binding = next(
+                item for item in json.loads(receipt.read_text(encoding="utf-8"))["bindings"]
+                if item["relative_path"] == "src/allowed.py"
+            )
+            self.assertEqual(pathlib.Path(binding["source"]).read_bytes(), expected)
+
     def test_replaces_one_unique_fragment(self):
         with tempfile.TemporaryDirectory() as raw:
             root = pathlib.Path(raw)

@@ -41,7 +41,10 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         self.assertTrue(value["bash_cannot_bypass_scope"])
         self.assertEqual(json.loads(self.output.read_text())["declared_write_paths"], ["src/a.py", "tests/"])
         self.assertEqual(len(value["bindings"]), len(value["bind_targets"]))
-        self.assertTrue(all(Path(item["source"]).is_relative_to(self.root) for item in value["bindings"]))
+        staging_root = Path(value["staging_root"]).resolve()
+        self.assertTrue(
+            all(Path(item["source"]).resolve().is_relative_to(staging_root) for item in value["bindings"])
+        )
 
     def test_glob_and_parent_escape_fail_closed(self) -> None:
         for path in ("src/*.py", "../outside.py", ".git/config"):

@@ -51,6 +51,11 @@ def _approved_staged_file(receipt_path: Path, relative_path: str) -> tuple[str, 
 
 def _open_private_file(staged: Path) -> int:
     flags = os.O_RDWR
+    # os.open() file descriptors inherit text-mode translation on Windows
+    # unless O_BINARY is requested.  The approved writer operates on bytes, so
+    # translating an existing CRLF sequence would corrupt it into CRCRLF.
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(staged, flags)
