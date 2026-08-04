@@ -32,7 +32,7 @@ class ApprovedFileWriterTests(unittest.TestCase):
             target = pathlib.Path(raw) / "staged.py"
             previous = b"value = 1\n"
             target.write_bytes(previous)
-            descriptor = os.open(target, os.O_RDWR)
+            descriptor = MOD._open_private_file(target)
             original_replace = MOD._replace_descriptor_content
             calls = 0
 
