@@ -2214,7 +2214,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         result = self._dispatch("task-cards/BUILDER.md")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Builder Mode:    execution-only", result.stdout)
-        self.assertIn("First Progress:  120s observation", result.stdout)
+        self.assertIn("First Progress:  30s observation", result.stdout)
+        runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
+        self.assertEqual(
+            runtime["first_progress_timeout_seconds"],
+            runtime["context_acquisition_timeout_seconds"],
+        )
 
     def test_auto_builder_mode_accepts_legacy_context_sufficient_alias(self):
         task = self._write_builder_task_card()
