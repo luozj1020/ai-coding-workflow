@@ -736,6 +736,81 @@ fi
 
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 REUSE_WORKTREE_DIR="${WORKTREE_ROOT}/reuse/claude-managed"
+_MANAGED_RUNTIME_PROTOCOL="aiwf-task-runtime-v1"
+_EXACT_WRITE_PROTOCOL="aiwf-exact-write-v2"
+_VALIDATION_RUNNER_PROTOCOL="aiwf-validation-runner-v1"
+
+# Validate managed-package consistency before any connectivity/model probe.
+# Historical execution worktrees are intentionally not inspected here.
+_MANAGED_RUNTIME_PREFLIGHT_FILE="${WORKTREE_ROOT}/${TASK_ID}.managed-runtime-preflight.json"
+_MANAGED_RUNTIME_PREFLIGHT_ERROR=""
+for _runtime_helper_name in write-approved-file.py run-approved-validation.py; do
+    if [ ! -f "${SCRIPT_DIR}/${_runtime_helper_name}" ]; then
+        _MANAGED_RUNTIME_PREFLIGHT_ERROR="missing-runtime-helper:${_runtime_helper_name}"
+        break
+    fi
+done
+_EARLY_WRITER_PROTOCOL=""
+_EARLY_VALIDATION_PROTOCOL=""
+if [ -z "$_MANAGED_RUNTIME_PREFLIGHT_ERROR" ]; then
+    if [ -z "$PYTHON_CMD" ]; then
+        _MANAGED_RUNTIME_PREFLIGHT_ERROR="python-unavailable"
+    else
+        _EARLY_WRITER_PROTOCOL="$("$PYTHON_CMD" \
+            "${SCRIPT_DIR}/write-approved-file.py" --runtime-protocol 2>/dev/null || true)"
+        if [ "$_EARLY_WRITER_PROTOCOL" != "$_EXACT_WRITE_PROTOCOL" ]; then
+            _MANAGED_RUNTIME_PREFLIGHT_ERROR="exact-write-protocol-mismatch"
+        fi
+        _EARLY_VALIDATION_PROTOCOL="$("$PYTHON_CMD" \
+            "${SCRIPT_DIR}/run-approved-validation.py" --runtime-protocol 2>/dev/null || true)"
+        if [ -z "$_MANAGED_RUNTIME_PREFLIGHT_ERROR" ] && \
+           [ "$_EARLY_VALIDATION_PROTOCOL" != "$_VALIDATION_RUNNER_PROTOCOL" ]; then
+            _MANAGED_RUNTIME_PREFLIGHT_ERROR="validation-runner-protocol-mismatch"
+        fi
+    fi
+fi
+if [ -n "$_MANAGED_RUNTIME_PREFLIGHT_ERROR" ]; then
+    mkdir -p "$WORKTREE_ROOT"
+    if [ -n "$PYTHON_CMD" ]; then
+        "$PYTHON_CMD" - "$_MANAGED_RUNTIME_PREFLIGHT_FILE" "$TASK_ID" \
+            "$_MANAGED_RUNTIME_PROTOCOL" "$_EXACT_WRITE_PROTOCOL" \
+            "${_EARLY_WRITER_PROTOCOL:-missing}" \
+            "$_VALIDATION_RUNNER_PROTOCOL" \
+            "${_EARLY_VALIDATION_PROTOCOL:-missing}" \
+            "$_MANAGED_RUNTIME_PREFLIGHT_ERROR" <<'PYEOF'
+import json, os, sys, tempfile
+(path, task_id, bundle_protocol, expected, observed,
+ validation_expected, validation_observed, reason) = sys.argv[1:]
+value = {
+    "schema_version": 1,
+    "status": "blocked",
+    "task_id": task_id,
+    "failure_category": "workflow-runtime-mismatch",
+    "reason": reason,
+    "bundle_protocol": bundle_protocol,
+    "expected_exact_write_protocol": expected,
+    "observed_exact_write_protocol": observed,
+    "expected_validation_runner_protocol": validation_expected,
+    "observed_validation_runner_protocol": validation_observed,
+    "builder_started": False,
+    "model_interaction_started": False,
+    "model_round_consumed": False,
+    "counts_toward_takeover": False,
+}
+fd, temporary = tempfile.mkstemp(
+    prefix=".managed-runtime-preflight-", dir=os.path.dirname(path)
+)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(temporary, path)
+PYEOF
+    fi
+    echo "Error: managed workflow runtime is internally inconsistent; refusing all model probes." >&2
+    echo "failure_category=workflow-runtime-mismatch" >&2
+    echo "runtime_preflight_receipt=$_MANAGED_RUNTIME_PREFLIGHT_FILE" >&2
+    exit 1
+fi
 
 # Return 0 only when the recorded PID still identifies the same process.
 # Return 1 for exited/reused/foreign PIDs and 2 when identity is inconclusive.
@@ -1652,6 +1727,7 @@ WRITE_SCOPE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.write-scope-enforcement.js
 PRODUCT_BASELINE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-baseline.json"
 CHANGE_SIZE_ADVISORY_FILE="${WORKTREE_ROOT}/${TASK_ID}.change-size-advisory.json"
 VALIDATION_CAPABILITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.validation-capability.json"
+MANAGED_RUNTIME_BUNDLE_FILE="${WORKTREE_ROOT}/${TASK_ID}.managed-runtime-bundle.json"
 REVISION_CARD_VALIDATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.revision-card-validation.json"
 CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
 PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
@@ -4260,6 +4336,8 @@ PYEOF
     [ -z "${_REVIEWED_CONTINUATION_LEASE_DIR:-}" ] || rm -rf "$_REVIEWED_CONTINUATION_LEASE_DIR"
     [ -z "${_RETRY_RESERVATION_DIR:-}" ] || rm -rf "$_RETRY_RESERVATION_DIR"
     [ -z "${_ADVISOR_CONTINUE_RESERVATION_DIR:-}" ] || rm -rf "$_ADVISOR_CONTINUE_RESERVATION_DIR"
+    [ -z "${_MANAGED_RUNTIME_SOURCE:-}" ] || rm -rf "$_MANAGED_RUNTIME_SOURCE"
+    [ -z "${_MANAGED_RUNTIME_TARGET:-}" ] || rmdir "$_MANAGED_RUNTIME_TARGET" 2>/dev/null || true
     exit "$final_status"
 }
 
@@ -4279,6 +4357,103 @@ cd "$WORKTREE_DIR"
 write_network_header
 
 progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, context_acquisition_timeout_seconds=${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}, active_execution_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, hard_timeout_seconds=${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${_RUNTIME_STRATEGY:-$CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, growth_extension_limit=1, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
+
+# Freeze the model-facing helpers from the same managed package as this
+# dispatcher. Historical/reviewed worktrees may contain older ai/* helpers and
+# must never select the runtime implementation for a newer launcher.
+_MANAGED_RUNTIME_SOURCE="$(mktemp -d "${_SYSTEM_TMP_ROOT%/}/aiwf-runtime-${TASK_ID}.XXXXXX")" || {
+    echo "Error: could not create the task managed-runtime bundle." >&2
+    echo "failure_category=workflow-runtime-mismatch" >&2
+    exit 1
+}
+_MANAGED_RUNTIME_TARGET="${WORKTREE_DIR}/.aiwf-runtime"
+_MANAGED_RUNTIME_MOUNT_ENABLED=0
+if { [ "$_PARSED_TASK_MODE" = "builder" ] || [ "$_PARSED_TASK_MODE" = "checker-test" ]; } && \
+   [ "$CLAUDE_CODE_TOOL_PROFILE" != "diagnostic" ] && \
+   [ "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT" != "off" ]; then
+    _MANAGED_RUNTIME_MOUNT_ENABLED=1
+fi
+for _runtime_helper_name in write-approved-file.py run-approved-validation.py; do
+    if [ ! -f "${SCRIPT_DIR}/${_runtime_helper_name}" ]; then
+        printf '%s\n' \
+            "Claude dispatch blocked before Builder execution." \
+            "failure_category=workflow-runtime-mismatch" \
+            "missing_runtime_helper=${_runtime_helper_name}" \
+            "builder_started=false" > "$STATUS_FILE"
+        echo "Error: managed runtime helper is missing beside the dispatcher: ${_runtime_helper_name}" >&2
+        echo "failure_category=workflow-runtime-mismatch" >&2
+        exit 1
+    fi
+    cp "${SCRIPT_DIR}/${_runtime_helper_name}" "${_MANAGED_RUNTIME_SOURCE}/${_runtime_helper_name}"
+    chmod 0444 "${_MANAGED_RUNTIME_SOURCE}/${_runtime_helper_name}" 2>/dev/null || true
+done
+_OBSERVED_EXACT_WRITE_PROTOCOL="$("$PYTHON_CMD" \
+    "${_MANAGED_RUNTIME_SOURCE}/write-approved-file.py" --runtime-protocol 2>/dev/null || true)"
+_OBSERVED_VALIDATION_PROTOCOL="$("$PYTHON_CMD" \
+    "${_MANAGED_RUNTIME_SOURCE}/run-approved-validation.py" --runtime-protocol 2>/dev/null || true)"
+if [ "$_OBSERVED_EXACT_WRITE_PROTOCOL" != "$_EXACT_WRITE_PROTOCOL" ] || \
+   [ "$_OBSERVED_VALIDATION_PROTOCOL" != "$_VALIDATION_RUNNER_PROTOCOL" ]; then
+    printf '%s\n' \
+        "Claude dispatch blocked before Builder execution." \
+        "failure_category=workflow-runtime-mismatch" \
+        "expected_runtime_protocol=${_EXACT_WRITE_PROTOCOL}" \
+        "observed_runtime_protocol=${_OBSERVED_EXACT_WRITE_PROTOCOL:-missing}" \
+        "expected_validation_protocol=${_VALIDATION_RUNNER_PROTOCOL}" \
+        "observed_validation_protocol=${_OBSERVED_VALIDATION_PROTOCOL:-missing}" \
+        "builder_started=false" > "$STATUS_FILE"
+    echo "Error: dispatcher and exact-writer runtime protocols do not match." >&2
+    echo "failure_category=workflow-runtime-mismatch" >&2
+    exit 1
+fi
+mkdir -p "$_MANAGED_RUNTIME_TARGET"
+"$PYTHON_CMD" - "$MANAGED_RUNTIME_BUNDLE_FILE" "$RUNTIME_JSON" \
+    "$TASK_ID" "$_MANAGED_RUNTIME_PROTOCOL" "$_EXACT_WRITE_PROTOCOL" \
+    "$_VALIDATION_RUNNER_PROTOCOL" \
+    "$_MANAGED_RUNTIME_SOURCE" "$_MANAGED_RUNTIME_TARGET" <<'PYEOF'
+import hashlib, json, os, sys, tempfile
+
+(output, runtime_path, task_id, bundle_protocol, writer_protocol, validation_protocol,
+ source, target) = sys.argv[1:]
+helpers = {}
+for name in ("write-approved-file.py", "run-approved-validation.py"):
+    path = os.path.join(source, name)
+    with open(path, "rb") as handle:
+        digest = "sha256:" + hashlib.sha256(handle.read()).hexdigest()
+    helpers[name] = {
+        "sha256": digest,
+        "model_path": ".aiwf-runtime/" + name,
+    }
+value = {
+    "schema_version": 1,
+    "status": "ready",
+    "task_id": task_id,
+    "bundle_protocol": bundle_protocol,
+    "exact_write_protocol": writer_protocol,
+    "validation_runner_protocol": validation_protocol,
+    "helper_source": "dispatcher-sibling-snapshot",
+    "historical_worktree_helpers_used": False,
+    "mount_mode": "read-only",
+    "helpers": helpers,
+}
+directory = os.path.dirname(output) or "."
+fd, temporary = tempfile.mkstemp(prefix=".managed-runtime-", dir=directory)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    json.dump(value, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(temporary, output)
+if os.path.isfile(runtime_path):
+    runtime = json.load(open(runtime_path, encoding="utf-8"))
+    runtime["managed_runtime_bundle"] = output
+    runtime["managed_runtime_protocol"] = bundle_protocol
+    runtime["historical_worktree_helpers_used"] = False
+    fd, temporary = tempfile.mkstemp(
+        prefix=".runtime-bundle-", dir=os.path.dirname(runtime_path)
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(runtime, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, runtime_path)
+PYEOF
 
 # --- Tool profile argument construction ---
 # Build arrays for --tools and --allowedTools based on resolved profile.
@@ -4359,8 +4534,12 @@ if [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && [ "$CLAUDE_CODE_TOOL_PROFILE" != "def
                 _VALIDATION_LAUNCHER="$("$PYTHON_CMD" -c "import json,sys; print(json.loads(sys.argv[1]).get('first_launcher') or '')" "$_VALIDATION_SUMMARY" 2>/dev/null || echo '')"
             fi
             if [ "$_TOOL_PROFILE_ALLOWLIST_COUNT" -gt 0 ]; then
-                _VALIDATION_HELPER_REL="$(basename "$SCRIPT_DIR")/run-approved-validation.py"
-                _allow_parts+=("Bash(${_VALIDATION_HELPER_REL} run)")
+                if [ "$_MANAGED_RUNTIME_MOUNT_ENABLED" -eq 1 ]; then
+                    _VALIDATION_HELPER_REL=".aiwf-runtime/run-approved-validation.py"
+                else
+                    _VALIDATION_HELPER_REL="${SCRIPT_DIR}/run-approved-validation.py"
+                fi
+                _allow_parts+=("Bash(${PYTHON_CMD} ${_VALIDATION_HELPER_REL} run)")
             fi
         fi
     fi
@@ -4447,7 +4626,7 @@ PYEOF
             echo "Error: required write-scope runtime needs HOME and write-approved-file.py." >&2
             exit 1
         fi
-        _WRITE_APPROVED_HELPER_REL="$(basename "$SCRIPT_DIR")/write-approved-file.py"
+        _WRITE_APPROVED_HELPER_REL=".aiwf-runtime/write-approved-file.py"
         # Invoke the Python helper through the interpreter.  Installed workflow
         # copies intentionally keep data/helper files at 0644, and WSL-backed
         # worktrees can mask that mode difference during local probes.
@@ -4467,6 +4646,7 @@ PYEOF
             bwrap --die-with-parent --ro-bind / /
             --dev-bind /dev /dev --proc /proc
             --bind "$TASK_TMPDIR" "$TASK_TMPDIR"
+            --ro-bind "$_MANAGED_RUNTIME_SOURCE" "$_MANAGED_RUNTIME_TARGET"
             --bind "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET"
             --bind "$_CLAUDE_PROJECTS_SOURCE" "$_CLAUDE_PROJECTS_TARGET"
             --bind "$_CLAUDE_WRITER_INPUT_SOURCE" "$_CLAUDE_WRITER_INPUT_TARGET"
@@ -4652,7 +4832,7 @@ PYEOF
         echo "- Receipt: ${VALIDATION_CAPABILITY_FILE}"
         if [ "${_TOOL_PROFILE_ALLOWLIST_COUNT:-0}" -gt 0 ]; then
             echo "- Permission decision: the task-card validation runner is pre-authorized through the Checker Bash allowlist."
-            echo "- Execute \`${_VALIDATION_HELPER_REL} run\` without requesting another approval. It reads and runs only the shell-free commands frozen in this card."
+            echo "- Execute \`${PYTHON_CMD} ${_VALIDATION_HELPER_REL} run\` without requesting another approval. It reads and runs only the shell-free commands frozen in this card."
             echo "- Report a sandbox/permission blocker only after that invocation is denied, including the original denial."
         fi
         echo "- Launcher probing does not execute the assigned tests; run them and report the real exit code."
@@ -5364,6 +5544,7 @@ while claude_is_running; do
             fi
             ACTIVE_WINDOW_REFRESHED=1
             progress_log "First substantive progress detected: signal=${_FP_SIGNAL}, first_progress_detected=1, elapsed_seconds=${ELAPSED}, active_window_refreshed=yes, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+            monitor_event "event=active-window-refreshed running=yes terminal=no elapsed_seconds=${ELAPSED} signal=${_FP_SIGNAL} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} worktree_changes=${WORKTREE_CHANGES} active_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
         elif [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
              [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ]; then
             if [ "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" = "observe" ]; then
@@ -5484,7 +5665,7 @@ while claude_is_running; do
     # this file instead of running ps/tail or starting a second polling watcher.
     _MONITOR_MATERIAL_DIGEST="${RESULT_BYTES}|${STATUS_BYTES}|${CURRENT_REPORT_HASH}|${CURRENT_PROGRESS_SEMANTIC_HASH}|${WORKTREE_CHANGES}|${CURRENT_WORKTREE_DIGEST}|${FIRST_PROGRESS_DETECTED}|${FIRST_PROGRESS_SIGNAL}|${EDIT_READY_DETECTED}|${EXECUTION_ACTIVITY_STATE}|${PRODUCT_IDLE_CONFIRMATION_COUNT}|${BLOCKER_RECORDED}|${IMPLEMENTATION_COMPLETE_DETECTED}|${COMPLETION_READY_DETECTED}|${VALIDATION_STARTED_ELAPSED_SECONDS}"
     if [ "$_MONITOR_MATERIAL_DIGEST" != "$_LAST_MONITOR_MATERIAL_DIGEST" ]; then
-        monitor_event "event=material-change running=yes terminal=no elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET_SECONDS} result_bytes=${RESULT_BYTES} status_bytes=${STATUS_BYTES} report_bytes=${REPORT_BYTES} progress_bytes=${CLAUDE_PROGRESS_BYTES} worktree_changes=${WORKTREE_CHANGES} first_progress=${FIRST_PROGRESS_DETECTED} first_progress_signal=${FIRST_PROGRESS_SIGNAL:-none} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} blocker=${BLOCKER_RECORDED} implementation_complete=${IMPLEMENTATION_COMPLETE_DETECTED} completion_ready=${COMPLETION_READY_DETECTED}"
+        monitor_event "event=material-change running=yes terminal=no elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET_SECONDS} result_bytes=${RESULT_BYTES} status_bytes=${STATUS_BYTES} report_bytes=${REPORT_BYTES} progress_bytes=${CLAUDE_PROGRESS_BYTES} worktree_changes=${WORKTREE_CHANGES} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} first_progress=${FIRST_PROGRESS_DETECTED} first_progress_signal=${FIRST_PROGRESS_SIGNAL:-none} active_window_refreshed=${ACTIVE_WINDOW_REFRESHED} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} blocker=${BLOCKER_RECORDED} implementation_complete=${IMPLEMENTATION_COMPLETE_DETECTED} completion_ready=${COMPLETION_READY_DETECTED}"
         _LAST_MONITOR_MATERIAL_DIGEST="$_MONITOR_MATERIAL_DIGEST"
     fi
 
@@ -5586,6 +5767,7 @@ while claude_is_running; do
             EXTENSION_START_REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
             EXTENSION_START_PROGRESS_HASH="$(progress_semantic_hash "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
             progress_log "Single growth extension started: active_window=${CLAUDE_CODE_TIMEOUT_SECONDS}s, extension=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s, deadline_epoch=${TIMEOUT_EXTENSION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}, recent_activity_seconds=${_RECENT_ACTIVITY_SECONDS}"
+            monitor_event "event=active-window-extended running=yes terminal=no elapsed_seconds=${ELAPSED} reason=${TIMEOUT_EXTENSION_REASON} extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
         else
             CLAUDE_TIMED_OUT=1
             TIMEOUT_EXTENSION_REASON="stale_progress_at_active_deadline"
@@ -7366,6 +7548,7 @@ echo "Raw Result:      $RAW_RESULT_FILE"
 echo "Status:          $STATUS_FILE"
 echo "Network Log:     $NETWORK_FILE"
 echo "Attempt Class:   $ATTEMPT_CLASSIFICATION_FILE"
+echo "Runtime Bundle:  $MANAGED_RUNTIME_BUNDLE_FILE"
 if [ -s "$DIRTY_SNAPSHOT_RECEIPT_FILE" ]; then
     echo "Dirty Snapshot:  $DIRTY_SNAPSHOT_RECEIPT_FILE"
 fi

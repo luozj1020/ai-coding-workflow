@@ -92,7 +92,9 @@ def normalize(raw: str, worktree: Path) -> str:
     pure = PurePosixPath(value.rstrip("/"))
     if pure.is_absolute() or ".." in pure.parts or value in {".", "./"}:
         raise SandboxError(f"Write path must be repository-relative: {raw!r}")
-    if not pure.parts or pure.parts[0] in {".git", ".worktrees", ".aiwf-write-staging"}:
+    if not pure.parts or pure.parts[0] in {
+        ".git", ".worktrees", ".aiwf-write-staging", ".aiwf-runtime"
+    }:
         raise SandboxError(f"workflow metadata path is forbidden: {raw!r}")
     target = worktree.joinpath(*pure.parts)
     try:
@@ -100,7 +102,7 @@ def normalize(raw: str, worktree: Path) -> str:
     except ValueError as exc:
         raise SandboxError(f"Write path escapes worktree: {raw!r}") from exc
     if resolved_relative.parts and resolved_relative.parts[0] in {
-        ".git", ".worktrees", ".aiwf-write-staging"
+        ".git", ".worktrees", ".aiwf-write-staging", ".aiwf-runtime"
     }:
         raise SandboxError(f"Write path resolves into workflow metadata: {raw!r}")
     return pure.as_posix() + ("/" if value.endswith("/") else "")

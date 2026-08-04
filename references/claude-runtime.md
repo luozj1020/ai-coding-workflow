@@ -115,6 +115,17 @@ must use unique-fragment replacement unless its exact path appears under `Full
 file replacement paths`. Empty mount-only placeholders are removed during
 synchronization and do not survive a preflight-only failure.
 
+Model-facing helpers never resolve from the execution worktree's historical
+`ai/` or `scripts/` files. Before any connectivity/model probe, the dispatcher
+verifies its sibling helper protocol. It then snapshots the exact-writer and
+validation runner into a task bundle before tool negotiation, records the
+protocol and helper hashes in
+`*.managed-runtime-bundle.json`, and read-only mounts that bundle at the fixed
+`.aiwf-runtime/` path. Reviewed continuations therefore reuse product state and
+session lineage without combining a new dispatcher with old worktree helpers.
+Missing or mismatched bundle components stop before Builder execution as
+`workflow-runtime-mismatch` and do not consume a model round.
+
 ## Progress and Monitoring
 
 Execution-only, batch, and test-writing Checker tasks default to a 120-second first durable-output deadline with stop action. Generic planning, acknowledgement, timestamps, and claimed command starts do not satisfy it; a worktree delta or valid owned report does. Validation-only Checker work retains the ordinary observation policy. The later active window remains 600 seconds and may receive one 300-second semantic-growth extension; the 1500-second hard cap always wins.
@@ -174,11 +185,20 @@ Approval-blocked early convergence requires two stable heartbeats by default. `C
 
 Do not spend Codex turns polling unchanged heartbeats. The dispatcher is the
 default single sampling owner and appends only `started`, `material-change`,
-`child-exited`, and finalized `terminal` boundaries to
+`active-window-refreshed`, `active-window-extended`, `child-exited`, and
+finalized `terminal` boundaries to
 `<task-id>.monitor-events.log`. An agent must issue one blocking
 `monitor-claude.sh wait <task-id> --until terminal` call; repeated
 `watch`, `ps`, `tail`, status, process-tree, or clock-only commands are forbidden. Read a bounded
 decision/diff only after that wait returns.
+
+The terminal wait remains one process, but it must stream each structured
+execution-window refresh or extension as soon as the dispatcher records it.
+The notice includes the progress signal, elapsed time, and new active/hard
+deadlines, then states that the same wait is continuing toward terminal. Codex
+must consume that notice instead of inferring a refresh from elapsed wall time.
+`--until material` also returns immediately when a refresh already exists or
+arrives after the wait starts.
 
 The human-readable progress log likewise emits running detail only after a
 phase/file/result/report change or when a timeout threshold is near. Unchanged
@@ -213,7 +233,8 @@ never satisfy completion by themselves.
 
 Task-card validation commands are audited before launch but are not embedded
 individually in Claude's `allowedTools` schema. When at least one command is
-accepted, Claude receives the fixed `ai/run-approved-validation.py run` entry
+accepted, Claude receives the fixed
+`python3 .aiwf-runtime/run-approved-validation.py run` entry
 point. The helper re-reads `CLAUDE_TASK_CARD.md`, rejects unsafe composition,
 length overflow, or command overflow, splits each command into an argv, and
 executes it without a shell. A rejected command prevents the dispatch and the

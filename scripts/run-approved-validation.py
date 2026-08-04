@@ -16,6 +16,7 @@ UNSAFE_RE = re.compile(r"[;&|`><\x00-\x08\x0e-\x1f]")
 FENCE_RE = re.compile(r"```[^\n]*(?:validation|check)[^\n]*\n(.*?)```", re.I | re.S)
 EXACT_RE = re.compile(r"(?im)^\s*-\s*Exact narrow command:\s*`?([^`\n]+?)`?\s*$")
 EMPTY_VALUES = {"none", "not-required", "not required", "tbd"}
+RUNTIME_PROTOCOL = "aiwf-validation-runner-v1"
 
 
 def extract_commands(text: str) -> tuple[list[str], dict[str, object]]:
@@ -81,6 +82,12 @@ def run_commands(commands: Sequence[str], *, cwd: Path, timeout: int) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--runtime-protocol",
+        action="version",
+        version=RUNTIME_PROTOCOL,
+        help="print the validation-runner runtime protocol and exit",
+    )
     parser.add_argument("action", choices=("audit", "lint", "run"))
     parser.add_argument("--task-card", type=Path, default=Path("CLAUDE_TASK_CARD.md"))
     parser.add_argument("--timeout", type=int, default=300)

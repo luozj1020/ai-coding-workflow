@@ -369,7 +369,19 @@ class InstallWorkflowTests(unittest.TestCase):
 
             self.assertIn("updated: ai/dispatch-to-claude.sh", second.stdout)
             self.assertIn("You are the executor in a Codex/Claude Code workflow.", dispatch.read_text(encoding="utf-8"))
-            self.assertTrue((repo / "ai" / "write-approved-file.py").is_file())
+            writer = repo / "ai" / "write-approved-file.py"
+            self.assertTrue(writer.is_file())
+            self.assertIn("aiwf-exact-write-v2", writer.read_text(encoding="utf-8"))
+            self.assertIn(
+                ".aiwf-runtime/write-approved-file.py",
+                dispatch.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "aiwf-validation-runner-v1",
+                (repo / "ai" / "run-approved-validation.py").read_text(
+                    encoding="utf-8"
+                ),
+            )
 
     def test_project_rule_allows_only_standard_workflow_entrypoints(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1303,6 +1315,9 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("deferred-machine-monitor", watch)
             self.assertIn("repeated watch is refused", watch)
             self.assertIn('event=material-change running=yes terminal=no', dispatch)
+            self.assertIn('event=active-window-refreshed running=yes terminal=no', dispatch)
+            self.assertIn('event=active-window-extended running=yes terminal=no', dispatch)
+            self.assertIn("emit_continuing_window_notice", text)
             self.assertIn('event=terminal running=no terminal=yes', dispatch)
             self.assertIn('Agent Wait (once):', dispatch)
             self.assertNotIn('Watch Progress:', dispatch)
@@ -1416,6 +1431,95 @@ class InstallWorkflowTests(unittest.TestCase):
                 self.assertTrue(stdout.startswith(material), stdout)
                 self.assertIn("triage_source=local", stdout)
                 self.assertIn("spark_status=disabled", stdout)
+            finally:
+                if waiter is not None and waiter.poll() is None:
+                    waiter.kill()
+                    waiter.wait(timeout=10)
+                sleeper.terminate()
+                sleeper.wait(timeout=10)
+
+    def test_monitor_material_wait_returns_existing_window_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-existing-window-refresh"
+            worktrees = repo / ".worktrees"
+            worktrees.mkdir(exist_ok=True)
+            refreshed = (
+                f"monitor_event source=dispatcher task_id={task_id} "
+                "event=active-window-refreshed running=yes terminal=no "
+                "elapsed_seconds=125 signal=builder_worktree_change "
+                "active_deadline_epoch=9999999999\n"
+            )
+            (worktrees / f"{task_id}.monitor-events.log").write_text(
+                refreshed, encoding="utf-8"
+            )
+            result = subprocess.run(
+                [load_module()._find_bash(), str(repo / "ai" / "monitor-claude.sh"),
+                 "wait", task_id, "--until", "material", "--timeout", "2",
+                 "--spark", "off"],
+                cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True, timeout=10,
+            )
+            self.assertTrue(result.stdout.startswith(refreshed), result.stdout)
+            self.assertIn("triage_source=local", result.stdout)
+
+    def test_monitor_terminal_wait_reports_window_refresh_before_terminal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            task_id = "claude-20990101-window-refresh-terminal"
+            worktrees = repo / ".worktrees"
+            worktrees.mkdir(exist_ok=True)
+            event_log = worktrees / f"{task_id}.monitor-events.log"
+            event_log.write_text(
+                f"monitor_event source=dispatcher task_id={task_id} "
+                "event=started running=yes terminal=no\n",
+                encoding="utf-8",
+            )
+            bash_exe = load_module()._find_bash()
+            sleeper = subprocess.Popen(
+                [bash_exe, "-c", "echo $$; exec sleep 20"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8",
+            )
+            waiter = None
+            try:
+                pid = sleeper.stdout.readline().strip()
+                sleeper.stdout.close()
+                (worktrees / f"{task_id}.dispatcher.pid").write_text(pid, encoding="utf-8")
+                waiter = subprocess.Popen(
+                    [bash_exe, str(repo / "ai" / "monitor-claude.sh"), "wait", task_id,
+                     "--until", "terminal", "--interval", "1", "--timeout", "8",
+                     "--spark", "off"],
+                    cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                time.sleep(1.2)
+                refreshed = (
+                    f"monitor_event source=dispatcher task_id={task_id} "
+                    "event=active-window-refreshed running=yes terminal=no "
+                    "elapsed_seconds=125 signal=builder_worktree_change "
+                    "active_deadline_epoch=9999999999\n"
+                )
+                with event_log.open("a", encoding="utf-8") as handle:
+                    handle.write(refreshed)
+                time.sleep(1.2)
+                self.assertIsNone(waiter.poll(), "terminal wait must continue after notice")
+                terminal = (
+                    f"monitor_event source=dispatcher task_id={task_id} "
+                    "event=terminal running=no terminal=yes exit_status=0\n"
+                )
+                with event_log.open("a", encoding="utf-8") as handle:
+                    handle.write(terminal)
+                stdout, stderr = waiter.communicate(timeout=10)
+                self.assertEqual(waiter.returncode, 0, stderr)
+                self.assertLess(stdout.index(refreshed.strip()), stdout.index(terminal.strip()))
+                self.assertIn(
+                    "monitor_wait status=continuing "
+                    f"task_id={task_id} until=terminal reason=execution-window-updated",
+                    stdout,
+                )
             finally:
                 if waiter is not None and waiter.poll() is None:
                     waiter.kill()

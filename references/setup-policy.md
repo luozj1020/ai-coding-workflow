@@ -99,6 +99,13 @@ content comparison across managed blocks, rules, helpers, schemas, profiles,
 and examples. Any missing or stale managed destination makes the command fail
 instead of reporting a successful refresh.
 
+Repository refresh applies to the current project worktree; it never rewrites
+historical execution worktrees. New dispatchers therefore snapshot their
+model-facing helpers from the same installed managed package and mount that
+task bundle read-only. A reviewed continuation reuses historical product files,
+not historical workflow helpers. This prevents a partial update from producing
+a new-launcher/old-writer runtime combination.
+
 ## Environment-Aware Setup
 
 Preview or apply language/tool detection:

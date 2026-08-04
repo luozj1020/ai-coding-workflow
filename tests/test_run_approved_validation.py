@@ -2,6 +2,7 @@ import importlib.util
 import io
 import json
 import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,13 @@ SPEC.loader.exec_module(validation)
 
 
 class ApprovedValidationTests(unittest.TestCase):
+    def test_reports_validation_runtime_protocol(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--runtime-protocol"],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(result.stdout.strip(), "aiwf-validation-runner-v1")
+
     def test_audit_extracts_commands_without_returning_bodies(self):
         commands, summary = validation.extract_commands(
             "```validation\npython -m unittest tests.test_one\ngit diff --check\n```\n"

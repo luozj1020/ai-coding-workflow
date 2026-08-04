@@ -14,6 +14,9 @@ import stat
 import sys
 
 
+RUNTIME_PROTOCOL = "aiwf-exact-write-v2"
+
+
 class ApprovedWriteError(ValueError):
     pass
 
@@ -184,6 +187,12 @@ def _decode_base64(label: str, value: str) -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--runtime-protocol",
+        action="version",
+        version=RUNTIME_PROTOCOL,
+        help="print the exact-write runtime protocol and exit",
+    )
     parser.add_argument(
         "--receipt", type=Path,
         help="write-scope receipt; defaults to AI_WORKFLOW_WRITE_SCOPE_RECEIPT",

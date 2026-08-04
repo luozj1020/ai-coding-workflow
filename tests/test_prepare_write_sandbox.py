@@ -50,6 +50,7 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         for path in (
             "src/*.py", "../outside.py", ".git/config",
             ".aiwf-write-staging/CONTENT",
+            ".aiwf-runtime/write-approved-file.py",
         ):
             with self.subTest(path=path):
                 self.card.write_text(f"- Write paths: {path}\n", encoding="utf-8")
@@ -116,6 +117,10 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         dispatcher = (ROOT / "scripts" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
         self.assertIn('--bind "$TASK_TMPDIR" "$TASK_TMPDIR"', dispatcher)
         self.assertIn(
+            '--ro-bind "$_MANAGED_RUNTIME_SOURCE" "$_MANAGED_RUNTIME_TARGET"',
+            dispatcher,
+        )
+        self.assertIn(
             '--bind "$_CLAUDE_WRITER_INPUT_SOURCE" "$_CLAUDE_WRITER_INPUT_TARGET"',
             dispatcher,
         )
@@ -125,6 +130,12 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         self.assertIn(".aiwf-write-staging/CONTENT", dispatcher)
         self.assertIn("--source .aiwf-write-staging/CONTENT)", dispatcher)
         self.assertIn('--content-base64 *)', dispatcher)
+        self.assertIn('.aiwf-runtime/write-approved-file.py', dispatcher)
+        self.assertIn(
+            '_VALIDATION_HELPER_REL=".aiwf-runtime/run-approved-validation.py"',
+            dispatcher,
+        )
+        self.assertIn('historical_worktree_helpers_used', dispatcher)
         self.assertNotIn('--receipt \\$AI_WORKFLOW_WRITE_SCOPE_RECEIPT', dispatcher)
         self.assertNotIn('--bind "$_SYSTEM_TMP_ROOT" "$_SYSTEM_TMP_ROOT"', dispatcher)
 
@@ -238,6 +249,58 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         self.assertEqual(Path(binding["source"]).read_text(), "unique\n")
         MOD.sync_receipt(self.output)
         self.assertEqual((self.worktree / "allowed.txt").read_text(), "unique\n")
+
+    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
+    def test_dispatcher_runtime_mount_hides_stale_worktree_writer(self) -> None:
+        self.card.write_text(
+            "- Write paths: allowed.txt\n"
+            "- Full file replacement paths: allowed.txt\n",
+            encoding="utf-8",
+        )
+        (self.worktree / "allowed.txt").write_text("old\n", encoding="utf-8")
+        value = MOD.prepare(self.card, self.worktree, self.output)
+        binding = next(
+            item for item in value["bindings"]
+            if item["relative_path"] == "allowed.txt"
+        )
+        runtime_source = self.root / "dispatcher-runtime"
+        runtime_target = self.worktree / ".aiwf-runtime"
+        runtime_source.mkdir()
+        runtime_target.mkdir()
+        shutil.copy2(
+            ROOT / "scripts" / "write-approved-file.py",
+            runtime_source / "write-approved-file.py",
+        )
+        (runtime_target / "write-approved-file.py").write_text(
+            "raise SystemExit('stale worktree writer was selected')\n",
+            encoding="utf-8",
+        )
+        replacement = self.root / "replacement"
+        replacement.write_text("new\n", encoding="utf-8")
+        command = [
+            "bwrap", "--die-with-parent", "--ro-bind", "/", "/",
+            "--dev-bind", "/dev", "/dev", "--proc", "/proc",
+            "--ro-bind", str(runtime_source), str(runtime_target),
+            "--bind", value["staging_root"], value["staging_root"],
+            "--chdir", str(self.worktree), "--", sys.executable,
+            ".aiwf-runtime/write-approved-file.py",
+            "--path", "allowed.txt", "--source", str(replacement),
+        ]
+        result = subprocess.run(
+            command,
+            env=dict(
+                os.environ,
+                AI_WORKFLOW_WRITE_SCOPE_RECEIPT=str(self.output),
+            ),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(binding["source"]).read_text(), "new\n")
+        self.assertIn(
+            "stale worktree writer was selected",
+            (runtime_target / "write-approved-file.py").read_text(),
+        )
 
 
 if __name__ == "__main__":

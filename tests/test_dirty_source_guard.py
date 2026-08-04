@@ -1221,10 +1221,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         fake_bwrap.write_text(
             "#!/usr/bin/env bash\n"
             "chdir=''\n"
+            "runtime_source=''\n"
+            "runtime_target=''\n"
             "while [ \"$#\" -gt 0 ]; do\n"
             "  case \"$1\" in\n"
             "    --die-with-parent) shift ;;\n"
-            "    --ro-bind|--dev-bind|--bind) shift 3 ;;\n"
+            "    --ro-bind)\n"
+            "      case \"$3\" in */.aiwf-runtime) runtime_source=\"$2\"; runtime_target=\"$3\" ;; esac\n"
+            "      shift 3 ;;\n"
+            "    --dev-bind|--bind) shift 3 ;;\n"
             "    --proc) shift 2 ;;\n"
             "    --chdir) chdir=\"$2\"; shift 2 ;;\n"
             "    --) shift; break ;;\n"
@@ -1232,7 +1237,13 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "  esac\n"
             "done\n"
             "[ -z \"$chdir\" ] || cd \"$chdir\"\n"
-            "exec \"$@\"\n",
+            "args=(\"$@\")\n"
+            "if [ -n \"$runtime_source\" ]; then\n"
+            "  for ((i=0; i<${#args[@]}; i++)); do\n"
+            "    case \"${args[$i]}\" in .aiwf-runtime/*) args[$i]=\"$runtime_source/${args[$i]#.aiwf-runtime/}\" ;; esac\n"
+            "  done\n"
+            "fi\n"
+            "exec \"${args[@]}\"\n",
             encoding="utf-8",
         )
         fake_bwrap.chmod(0o755)
@@ -1285,7 +1296,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         prompt = pathlib.Path(runtime["worktree"]) / "CLAUDE_PROMPT.md"
         prompt_text = prompt.read_text(encoding="utf-8")
         self.assertIn("EXACT APPROVED FILE WRITER", prompt_text)
-        self.assertIn("python3 scripts/write-approved-file.py", prompt_text)
+        self.assertIn(
+            "python3 .aiwf-runtime/write-approved-file.py", prompt_text
+        )
         self.assertIn("--replace-old-base64", prompt_text)
         self.assertIn("--content-base64", prompt_text)
         self.assertIn(".aiwf-write-staging/CONTENT", prompt_text)
@@ -1294,12 +1307,65 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         argv_text = argv_log.read_text(encoding="utf-8")
         self.assertIn("--content-base64", argv_text)
         self.assertIn(
-            "python3 scripts/write-approved-file.py --path * "
+            "python3 .aiwf-runtime/write-approved-file.py --path * "
             "--source .aiwf-write-staging/CONTENT",
             argv_text,
         )
         self.assertNotIn("$AI_WORKFLOW_WRITE_SCOPE_RECEIPT", argv_text)
         self.assertNotIn(str(self.repo / ".worktrees"), argv_text)
+        bundle = json.loads(
+            (
+                self.repo / ".worktrees"
+                / f"{runtime['task_id']}.managed-runtime-bundle.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(bundle["status"], "ready")
+        self.assertEqual(bundle["bundle_protocol"], "aiwf-task-runtime-v1")
+        self.assertEqual(bundle["exact_write_protocol"], "aiwf-exact-write-v2")
+        self.assertEqual(
+            bundle["validation_runner_protocol"],
+            "aiwf-validation-runner-v1",
+        )
+        self.assertFalse(bundle["historical_worktree_helpers_used"])
+        self.assertEqual(
+            bundle["helpers"]["write-approved-file.py"]["model_path"],
+            ".aiwf-runtime/write-approved-file.py",
+        )
+        self.assertEqual(runtime["managed_runtime_bundle"], str(
+            self.repo / ".worktrees"
+            / f"{runtime['task_id']}.managed-runtime-bundle.json"
+        ))
+        self.assertFalse(runtime["historical_worktree_helpers_used"])
+
+    def test_partial_managed_update_blocks_before_builder_start(self):
+        self._write_builder_task_card()
+        writer = self.repo / "scripts" / "write-approved-file.py"
+        writer.write_text(
+            "#!/usr/bin/env python3\nprint('legacy-exact-write-v1')\n",
+            encoding="utf-8",
+        )
+        self._run(["git", "add", "scripts/write-approved-file.py"])
+        self._run(["git", "commit", "-m", "simulate stale managed writer"])
+        argv_log = self.case_root / "partial-update-argv.log"
+
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_ARGV_LOG": str(argv_log)},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("workflow-runtime-mismatch", result.stderr)
+        self.assertIn("refusing all model probes", result.stderr)
+        self.assertFalse(argv_log.exists())
+        receipts = list(
+            (self.repo / ".worktrees").glob("*.managed-runtime-preflight.json")
+        )
+        self.assertEqual(len(receipts), 1)
+        receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
+        self.assertFalse(receipt["builder_started"])
+        self.assertFalse(receipt["model_interaction_started"])
+        self.assertFalse(receipt["model_round_consumed"])
+        self.assertFalse(receipt["counts_toward_takeover"])
 
     def test_workspace_trust_preflight_stops_before_builder_window(self):
         self._write_task_card()
@@ -3265,7 +3331,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("allowlist_accepted=2", result.stdout)
         if argv_log.exists():
             argv_content = argv_log.read_text(encoding="utf-8")
-            self.assertIn("Bash(scripts/run-approved-validation.py run)", argv_content)
+            self.assertIn(
+                f"Bash(python3 {self.repo / 'scripts' / 'run-approved-validation.py'} run)",
+                argv_content,
+            )
             self.assertNotIn("Bash(python -m pytest -q)", argv_content)
             self.assertNotIn("Bash(git diff --check)", argv_content)
         worktree = self._artifact_path(result.stdout, "Worktree")
@@ -3296,7 +3365,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("allowlist_accepted=1", result.stdout)
         if argv_log.exists():
             argv_content = argv_log.read_text(encoding="utf-8")
-            self.assertIn("Bash(scripts/run-approved-validation.py run)", argv_content)
+            self.assertIn(
+                f"Bash(python3 {self.repo / 'scripts' / 'run-approved-validation.py'} run)",
+                argv_content,
+            )
 
     def test_different_validation_commands_share_final_tool_contract_hash(self):
         env = {
@@ -3345,7 +3417,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("allowlist_accepted=1", result.stdout)
-        self.assertIn("Bash(scripts/run-approved-validation.py run)", argv_log.read_text())
+        self.assertIn(
+            f"Bash(python3 {self.repo / 'scripts' / 'run-approved-validation.py'} run)",
+            argv_log.read_text(),
+        )
 
     def test_comments_and_blank_lines_ignored_in_validation(self):
         """Comments and blank lines in validation fences are ignored."""
@@ -3464,7 +3539,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             self.assertNotIn("--dangerously-skip-permissions", argv_content)
             # One fixed helper is allowed; task-card commands are not embedded
             # in the tool schema.
-            self.assertIn("Bash(scripts/run-approved-validation.py run)", argv_content)
+            self.assertIn(
+                f"Bash(python3 {self.repo / 'scripts' / 'run-approved-validation.py'} run)",
+                argv_content,
+            )
 
     def test_default_profile_preserves_legacy_invocation(self):
         """Default/unsupported profile preserves legacy invocation with no profile flags."""

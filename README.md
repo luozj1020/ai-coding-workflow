@@ -966,7 +966,7 @@ These labels explain observable harness changes; they do not claim knowledge of
 provider TTL, eviction, or backend routing.
 
 To keep the tool schema reusable, frozen validation commands are executed by
-the fixed `ai/run-approved-validation.py run` entry point instead of being
+the fixed `.aiwf-runtime/run-approved-validation.py run` entry point instead of being
 embedded one-by-one in `allowedTools`. Exact-write commands let the helper read
 its environment-bound receipt internally and use fixed task-local input names
 rather than expanding `$TMPDIR`, a receipt variable, or a task-specific path.
@@ -1414,7 +1414,7 @@ refused so an accidental caller loop cannot keep producing
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, the dispatcher is the only sampling owner and writes material/finalized terminal boundaries to `*.monitor-events.log`. Codex should make one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated `watch`, `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On the boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` only for ambiguous `inspect` or `interrupt-candidate` evidence. Spark receives bounded JSON, returns a summary capped at 240 characters plus fixed decision fields, and never receives raw process listings, full logs, network tails, or source diffs. No helper authorizes interruption.
+For agent-driven runs, the dispatcher is the only sampling owner and writes material/window/finalized terminal boundaries to `*.monitor-events.log`. Codex should make one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated `watch`, `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. That single terminal wait streams `active-window-refreshed` and `active-window-extended` notices immediately, including the new deadline, while continuing to block for terminal; Codex must not infer a refresh from elapsed time. There is no detached supervisor. On the terminal boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` only for ambiguous `inspect` or `interrupt-candidate` evidence. Spark receives bounded JSON, returns a summary capped at 240 characters plus fixed decision fields, and never receives raw process listings, full logs, network tails, or source diffs. No helper authorizes interruption.
 
 Spark routing, Claude monitoring, failure triage, and parallel planning now use
 one strict control protocol. Successful direct calls emit
@@ -1451,6 +1451,11 @@ unique old/new fragment replacement from fixed files under a task-local
 `.aiwf-write-staging/` directory whose parent supports atomic Edit operations;
 base64 arguments remain a fallback. The dispatcher runs that actual helper
 against a control file and a declared product file before model interaction.
+It snapshots the exact writer and validation runner located beside the active
+dispatcher, records their protocol and hashes, and mounts them read-only at the
+fixed `.aiwf-runtime/` path. Historical worktree copies of managed helpers are
+never executed, so a Skill update cannot create a new-dispatcher/old-writer
+combination during reviewed continuation.
 Zero matches, multiple matches, and
 undeclared targets fail without writing. Its descriptor stays in binary mode on
 Windows, so staged bytes and mixed LF/CRLF content are copied exactly rather

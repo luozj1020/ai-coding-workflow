@@ -119,6 +119,12 @@ emit_boundary_summary() {
     fi
 }
 
+emit_continuing_window_notice() {
+    local boundary="$1"
+    printf '%s\n' "$boundary"
+    printf '%s\n' "monitor_wait status=continuing task_id=${TASK_ID} until=terminal reason=execution-window-updated"
+}
+
 case "$ACTION" in
     wait)
         # One blocking tool call replaces agent-side ps/tail/clock polling.
@@ -129,6 +135,19 @@ case "$ACTION" in
         if printf '%s\n' "$_last" | grep -q ' terminal=yes\([[:space:]]\|$\)'; then
             emit_boundary_summary "$_last"
             exit 0
+        fi
+        _existing_material_event=""
+        _existing_window_event=""
+        if [ -f "$EVENT_LOG" ]; then
+            _existing_material_event="$(grep -E ' event=(material-change|active-window-refreshed|active-window-extended)([[:space:]]|$)' "$EVENT_LOG" | tail -1 || true)"
+            _existing_window_event="$(grep -E ' event=active-window-(refreshed|extended)([[:space:]]|$)' "$EVENT_LOG" | tail -1 || true)"
+        fi
+        if [ "$WAIT_UNTIL" = "material" ] && [ -n "$_existing_material_event" ]; then
+            emit_boundary_summary "$_existing_material_event"
+            exit 0
+        fi
+        if [ -n "$_existing_window_event" ]; then
+            emit_continuing_window_notice "$_existing_window_event"
         fi
         _started="$(date +%s)"
         while true; do
@@ -142,8 +161,12 @@ case "$ACTION" in
                     emit_boundary_summary "$_terminal"
                     exit 0
                 fi
+                _window_event="$(printf '%s\n' "$_new_events" | grep -E ' event=active-window-(refreshed|extended)([[:space:]]|$)' | tail -1 || true)"
+                if [ -n "$_window_event" ] && [ "$WAIT_UNTIL" = "terminal" ]; then
+                    emit_continuing_window_notice "$_window_event"
+                fi
                 if [ "$WAIT_UNTIL" = "material" ]; then
-                    _material="$(printf '%s\n' "$_new_events" | grep -E ' event=material-change([[:space:]]|$)' || true)"
+                    _material="$(printf '%s\n' "$_new_events" | grep -E ' event=(material-change|active-window-refreshed|active-window-extended)([[:space:]]|$)' | tail -1 || true)"
                     if [ -n "$_material" ]; then
                         emit_boundary_summary "$_material"
                         exit 0

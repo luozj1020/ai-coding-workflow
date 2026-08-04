@@ -687,7 +687,7 @@ Codex 接受 Builder 主体方向后，每个修订仍必须在编写下一张�
 
 dirty source 或 stale HEAD 也应按同类逻辑处理：它会阻止可靠委托，但本身不是 Codex 接管实现的理由。应先恢复委托路径，例如提交已接受阶段、stash/patch 未提交改动、刷新 workflow 文件、从更新后的 HEAD 重新派发、请求明确的 dirty-source 派发批准，或停止等待人工处理。如果明确批准当前未提交状态作为基线，应使用 `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot`；环境变量形式仅用于兼容，因为前置变量赋值无法匹配受托管规则保护的稳定 launcher 前缀。
 
-对于原地重试和 reviewed continuation，若 Claude 返回 conversation/session not found，dispatcher 会先将其记录为不计模型失败的恢复故障，再以同一 owner、任务、worktree 和写入范围自动尝试一次新会话；其他恢复错误仍然终止。精确路径写入约束使用工作树外的可写 staging，并在模型交互前通过最终挂载布局真实运行收据约束 writer，分别探测控制文件和一个已声明产品文件，因此错误挂载会在启动模型前作为环境阻断退出。沙箱还会提供任务级 `.aiwf-write-staging/` 输入目录，其父目录可写，内置 Edit 可以在其中原子替换固定的完整内容或 old/new 片段文件；base64 参数作为 Edit 和 Write 都缺失时的后备。writer 在进程内部读取不可变收据，不需要读取工作树外路径、展开 `$TMPDIR`/收据变量或等待人工批准；零匹配、多匹配和未声明路径均失败关闭。Windows 上写入描述符保持二进制模式，因此 staging 字节及混合 LF/CRLF 内容不会经过文本换行转换。
+对于原地重试和 reviewed continuation，若 Claude 返回 conversation/session not found，dispatcher 会先将其记录为不计模型失败的恢复故障，再以同一 owner、任务、worktree 和写入范围自动尝试一次新会话；其他恢复错误仍然终止。精确路径写入约束使用工作树外的可写 staging，并在模型交互前通过最终挂载布局真实运行收据约束 writer，分别探测控制文件和一个已声明产品文件，因此错误挂载会在启动模型前作为环境阻断退出。沙箱还会提供任务级 `.aiwf-write-staging/` 输入目录，其父目录可写，内置 Edit 可以在其中原子替换固定的完整内容或 old/new 片段文件；base64 参数作为 Edit 和 Write 都缺失时的后备。writer 在进程内部读取不可变收据，不需要读取工作树外路径、展开 `$TMPDIR`/收据变量或等待人工批准；零匹配、多匹配和未声明路径均失败关闭。Windows 上写入描述符保持二进制模式，因此 staging 字节及混合 LF/CRLF 内容不会经过文本换行转换。dispatcher 还会从自身所在的同版本托管包快照精确 writer 与验证 runner，记录协议和文件哈希，并只读挂载到固定的 `.aiwf-runtime/`。历史 worktree 中的旧版 `ai/`/`scripts/` helper 不再参与执行，因此 reviewed continuation 不会出现“新版启动器 + 旧版 writer”的组合；缺失或协议不匹配会在 Builder 启动前按 `workflow-runtime-mismatch` 失败关闭，且不消耗模型轮次。
 
 **步骤 1：初始化项目**（一次性）
 
@@ -888,7 +888,7 @@ Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`co
 
 Claude 用量记录还会保存仅含哈希的缓存归因：provider route、稳定提示前缀、解析后的工具契约、任务后缀、缓存通道和会话模式。Ledger 不会复制提示正文或工具命令正文。运行 `python ai/aiwf.py usage aggregate .ai-workflow/model-usage.jsonl` 可查看整体和分通道的 Token 加权缓存命中率，以及 `cold-start`、`prefix-drift`、`tool-profile-change`、`provider-route-change`、`resume-failed`、`provider-unknown` 等保守分类。这些标签只解释 Harness 可观测到的变化，不推断服务端 TTL、淘汰或后端路由。
 
-为保持工具 schema 可复用，冻结的验证命令不再逐条嵌入 `allowedTools`，而是统一由固定入口 `ai/run-approved-validation.py run` 执行。精确写入命令由 helper 在内部读取环境绑定收据，并使用固定的任务级输入文件名，不再在 Bash 中展开 `$TMPDIR`、收据变量或任务专属绝对路径；base64 参数仅作为工具缺失时的后备。Helper 会重新解析不可变任务卡、拒绝 shell 组合并以无 shell 的参数数组运行命令；只读根仍负责强制声明的写入范围。填写任务卡时可先运行 `python ai/compose_task_card.py --lint-card CARD`，在派发前发现不受支持的 shell 组合。
+为保持工具 schema 可复用，冻结的验证命令不再逐条嵌入 `allowedTools`，而是统一由固定入口 `.aiwf-runtime/run-approved-validation.py run` 执行。精确写入命令由 helper 在内部读取环境绑定收据，并使用固定的任务级输入文件名，不再在 Bash 中展开 `$TMPDIR`、收据变量或任务专属绝对路径；base64 参数仅作为工具缺失时的后备。Helper 会重新解析不可变任务卡、拒绝 shell 组合并以无 shell 的参数数组运行命令；只读根仍负责强制声明的写入范围。填写任务卡时可先运行 `python ai/compose_task_card.py --lint-card CARD`，在派发前发现不受支持的 shell 组合。
 
 缓存回归应比较同一契约的 warm continuation，而不是所有调用的混合百分比。可通过 `--minimum-warm-cache-calls 5 --minimum-warm-cache-hit-rate 0.95` 生成 `pass`、`regression-candidate` 或 `insufficient-evidence` 结论；仅在受控 benchmark/CI 中再增加 `--require-cache-gate`。`by_model_cache_lane` 会进一步隔离不同模型。默认不启用阈值，因此普通派发不会被任意全局缓存目标阻断。
 
@@ -1303,7 +1303,7 @@ Claude 会在自然里程碑更新 `CLAUDE_PROGRESS.md`。只有同时包含 `Co
 
 `watch-claude.sh` 和 `status-claude.sh` 还会打印机器可读监控字段（`monitor_level`、`action`、`evidence_state`、quiet/elapsed 秒数，以及可用时的 suspect count）。Codex 应优先读取这些低 token 字段，再决定是否展开完整 status、progress 或 network tail。
 
-智能体运行时由 Dispatcher 作为唯一采样者，只把实质变化和完成后的终态写入 `*.monitor-events.log`。Codex 应只发起一次阻塞式 `monitor-claude.sh wait <task-id> --until terminal`；禁止重复执行 `watch`、`ps`、`tail`、status、进程树或纯时钟检查。不再启动分离的 supervisor。到达终态边界时，`wait` 会附加一次紧凑本地判断；只有本地状态为 `inspect` 或 `interrupt-candidate` 时，才可能调用 Spark `monitor-triage`。Spark 只接收有边界的 JSON，并返回最多 240 字符的摘要和固定决策字段；原始进程列表、完整日志、network tail 和源码 diff 都不会发送给 Spark。任何 helper 都不会授权中断。
+智能体运行时由 Dispatcher 作为唯一采样者，只把实质变化、窗口变化和完成后的终态写入 `*.monitor-events.log`。Codex 应只发起一次阻塞式 `monitor-claude.sh wait <task-id> --until terminal`；禁止重复执行 `watch`、`ps`、`tail`、status、进程树或纯时钟检查。同一个 terminal wait 会在 Dispatcher 刷新或扩展执行窗口时立即流出 `active-window-refreshed` / `active-window-extended` 结构化通知（包括新的截止时间），随后继续等待终态；Codex 不得再根据已等待时长推断窗口是否刷新。不再启动分离的 supervisor。到达终态边界时，`wait` 会附加一次紧凑本地判断；只有本地状态为 `inspect` 或 `interrupt-candidate` 时，才可能调用 Spark `monitor-triage`。Spark 只接收有边界的 JSON，并返回最多 240 字符的摘要和固定决策字段；原始进程列表、完整日志、network tail 和源码 diff 都不会发送给 Spark。任何 helper 都不会授权中断。
 
 Spark 的路由、Claude 监控、失败归因和并行规划现在共用一套严格控制协议。成功的 direct 调用会输出 `spark_decision_json`，下游直接校验并消费紧凑对象，不再重新阅读建议正文；证据哈希会抑制重复监控判断。Spark 不能授权中断、接管、派发、验收或合并；并行建议最多两个 worker，并且必须串行协调与审查。
 

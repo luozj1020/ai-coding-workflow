@@ -14,6 +14,13 @@ WRITER = ROOT / "scripts" / "write-approved-file.py"
 
 
 class ApprovedFileWriterTests(unittest.TestCase):
+    def test_reports_exact_write_runtime_protocol(self):
+        result = subprocess.run(
+            [sys.executable, str(WRITER), "--runtime-protocol"],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(result.stdout.strip(), "aiwf-exact-write-v2")
+
     def _receipt(self, root: pathlib.Path, *, allow_full: bool = True) -> pathlib.Path:
         worktree = root / "worktree"
         staging = root / "staging"
