@@ -3225,6 +3225,102 @@ class SparkExecutionEnvTests(unittest.TestCase):
             self.assertIn("host_retry_command_form=stable-cli", result.stderr)
             self.assertIn("--execution-env host", result.stderr)
 
+    def test_runtime_eperm_failure_requests_host_handoff(self):
+        """A sandbox EPERM failure cannot silently auto-disable with exit zero."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path,
+                output_text="",
+                exit_code=1,
+                stderr_text="connect failed: Operation not permitted (os error 1)",
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["AI_CODING_WORKFLOW_BYPASS_BROKER"] = "1"
+            env.pop("CODEX_SANDBOX_NETWORK_DISABLED", None)
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                    "--execution-env", "auto",
+                    "--result-mode", "direct",
+                    "--diagnostics", "failure",
+                ],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 75, result.stderr + result.stdout)
+            self.assertIn("spark_status=unavailable", result.stdout)
+            self.assertIn("spark_protocol_end=aiwf-spark-stdout-v1", result.stdout)
+            self.assertIn("needs_host_execution=true", result.stderr)
+            self.assertIn("host_handoff_required=true", result.stderr)
+            self.assertIn("host_retry_command_form=stable-cli", result.stderr)
+
+    def test_runtime_dns_failure_requests_host_handoff(self):
+        """A DNS failure in auto mode requests the single host retry."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path,
+                output_text="",
+                exit_code=1,
+                stderr_text="Temporary failure in name resolution",
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["AI_CODING_WORKFLOW_BYPASS_BROKER"] = "1"
+            env.pop("CODEX_SANDBOX_NETWORK_DISABLED", None)
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                    "--execution-env", "auto",
+                    "--result-mode", "direct",
+                    "--diagnostics", "failure",
+                ],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 75, result.stderr + result.stdout)
+            self.assertIn("needs_host_execution=true", result.stderr)
+            self.assertIn("host_handoff_required=true", result.stderr)
+
+    def test_runtime_eperm_failure_on_host_does_not_request_another_host(self):
+        """Host execution never asks the outer orchestrator to retry host again."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(tmp_path)
+            fake_codex = self._make_fake_codex(
+                tmp_path,
+                output_text="",
+                exit_code=1,
+                stderr_text="connect failed: Operation not permitted (os error 1)",
+            )
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["AI_CODING_WORKFLOW_BYPASS_BROKER"] = "1"
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                    "--execution-env", "host",
+                    "--result-mode", "direct",
+                    "--diagnostics", "failure",
+                ],
+                cwd=str(repo), env=env,
+                text=True, encoding="utf-8", errors="replace", capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertIn("spark_status=unavailable", result.stdout)
+            self.assertNotIn("needs_host_execution=true", result.stderr)
+            self.assertNotIn("host_handoff_required=true", result.stderr)
+
     def test_compact_diagnostic_under_explicit_sandbox_persists_redacted(self):
         """Compact diagnostic under explicit sandbox/direct mode persists head+tail
         redacted diagnostic with credential sentinel absent."""

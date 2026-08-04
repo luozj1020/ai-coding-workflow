@@ -53,18 +53,21 @@ host-execution permission surface (for example,
 bash ai/dispatch-to-claude.sh <task-card> \
   --execution-env host \
   --dirty-source-mode snapshot \
-  --retry-in-place-task-id <task-id>
+  --preflight-task-id <task-id>
 ```
 
 Include `--dirty-source-mode snapshot` only when the handoff receipt names
-snapshot mode. For reviewed continuation, use `--reviewed-continuation <approval-path>` in
-place of the retry task ID. Legacy `CLAUDE_CODE_HOST_AUTHORITY=1` and
+snapshot mode. `--preflight-task-id` preserves identity when the early probe
+stops before any worktree or session exists. A later transport handoff from an
+existing worktree continues to use `--retry-in-place-task-id`; reviewed
+continuation uses `--reviewed-continuation <approval-path>`. Legacy
+`CLAUDE_CODE_HOST_AUTHORITY=1` and
 continuation/dirty-source selector environment variables remain compatible, but the CLI
 shape is preferred because it matches the narrow persistent launcher approval.
 The receipt marks `host_retry_args_authoritative=true` and the environment map
 as legacy; outer orchestration must reconstruct the command from the CLI args.
-This preserves the same task card, worktree, retry lineage, and session
-identity. The authorized dispatcher forces the probe environment to `host`
+This preserves every identity that already exists without manufacturing a
+worktree solely for a failed connectivity probe. The authorized dispatcher forces the probe environment to `host`
 and removes the inherited sandbox marker; this
 is only an assertion of an already-crossed boundary and never grants authority
 by itself. Do not classify Claude as unavailable until this single host attempt
@@ -207,6 +210,8 @@ point. The helper re-reads `CLAUDE_TASK_CARD.md`, rejects unsafe composition,
 length overflow, or command overflow, splits each command into an argv, and
 executes it without a shell. A rejected command prevents the dispatch and the
 runner from executing any assigned validation.
+Run `python ai/compose_task_card.py --lint-card CARD` while filling the card to
+surface rejected shell composition before dispatch.
 
 Exact-write entries use the fixed repository-relative writer path and the
 literal `$AI_WORKFLOW_WRITE_SCOPE_RECEIPT` reference. The dispatcher binds that

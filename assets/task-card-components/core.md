@@ -34,7 +34,7 @@
 | Reference implementation/source of truth | |
 | Known constraints | |
 | Do not read/modify | |
-| Context sufficient for execution? | yes/no |
+| Context is sufficient for execution? | yes/no |
 | Execution-only eligible? | yes/no |
 
 ## Handoff Contract

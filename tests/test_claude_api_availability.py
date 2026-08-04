@@ -63,6 +63,21 @@ class ClaudeApiAvailabilityTests(unittest.TestCase):
                 self.assertEqual(MOD.check(args), 1)
             self.assertEqual(json.loads(output.call_args.args[0])["status"], "expired")
 
+    def test_tool_profile_change_reuses_connectivity_and_observed_inventory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            recorded = self.args(root, tool_profile="locator-builder")
+            MOD.record(recorded)
+            requested = self.args(root, tool_profile="minimal-builder")
+            with mock.patch("builtins.print") as output:
+                self.assertEqual(MOD.check(requested), 0)
+            value = json.loads(output.call_args.args[0])
+            self.assertTrue(value["cache_valid"])
+            self.assertEqual(value["interaction_conclusion"], "available")
+            self.assertFalse(value["tool_profile_matches"])
+            self.assertTrue(value["tool_inventory_verified"])
+            self.assertEqual(value["tool_inventory"], ["Bash", "Read"])
+
     def test_suspicion_invalidates_prior_success(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

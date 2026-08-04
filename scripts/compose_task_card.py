@@ -4,6 +4,7 @@
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -125,12 +126,26 @@ def build_parser():
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--list", action="store_true", help="Print the compact component catalog as JSON")
     parser.add_argument("--select-from", help="JSON routing facts used to select the minimal preset/gates")
+    parser.add_argument("--lint-card", help="Lint a filled Markdown card without dispatching a model")
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
+        if args.lint_card:
+            helper = Path(__file__).resolve().with_name("run-approved-validation.py")
+            completed = subprocess.run(
+                [sys.executable, str(helper), "lint", "--task-card", args.lint_card],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if completed.stdout:
+                print(completed.stdout.rstrip())
+            if completed.stderr:
+                print(completed.stderr.rstrip(), file=sys.stderr)
+            return completed.returncode
         root = component_root()
         catalog = load_catalog(root)
         if args.list:

@@ -51,6 +51,8 @@ class TaskCardComponentTests(unittest.TestCase):
         self.assertIn("## Root Cause Gate", text)
         self.assertIn("| Mode | builder |", text)
         self.assertIn("Checker model dispatch", text)
+        self.assertIn("| Context is sufficient for execution? | yes/no |", text)
+        self.assertNotIn("| Context sufficient for execution? |", text)
         self.assertNotIn("## Parallel Execution Gate", text)
         self.assertLess(len(text.splitlines()), 120)
 
@@ -138,6 +140,22 @@ class TaskCardComponentTests(unittest.TestCase):
         self.assertIn("builder", value["presets"])
         self.assertIn("exploratory-builder", value["presets"])
         self.assertIn("large-repo", value["gates"])
+
+    def test_lint_card_rejects_unsafe_validation_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            card = Path(td) / "card.md"
+            card.write_text(
+                '- Exact narrow command: `python -c "print(1); print(2)"`\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--lint-card", str(card)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(json.loads(result.stdout)["status"], "rejected")
 
 
 if __name__ == "__main__":

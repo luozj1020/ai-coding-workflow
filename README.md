@@ -816,7 +816,9 @@ returns exit 75 with `needs_host_execution=true` before Builder execution. The
 outer Codex caller must replay the identical dispatcher invocation once with
 host execution permission using the stable approved launcher:
 `bash ai/dispatch-to-claude.sh CARD --execution-env host
---retry-in-place-task-id TASK_ID`. Reviewed continuation uses
+--preflight-task-id TASK_ID` when the early probe stopped before worktree
+creation. A later handoff from an existing worktree uses
+`--retry-in-place-task-id TASK_ID`. Reviewed continuation uses
 `--reviewed-continuation APPROVAL` instead. A snapshot handoff also carries
 `--dirty-source-mode snapshot`; use that option on the initial dirty-source
 dispatch so both attempts retain the trusted launcher prefix. Legacy environment selectors remain
@@ -826,6 +828,13 @@ the task card, worktree, and session lineage. The handoff receipt marks
 orchestration, not permission to
 abandon the model call; only a failed host attempt establishes that the current
 route is unavailable.
+
+The startup connectivity probe runs before full worktree construction. Its
+cache identity is independent of the requested tool profile; the observed tool
+inventory is checked separately against each card. Receipts distinguish
+`host_requested`, `host_authorized`, and `host_effective`, and every post-ID
+preflight failure writes a terminal outcome with `builder_started=false` and
+`claude_first_satisfied=false`.
 
 `--brief-file PATH` and `--stdin-brief` are also supported. Brief input is limited to early read-only routing modes. Repeat deterministic ROUTE before every revised, narrowed, retried, re-dispatched, split-child, or next-phase card. Invoke Spark only if that route still has an economically uncertain Claude candidate; otherwise Codex proceeds directly without a task card.
 - `review-only`: quick read-only critique of the task card or likely direction.

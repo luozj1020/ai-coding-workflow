@@ -161,7 +161,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "  if [ \"${FAKE_CLAUDE_HEALTHCHECK_TRUST:-0}\" = 1 ]; then echo 'this workspace has not been trusted' >&2; exit 42; fi\n"
                 "  if [ \"${FAKE_CLAUDE_HEALTHCHECK_FAIL:-0}\" = 1 ]; then exit 42; fi\n"
                 "  if [[ \"$*\" == *\"stream-json\"* ]]; then\n"
-                "    printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"tools\":[\"Read\",\"Edit\",\"Write\",\"Grep\",\"Glob\",\"Bash\"]}' '{\"type\":\"result\",\"result\":\"ok\"}'\n"
+                "    printf '%s\\n' \"{\\\"type\\\":\\\"system\\\",\\\"subtype\\\":\\\"init\\\",\\\"tools\\\":${FAKE_CLAUDE_TOOL_INVENTORY:-[\\\"Read\\\",\\\"Edit\\\",\\\"Write\\\",\\\"Grep\\\",\\\"Glob\\\",\\\"Bash\\\"]}}\" '{\"type\":\"result\",\"result\":\"ok\"}'\n"
                 "  else\n"
                 "    printf '你好！\\n'\n"
                 "  fi\n"
@@ -1120,19 +1120,18 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         payload = json.loads(result_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["host_retry_command_form"], "stable-cli")
         self.assertTrue(payload["host_retry_args_authoritative"])
-        self.assertTrue(payload["host_retry_environment_legacy"])
         self.assertEqual(
             payload["host_retry_args"],
             [
                 "task-cards/PROJ.md",
                 "--execution-env", "host",
                 "--dirty-source-mode", "snapshot",
-                "--retry-in-place-task-id", payload["task_id"],
+                "--preflight-task-id", payload["task_id"],
             ],
         )
-        self.assertEqual(
-            payload["host_retry_environment"]["CLAUDE_CODE_DIRTY_SOURCE_MODE"],
-            "snapshot",
+        self.assertFalse(payload["worktree_created"])
+        self.assertFalse(
+            (self.repo / ".worktrees" / f"{payload['task_id']}.dispatcher.pid").exists()
         )
 
     def test_dirty_snapshot_retry_reuses_execution_base_not_source_head(self):
@@ -1298,6 +1297,35 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         payload = json.loads(result_file.read_text(encoding="utf-8"))
         self.assertEqual(payload["dispatch_outcome"], "preflight-blocked")
         self.assertFalse(payload["builder_started"])
+        self.assertFalse(payload["claude_first_satisfied"])
+        self.assertEqual(payload["workflow_execution_status"], "failed-to-dispatch")
+        self.assertFalse(payload["worktree_created"])
+        outcome_file = next((self.repo / ".worktrees").glob("claude-*.outcome.json"))
+        outcome = json.loads(outcome_file.read_text(encoding="utf-8"))
+        self.assertFalse(outcome["dispatch_success"])
+        self.assertEqual(outcome["completion_state"], "failed-to-dispatch")
+
+    def test_tool_inventory_mismatch_writes_complete_terminal_receipts(self):
+        self._write_task_card()
+        result = self._dispatch(extra_env={
+            "CLAUDE_CODE_API_PROBE_MODE": "always",
+            "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
+            "CLAUDE_CODE_TOOL_PROFILE": "locator-builder",
+            "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+            "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+            "FAKE_CLAUDE_TOOL_INVENTORY": '["Read","Edit","Write","Bash"]',
+        })
+        self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
+        self.assertIn("tool-capability-mismatch", result.stderr)
+        result_file = next((self.repo / ".worktrees").glob("claude-*.result.json"))
+        payload = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertFalse(payload["builder_started"])
+        self.assertFalse(payload["claude_first_satisfied"])
+        self.assertEqual(payload["missing_runtime_tools"], ["Glob", "Grep"])
+        outcome_file = next((self.repo / ".worktrees").glob("claude-*.outcome.json"))
+        outcome = json.loads(outcome_file.read_text(encoding="utf-8"))
+        self.assertFalse(outcome["dispatch_success"])
+        self.assertEqual(outcome["completion_state"], "failed-to-dispatch")
 
     def test_reuse_managed_worktree_requires_explicit_reset_when_existing(self):
         self._write_task_card()
@@ -2180,6 +2208,20 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Builder Mode:    execution-only", result.stdout)
         self.assertIn("First Progress:  120s observation", result.stdout)
+
+    def test_auto_builder_mode_accepts_legacy_context_sufficient_alias(self):
+        task = self._write_builder_task_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Claude Context Packet\n\n| Field | Value |\n|---|---|\n"
+                "| Context sufficient for execution? | yes |\n"
+                "| Execution-only eligible? | yes |\n"
+            )
+        self._run(["git", "add", "task-cards/BUILDER.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add legacy auto builder task"], cwd=self.repo)
+        result = self._dispatch("task-cards/BUILDER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Builder Mode:    execution-only", result.stdout)
 
     def test_seed_only_stopped_at_short_deadline(self):
         self._write_builder_task_card()

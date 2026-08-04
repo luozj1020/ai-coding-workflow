@@ -5,6 +5,7 @@
 #        [--empty-api-config-env NAME] [--execution-env auto|sandbox|host]
 #        [--dirty-source-mode block|snapshot]
 #        [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]
+#        [--preflight-task-id TASK_ID]
 #
 # This script:
 #   1. Validates that git and claude CLI exist.
@@ -26,7 +27,7 @@ PATH="${PATH}:/usr/bin:/bin:/mingw64/bin"
 export PATH
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL] [--preflight-task-id TASK_ID]" >&2
     exit 1
 fi
 
@@ -37,6 +38,7 @@ DISPATCH_EXECUTION_ENV="auto"
 DIRTY_SOURCE_MODE_OPTION=""
 RETRY_IN_PLACE_TASK_ID_OPTION=""
 REVIEWED_CONTINUATION_OPTION=""
+PREFLIGHT_TASK_ID_OPTION=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --empty-api-config-env)
@@ -91,6 +93,20 @@ while [ $# -gt 0 ]; do
                 exit 1
             }
             REVIEWED_CONTINUATION_OPTION="$2"
+            shift 2
+            ;;
+        --preflight-task-id)
+            [ $# -ge 2 ] || {
+                echo "Error: --preflight-task-id requires a task id." >&2
+                exit 1
+            }
+            PREFLIGHT_TASK_ID_OPTION="$2"
+            case "$PREFLIGHT_TASK_ID_OPTION" in
+                *[!A-Za-z0-9._-]*)
+                    echo "Error: --preflight-task-id contains unsafe characters." >&2
+                    exit 1
+                    ;;
+            esac
             shift 2
             ;;
         *)
@@ -582,7 +598,7 @@ if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
         CLAUDE_CODE_BUILDER_MODE="exploratory"
     elif [ "$_PARSED_TASK_MODE" = "builder" ] && \
        grep -Eiq '^\|[[:space:]]*Execution-only eligible\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD" && \
-       grep -Eiq '^\|[[:space:]]*Context is sufficient for execution\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
+       grep -Eiq '^\|[[:space:]]*Context (is )?sufficient for execution\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
         CLAUDE_CODE_BUILDER_MODE="execution-only"
     else
         CLAUDE_CODE_BUILDER_MODE="standard"
@@ -709,7 +725,9 @@ fi
 # When AI_CODING_WORKFLOW_DAG_TASK_ID is set, build TASK_ID from the DAG
 # task identifier rather than just the timestamp, so concurrent dispatches
 # in the same second cannot collide.
-if [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
+if [ -n "$PREFLIGHT_TASK_ID_OPTION" ]; then
+    TASK_ID="$PREFLIGHT_TASK_ID_OPTION"
+elif [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
     DAG_GROUP="${AI_CODING_WORKFLOW_DAG_GROUP_ID:-dag}"
     TASK_ID="${DAG_GROUP}-${AI_CODING_WORKFLOW_DAG_TASK_ID}-${TIMESTAMP}-${RAND_SUFFIX}"
 else
@@ -1597,7 +1615,9 @@ elif [ -n "${CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID:-}" ]; then
     echo "Worktree reuse (advisor-continuation): $WORKTREE_DIR (prior task: $_ADVISOR_CONTINUE_TASK_ID, new task: $TASK_ID)"
 else
     # --- Normal worktree setup (fresh or reuse-managed) ---
-    if [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
+    if [ -n "$PREFLIGHT_TASK_ID_OPTION" ]; then
+        TASK_ID="$PREFLIGHT_TASK_ID_OPTION"
+    elif [ -n "${AI_CODING_WORKFLOW_DAG_TASK_ID:-}" ]; then
         DAG_GROUP="${AI_CODING_WORKFLOW_DAG_GROUP_ID:-dag}"
         TASK_ID="${DAG_GROUP}-${AI_CODING_WORKFLOW_DAG_TASK_ID}-${TIMESTAMP}-${RAND_SUFFIX}"
     else
@@ -1797,6 +1817,165 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/process-identity.py" ]; then
     "$PYTHON_CMD" "${SCRIPT_DIR}/process-identity.py" capture \
         --pid "$$" --task-id "$TASK_ID" --role dispatcher \
         --output "$DISPATCHER_IDENTITY_FILE" >/dev/null 2>&1 || true
+fi
+
+# Resolve a learned route and test the real interaction boundary before making
+# a full worktree.  This probe intentionally requests no card-specific tool
+# filter: its init event records the executable's observed inventory, while the
+# later profile gate remains responsible for comparing required capabilities.
+_EARLY_STARTUP_PROBE_CONCLUSION="not-run"
+_EARLY_STARTUP_PROBE_SOURCE="not-run"
+if [ "$_ROUTE_SOURCE" = "default" ] && [ -n "$PYTHON_CMD" ] && \
+   [ -f "${SCRIPT_DIR}/claude-route-preference.py" ]; then
+    _EARLY_LEARNED_ROUTE="$("$PYTHON_CMD" "${SCRIPT_DIR}/claude-route-preference.py" resolve --fallback "" 2>/dev/null || true)"
+    if [ "$_EARLY_LEARNED_ROUTE" = direct ] || [ "$_EARLY_LEARNED_ROUTE" = inherit ]; then
+        CLAUDE_CODE_PROXY_MODE="$_EARLY_LEARNED_ROUTE"
+        _ROUTE_SOURCE="learned"
+    fi
+fi
+if [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ] && [ -n "$PYTHON_CMD" ]; then
+    _EARLY_CACHE_HIT=0
+    if [ "$CLAUDE_CODE_API_PROBE_MODE" != "always" ] && \
+       [ -f "${SCRIPT_DIR}/claude-api-availability.py" ]; then
+        if "$PYTHON_CMD" "${SCRIPT_DIR}/claude-api-availability.py" check \
+            --state "$API_AVAILABILITY_STATE_FILE" --repository "$REPO_ROOT" \
+            --route "$CLAUDE_CODE_PROXY_MODE" --environment "$CLAUDE_CODE_PROBE_ENVIRONMENT" \
+            --claude-command "$(command -v claude 2>/dev/null || true)" \
+            --tool-profile "${CLAUDE_CODE_TOOL_PROFILE:-default}" \
+            --ttl "$CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS" \
+            > "$STARTUP_INTERACTION_HEALTH_FILE" 2>/dev/null; then
+            _EARLY_CACHE_HIT=1
+            _EARLY_STARTUP_PROBE_CONCLUSION="available"
+            _EARLY_STARTUP_PROBE_SOURCE="early-cache"
+        fi
+    fi
+    if [ "$_EARLY_CACHE_HIT" -eq 0 ] && [ -f "${SCRIPT_DIR}/claude-healthcheck.py" ]; then
+        _EARLY_PROBE_ENV_ARGS=()
+        if [ "$CLAUDE_CODE_PROBE_ENVIRONMENT" != auto ]; then
+            _EARLY_PROBE_ENV_ARGS=(--probe-environment "$CLAUDE_CODE_PROBE_ENVIRONMENT")
+        fi
+        "$PYTHON_CMD" "${SCRIPT_DIR}/claude-healthcheck.py" \
+            --interaction-route "$CLAUDE_CODE_PROXY_MODE" \
+            --timeout "$CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS" \
+            --prompt '你好' --json "${_EARLY_PROBE_ENV_ARGS[@]}" \
+            > "$STARTUP_INTERACTION_HEALTH_FILE" 2>/dev/null || true
+        _EARLY_STARTUP_PROBE_CONCLUSION="$("$PYTHON_CMD" - "$STARTUP_INTERACTION_HEALTH_FILE" <<'PYEOF' 2>/dev/null || echo unavailable-in-current-environment
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("interaction_conclusion", "unavailable-in-current-environment"))
+except (OSError, ValueError, TypeError):
+    print("unavailable-in-current-environment")
+PYEOF
+)"
+        _EARLY_STARTUP_PROBE_SOURCE="early-live"
+        if [ "$_EARLY_STARTUP_PROBE_CONCLUSION" = available ] && \
+           [ -f "${SCRIPT_DIR}/claude-api-availability.py" ]; then
+            _EARLY_INVENTORY_ARGS=()
+            while IFS= read -r _EARLY_TOOL; do
+                [ -n "$_EARLY_TOOL" ] && _EARLY_INVENTORY_ARGS+=(--tool-inventory "$_EARLY_TOOL")
+            done < <("$PYTHON_CMD" - "$STARTUP_INTERACTION_HEALTH_FILE" <<'PYEOF' 2>/dev/null || true
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+successful = [p for p in value.get("interaction_probes", []) if p.get("success")]
+for tool in (successful[-1].get("tool_inventory", []) if successful else []):
+    print(tool)
+PYEOF
+)
+            "$PYTHON_CMD" "${SCRIPT_DIR}/claude-api-availability.py" record \
+                --state "$API_AVAILABILITY_STATE_FILE" --repository "$REPO_ROOT" \
+                --route "$CLAUDE_CODE_PROXY_MODE" --environment "$CLAUDE_CODE_PROBE_ENVIRONMENT" \
+                --claude-command "$(command -v claude 2>/dev/null || true)" \
+                --tool-profile "${CLAUDE_CODE_TOOL_PROFILE:-default}" \
+                --source early-startup-probe --tool-inventory-verified \
+                "${_EARLY_INVENTORY_ARGS[@]}" >/dev/null 2>&1 || true
+        fi
+    fi
+    if [ "$_EARLY_STARTUP_PROBE_CONCLUSION" != available ]; then
+        _EARLY_NEEDS_HOST=0
+        if [ "$_EARLY_STARTUP_PROBE_CONCLUSION" = inconclusive-restricted-environment ] && \
+           [ "$CLAUDE_CODE_HOST_AUTHORITY" != 1 ]; then
+            _EARLY_NEEDS_HOST=1
+        fi
+        _EARLY_CATEGORY="$("$PYTHON_CMD" - "$STARTUP_INTERACTION_HEALTH_FILE" <<'PYEOF' 2>/dev/null || echo interaction-unavailable
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    probes = value.get("interaction_probes", [])
+    print(probes[-1].get("failure_category", "interaction-unavailable") if probes else "interaction-unavailable")
+except (OSError, ValueError, TypeError, IndexError):
+    print("interaction-unavailable")
+PYEOF
+)"
+        [ "$_EARLY_NEEDS_HOST" -eq 0 ] || _EARLY_CATEGORY="sandbox-network-host-handoff"
+        {
+            echo "Claude dispatch preflight blocked before worktree creation."
+            echo "failure_category=${_EARLY_CATEGORY}"
+            echo "interaction_conclusion=${_EARLY_STARTUP_PROBE_CONCLUSION}"
+            echo "builder_started=false"
+        } > "$STATUS_FILE"
+        if [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; then
+            _EARLY_ATTEMPT_OUTCOME="preflight_error"
+            [ "$_EARLY_NEEDS_HOST" -eq 0 ] || _EARLY_ATTEMPT_OUTCOME="network_error"
+            "$PYTHON_CMD" "${SCRIPT_DIR}/classify-claude-attempt.py" \
+                --exit-code 75 --outcome "$_EARLY_ATTEMPT_OUTCOME" --progress none \
+                --direction unknown --error-text-file "$STATUS_FILE" \
+                --retry-ordinal "${_RETRY_ORDINAL:-0}" \
+                > "$ATTEMPT_CLASSIFICATION_FILE" 2>/dev/null || true
+        fi
+        "$PYTHON_CMD" - "$RESULT_FILE" "$OUTCOME_FILE" "$TASK_ID" "$_EARLY_CATEGORY" \
+            "$_EARLY_NEEDS_HOST" "$DISPATCH_EXECUTION_ENV" "$CLAUDE_CODE_HOST_AUTHORITY" \
+            "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" \
+            "$TASK_CARD" "$CLAUDE_CODE_DIRTY_SOURCE_MODE" \
+            "${_REVIEWED_CONTINUATION_APPROVAL:-}" <<'PYEOF'
+import json, os, sys
+result, outcome, task_id, category, needs_host, requested_env, authority, health, classification, task_card, dirty_mode, reviewed = sys.argv[1:]
+needs_host_execution = needs_host == "1"
+host_retry_args = None
+if needs_host_execution:
+    host_retry_args = [task_card, "--execution-env", "host"]
+    if dirty_mode == "snapshot":
+        host_retry_args += ["--dirty-source-mode", "snapshot"]
+    if reviewed:
+        host_retry_args += ["--reviewed-continuation", reviewed]
+    else:
+        host_retry_args += ["--preflight-task-id", task_id]
+common = {
+    "schema_version": 1, "task_id": task_id,
+    "dispatch_outcome": "preflight-blocked", "failure_category": category,
+    "builder_started": False, "claude_first_satisfied": False,
+    "workflow_execution_status": "failed-to-dispatch",
+    "completion_state": "failed-to-dispatch", "needs_host_execution": needs_host_execution,
+    "host_handoff_required": needs_host_execution,
+    "host_retry_args": host_retry_args,
+    "host_retry_args_authoritative": needs_host_execution,
+    "host_retry_command_form": "stable-cli" if needs_host_execution else None,
+    "host_requested": requested_env == "host",
+    "host_authorized": authority == "1", "host_effective": False,
+    "interaction_health": health, "worktree_created": False, "merge_authorized": False,
+    "attempt_classification": classification if os.path.isfile(classification) else None,
+}
+with open(result, "w", encoding="utf-8") as handle:
+    json.dump(common, handle, indent=2, sort_keys=True); handle.write("\n")
+with open(outcome, "w", encoding="utf-8") as handle:
+    json.dump({**common, "dispatch_success": False, "artifact_valid": False,
+               "report_consistency": "not-applicable", "validation_success": "not-run",
+               "semantic_acceptance": "not-reviewed"}, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PYEOF
+        echo "Error: Claude dispatch preflight failed (${_EARLY_CATEGORY}) before worktree creation." >&2
+        if [ "$_EARLY_NEEDS_HOST" -ne 0 ]; then
+            echo "needs_host_execution=true" >&2
+            printf 'host_retry_command=bash %q %q --execution-env host' "$0" "$TASK_CARD" >&2
+            [ "$CLAUDE_CODE_DIRTY_SOURCE_MODE" != snapshot ] || printf ' --dirty-source-mode snapshot' >&2
+            if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
+                printf ' --reviewed-continuation %q\n' "$_REVIEWED_CONTINUATION_APPROVAL" >&2
+            else
+                printf ' --preflight-task-id %q\n' "$TASK_ID" >&2
+            fi
+        fi
+        rm -f "$DISPATCHER_PID_FILE"
+        exit 75
+    fi
 fi
 
 create_dispatch_worktree() {
@@ -2439,6 +2618,9 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "recent_activity_window_seconds": %s,\n' "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS"
     printf '  "probe_mode": "%s",\n' "$CLAUDE_CODE_API_PROBE_MODE"
     printf '  "probe_environment": "%s",\n' "$CLAUDE_CODE_PROBE_ENVIRONMENT"
+    printf '  "host_requested": %s,\n' "$([ "$DISPATCH_EXECUTION_ENV" = host ] && echo true || echo false)"
+    printf '  "host_authorized": %s,\n' "$([ "$CLAUDE_CODE_HOST_AUTHORITY" = 1 ] && echo true || echo false)"
+    echo '  "host_effective": false,'
     printf '  "api_availability_ttl_seconds": %s,\n' "$CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS"
     printf '  "api_availability_state": "%s",\n' "$API_AVAILABILITY_STATE_FILE"
     printf '  "first_progress_action": "%s",\n' "$CLAUDE_CODE_FIRST_PROGRESS_ACTION"
@@ -3948,6 +4130,65 @@ dispatch_exit_handler() {
     fi
     DISPATCH_EXIT_HANDLER_ACTIVE=1
 
+    if [ "$CLAUDE_LAUNCHED" -eq 0 ] && [ "$DISPATCH_FINALIZED" -ne 1 ] && \
+       [ ! -s "${OUTCOME_FILE:-}" ] && [ -n "${PYTHON_CMD:-}" ]; then
+        if [ ! -s "${STATUS_FILE:-}" ]; then
+            printf '%s\n' \
+                "Claude dispatch exited before Builder execution." \
+                "failure_category=preflight-error" \
+                "builder_started=false" > "$STATUS_FILE" 2>/dev/null || true
+        fi
+        if [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; then
+            "$PYTHON_CMD" "${SCRIPT_DIR}/classify-claude-attempt.py" \
+                --exit-code "$original_status" --outcome preflight_error --progress none \
+                --direction unknown --error-text-file "$STATUS_FILE" \
+                --retry-ordinal "${_RETRY_ORDINAL:-0}" \
+                > "$ATTEMPT_CLASSIFICATION_FILE" 2>/dev/null || true
+        fi
+        "$PYTHON_CMD" - "$RESULT_FILE" "$OUTCOME_FILE" "$TASK_ID" \
+            "$original_status" "$ATTEMPT_CLASSIFICATION_FILE" \
+            "$DISPATCH_EXECUTION_ENV" "$CLAUDE_CODE_HOST_AUTHORITY" <<'PYEOF' 2>/dev/null || true
+import json, os, sys, tempfile
+result, outcome, task_id, exit_status, classification, requested_env, host_authority = sys.argv[1:]
+common = {
+    "schema_version": 1,
+    "task_id": task_id,
+    "dispatch_outcome": "preflight-blocked",
+    "failure_category": "preflight-error",
+    "exit_status": int(exit_status),
+    "builder_started": False,
+    "claude_first_satisfied": False,
+    "workflow_execution_status": "failed-to-dispatch",
+    "completion_state": "failed-to-dispatch",
+    "attempt_classification": classification if os.path.isfile(classification) else None,
+    "host_requested": requested_env == "host",
+    "host_authorized": host_authority == "1",
+    "host_effective": False,
+    "merge_authorized": False,
+}
+def write(path, value):
+    directory = os.path.dirname(path) or "."
+    fd, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path), dir=directory)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, path)
+write(result, common)
+write(outcome, {
+    **common,
+    "dispatch_success": False,
+    "artifact_valid": False,
+    "report_consistency": "not-applicable",
+    "validation_success": "not-run",
+    "semantic_acceptance": "not-reviewed",
+})
+PYEOF
+        if [ -n "${MONITOR_EVENT_LOG:-}" ]; then
+            printf '%s\n' "event=terminal running=no terminal=yes exit_status=${original_status} dispatch_outcome=preflight-blocked failure_category=preflight-error" \
+                >> "$MONITOR_EVENT_LOG" 2>/dev/null || true
+        fi
+    fi
+
     if [ "$CLAUDE_LAUNCHED" -eq 1 ] && [ "$DISPATCH_FINALIZED" -ne 1 ]; then
         set +e
         stop_claude "dispatcher-abnormal-exit-${original_status}" "unknown"
@@ -3969,6 +4210,7 @@ value = {
     "process_termination_receipt": termination if os.path.isfile(termination) else None,
     "merge_authorized": False,
 }
+
 def write(path, payload):
     directory = os.path.dirname(path) or "."
     fd, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path), dir=directory)
@@ -4004,6 +4246,10 @@ PYEOF
     [ -z "${_ADVISOR_CONTINUE_RESERVATION_DIR:-}" ] || rm -rf "$_ADVISOR_CONTINUE_RESERVATION_DIR"
     exit "$final_status"
 }
+
+# Subsequent setup has a task identity and must leave a terminal receipt even
+# when it fails before the Builder process exists.
+trap 'dispatch_exit_handler $?' EXIT
 
 if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
     echo "Invoking Claude Code..."
@@ -4358,12 +4604,90 @@ PYEOF
     progress_log "Validation capability recorded: status=${_CAPABILITY_STATUS}, artifact=${VALIDATION_CAPABILITY_FILE}"
 fi
 
+write_preflight_failure_receipts() {
+    local category="$1"
+    local attempt_outcome="$2"
+    local exit_status="$3"
+    local missing_tools="${4:-}"
+    if [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; then
+        "$PYTHON_CMD" "${SCRIPT_DIR}/classify-claude-attempt.py" \
+            --exit-code "$exit_status" --outcome "$attempt_outcome" --progress none \
+            --direction unknown --error-text-file "$STATUS_FILE" \
+            --retry-ordinal "${_RETRY_ORDINAL:-0}" \
+            > "$ATTEMPT_CLASSIFICATION_FILE" 2>/dev/null || true
+    fi
+    "$PYTHON_CMD" - "$RESULT_FILE" "$OUTCOME_FILE" "$TASK_ID" "$category" \
+        "$ATTEMPT_CLASSIFICATION_FILE" "$missing_tools" "$DISPATCH_EXECUTION_ENV" \
+        "$CLAUDE_CODE_HOST_AUTHORITY" <<'PYEOF'
+import json, os, sys, tempfile
+result, outcome, task_id, category, classification, missing, requested_env, host_authority = sys.argv[1:]
+host_requested = requested_env == "host"
+host_authorized = host_authority == "1"
+host_effective = host_requested and host_authorized
+common = {
+    "schema_version": 1,
+    "task_id": task_id,
+    "dispatch_outcome": "preflight-blocked",
+    "failure_category": category,
+    "builder_started": False,
+    "claude_first_satisfied": False,
+    "workflow_execution_status": "failed-to-dispatch",
+    "completion_state": "failed-to-dispatch",
+    "attempt_classification": classification if os.path.isfile(classification) else None,
+    "missing_runtime_tools": sorted(filter(None, missing.split(","))),
+    "host_requested": host_requested,
+    "host_authorized": host_authorized,
+    "host_effective": host_effective,
+    "merge_authorized": False,
+}
+def write(path, value):
+    directory = os.path.dirname(path) or "."
+    fd, temporary = tempfile.mkstemp(prefix="." + os.path.basename(path), dir=directory)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, path)
+write(result, common)
+write(outcome, {
+    **common,
+    "dispatch_success": False,
+    "artifact_valid": False,
+    "report_consistency": "not-applicable",
+    "validation_success": "not-run",
+    "semantic_acceptance": "not-reviewed",
+})
+PYEOF
+}
+
 # --- Unified interaction probe: startup phase ---
 # Adaptive mode accepts a recent success bound to this repository, route,
 # environment, and Claude executable. A missing/stale cache triggers one live
 # probe. Later suspicious zero-output still triggers a live probe regardless.
 _STARTUP_PROBE_CONCLUSION="not-run"
-if [ "$CLAUDE_CODE_API_PROBE_MODE" != "always" ] && \
+if [ "${_EARLY_STARTUP_PROBE_CONCLUSION:-not-run}" = "available" ]; then
+    _STARTUP_PROBE_CONCLUSION="available"
+    _STARTUP_PROBE_SOURCE="${_EARLY_STARTUP_PROBE_SOURCE:-early}"
+    _LAST_PROBE_AUTHORITATIVE="yes"
+    IFS=$'\t' read -r _LAST_TOOL_INVENTORY_VERIFIED _LAST_TOOL_INVENTORY < <(
+        "$PYTHON_CMD" - "$STARTUP_INTERACTION_HEALTH_FILE" <<'PYEOF' 2>/dev/null || printf 'no\t\n'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+if "tool_inventory" in value:
+    inventory = value.get("tool_inventory", [])
+    verified = value.get("tool_inventory_verified") is True
+else:
+    successful = [p for p in value.get("interaction_probes", []) if p.get("success")]
+    probe = successful[-1] if successful else {}
+    inventory = probe.get("tool_inventory", [])
+    verified = probe.get("tool_inventory_verified") is True
+print(("yes" if verified else "no") + "\t" + ",".join(inventory))
+PYEOF
+    )
+    if [ "$_STARTUP_PROBE_SOURCE" = "early-live" ]; then
+        progress_log "Startup interaction probe: conclusion=available, phase=early-pre-worktree"
+    fi
+    progress_log "Startup API availability reused: conclusion=available, source=${_STARTUP_PROBE_SOURCE}, artifact=${STARTUP_INTERACTION_HEALTH_FILE}"
+elif [ "$CLAUDE_CODE_API_PROBE_MODE" != "always" ] && \
    [ "$CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED" = "1" ] && \
    load_cached_api_availability "$STARTUP_INTERACTION_HEALTH_FILE"; then
     _STARTUP_PROBE_CONCLUSION="available"
@@ -4409,10 +4733,20 @@ PYEOF
     } 2>/dev/null)"
     if [ -n "$_TOOL_INVENTORY_MISSING" ]; then
         _RUNTIME_TOOL_INVENTORY_STATUS="mismatch:${_TOOL_INVENTORY_MISSING}"
+        {
+            echo "Claude dispatch preflight blocked before Builder execution."
+            echo "failure_category=tool-capability-mismatch"
+            echo "missing_runtime_tools=${_TOOL_INVENTORY_MISSING}"
+            echo "builder_started=false"
+        } > "$STATUS_FILE"
+        write_preflight_failure_receipts \
+            "tool-capability-mismatch" "preflight_error" 1 "$_TOOL_INVENTORY_MISSING"
+        progress_log "Dispatch preflight blocked: category=tool-capability-mismatch, missing_runtime_tools=${_TOOL_INVENTORY_MISSING}, builder_started=no"
+        monitor_event "event=terminal running=no terminal=yes exit_status=1 dispatch_outcome=preflight-blocked failure_category=tool-capability-mismatch"
+        sync_write_scope_staging >/dev/null 2>&1 || true
         echo "Error: Claude runtime tool inventory does not satisfy the task profile." >&2
         echo "failure_category=tool-capability-mismatch" >&2
         echo "missing_runtime_tools=${_TOOL_INVENTORY_MISSING}" >&2
-        sync_write_scope_staging >/dev/null 2>&1 || true
         exit 1
     fi
     _RUNTIME_TOOL_INVENTORY_STATUS="verified"
@@ -4425,13 +4759,18 @@ fi
 
 if [ -n "$PYTHON_CMD" ] && [ -s "$RUNTIME_JSON" ]; then
     "$PYTHON_CMD" - "$RUNTIME_JSON" "$_LAST_TOOL_INVENTORY_VERIFIED" \
-        "$_LAST_TOOL_INVENTORY" "$_RUNTIME_TOOL_INVENTORY_STATUS" <<'PYEOF' 2>/dev/null || true
+        "$_LAST_TOOL_INVENTORY" "$_RUNTIME_TOOL_INVENTORY_STATUS" \
+        "$DISPATCH_EXECUTION_ENV" "$CLAUDE_CODE_HOST_AUTHORITY" \
+        "$_STARTUP_PROBE_CONCLUSION" <<'PYEOF' 2>/dev/null || true
 import json, os, sys, tempfile
-path, verified, inventory, status = sys.argv[1:]
+path, verified, inventory, status, requested_env, authority, conclusion = sys.argv[1:]
 value = json.load(open(path, encoding="utf-8"))
 value["runtime_tool_inventory_verified"] = verified == "yes"
 value["runtime_tool_inventory"] = sorted(set(filter(None, inventory.split(","))))
 value["runtime_tool_inventory_status"] = status
+value["host_requested"] = requested_env == "host"
+value["host_authorized"] = authority == "1"
+value["host_effective"] = requested_env == "host" and conclusion == "available"
 fd, temporary = tempfile.mkstemp(prefix=".runtime-tools-", dir=os.path.dirname(path))
 with os.fdopen(fd, "w", encoding="utf-8") as handle:
     json.dump(value, handle, indent=2, sort_keys=True)
@@ -4495,14 +4834,18 @@ PYEOF
             --retry-ordinal "${_RETRY_ORDINAL:-0}" \
             > "$ATTEMPT_CLASSIFICATION_FILE" 2>/dev/null || true
     fi
-    "$PYTHON_CMD" - "$RESULT_FILE" "$TASK_ID" "$_STARTUP_FAILURE_CATEGORY" \
+    "$PYTHON_CMD" - "$RESULT_FILE" "$OUTCOME_FILE" "$TASK_ID" "$_STARTUP_FAILURE_CATEGORY" \
         "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" \
         "$_STARTUP_NEEDS_HOST_EXECUTION" \
         "${_REVIEWED_CONTINUATION_APPROVAL:-}" "$TASK_CARD" \
-        "$CLAUDE_CODE_DIRTY_SOURCE_MODE" <<'PYEOF'
+        "$CLAUDE_CODE_DIRTY_SOURCE_MODE" "$DISPATCH_EXECUTION_ENV" \
+        "$CLAUDE_CODE_HOST_AUTHORITY" <<'PYEOF'
 import json, os, sys
-output, task_id, category, health, classification, needs_host, reviewed_approval, task_card, dirty_source_mode = sys.argv[1:]
+output, outcome, task_id, category, health, classification, needs_host, reviewed_approval, task_card, dirty_source_mode, requested_env, host_authority = sys.argv[1:]
 needs_host_execution = needs_host == "1"
+host_requested = requested_env == "host"
+host_authorized = host_authority == "1"
+host_effective = host_requested and host_authorized
 host_retry_environment = None
 host_retry_args = None
 if needs_host_execution:
@@ -4526,6 +4869,9 @@ value = {
     "dispatch_outcome": "preflight-blocked",
     "failure_category": category,
     "builder_started": False,
+    "claude_first_satisfied": False,
+    "workflow_execution_status": "failed-to-dispatch",
+    "completion_state": "failed-to-dispatch",
     "interaction_health": health,
     "attempt_classification": classification if os.path.exists(classification) else None,
     "needs_host_execution": needs_host_execution,
@@ -4539,9 +4885,23 @@ value = {
     "host_retry_args": host_retry_args,
     "host_retry_args_authoritative": needs_host_execution,
     "host_retry_command_form": "stable-cli" if needs_host_execution else None,
+    "host_requested": host_requested,
+    "host_authorized": host_authorized,
+    "host_effective": host_effective,
+    "merge_authorized": False,
 }
 with open(output, "w", encoding="utf-8") as handle:
     json.dump(value, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+with open(outcome, "w", encoding="utf-8") as handle:
+    json.dump({
+        **value,
+        "dispatch_success": False,
+        "artifact_valid": False,
+        "report_consistency": "not-applicable",
+        "validation_success": "not-run",
+        "semantic_acceptance": "not-reviewed",
+    }, handle, indent=2, sort_keys=True)
     handle.write("\n")
 PYEOF
     progress_log "Dispatch preflight blocked: category=${_STARTUP_FAILURE_CATEGORY}, conclusion=${_STARTUP_PROBE_CONCLUSION}, builder_started=no"
@@ -5099,6 +5459,12 @@ while claude_is_running; do
             else
                 _APPROVAL_CONVERGENCE_COUNT=1
                 _LAST_APPROVAL_FP="$_ABC_FP"
+                if [ "$_APPROVAL_CONVERGENCE_COUNT" -ge "$CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS" ]; then
+                    progress_log "Approval-blocked early convergence: stable for ${_APPROVAL_CONVERGENCE_COUNT} heartbeats after ${ELAPSED}s"
+                    stop_claude "approval-blocked early convergence" "$ELAPSED"
+                    CLAUDE_APPROVAL_CONVERGED=1
+                    break
+                fi
             fi
         else
             _APPROVAL_CONVERGENCE_COUNT=0
@@ -6098,13 +6464,25 @@ else
 fi
 
 if [ -n "$PYTHON_CMD" ]; then
+    CLAUDE_FIRST_SATISFIED="no"
+    if [ "$CLAUDE_LAUNCHED" -eq 1 ] && \
+       { [ "$IMPLEMENTATION_CHANGES" -gt 0 ] || [ "$VALID_CLAUDE_REPORT" -eq 1 ]; }; then
+        CLAUDE_FIRST_SATISFIED="yes"
+    fi
+    WORKFLOW_EXECUTION_STATUS="claude-first-degraded"
+    [ "$CLAUDE_FIRST_SATISFIED" = "yes" ] && WORKFLOW_EXECUTION_STATUS="claude-first-executed"
     "$PYTHON_CMD" - "$OUTCOME_FILE" "$TASK_ID" "$DISPATCH_OUTCOME" "$DISPATCH_SUCCESS" \
         "$REPORT_CONSISTENCY_STATUS" "$ARTIFACT_VALID" "$VALIDATION_STATUS" \
-        "$SEMANTIC_ACCEPTANCE" "$COMPLETION_STATE" <<'PYEOF'
+        "$SEMANTIC_ACCEPTANCE" "$COMPLETION_STATE" "$CLAUDE_LAUNCHED" \
+        "$CLAUDE_FIRST_SATISFIED" "$WORKFLOW_EXECUTION_STATUS" \
+        "$DISPATCH_EXECUTION_ENV" "$CLAUDE_CODE_HOST_AUTHORITY" \
+        "${_STARTUP_PROBE_CONCLUSION:-not-run}" <<'PYEOF'
 import json, os, sys, tempfile
 (
     output, task_id, dispatch_outcome, dispatch_success, report_consistency,
     artifact_valid, validation_success, semantic_acceptance, completion_state,
+    builder_launched, claude_first_satisfied, workflow_status,
+    requested_env, host_authority, startup_probe,
 ) = sys.argv[1:]
 value = {
     "schema_version": 1,
@@ -6116,6 +6494,12 @@ value = {
     "validation_success": validation_success,
     "semantic_acceptance": semantic_acceptance,
     "completion_state": completion_state,
+    "builder_started": builder_launched == "1",
+    "claude_first_satisfied": claude_first_satisfied == "yes",
+    "workflow_execution_status": workflow_status,
+    "host_requested": requested_env == "host",
+    "host_authorized": host_authority == "1",
+    "host_effective": requested_env == "host" and startup_probe == "available",
 }
 directory = os.path.dirname(output) or "."
 fd, temporary = tempfile.mkstemp(prefix=".outcome-", dir=directory)

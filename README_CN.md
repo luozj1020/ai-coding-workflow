@@ -766,7 +766,8 @@ Claude 现在使用相同的外层边界协议。受限沙箱中的启动交互�
 执行前返回 exit 75 和 `needs_host_execution=true`。外层 Codex 必须通过宿主
 执行权限，使用稳定且可匹配项目授权规则的命令
 `bash ai/dispatch-to-claude.sh CARD --execution-env host
---retry-in-place-task-id TASK_ID` 原样重放一次；reviewed continuation 改用
+--preflight-task-id TASK_ID` 原样重放一次（适用于尚未创建 worktree 的前置探测）；
+已有 worktree 的后续传输重试仍使用 `--retry-in-place-task-id TASK_ID`；reviewed continuation 改用
 `--reviewed-continuation APPROVAL`。snapshot 交接还必须携带
 `--dirty-source-mode snapshot`；首次 dirty-source 派发也应使用该选项，使两次命令
 都保留可信 launcher 前缀。旧环境变量形式仍兼容，但 CLI 形式不会改变
@@ -887,7 +888,7 @@ Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`co
 
 Claude 用量记录还会保存仅含哈希的缓存归因：provider route、稳定提示前缀、解析后的工具契约、任务后缀、缓存通道和会话模式。Ledger 不会复制提示正文或工具命令正文。运行 `python ai/aiwf.py usage aggregate .ai-workflow/model-usage.jsonl` 可查看整体和分通道的 Token 加权缓存命中率，以及 `cold-start`、`prefix-drift`、`tool-profile-change`、`provider-route-change`、`resume-failed`、`provider-unknown` 等保守分类。这些标签只解释 Harness 可观测到的变化，不推断服务端 TTL、淘汰或后端路由。
 
-为保持工具 schema 可复用，冻结的验证命令不再逐条嵌入 `allowedTools`，而是统一由固定入口 `ai/run-approved-validation.py run` 执行。精确写入命令也通过环境绑定的收据引用目标，不再写入任务专属绝对收据路径。Helper 会重新解析不可变任务卡、拒绝 shell 组合并以无 shell 的参数数组运行命令；只读根仍负责强制声明的写入范围。
+为保持工具 schema 可复用，冻结的验证命令不再逐条嵌入 `allowedTools`，而是统一由固定入口 `ai/run-approved-validation.py run` 执行。精确写入命令也通过环境绑定的收据引用目标，不再写入任务专属绝对收据路径。Helper 会重新解析不可变任务卡、拒绝 shell 组合并以无 shell 的参数数组运行命令；只读根仍负责强制声明的写入范围。填写任务卡时可先运行 `python ai/compose_task_card.py --lint-card CARD`，在派发前发现不受支持的 shell 组合。
 
 缓存回归应比较同一契约的 warm continuation，而不是所有调用的混合百分比。可通过 `--minimum-warm-cache-calls 5 --minimum-warm-cache-hit-rate 0.95` 生成 `pass`、`regression-candidate` 或 `insufficient-evidence` 结论；仅在受控 benchmark/CI 中再增加 `--require-cache-gate`。`by_model_cache_lane` 会进一步隔离不同模型。默认不启用阈值，因此普通派发不会被任意全局缓存目标阻断。
 

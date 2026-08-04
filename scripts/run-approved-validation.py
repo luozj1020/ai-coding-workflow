@@ -81,7 +81,7 @@ def run_commands(commands: Sequence[str], *, cwd: Path, timeout: int) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("audit", "run"))
+    parser.add_argument("action", choices=("audit", "lint", "run"))
     parser.add_argument("--task-card", type=Path, default=Path("CLAUDE_TASK_CARD.md"))
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args(argv)
@@ -92,6 +92,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.action == "audit":
         print(json.dumps(summary, sort_keys=True))
         return 0
+    if args.action == "lint":
+        rejected = any(summary[key] for key in ("unsafe", "oversized", "overflow"))
+        print(json.dumps({"status": "rejected" if rejected else "accepted", **summary}, sort_keys=True))
+        return 2 if rejected else 0
     if any(summary[key] for key in ("unsafe", "oversized", "overflow")):
         print(json.dumps({"status": "rejected", **summary}, sort_keys=True))
         return 2

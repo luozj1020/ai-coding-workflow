@@ -56,6 +56,21 @@ class ApprovedValidationTests(unittest.TestCase):
             self.assertEqual(result, 2)
             self.assertEqual(json.loads(output.getvalue())["status"], "rejected")
 
+    def test_lint_rejects_unsafe_commands_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as raw:
+            card = Path(raw) / "task-card.md"
+            card.write_text(
+                "- Exact narrow command: `python -c \"print(1); print(2)\"`\n",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = validation.main(["lint", "--task-card", str(card)])
+            self.assertEqual(result, 2)
+            value = json.loads(output.getvalue())
+            self.assertEqual(value["status"], "rejected")
+            self.assertEqual(value["unsafe"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,12 +29,15 @@ def context_hash(
     repository: Path, route: str, environment: str, claude_command: str,
     tool_profile: str = "",
 ) -> str:
+    # Connectivity is independent of the requested tool profile.  Keeping the
+    # profile in this identity caused a new network round-trip whenever a card
+    # changed from locator-builder to minimal-builder.  Tool inventory remains
+    # separately bound below and is never reused across profiles.
     payload = {
         "claude_command": str(Path(claude_command).resolve()) if claude_command else "unavailable",
         "environment": environment,
         "repository": str(repository.resolve()),
         "route": route,
-        "tool_profile": tool_profile or "default",
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
@@ -100,11 +103,20 @@ def check(args: argparse.Namespace) -> int:
         else:
             result["age_seconds"] = age
             if age <= args.ttl:
+                requested_profile = args.tool_profile or "default"
+                recorded_profile = record.get("tool_profile", "default")
+                inventory_matches = recorded_profile == requested_profile
                 result.update(
                     status="available-cached",
                     interaction_conclusion="available",
                     cache_valid=True,
                     source=record.get("source", "unknown"),
+                    tool_profile_recorded=recorded_profile,
+                    tool_profile_matches=inventory_matches,
+                    # The observed init inventory describes the executable and
+                    # route, not merely the card that requested it.  Consumers
+                    # may reuse it when it satisfies a new profile; a missing
+                    # capability still triggers their normal fail-closed path.
                     tool_inventory=record.get("tool_inventory", []),
                     tool_inventory_verified=bool(record.get("tool_inventory_verified")),
                 )
@@ -123,6 +135,7 @@ def record(args: argparse.Namespace) -> int:
         "route": route,
         "probe_environment": args.environment,
         "context_hash": identity,
+        "tool_profile": args.tool_profile or "default",
         "recorded_at": timestamp(now_utc()),
         "source": args.source,
         "tool_inventory": sorted(set(args.tool_inventory or [])),

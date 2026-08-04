@@ -18,7 +18,10 @@ def parse(text):
         if active and line.strip().startswith("|"):
             cells = [v.strip() for v in line.strip().strip("|").split("|")]
             if len(cells) >= 2 and cells[0].lower() not in {"field", "-------"}:
-                fields[cells[0].lower()] = cells[1]
+                name = cells[0].lower()
+                if name == "context sufficient for execution?":
+                    name = "context is sufficient for execution?"
+                fields[name] = cells[1]
     return fields
 
 def validate(path):

@@ -154,7 +154,7 @@ def _instantiate_delegation_card(
         f"| Reference implementation/source of truth | {facts.get('source_of_truth_example') or 'task contract and existing repository patterns'} |\n"
         f"| Known constraints | {', '.join(map(str, facts.get('constraints', []))) or 'scope and acceptance below'} |\n"
         f"| Do not read/modify | {', '.join(map(str, forbidden_paths)) or 'unrelated paths'} |\n"
-        f"| Context sufficient for execution? | {context_sufficient} |\n"
+        f"| Context is sufficient for execution? | {context_sufficient} |\n"
         f"| Execution-only eligible? | {execution_only} |\n\n"
         "## Handoff Contract"
     )

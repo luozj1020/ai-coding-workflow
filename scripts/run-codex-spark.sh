@@ -1332,7 +1332,7 @@ spark_unavailable_failure() {
         text="$(tr '[:upper:]' '[:lower:]' < "$STDERR_FILE")"
     fi
     printf '%s\n' "$text" | grep -Eiq \
-        'quota|rate limit|rate-limit|insufficient|exceeded|billing|credit|model.*(not|unavailable|unsupported|unknown)|not.*model|access|permission|unauthori[sz]ed|forbidden|login|auth|network|connection|unable to connect|failedtoopensocket|socket|timeout|timed out|proxy|dns|read-only file system|os error 30|app-server|failed to initialize'
+        'quota|rate limit|rate-limit|insufficient|exceeded|billing|credit|model.*(not|unavailable|unsupported|unknown)|not.*model|access|permission|unauthori[sz]ed|forbidden|login|auth|network|connection|unable to connect|failedtoopensocket|socket|timeout|timed out|proxy|dns|name resolution|operation not permitted|eperm|os error 1([^0-9]|$)|read-only file system|os error 30|app-server|failed to initialize'
 }
 
 spark_network_environment_failure() {
@@ -1345,7 +1345,7 @@ spark_network_environment_failure() {
         } | tr '[:upper:]' '[:lower:]'
     )"
     printf '%s\n' "$text" | grep -Eiq \
-        'failedtoopensocket|unable to connect|network is unreachable|socket.*(not permitted|permission denied)|proxyconnect|proxy error|dns|name resolution|temporary failure in name resolution|connection (refused|reset|aborted)|could not resolve host'
+        'failedtoopensocket|unable to connect|network is unreachable|socket.*(not permitted|permission denied)|operation not permitted|eperm|os error 1([^0-9]|$)|proxyconnect|proxy error|dns|name resolution|temporary failure in name resolution|connection (refused|reset|aborted)|could not resolve host'
 }
 
 spark_failure_auto_disable_reason() {
