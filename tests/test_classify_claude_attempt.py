@@ -68,6 +68,14 @@ class ClassifyClaudeAttemptTests(unittest.TestCase):
         self.assertEqual(result["failure_class"], "external-approval-blocker")
         self.assertFalse(result["counts_toward_takeover"])
 
+    def test_shell_expansion_policy_blocker_does_not_count(self):
+        result = classify(
+            outcome="execution_timeout",
+            error_text="Bash rejected: Contains simple_expansion",
+        )
+        self.assertEqual(result["failure_class"], "external-approval-blocker")
+        self.assertFalse(result["counts_toward_takeover"])
+
     def test_clean_exit_without_progress_counts(self):
         result = classify(exit_code=0, outcome="success")
         self.assertEqual(result["failure_class"], "model-no-progress")

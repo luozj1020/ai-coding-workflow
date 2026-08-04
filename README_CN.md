@@ -687,7 +687,7 @@ Codex 接受 Builder 主体方向后，每个修订仍必须在编写下一张�
 
 dirty source 或 stale HEAD 也应按同类逻辑处理：它会阻止可靠委托，但本身不是 Codex 接管实现的理由。应先恢复委托路径，例如提交已接受阶段、stash/patch 未提交改动、刷新 workflow 文件、从更新后的 HEAD 重新派发、请求明确的 dirty-source 派发批准，或停止等待人工处理。如果明确批准当前未提交状态作为基线，应使用 `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot`；环境变量形式仅用于兼容，因为前置变量赋值无法匹配受托管规则保护的稳定 launcher 前缀。
 
-对于原地重试和 reviewed continuation，若 Claude 返回 conversation/session not found，dispatcher 会先将其记录为不计模型失败的恢复故障，再以同一 owner、任务、worktree 和写入范围自动尝试一次新会话；其他恢复错误仍然终止。精确路径写入约束使用工作树外的可写 staging，并在模型交互前通过最终挂载布局执行真实写探针，因此错误的只读 `/mnt/*` 挂载会在启动模型前作为环境阻断退出，而不会消耗一个长回合。沙箱还会把 Claude 的 `~/.claude/session-env` 映射到任务临时目录；当内置 Edit 需要在目标旁创建临时文件或运行时没有 Write 时，生成的提示会要求先在 `$TMPDIR` 生成完整内容，再调用受写范围收据校验的 `write-approved-file.py`。该工具也支持 old/new 片段文件，但只有旧片段恰好匹配一次才写入；零匹配、多匹配和未声明路径均失败关闭。Windows 上写入描述符保持二进制模式，因此 staging 字节及混合 LF/CRLF 内容不会经过文本换行转换。
+对于原地重试和 reviewed continuation，若 Claude 返回 conversation/session not found，dispatcher 会先将其记录为不计模型失败的恢复故障，再以同一 owner、任务、worktree 和写入范围自动尝试一次新会话；其他恢复错误仍然终止。精确路径写入约束使用工作树外的可写 staging，并在模型交互前通过最终挂载布局真实运行收据约束 writer，分别探测控制文件和一个已声明产品文件，因此错误挂载会在启动模型前作为环境阻断退出。沙箱还会提供任务级 `.aiwf-write-staging/` 输入目录，其父目录可写，内置 Edit 可以在其中原子替换固定的完整内容或 old/new 片段文件；base64 参数作为 Edit 和 Write 都缺失时的后备。writer 在进程内部读取不可变收据，不需要读取工作树外路径、展开 `$TMPDIR`/收据变量或等待人工批准；零匹配、多匹配和未声明路径均失败关闭。Windows 上写入描述符保持二进制模式，因此 staging 字节及混合 LF/CRLF 内容不会经过文本换行转换。
 
 **步骤 1：初始化项目**（一次性）
 
@@ -888,7 +888,7 @@ Spark 输出是建议。把 `accepted_suggestions`、`ignored_suggestions`、`co
 
 Claude 用量记录还会保存仅含哈希的缓存归因：provider route、稳定提示前缀、解析后的工具契约、任务后缀、缓存通道和会话模式。Ledger 不会复制提示正文或工具命令正文。运行 `python ai/aiwf.py usage aggregate .ai-workflow/model-usage.jsonl` 可查看整体和分通道的 Token 加权缓存命中率，以及 `cold-start`、`prefix-drift`、`tool-profile-change`、`provider-route-change`、`resume-failed`、`provider-unknown` 等保守分类。这些标签只解释 Harness 可观测到的变化，不推断服务端 TTL、淘汰或后端路由。
 
-为保持工具 schema 可复用，冻结的验证命令不再逐条嵌入 `allowedTools`，而是统一由固定入口 `ai/run-approved-validation.py run` 执行。精确写入命令也通过环境绑定的收据引用目标，不再写入任务专属绝对收据路径。Helper 会重新解析不可变任务卡、拒绝 shell 组合并以无 shell 的参数数组运行命令；只读根仍负责强制声明的写入范围。填写任务卡时可先运行 `python ai/compose_task_card.py --lint-card CARD`，在派发前发现不受支持的 shell 组合。
+为保持工具 schema 可复用，冻结的验证命令不再逐条嵌入 `allowedTools`，而是统一由固定入口 `ai/run-approved-validation.py run` 执行。精确写入命令由 helper 在内部读取环境绑定收据，并使用固定的任务级输入文件名，不再在 Bash 中展开 `$TMPDIR`、收据变量或任务专属绝对路径；base64 参数仅作为工具缺失时的后备。Helper 会重新解析不可变任务卡、拒绝 shell 组合并以无 shell 的参数数组运行命令；只读根仍负责强制声明的写入范围。填写任务卡时可先运行 `python ai/compose_task_card.py --lint-card CARD`，在派发前发现不受支持的 shell 组合。
 
 缓存回归应比较同一契约的 warm continuation，而不是所有调用的混合百分比。可通过 `--minimum-warm-cache-calls 5 --minimum-warm-cache-hit-rate 0.95` 生成 `pass`、`regression-candidate` 或 `insufficient-evidence` 结论；仅在受控 benchmark/CI 中再增加 `--require-cache-gate`。`by_model_cache_lane` 会进一步隔离不同模型。默认不启用阈值，因此普通派发不会被任意全局缓存目标阻断。
 

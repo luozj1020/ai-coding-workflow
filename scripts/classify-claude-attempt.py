@@ -12,7 +12,11 @@ TRANSPORT_RE = re.compile(
     r"api error|connection (?:closed|reset|refused)|econn|dns|tls|socket|timed? ?out|timeout|fetch failed|network",
     re.I,
 )
-APPROVAL_RE = re.compile(r"approval|permission|sandbox|not permitted|workspace.{0,40}not.{0,20}trusted", re.I)
+APPROVAL_RE = re.compile(
+    r"approval|permission|sandbox|not permitted|contains simple_expansion|"
+    r"workspace.{0,40}not.{0,20}trusted",
+    re.I,
+)
 
 
 def classify(

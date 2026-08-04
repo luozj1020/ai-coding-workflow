@@ -89,11 +89,12 @@ Worktree continuity and model memory are separate. Initial dispatch assigns an e
 
 Required exact-path write enforcement uses writable staging sources outside the
 worktree and binds only those sources over their declared destinations inside
-the read-only sandbox. The dispatcher performs a real write probe through the
-final sandbox command before starting Claude, synchronizes only receipt-listed
-paths back to the worktree, and fails as
-`write-sandbox-allowed-path-read-only` if the effective mount is still
-read-only. Required enforcement never degrades to post-run-only auditing;
+the read-only sandbox. Before starting Claude, the dispatcher runs the actual
+receipt-bound writer through the final sandbox command against a control file
+and one declared product file when available. It synchronizes only
+receipt-listed paths back to the worktree and fails as
+`write-sandbox-approved-writer-unavailable` when the effective writer cannot
+open those bindings. Required enforcement never degrades to post-run-only auditing;
 `editor-only` removes Bash rather than merely discouraging it. Claude's
 `~/.claude/session-env` is separately mapped to a task-scoped temporary
 directory so Bash initialization does not need a writable home. The lineage's
@@ -101,9 +102,13 @@ directory so Bash initialization does not need a writable home. The lineage's
 `.worktrees/.session-store/<lineage>/projects`, allowing a real same-session
 resume without opening the rest of the home directory. Both mounts receive a
 write probe before launch. Because built-in Edit may require a neighboring temporary file, the
-prompt supplies `write-approved-file.py`: it accepts either complete replacement
-content or old/new fragment files from `$TMPDIR`, validates the exact target
-against the immutable receipt, and writes only its staged binding. Fragment
+prompt supplies `write-approved-file.py` plus a task-local
+`.aiwf-write-staging/` input directory whose writable parent supports built-in
+Edit/Write atomic replacement. Fixed source filenames feed complete bytes or
+old/new fragments to the helper, which reads the immutable receipt internally
+and writes only its external staged binding. The commands need no shell
+expansion or per-task path in `allowedTools`; base64 arguments remain a fallback
+when both Edit and Write are absent. Fragment
 replacement fails without writing unless the old bytes occur exactly once.
 Complete replacement is allowed by default only for new files; an existing file
 must use unique-fragment replacement unless its exact path appears under `Full
@@ -153,7 +158,10 @@ Codex review rather than being discarded.
 Before launch, the dispatcher freezes a full product-content baseline. Existing
 dirty content in a reviewed continuation never counts as first progress; only a
 content digest different from that approved baseline does. First progress and
-product idle use the same full content hash. An unchanged digest for
+product idle use the same full content hash. Each heartbeat synchronizes
+receipt-listed external staging before computing that digest, so a successful
+approved-writer call becomes a product delta and refreshes the active window on
+the next sample. Control files and writer-input scratch never do. An unchanged digest for
 `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` (default 180) becomes an idle
 candidate; `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` consecutive observations
 (default 2) stop the child as `product_idle_confirmed`.
@@ -213,11 +221,12 @@ runner from executing any assigned validation.
 Run `python ai/compose_task_card.py --lint-card CARD` while filling the card to
 surface rejected shell composition before dispatch.
 
-Exact-write entries use the fixed repository-relative writer path and the
-literal `$AI_WORKFLOW_WRITE_SCOPE_RECEIPT` reference. The dispatcher binds that
-environment variable to the current task receipt; bubblewrap and the receipt
-still enforce exact declared targets. This removes per-task absolute paths from
-the tool schema without broadening write authority. Cache attribution hashes
+Exact-write entries use the fixed repository-relative writer path and fixed
+`.aiwf-write-staging/` input filenames, with base64 content arguments as a
+fallback. The helper reads the dispatcher-bound receipt internally; the Claude
+command contains neither an environment expansion nor a per-task absolute path.
+Bubblewrap and the receipt still enforce exact declared targets.
+This keeps the tool schema stable without broadening write authority. Cache attribution hashes
 the final allowed-tools contract after both runner and writer entries exist.
 
 ## Reports

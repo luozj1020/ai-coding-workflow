@@ -248,6 +248,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    printf '%s\\n' 'Current Phase: implementation' 'Blocker: workspace is not trusted' > CLAUDE_PROGRESS.md\n"
                 "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-4}\"\n"
                 "    ;;\n"
+                "  writer-policy-blocked)\n"
+                "    echo 'Bash rejected: Contains simple_expansion; command requires approval' >&2\n"
+                "    sleep \"${FAKE_CLAUDE_SLEEP_SECONDS:-8}\"\n"
+                "    ;;\n"
                 "  tail-stall)\n"
                 "    printf '# useful implementation\\n' > NEW_FILE.md\n"
                 "    printf '%s\\n' 'Current Phase: reporting' 'Context Acquisition Complete: yes' 'Planned First Write: NEW_FILE.md' 'Implementation Complete: yes' 'Completion Ready: no' > CLAUDE_PROGRESS.md\n"
@@ -1282,11 +1286,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         prompt_text = prompt.read_text(encoding="utf-8")
         self.assertIn("EXACT APPROVED FILE WRITER", prompt_text)
         self.assertIn("write-approved-file.py", prompt_text)
-        self.assertIn("--replace-old-source", prompt_text)
-        self.assertIn("$AI_WORKFLOW_WRITE_SCOPE_RECEIPT", prompt_text)
+        self.assertIn("--replace-old-base64", prompt_text)
+        self.assertIn("--content-base64", prompt_text)
+        self.assertIn(".aiwf-write-staging/CONTENT", prompt_text)
+        self.assertNotIn("$AI_WORKFLOW_WRITE_SCOPE_RECEIPT", prompt_text)
         self.assertNotIn(str(self.repo / ".worktrees" / f"{runtime['task_id']}.write-scope-enforcement.json"), prompt_text)
         argv_text = argv_log.read_text(encoding="utf-8")
-        self.assertIn("$AI_WORKFLOW_WRITE_SCOPE_RECEIPT", argv_text)
+        self.assertIn("--content-base64", argv_text)
+        self.assertIn("--source .aiwf-write-staging/CONTENT", argv_text)
+        self.assertNotIn("$AI_WORKFLOW_WRITE_SCOPE_RECEIPT", argv_text)
         self.assertNotIn(str(self.repo / ".worktrees"), argv_text)
 
     def test_workspace_trust_preflight_stops_before_builder_window(self):
@@ -2605,6 +2613,27 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         self.assertIn("Dispatch outcome: approval_blocked", status)
         self.assertNotIn("Dispatch outcome: no_useful_progress", status)
+
+    def test_writer_permission_blocker_stops_without_model_failure(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "FAKE_CLAUDE_MODE": "writer-policy-blocked",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "8",
+                "CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        self.assertIn("Convergence type: external_write_blocker", status)
+        self.assertIn("Dispatch outcome: approval_blocked", status)
+        self.assertIn("Attempt failure class: external-approval-blocker", status)
+        self.assertIn("Counts toward takeover: false", status)
+        outcome = json.loads(
+            self._artifact_path(result.stdout, "Outcome Gates").read_text(encoding="utf-8")
+        )
+        self.assertTrue(outcome["write_runtime_blocked"])
 
     def test_blocker_none_does_not_publish_blocked_execution_state(self):
         self._write_builder_task_card()

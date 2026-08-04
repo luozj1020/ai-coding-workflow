@@ -3901,6 +3901,12 @@ worktree_digest() {
     } | sha256sum 2>/dev/null | awk '{print $1}' || true
 }
 
+write_runtime_approval_blocker() {
+    grep -Eiq \
+        'contains simple_expansion|requires ([^[:space:]]+ )?approval|approval (is )?required|permission denied|tool use[^[:cntrl:]]*(denied|rejected)|write-approved-file[^[:cntrl:]]*(blocked|denied|approval)|AI_WORKFLOW_WRITE_SCOPE_RECEIPT[^[:cntrl:]]*(blocked|denied|approval)' \
+        "$STATUS_FILE" "$RAW_RESULT_FILE" "$RESULT_FILE" 2>/dev/null
+}
+
 stop_claude() {
     local reason="$1"
     local elapsed="$2"
@@ -4385,6 +4391,8 @@ progress_log "Tool profile resolved: profile=${CLAUDE_CODE_TOOL_PROFILE}, deriva
 _CLAUDE_SANDBOX_PREFIX=()
 _WRITE_SCOPE_EFFECTIVE="off"
 _WRITE_SCOPE_STAGING_ROOT="${TASK_TMPDIR}/write-sandbox"
+_CLAUDE_WRITER_INPUT_SOURCE="${TASK_TMPDIR}/writer-input"
+_CLAUDE_WRITER_INPUT_TARGET="${WORKTREE_DIR}/.aiwf-write-staging"
 _CLAUDE_SESSION_ENV_SOURCE="${TASK_TMPDIR}/claude-session-env"
 _CLAUDE_SESSION_ENV_TARGET="${HOME:-}/.claude/session-env"
 _CLAUDE_PROJECTS_SOURCE="${WORKTREE_ROOT}/.session-store/${_LINEAGE_ROOT_TASK_ID:-$TASK_ID}/projects"
@@ -4435,7 +4443,6 @@ PYEOF
                 echo "Error: required write-scope enforcement could not be prepared: ${_WRITE_BIND_OUTPUT}" >&2
                 exit 1
             }
-        _WRITE_SCOPE_PROBE_TARGET=""
         if [ -z "${HOME:-}" ] || [ ! -f "${SCRIPT_DIR}/write-approved-file.py" ]; then
             echo "Error: required write-scope runtime needs HOME and write-approved-file.py." >&2
             exit 1
@@ -4443,26 +4450,28 @@ PYEOF
         _WRITE_APPROVED_HELPER_REL="$(basename "$SCRIPT_DIR")/write-approved-file.py"
         export AI_WORKFLOW_WRITE_SCOPE_RECEIPT="$WRITE_SCOPE_RECEIPT_FILE"
         mkdir -p "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET" \
-            "$_CLAUDE_PROJECTS_SOURCE" "$_CLAUDE_PROJECTS_TARGET" || {
+            "$_CLAUDE_PROJECTS_SOURCE" "$_CLAUDE_PROJECTS_TARGET" \
+            "$_CLAUDE_WRITER_INPUT_SOURCE" "$_CLAUDE_WRITER_INPUT_TARGET" || {
             echo "Error: could not prepare Claude session environment/transcript write mounts." >&2
             echo "failure_category=write-sandbox-session-storage-unavailable" >&2
             exit 1
         }
+        for _writer_input_name in CONTENT OLD_FRAGMENT NEW_FRAGMENT; do
+            printf 'AIWF_WRITER_INPUT_V1\n' > "${_CLAUDE_WRITER_INPUT_SOURCE}/${_writer_input_name}"
+        done
         _CLAUDE_SANDBOX_PREFIX=(
             bwrap --die-with-parent --ro-bind / /
             --dev-bind /dev /dev --proc /proc
             --bind "$TASK_TMPDIR" "$TASK_TMPDIR"
             --bind "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET"
             --bind "$_CLAUDE_PROJECTS_SOURCE" "$_CLAUDE_PROJECTS_TARGET"
+            --bind "$_CLAUDE_WRITER_INPUT_SOURCE" "$_CLAUDE_WRITER_INPUT_TARGET"
             --chdir "$WORKTREE_DIR"
         )
         while IFS=$'\t' read -r _write_bind_source _write_bind_target; do
             [ -n "$_write_bind_source" ] || continue
             [ -n "$_write_bind_target" ] || continue
             _CLAUDE_SANDBOX_PREFIX+=(--bind "$_write_bind_source" "$_write_bind_target")
-            if [ -z "$_WRITE_SCOPE_PROBE_TARGET" ] && [ -f "$_write_bind_source" ]; then
-                _WRITE_SCOPE_PROBE_TARGET="$_write_bind_target"
-            fi
         done <<< "$_WRITE_BIND_OUTPUT"
         _CLAUDE_SANDBOX_PREFIX+=(--)
         if ! "${_CLAUDE_SANDBOX_PREFIX[@]}" sh -c \
@@ -4472,28 +4481,59 @@ PYEOF
             exit 1
         fi
         rm -f "$_CLAUDE_SESSION_ENV_SOURCE/.aiwf-probe" "$_CLAUDE_PROJECTS_SOURCE/.aiwf-probe"
-        if [ -z "$_WRITE_SCOPE_PROBE_TARGET" ] || \
-           ! "${_CLAUDE_SANDBOX_PREFIX[@]}" sh -c ': >> "$1"' aiwf-write-probe \
-                "$_WRITE_SCOPE_PROBE_TARGET"; then
-            echo "Error: required write-scope enforcement mounted approved paths read-only; refusing to start Claude." >&2
-            echo "failure_category=write-sandbox-allowed-path-read-only" >&2
+        if ! "${_CLAUDE_SANDBOX_PREFIX[@]}" sh -c \
+            'printf probe > .aiwf-write-staging/.atomic-probe.tmp && mv .aiwf-write-staging/.atomic-probe.tmp .aiwf-write-staging/.atomic-probe && rm .aiwf-write-staging/.atomic-probe'; then
+            echo "Error: task-local writer input directory does not support atomic Edit-style writes." >&2
+            echo "failure_category=write-sandbox-writer-input-read-only" >&2
             exit 1
         fi
+        _WRITE_SCOPE_PROBE_PATHS=("CLAUDE_PROGRESS.md")
+        _WRITE_SCOPE_PRODUCT_PROBE_PATH="$("$PYTHON_CMD" - "$WRITE_SCOPE_RECEIPT_FILE" <<'PYEOF'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+controls = set(value.get("control_write_paths", []))
+for binding in value.get("bindings", []):
+    if (isinstance(binding, dict) and binding.get("kind") == "file"
+            and binding.get("relative_path") not in controls):
+        print(binding["relative_path"])
+        break
+PYEOF
+)"
+        if [ -n "$_WRITE_SCOPE_PRODUCT_PROBE_PATH" ]; then
+            _WRITE_SCOPE_PROBE_PATHS+=("$_WRITE_SCOPE_PRODUCT_PROBE_PATH")
+        fi
+        for _write_probe_path in "${_WRITE_SCOPE_PROBE_PATHS[@]}"; do
+            if ! "${_CLAUDE_SANDBOX_PREFIX[@]}" "$_WRITE_APPROVED_HELPER_REL" \
+                    --path "$_write_probe_path" --probe >/dev/null; then
+                echo "Error: exact approved writer could not write its receipt-bound staging file: ${_write_probe_path}" >&2
+                echo "failure_category=write-sandbox-approved-writer-unavailable" >&2
+                exit 1
+            fi
+        done
         cat >> "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<EOF
 
 --- EXACT APPROVED FILE WRITER ---
 The repository parent directories are intentionally read-only. Built-in Edit
 may fail because it creates a neighboring temporary file, and Write may be
-absent in some Claude Code versions. For a new file, or an existing path listed
-under \`Full file replacement paths\`, first create the complete content under
-\`\$TMPDIR\`, then run exactly:
+absent in some Claude Code versions. The task-local
+\`.aiwf-write-staging/\` directory has a writable parent specifically for
+Edit/Write input preparation; it is outside product evidence and cannot widen
+the receipt's target scope. The approved writer reads its immutable receipt
+internally, so do not expand environment variables. For a new file, or an
+existing path listed under \`Full file replacement paths\`, use Edit or Write
+to place the complete bytes in \`.aiwf-write-staging/CONTENT\`, then run exactly:
 
-\`${_WRITE_APPROVED_HELPER_REL} --receipt \$AI_WORKFLOW_WRITE_SCOPE_RECEIPT --path REPOSITORY_RELATIVE_PATH --source \$TMPDIR/REPLACEMENT_FILE\`
+\`${_WRITE_APPROVED_HELPER_REL} --path REPOSITORY_RELATIVE_PATH --source .aiwf-write-staging/CONTENT\`
 
-For a narrow edit, put the exact old and new byte fragments in two temporary
-files and use the unique-match mode:
+For a narrow edit, place the exact old and new byte fragments in
+\`.aiwf-write-staging/OLD_FRAGMENT\` and
+\`.aiwf-write-staging/NEW_FRAGMENT\`, then use the unique-match mode:
 
-\`${_WRITE_APPROVED_HELPER_REL} --receipt \$AI_WORKFLOW_WRITE_SCOPE_RECEIPT --path REPOSITORY_RELATIVE_PATH --replace-old-source \$TMPDIR/OLD_FRAGMENT --replace-new-source \$TMPDIR/NEW_FRAGMENT\`
+\`${_WRITE_APPROVED_HELPER_REL} --path REPOSITORY_RELATIVE_PATH --replace-old-source .aiwf-write-staging/OLD_FRAGMENT --replace-new-source .aiwf-write-staging/NEW_FRAGMENT\`
+
+If the runtime has neither Edit nor Write, the shell-expansion-free
+\`--content-base64\` and \`--replace-old-base64 ... --replace-new-base64 ...\`
+forms remain available. Do not run a separate encoding command.
 
 Unique replacement fails without writing unless the old fragment occurs
 exactly once.
@@ -4506,12 +4546,14 @@ The receipt rejects every undeclared path. Do not use Edit after an atomic-temp
 failure and do not create repository-local helper files.
 EOF
         if [[ "${_TOOL_PROFILE_AVAILABLE_TOOLS}" == *Bash* ]] && [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ]; then
-            _approved_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --receipt \$AI_WORKFLOW_WRITE_SCOPE_RECEIPT --path * --source *)"
-            _approved_fragment_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --receipt \$AI_WORKFLOW_WRITE_SCOPE_RECEIPT --path * --replace-old-source * --replace-new-source *)"
+            _approved_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --path * --source .aiwf-write-staging/CONTENT)"
+            _approved_fragment_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --path * --replace-old-source .aiwf-write-staging/OLD_FRAGMENT --replace-new-source .aiwf-write-staging/NEW_FRAGMENT)"
+            _approved_base64_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --path * --content-base64 *)"
+            _approved_base64_fragment_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --path * --replace-old-base64 * --replace-new-base64 *)"
             if [ ${#_CLAUDE_ALLOWED_ARGS[@]} -gt 0 ]; then
-                _CLAUDE_ALLOWED_ARGS[1]="${_CLAUDE_ALLOWED_ARGS[1]},${_approved_writer_allow},${_approved_fragment_writer_allow}"
+                _CLAUDE_ALLOWED_ARGS[1]="${_CLAUDE_ALLOWED_ARGS[1]},${_approved_writer_allow},${_approved_fragment_writer_allow},${_approved_base64_writer_allow},${_approved_base64_fragment_writer_allow}"
             else
-                _CLAUDE_ALLOWED_ARGS=(--allowedTools "${_approved_writer_allow},${_approved_fragment_writer_allow}")
+                _CLAUDE_ALLOWED_ARGS=(--allowedTools "${_approved_writer_allow},${_approved_fragment_writer_allow},${_approved_base64_writer_allow},${_approved_base64_fragment_writer_allow}")
             fi
         fi
         _WRITE_SCOPE_EFFECTIVE="required"
@@ -5008,9 +5050,11 @@ START_EPOCH="$(date +%s)"
 CLAUDE_TIMED_OUT=0
 CLAUDE_NO_OUTPUT_TIMED_OUT=0
 CLAUDE_APPROVAL_CONVERGED=0
+CLAUDE_WRITE_BLOCKED_CONVERGED=0
 CLAUDE_COMPLETION_CONVERGED=0
 CLAUDE_FIRST_PROGRESS_TIMED_OUT=0
 _APPROVAL_CONVERGENCE_COUNT=0
+_WRITE_BLOCKER_CONVERGENCE_COUNT=0
 _LAST_APPROVAL_FP=""
 LAST_ACTIVITY_EPOCH="$START_EPOCH"
 LAST_TOTAL_BYTES=0
@@ -5482,6 +5526,26 @@ while claude_is_running; do
         fi
     fi
 
+    # A writing task whose exact-writer command is rejected by the runtime
+    # permission layer cannot create durable progress. Stop after two observed
+    # confirmations instead of misclassifying a ten-minute wait as model
+    # no-progress. A real product delta always wins and clears this candidate.
+    if [ "${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE:-1}" = "1" ] && \
+       [ "$_WRITING_RUNTIME_ROLE" -eq 1 ] && \
+       [ "$PRODUCT_DELTA_FROM_BASELINE" -eq 0 ] && \
+       write_runtime_approval_blocker; then
+        _WRITE_BLOCKER_CONVERGENCE_COUNT=$((_WRITE_BLOCKER_CONVERGENCE_COUNT + 1))
+        if [ "$_WRITE_BLOCKER_CONVERGENCE_COUNT" -ge "$CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS" ]; then
+            CLAUDE_WRITE_BLOCKED_CONVERGED=1
+            EXECUTION_ACTIVITY_STATE="external-write-blocked"
+            progress_log "Exact-writer approval blocker converged: confirmations=${_WRITE_BLOCKER_CONVERGENCE_COUNT}, elapsed_seconds=${ELAPSED}"
+            stop_claude "exact-writer approval blocker" "$ELAPSED"
+            break
+        fi
+    else
+        _WRITE_BLOCKER_CONVERGENCE_COUNT=0
+    fi
+
     if [ "$HARD_TIMEOUT_DEADLINE" -gt 0 ] && [ "$NOW_EPOCH" -ge "$HARD_TIMEOUT_DEADLINE" ]; then
         CLAUDE_TIMED_OUT=1
         stop_claude "hard runtime timeout" "$ELAPSED"
@@ -5620,6 +5684,7 @@ fi
     printf '  "completion_evidence_elapsed_seconds": %s,\n' "${COMPLETION_EVIDENCE_ELAPSED_SECONDS:-null}"
     printf '  "completion_ready_timeout_seconds": %s,\n' "$CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS"
     printf '  "completion_ready_converged": %s,\n' "$([ "$CLAUDE_COMPLETION_CONVERGED" -eq 1 ] && echo true || echo false)"
+    printf '  "write_blocker_converged": %s,\n' "$([ "$CLAUDE_WRITE_BLOCKED_CONVERGED" -eq 1 ] && echo true || echo false)"
     echo '  "measurement": "dispatcher heartbeat observation; phase boundaries are approximate"'
     echo '}'
 } > "$PHASE_METRICS_FILE"
@@ -5665,6 +5730,15 @@ if [ "${CLAUDE_COMPLETION_CONVERGED:-0}" -eq 1 ]; then
         echo "[dispatch] Progress log: ${PROGRESS_FILE}"
     } >> "$STATUS_FILE"
     progress_log "Claude finished by completion-ready evidence convergence: elapsed_seconds=${ELAPSED}, original_wait_status=${CLAUDE_CONVERGENCE_PROCESS_STATUS:-unknown}"
+elif [ "${CLAUDE_WRITE_BLOCKED_CONVERGED:-0}" -eq 1 ]; then
+    {
+        echo ""
+        echo "[dispatch] Claude stopped because its receipt-bound writer was rejected by the runtime permission layer."
+        echo "[dispatch] Convergence type: external_write_blocker"
+        echo "[dispatch] Counts toward model failure: no"
+        echo "[dispatch] Progress log: ${PROGRESS_FILE}"
+    } >> "$STATUS_FILE"
+    progress_log "Claude finished by external write-blocker convergence: elapsed_seconds=${ELAPSED}, wait_status=${CLAUDE_STATUS}"
 elif [ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ]; then
     {
         echo ""
@@ -6411,6 +6485,11 @@ fi
 # Compute dispatch outcome for orchestrator consumption.
 # Allows distinguishing: success, api_error_with_diff, api_error_without_diff,
 # approval_blocked, timeout, fallback, no_useful_progress, scope_violation.
+WRITE_RUNTIME_BLOCKED=0
+if [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && \
+   { [ "${CLAUDE_WRITE_BLOCKED_CONVERGED:-0}" -eq 1 ] || write_runtime_approval_blocker; }; then
+    WRITE_RUNTIME_BLOCKED=1
+fi
 DISPATCH_OUTCOME="success"
 if [ "${PLANNER_OUTPUT_SCOPE_VIOLATION:-0}" -eq 1 ]; then
     DISPATCH_OUTCOME="scope_violation"
@@ -6427,7 +6506,7 @@ elif [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then
     else
         DISPATCH_OUTCOME="api_error_without_diff"
     fi
-elif [ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ]; then
+elif [ "${CLAUDE_APPROVAL_CONVERGED:-0}" -eq 1 ] || [ "$WRITE_RUNTIME_BLOCKED" -eq 1 ]; then
     DISPATCH_OUTCOME="approval_blocked"
 elif [ "$ZERO_OUTPUT_PROBE_CONCLUSION" = "unavailable-in-current-environment" ] || \
      [ "$ZERO_OUTPUT_PROBE_CONCLUSION" = "inconclusive-restricted-environment" ]; then
@@ -6486,13 +6565,13 @@ if [ -n "$PYTHON_CMD" ]; then
         "$SEMANTIC_ACCEPTANCE" "$COMPLETION_STATE" "$CLAUDE_LAUNCHED" \
         "$CLAUDE_FIRST_SATISFIED" "$WORKFLOW_EXECUTION_STATUS" \
         "$DISPATCH_EXECUTION_ENV" "$CLAUDE_CODE_HOST_AUTHORITY" \
-        "${_STARTUP_PROBE_CONCLUSION:-not-run}" <<'PYEOF'
+        "${_STARTUP_PROBE_CONCLUSION:-not-run}" "$WRITE_RUNTIME_BLOCKED" <<'PYEOF'
 import json, os, sys, tempfile
 (
     output, task_id, dispatch_outcome, dispatch_success, report_consistency,
     artifact_valid, validation_success, semantic_acceptance, completion_state,
     builder_launched, claude_first_satisfied, workflow_status,
-    requested_env, host_authority, startup_probe,
+    requested_env, host_authority, startup_probe, write_runtime_blocked,
 ) = sys.argv[1:]
 value = {
     "schema_version": 1,
@@ -6510,6 +6589,7 @@ value = {
     "host_requested": requested_env == "host",
     "host_authorized": host_authority == "1",
     "host_effective": requested_env == "host" and startup_probe == "available",
+    "write_runtime_blocked": write_runtime_blocked == "1",
 }
 directory = os.path.dirname(output) or "."
 fd, temporary = tempfile.mkstemp(prefix=".outcome-", dir=directory)

@@ -47,7 +47,10 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         )
 
     def test_glob_and_parent_escape_fail_closed(self) -> None:
-        for path in ("src/*.py", "../outside.py", ".git/config"):
+        for path in (
+            "src/*.py", "../outside.py", ".git/config",
+            ".aiwf-write-staging/CONTENT",
+        ):
             with self.subTest(path=path):
                 self.card.write_text(f"- Write paths: {path}\n", encoding="utf-8")
                 with self.assertRaises(MOD.SandboxError):
@@ -81,6 +84,19 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         with self.assertRaises(MOD.SandboxError):
             MOD.prepare(self.card, self.worktree, self.output)
 
+    def test_inline_path_annotation_fails_closed(self) -> None:
+        self.card.write_text(
+            "- Write paths: tests/unit/test_tensor_storage.py (new focused test module)\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(MOD.SandboxError, "prose or whitespace"):
+            MOD.prepare(self.card, self.worktree, self.output)
+
+    def test_backtick_quoted_path_may_contain_spaces(self) -> None:
+        self.card.write_text("- Write paths: `docs/file name.md`\n", encoding="utf-8")
+        value = MOD.prepare(self.card, self.worktree, self.output)
+        self.assertEqual(value["declared_write_paths"], ["docs/file name.md"])
+
     def test_symlink_parent_and_hard_link_fail_closed(self) -> None:
         (self.worktree / ".git").mkdir()
         (self.worktree / "alias").symlink_to(".git", target_is_directory=True)
@@ -99,9 +115,17 @@ class PrepareWriteSandboxTests(unittest.TestCase):
     def test_dispatcher_writes_only_to_task_scoped_temp_directory(self) -> None:
         dispatcher = (ROOT / "scripts" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
         self.assertIn('--bind "$TASK_TMPDIR" "$TASK_TMPDIR"', dispatcher)
+        self.assertIn(
+            '--bind "$_CLAUDE_WRITER_INPUT_SOURCE" "$_CLAUDE_WRITER_INPUT_TARGET"',
+            dispatcher,
+        )
         self.assertIn('--staging-root "$_WRITE_SCOPE_STAGING_ROOT"', dispatcher)
         self.assertIn('--bind "$_write_bind_source" "$_write_bind_target"', dispatcher)
-        self.assertIn("write-sandbox-allowed-path-read-only", dispatcher)
+        self.assertIn("write-sandbox-approved-writer-unavailable", dispatcher)
+        self.assertIn(".aiwf-write-staging/CONTENT", dispatcher)
+        self.assertIn("--source .aiwf-write-staging/CONTENT)", dispatcher)
+        self.assertIn('--content-base64 *)', dispatcher)
+        self.assertNotIn('--receipt \\$AI_WORKFLOW_WRITE_SCOPE_RECEIPT', dispatcher)
         self.assertNotIn('--bind "$_SYSTEM_TMP_ROOT" "$_SYSTEM_TMP_ROOT"', dispatcher)
 
     @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap unavailable")
@@ -160,32 +184,52 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         session_target = self.root / "home" / ".claude" / "session-env"
         session_source.mkdir()
         session_target.mkdir(parents=True)
-        replacement = self.root / "replacement.txt"
-        replacement.write_text("new\n", encoding="utf-8")
+        writer_input_source = self.root / "writer-input"
+        writer_input_target = self.worktree / ".aiwf-write-staging"
+        writer_input_source.mkdir()
+        writer_input_target.mkdir()
+        for name in ("CONTENT", "OLD_FRAGMENT", "NEW_FRAGMENT"):
+            (writer_input_source / name).write_text("AIWF_WRITER_INPUT_V1\n")
+        atomic_edit_probe = [
+            "bwrap", "--die-with-parent", "--ro-bind", "/", "/",
+            "--dev-bind", "/dev", "/dev", "--proc", "/proc",
+            "--bind", str(writer_input_source), str(writer_input_target),
+            "--chdir", str(self.worktree), "--", "sh", "-c",
+            "printf 'new\\n' > .aiwf-write-staging/.CONTENT.tmp && "
+            "mv .aiwf-write-staging/.CONTENT.tmp .aiwf-write-staging/CONTENT",
+        ]
+        atomic_result = subprocess.run(
+            atomic_edit_probe, capture_output=True, text=True
+        )
+        self.assertEqual(atomic_result.returncode, 0, atomic_result.stderr)
         writer = ROOT / "scripts" / "write-approved-file.py"
         command = [
             "bwrap", "--die-with-parent", "--ro-bind", "/", "/",
             "--dev-bind", "/dev", "/dev", "--proc", "/proc",
             "--bind", value["staging_root"], value["staging_root"],
             "--bind", str(session_source), str(session_target),
-            "--bind", binding["source"], binding["target"], "--",
+            "--bind", str(writer_input_source), str(writer_input_target),
+            "--bind", binding["source"], binding["target"],
+            "--chdir", str(self.worktree), "--",
             "sh", "-c", 'touch "$HOME/.claude/session-env/ready"; exec "$@"',
-            "aiwf", sys.executable, str(writer), "--receipt", str(self.output),
-            "--path", "allowed.txt", "--source", str(replacement),
+            "aiwf", sys.executable, str(writer),
+            "--path", "allowed.txt", "--source", ".aiwf-write-staging/CONTENT",
         ]
-        env = dict(os.environ, HOME=str(self.root / "home"))
+        env = dict(
+            os.environ,
+            HOME=str(self.root / "home"),
+            AI_WORKFLOW_WRITE_SCOPE_RECEIPT=str(self.output),
+        )
         result = subprocess.run(command, env=env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((session_source / "ready").is_file())
         self.assertEqual(Path(binding["source"]).read_text(), "new\n")
         self.assertEqual((self.worktree / "allowed.txt").read_text(), "old\n")
-        old_fragment = self.root / "old-fragment.txt"
-        new_fragment = self.root / "new-fragment.txt"
-        old_fragment.write_text("new", encoding="utf-8")
-        new_fragment.write_text("unique", encoding="utf-8")
+        (writer_input_source / "OLD_FRAGMENT").write_text("new")
+        (writer_input_source / "NEW_FRAGMENT").write_text("unique")
         fragment_command = command[:-2] + [
-            "--replace-old-source", str(old_fragment),
-            "--replace-new-source", str(new_fragment),
+            "--replace-old-source", ".aiwf-write-staging/OLD_FRAGMENT",
+            "--replace-new-source", ".aiwf-write-staging/NEW_FRAGMENT",
         ]
         fragment_result = subprocess.run(
             fragment_command, env=env, capture_output=True, text=True

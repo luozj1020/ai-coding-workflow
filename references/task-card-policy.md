@@ -38,6 +38,12 @@ Never omit a material stop condition:
 
 Builder presets ship with conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation are disabled/not-required until Codex replaces them with exact assignments. Do not leave ambiguous placeholders or enable broad tail work merely to make the card look complete.
 
+Every `Write paths` and `Full file replacement paths` item is a pure
+repository-relative path. Put descriptions such as “new focused test module”
+in surrounding prose, never after the path; dispatch lint rejects an unquoted
+whitespace-bearing item instead of creating a file whose name contains the
+annotation. Backtick-quote a legitimate path that itself contains spaces.
+
 - Spec Gate for ambiguous product, UX, API, or data-model direction.
 - Root Cause Gate for bugs, regressions, or repeated failed fixes.
 - Test-First/TDD Contract when red/green evidence is acceptance-critical.

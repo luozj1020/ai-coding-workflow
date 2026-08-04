@@ -26,6 +26,21 @@ class SandboxError(RuntimeError):
     pass
 
 
+def _path_item(raw: str) -> str:
+    value = raw.strip()
+    if value.startswith("`") or value.endswith("`"):
+        if len(value) < 2 or not (value.startswith("`") and value.endswith("`")):
+            raise SandboxError(f"Write path has text outside its code span: {raw!r}")
+        value = value[1:-1]
+    elif any(char.isspace() for char in value):
+        raise SandboxError(
+            f"Write path contains prose or whitespace; use an exact backtick-quoted path: {raw!r}"
+        )
+    if "`" in value:
+        raise SandboxError(f"Write path contains an invalid code-span delimiter: {raw!r}")
+    return value
+
+
 def _card_paths(text: str) -> List[str]:
     lines = text.splitlines()
     for index, line in enumerate(lines):
@@ -37,7 +52,7 @@ def _card_paths(text: str) -> List[str]:
             if inline.lower() in {"none", "not assigned", "n/a"}:
                 return []
             return [
-                item.strip().strip("`")
+                _path_item(item)
                 for item in inline.split(",")
                 if item.strip()
             ]
@@ -53,7 +68,7 @@ def _card_paths(text: str) -> List[str]:
                 raise SandboxError(
                     f"invalid multi-line Write paths entry: {nested!r}"
                 )
-            values.append(item.group(1).strip().strip("`"))
+            values.append(_path_item(item.group(1)))
         return values
     raise SandboxError("task card has no Write paths")
 
@@ -67,7 +82,7 @@ def _full_replacement_paths(text: str) -> List[str]:
     value = match.group(1).strip()
     if value.lower() in {"", "none", "not assigned", "n/a"}:
         return []
-    return [item.strip().strip("`") for item in value.split(",") if item.strip()]
+    return [_path_item(item) for item in value.split(",") if item.strip()]
 
 
 def normalize(raw: str, worktree: Path) -> str:
@@ -77,14 +92,16 @@ def normalize(raw: str, worktree: Path) -> str:
     pure = PurePosixPath(value.rstrip("/"))
     if pure.is_absolute() or ".." in pure.parts or value in {".", "./"}:
         raise SandboxError(f"Write path must be repository-relative: {raw!r}")
-    if not pure.parts or pure.parts[0] in {".git", ".worktrees"}:
+    if not pure.parts or pure.parts[0] in {".git", ".worktrees", ".aiwf-write-staging"}:
         raise SandboxError(f"workflow metadata path is forbidden: {raw!r}")
     target = worktree.joinpath(*pure.parts)
     try:
         resolved_relative = target.resolve(strict=False).relative_to(worktree.resolve())
     except ValueError as exc:
         raise SandboxError(f"Write path escapes worktree: {raw!r}") from exc
-    if resolved_relative.parts and resolved_relative.parts[0] in {".git", ".worktrees"}:
+    if resolved_relative.parts and resolved_relative.parts[0] in {
+        ".git", ".worktrees", ".aiwf-write-staging"
+    }:
         raise SandboxError(f"Write path resolves into workflow metadata: {raw!r}")
     return pure.as_posix() + ("/" if value.endswith("/") else "")
 

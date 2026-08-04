@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -144,22 +146,79 @@ def replace_unique_approved(
     }
 
 
+def probe_approved(receipt_path: Path, relative_path: str) -> dict[str, object]:
+    """Prove that the receipt-selected staging file is writable without changing it."""
+    relative_path, staged, _binding = _approved_staged_file(receipt_path, relative_path)
+    descriptor = _open_private_file(staged)
+    try:
+        size = os.fstat(descriptor).st_size
+        if size:
+            os.lseek(descriptor, size - 1, os.SEEK_SET)
+            final_byte = os.read(descriptor, 1)
+            os.lseek(descriptor, size - 1, os.SEEK_SET)
+            os.write(descriptor, final_byte)
+        else:
+            os.write(descriptor, b"\0")
+            os.ftruncate(descriptor, 0)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return {
+        "status": "ready",
+        "operation": "write-probe",
+        "relative_path": relative_path,
+        "bytes": size,
+    }
+
+
+def _decode_base64(label: str, value: str) -> bytes:
+    try:
+        encoded = value.encode("ascii")
+        decoded = base64.b64decode(encoded, validate=True)
+    except (UnicodeEncodeError, binascii.Error) as exc:
+        raise ApprovedWriteError(f"--{label} must be canonical base64") from exc
+    if base64.b64encode(decoded) != encoded:
+        raise ApprovedWriteError(f"--{label} must be canonical base64")
+    return decoded
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument(
+        "--receipt", type=Path,
+        help="write-scope receipt; defaults to AI_WORKFLOW_WRITE_SCOPE_RECEIPT",
+    )
     parser.add_argument("--path", required=True)
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--source", type=Path)
     source.add_argument("--stdin", action="store_true")
+    source.add_argument("--content-base64")
     source.add_argument("--replace-old-source", type=Path)
+    source.add_argument("--replace-old-base64")
+    source.add_argument("--probe", action="store_true")
     parser.add_argument("--replace-new-source", type=Path)
+    parser.add_argument("--replace-new-base64")
     parser.add_argument("--max-bytes", type=int, default=16 * 1024 * 1024)
     args = parser.parse_args()
     try:
+        receipt_value = args.receipt or os.environ.get("AI_WORKFLOW_WRITE_SCOPE_RECEIPT")
+        if not receipt_value:
+            raise ApprovedWriteError(
+                "--receipt or AI_WORKFLOW_WRITE_SCOPE_RECEIPT is required"
+            )
+        receipt = Path(receipt_value).resolve()
         if args.max_bytes <= 0:
             raise ApprovedWriteError("--max-bytes must be positive")
         if args.replace_new_source and not args.replace_old_source:
             raise ApprovedWriteError("--replace-new-source requires --replace-old-source")
+        if args.replace_new_base64 is not None and args.replace_old_base64 is None:
+            raise ApprovedWriteError(
+                "--replace-new-base64 requires --replace-old-base64"
+            )
+        if args.replace_old_source and args.replace_new_base64 is not None:
+            raise ApprovedWriteError("source and base64 replacement modes cannot be mixed")
+        if args.replace_old_base64 is not None and args.replace_new_source:
+            raise ApprovedWriteError("source and base64 replacement modes cannot be mixed")
         if args.replace_old_source:
             if not args.replace_new_source:
                 raise ApprovedWriteError("--replace-old-source requires --replace-new-source")
@@ -171,22 +230,38 @@ def main() -> int:
             if len(old) > args.max_bytes or len(new) > args.max_bytes:
                 raise ApprovedWriteError("replacement fragment exceeds --max-bytes")
             result = replace_unique_approved(
-                args.receipt.resolve(), args.path, old, new, args.max_bytes
+                receipt, args.path, old, new, args.max_bytes
             )
+        elif args.replace_old_base64 is not None:
+            if args.replace_new_base64 is None:
+                raise ApprovedWriteError(
+                    "--replace-old-base64 requires --replace-new-base64"
+                )
+            old = _decode_base64("replace-old-base64", args.replace_old_base64)
+            new = _decode_base64("replace-new-base64", args.replace_new_base64)
+            if len(old) > args.max_bytes or len(new) > args.max_bytes:
+                raise ApprovedWriteError("replacement fragment exceeds --max-bytes")
+            result = replace_unique_approved(
+                receipt, args.path, old, new, args.max_bytes
+            )
+        elif args.probe:
+            result = probe_approved(receipt, args.path)
         elif args.source:
             if args.source.is_symlink() or not args.source.is_file():
                 raise ApprovedWriteError("--source must be a regular non-symlink file")
             content = args.source.read_bytes()
         elif args.stdin:
             content = sys.stdin.buffer.read(args.max_bytes + 1)
+        elif args.content_base64 is not None:
+            content = _decode_base64("content-base64", args.content_base64)
         else:
             raise ApprovedWriteError(
-                "one of --source, --stdin, or --replace-old-source is required"
+                "one write mode is required"
             )
-        if not args.replace_old_source:
+        if not args.replace_old_source and args.replace_old_base64 is None and not args.probe:
             if len(content) > args.max_bytes:
                 raise ApprovedWriteError("replacement content exceeds --max-bytes")
-            result = write_approved(args.receipt.resolve(), args.path, content)
+            result = write_approved(receipt, args.path, content)
     except (ApprovedWriteError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"approved write: {exc}", file=sys.stderr)
         return 2

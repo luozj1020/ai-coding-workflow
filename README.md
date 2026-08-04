@@ -967,8 +967,9 @@ provider TTL, eviction, or backend routing.
 
 To keep the tool schema reusable, frozen validation commands are executed by
 the fixed `ai/run-approved-validation.py run` entry point instead of being
-embedded one-by-one in `allowedTools`. Exact-write commands likewise refer to
-an environment-bound receipt rather than a task-specific absolute receipt path.
+embedded one-by-one in `allowedTools`. Exact-write commands let the helper read
+its environment-bound receipt internally and use fixed task-local input names
+rather than expanding `$TMPDIR`, a receipt variable, or a task-specific path.
 The helper re-parses the immutable task card, rejects shell composition, and
 runs argument vectors without a shell; the read-only-root write boundary still
 enforces the declared paths.
@@ -1446,7 +1447,11 @@ after a long run. The sandbox maps Claude's session environment to task-local
 temporary storage and supplies a receipt-validated exact-file replacement
 helper for clients whose Edit implementation needs a writable parent directory
 or whose runtime omits Write. The helper supports complete-file writes and
-unique old/new fragment replacement; zero matches, multiple matches, and
+unique old/new fragment replacement from fixed files under a task-local
+`.aiwf-write-staging/` directory whose parent supports atomic Edit operations;
+base64 arguments remain a fallback. The dispatcher runs that actual helper
+against a control file and a declared product file before model interaction.
+Zero matches, multiple matches, and
 undeclared targets fail without writing. Its descriptor stays in binary mode on
 Windows, so staged bytes and mixed LF/CRLF content are copied exactly rather
 than passing through text newline translation.

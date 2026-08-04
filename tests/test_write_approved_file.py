@@ -1,4 +1,6 @@
+import base64
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -72,6 +74,25 @@ class ApprovedFileWriterTests(unittest.TestCase):
             )
             self.assertEqual(pathlib.Path(binding["source"]).read_bytes(), expected)
 
+    def test_environment_receipt_and_base64_content_need_no_shell_expansion(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            receipt = self._receipt(root)
+            expected = b"new without temp file\n"
+            env = dict(os.environ, AI_WORKFLOW_WRITE_SCOPE_RECEIPT=str(receipt))
+            result = subprocess.run(
+                [sys.executable, str(WRITER), "--path", "src/allowed.py",
+                 "--content-base64", base64.b64encode(expected).decode("ascii")],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            value = json.loads(receipt.read_text(encoding="utf-8"))
+            binding = next(
+                item for item in value["bindings"]
+                if item["relative_path"] == "src/allowed.py"
+            )
+            self.assertEqual(pathlib.Path(binding["source"]).read_bytes(), expected)
+            self.assertEqual(json.loads(result.stdout)["operation"], "complete-file")
+
     def test_replaces_one_unique_fragment(self):
         with tempfile.TemporaryDirectory() as raw:
             root = pathlib.Path(raw)
@@ -94,6 +115,67 @@ class ApprovedFileWriterTests(unittest.TestCase):
             self.assertEqual(pathlib.Path(binding["source"]).read_text(), "updated\n")
             self.assertEqual(value["operation"], "unique-fragment-replacement")
             self.assertEqual(value["matches"], 1)
+
+    def test_base64_unique_replacement_needs_no_temp_files(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            receipt = self._receipt(root, allow_full=False)
+            env = dict(os.environ, AI_WORKFLOW_WRITE_SCOPE_RECEIPT=str(receipt))
+            result = subprocess.run(
+                [
+                    sys.executable, str(WRITER), "--path", "src/allowed.py",
+                    "--replace-old-base64", base64.b64encode(b"old").decode("ascii"),
+                    "--replace-new-base64", base64.b64encode(b"updated").decode("ascii"),
+                ],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            value = json.loads(receipt.read_text(encoding="utf-8"))
+            binding = next(
+                item for item in value["bindings"]
+                if item["relative_path"] == "src/allowed.py"
+            )
+            self.assertEqual(pathlib.Path(binding["source"]).read_text(), "updated\n")
+            self.assertEqual(json.loads(result.stdout)["operation"], "unique-fragment-replacement")
+
+    def test_probe_preserves_approved_file_bytes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            receipt = self._receipt(root, allow_full=False)
+            env = dict(os.environ, AI_WORKFLOW_WRITE_SCOPE_RECEIPT=str(receipt))
+            value = json.loads(receipt.read_text(encoding="utf-8"))
+            binding = next(
+                item for item in value["bindings"]
+                if item["relative_path"] == "src/allowed.py"
+            )
+            staged = pathlib.Path(binding["source"])
+            before = staged.read_bytes()
+            result = subprocess.run(
+                [sys.executable, str(WRITER), "--path", "src/allowed.py", "--probe"],
+                env=env, check=True, capture_output=True, text=True,
+            )
+            self.assertEqual(staged.read_bytes(), before)
+            self.assertEqual(json.loads(result.stdout)["operation"], "write-probe")
+
+    def test_noncanonical_base64_is_rejected_without_writing(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            receipt = self._receipt(root)
+            env = dict(os.environ, AI_WORKFLOW_WRITE_SCOPE_RECEIPT=str(receipt))
+            value = json.loads(receipt.read_text(encoding="utf-8"))
+            binding = next(
+                item for item in value["bindings"]
+                if item["relative_path"] == "src/allowed.py"
+            )
+            staged = pathlib.Path(binding["source"])
+            before = staged.read_bytes()
+            result = subprocess.run(
+                [sys.executable, str(WRITER), "--path", "src/allowed.py",
+                 "--content-base64", "Zh=="],
+                env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("canonical base64", result.stderr)
+            self.assertEqual(staged.read_bytes(), before)
 
     def test_existing_file_complete_write_requires_explicit_declaration(self):
         with tempfile.TemporaryDirectory() as raw:
