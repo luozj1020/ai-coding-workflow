@@ -212,7 +212,7 @@ case "$CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT" in 0|1) ;; *) echo "Error: CLAUD
 CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS="${CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS:-120}"
 case "$CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS must be a positive integer." >&2; exit 1 ;; esac
 CLAUDE_CODE_EDIT_READY_GRACE_SECONDS="${CLAUDE_CODE_EDIT_READY_GRACE_SECONDS:-120}"
-CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS="${CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS:-180}"
+CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS="${CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS:-600}"
 CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS="${CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS:-2}"
 CLAUDE_CODE_TAIL_TIMEOUT_SECONDS="${CLAUDE_CODE_TAIL_TIMEOUT_SECONDS:-90}"
 CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS="${CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS:-20}"
@@ -704,6 +704,34 @@ case "$CLAUDE_CODE_WORKTREE_PROGRESS" in
 esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+resolve_runtime_repository_root() {
+    local source_root="$1"
+    local common_raw common_abs primary
+    common_raw="$(git -C "$source_root" rev-parse --git-common-dir 2>/dev/null || true)"
+    if [ -n "$common_raw" ]; then
+        case "$common_raw" in
+            /*) common_abs="$common_raw" ;;
+            *) common_abs="${source_root}/${common_raw}" ;;
+        esac
+        common_abs="$(cd "$common_abs" 2>/dev/null && pwd -P || true)"
+        if [ -n "$common_abs" ] && [ "$(basename "$common_abs")" = ".git" ]; then
+            dirname "$common_abs"
+            return 0
+        fi
+    fi
+    primary="$(git -C "$source_root" worktree list --porcelain 2>/dev/null \
+        | sed -n 's/^worktree //p' | head -1)"
+    if [ -n "$primary" ] && [ -d "$primary" ]; then
+        (cd "$primary" && pwd -P)
+        return 0
+    fi
+    return 1
+}
+RUNTIME_REPO_ROOT="$(resolve_runtime_repository_root "$REPO_ROOT" || true)"
+if [ -z "$RUNTIME_REPO_ROOT" ] || [ ! -d "$RUNTIME_REPO_ROOT" ]; then
+    echo "Error: could not resolve the Git common repository root." >&2
+    exit 1
+fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MONITOR_SCRIPT="${SCRIPT_DIR}/monitor-claude.sh"
 HANDOFF_RECORDER="${SCRIPT_DIR}/record-handoff-event.py"
@@ -734,10 +762,10 @@ else
     TASK_ID="claude-${TIMESTAMP}-${RAND_SUFFIX}"
 fi
 
-WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
+WORKTREE_ROOT="${RUNTIME_REPO_ROOT}/.worktrees"
 REUSE_WORKTREE_DIR="${WORKTREE_ROOT}/reuse/claude-managed"
 _MANAGED_RUNTIME_PROTOCOL="aiwf-task-runtime-v1"
-_EXACT_WRITE_PROTOCOL="aiwf-exact-write-v2"
+_EXACT_WRITE_PROTOCOL="aiwf-exact-write-v3"
 _VALIDATION_RUNNER_PROTOCOL="aiwf-validation-runner-v1"
 
 # Validate managed-package consistency before any connectivity/model probe.
@@ -1745,6 +1773,7 @@ CHECKER_IDENTITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker.process.json"
 PROCESS_TERMINATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.process-termination.json"
 ABNORMAL_EXIT_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher-abnormal-exit.json"
 PHASE_METRICS_FILE="${WORKTREE_ROOT}/${TASK_ID}.phase-metrics.json"
+ACTIVITY_OBSERVATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.activity-observation.json"
 PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.progress.log"
 MONITOR_EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.monitor-events.log"
 PHASE_EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.phase-events.jsonl"
@@ -1756,7 +1785,7 @@ CHECKER_CONTRACT_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.checker-contract.json
 CODEGRAPH_WORKTREE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.codegraph-worktree.json"
 INTERACTION_HEALTH_FILE="${WORKTREE_ROOT}/${TASK_ID}.interaction-health.json"
 STARTUP_INTERACTION_HEALTH_FILE="${WORKTREE_ROOT}/${TASK_ID}.startup-interaction-health.json"
-API_AVAILABILITY_STATE_FILE="${REPO_ROOT}/.ai-workflow/claude-api-availability.json"
+API_AVAILABILITY_STATE_FILE="${RUNTIME_REPO_ROOT}/.ai-workflow/claude-api-availability.json"
 SEEDED_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT"
 SEEDED_PROGRESS_MARKER="AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"
 FALLBACK_REPORT_MARKER="AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT"
@@ -1767,10 +1796,15 @@ for f in "$RESULT_FILE" "$RAW_RESULT_FILE" "$STATUS_FILE" "$DIFFSTAT_FILE" "$DIF
          "$PROGRESS_FILE" "$MONITOR_EVENT_LOG" "$PHASE_EVENT_LOG" "$NETWORK_FILE"; do
     mkdir -p "$(dirname "$f")"
 done
-TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
-if [ -z "$TASK_CARD_REL" ]; then
-    TASK_CARD_REL="$(git -C "$REPO_ROOT" ls-files --others --exclude-standard --full-name -- "$TASK_CARD" 2>/dev/null | head -1 || true)"
-fi
+TASK_CARD_ABS="$(cd "$(dirname "$TASK_CARD")" && pwd -P)/$(basename "$TASK_CARD")"
+TASK_CARD_REL=""
+TASK_CARD_EXTERNAL=1
+case "$TASK_CARD_ABS" in
+    "$REPO_ROOT"/*)
+        TASK_CARD_REL="${TASK_CARD_ABS#"$REPO_ROOT"/}"
+        TASK_CARD_EXTERNAL=0
+        ;;
+esac
 
 _ARCHIVED_CONTROL_PATHS=""
 if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/archive-control-files.py" ]; then
@@ -1790,14 +1824,6 @@ PYEOF
         rmdir "$CONTROL_ARCHIVE_DIR" 2>/dev/null || true
     fi
 fi
-if [ -z "$TASK_CARD_REL" ]; then
-    TASK_CARD_ABS="$(cd "$(dirname "$TASK_CARD")" && pwd)/$(basename "$TASK_CARD")"
-    case "$TASK_CARD_ABS" in
-        "$REPO_ROOT"/*) TASK_CARD_REL="${TASK_CARD_ABS#"$REPO_ROOT"/}" ;;
-        *) TASK_CARD_REL="$TASK_CARD" ;;
-    esac
-fi
-
 DIRTY_TRACKED="$(git diff --name-only 2>/dev/null || true)"
 DIRTY_STAGED="$(git diff --cached --name-only 2>/dev/null || true)"
 if [ "$CLAUDE_CODE_LARGE_REPO_MODE" = "1" ]; then
@@ -1806,7 +1832,7 @@ if [ "$CLAUDE_CODE_LARGE_REPO_MODE" = "1" ]; then
 else
     DIRTY_UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null \
         | grep -v -E "^\.worktrees/" \
-        | grep -vxF "$TASK_CARD_REL" \
+        | { if [ -n "$TASK_CARD_REL" ]; then grep -vxF "$TASK_CARD_REL"; else cat; fi; } \
         | grep -vxF ".ai-workflow/model-calls.jsonl" \
         | grep -vxF ".ai-workflow/model-calls.lock" \
         | grep -vxF ".ai-workflow/model-usage.jsonl" \
@@ -1963,11 +1989,61 @@ PYEOF
                 --claude-command "$(command -v claude 2>/dev/null || true)" \
                 --tool-profile "${CLAUDE_CODE_TOOL_PROFILE:-default}" \
                 --source early-startup-probe --tool-inventory-verified \
-                "${_EARLY_INVENTORY_ARGS[@]}" >/dev/null 2>&1 || true
+            "${_EARLY_INVENTORY_ARGS[@]}" >/dev/null 2>&1 || true
+        fi
+    fi
+    _EARLY_TOOL_INVENTORY_MISSING=""
+    _EARLY_REQUESTED_TOOLS=""
+    case "${CLAUDE_CODE_TOOL_PROFILE:-default}" in
+        editor-only)     _EARLY_REQUESTED_TOOLS="Read,Edit,Write,Grep,Glob" ;;
+        minimal-builder) _EARLY_REQUESTED_TOOLS="Read,Edit,Write,Bash" ;;
+        locator-builder) _EARLY_REQUESTED_TOOLS="Read,Edit,Write,Grep,Glob,Bash" ;;
+        checker)         _EARLY_REQUESTED_TOOLS="Read,Edit,Write,Grep,Glob,Bash" ;;
+        diagnostic)      _EARLY_REQUESTED_TOOLS="Read,Grep,Glob,Bash" ;;
+    esac
+    if [ "$_EARLY_STARTUP_PROBE_CONCLUSION" = available ] && \
+       [ -n "$_EARLY_REQUESTED_TOOLS" ]; then
+        _EARLY_WRITE_SCOPE_EXPECTED="off"
+        if { [ "${_PARSED_TASK_MODE:-}" = builder ] || \
+             [ "${_PARSED_TASK_MODE:-}" = checker-test ]; } && \
+           [ "${CLAUDE_CODE_TOOL_PROFILE:-}" != diagnostic ] && \
+           { [ "${CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT:-auto}" = auto ] || \
+             [ "${CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT:-auto}" = required ]; }; then
+            _EARLY_WRITE_SCOPE_EXPECTED="required"
+        fi
+        [ -z "${_REVIEWED_CONTINUATION_TASK_ID:-}" ] || _EARLY_WRITE_SCOPE_EXPECTED="required"
+        _EARLY_TOOL_INVENTORY_MISSING="$({
+            "$PYTHON_CMD" - "$STARTUP_INTERACTION_HEALTH_FILE" \
+                "$_EARLY_REQUESTED_TOOLS" "$_EARLY_WRITE_SCOPE_EXPECTED" <<'PYEOF'
+import json, sys
+health, requested, write_scope = sys.argv[1:]
+value = json.load(open(health, encoding="utf-8"))
+if "tool_inventory" in value:
+    inventory = value.get("tool_inventory", [])
+    verified = value.get("tool_inventory_verified") is True
+else:
+    successful = [item for item in value.get("interaction_probes", []) if item.get("success")]
+    latest = successful[-1] if successful else {}
+    inventory = latest.get("tool_inventory", [])
+    verified = latest.get("tool_inventory_verified") is True
+if not verified:
+    print("inventory-unverified")
+    raise SystemExit
+available = set(item for item in inventory if isinstance(item, str))
+missing = set(filter(None, requested.split(","))) - available
+if write_scope == "required" and "Bash" in available:
+    missing.difference_update({"Edit", "Write"})
+print(",".join(sorted(missing)))
+PYEOF
+        } 2>/dev/null)"
+        if [ -n "$_EARLY_TOOL_INVENTORY_MISSING" ]; then
+            _EARLY_STARTUP_PROBE_CONCLUSION="tool-capability-mismatch"
+            _EARLY_STARTUP_PROBE_SOURCE="early-capability-check"
         fi
     fi
     if [ "$_EARLY_STARTUP_PROBE_CONCLUSION" != available ]; then
         _EARLY_NEEDS_HOST=0
+        _EARLY_EXIT_STATUS=75
         if [ "$_EARLY_STARTUP_PROBE_CONCLUSION" = inconclusive-restricted-environment ] && \
            [ "$CLAUDE_CODE_HOST_AUTHORITY" != 1 ]; then
             _EARLY_NEEDS_HOST=1
@@ -1983,17 +2059,24 @@ except (OSError, ValueError, TypeError, IndexError):
 PYEOF
 )"
         [ "$_EARLY_NEEDS_HOST" -eq 0 ] || _EARLY_CATEGORY="sandbox-network-host-handoff"
+        if [ "$_EARLY_STARTUP_PROBE_CONCLUSION" = tool-capability-mismatch ]; then
+            _EARLY_CATEGORY="tool-capability-mismatch"
+            _EARLY_EXIT_STATUS=1
+        fi
         {
             echo "Claude dispatch preflight blocked before worktree creation."
             echo "failure_category=${_EARLY_CATEGORY}"
             echo "interaction_conclusion=${_EARLY_STARTUP_PROBE_CONCLUSION}"
+            if [ -n "$_EARLY_TOOL_INVENTORY_MISSING" ]; then
+                echo "missing_runtime_tools=${_EARLY_TOOL_INVENTORY_MISSING}"
+            fi
             echo "builder_started=false"
         } > "$STATUS_FILE"
         if [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; then
             _EARLY_ATTEMPT_OUTCOME="preflight_error"
             [ "$_EARLY_NEEDS_HOST" -eq 0 ] || _EARLY_ATTEMPT_OUTCOME="network_error"
             "$PYTHON_CMD" "${SCRIPT_DIR}/classify-claude-attempt.py" \
-                --exit-code 75 --outcome "$_EARLY_ATTEMPT_OUTCOME" --progress none \
+                --exit-code "$_EARLY_EXIT_STATUS" --outcome "$_EARLY_ATTEMPT_OUTCOME" --progress none \
                 --direction unknown --error-text-file "$STATUS_FILE" \
                 --retry-ordinal "${_RETRY_ORDINAL:-0}" \
                 > "$ATTEMPT_CLASSIFICATION_FILE" 2>/dev/null || true
@@ -2002,9 +2085,10 @@ PYEOF
             "$_EARLY_NEEDS_HOST" "$DISPATCH_EXECUTION_ENV" "$CLAUDE_CODE_HOST_AUTHORITY" \
             "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" \
             "$TASK_CARD" "$CLAUDE_CODE_DIRTY_SOURCE_MODE" \
-            "${_REVIEWED_CONTINUATION_APPROVAL:-}" <<'PYEOF'
+            "${_REVIEWED_CONTINUATION_APPROVAL:-}" \
+            "${_EARLY_TOOL_INVENTORY_MISSING:-}" <<'PYEOF'
 import json, os, sys
-result, outcome, task_id, category, needs_host, requested_env, authority, health, classification, task_card, dirty_mode, reviewed = sys.argv[1:]
+result, outcome, task_id, category, needs_host, requested_env, authority, health, classification, task_card, dirty_mode, reviewed, missing_tools = sys.argv[1:]
 needs_host_execution = needs_host == "1"
 host_retry_args = None
 host_retry_environment = None
@@ -2038,6 +2122,7 @@ common = {
     "host_requested": requested_env == "host",
     "host_authorized": authority == "1", "host_effective": False,
     "interaction_health": health, "worktree_created": False, "merge_authorized": False,
+    "missing_runtime_tools": sorted(filter(None, missing_tools.split(","))),
     "attempt_classification": classification if os.path.isfile(classification) else None,
 }
 with open(result, "w", encoding="utf-8") as handle:
@@ -2060,13 +2145,18 @@ PYEOF
             fi
         fi
         rm -f "$DISPATCHER_PID_FILE"
-        exit 75
+        exit "$_EARLY_EXIT_STATUS"
     fi
 fi
 
 create_dispatch_worktree() {
     local branch_name="$1"
     if [ "$CLAUDE_CODE_WORKTREE_STRATEGY" = "fresh" ]; then
+        if [ "$WORKTREE_DIR" != "${WORKTREE_ROOT}/${TASK_ID}" ]; then
+            echo "Error: refusing recursive or non-flat fresh worktree target: $WORKTREE_DIR" >&2
+            echo "Expected direct child of the Git common runtime root: ${WORKTREE_ROOT}/${TASK_ID}" >&2
+            exit 1
+        fi
         if [ "$CLAUDE_CODE_WORKTREE_PROGRESS" = "quiet" ]; then
             git worktree add -b "$branch_name" "$WORKTREE_DIR" "$WORKTREE_START_COMMIT" >/dev/null || {
                 echo "Error: Failed to create git worktree at $WORKTREE_DIR" >&2
@@ -2571,7 +2661,7 @@ echo "CodeGraph execution guard: status=${CODEGRAPH_EXECUTION_STATUS}, action=${
     echo "- Active-execution window: ${CLAUDE_CODE_TIMEOUT_SECONDS}s"
     echo "- Hard timeout: ${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}s"
     echo "- Progress extension seconds: ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s"
-    echo "- Legacy growing-extension setting (not an additional round): ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}s"
+    echo "- Renewable product-growth extension seconds: ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}s"
     echo "- Recent activity window seconds: ${CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS}s"
     echo "- API probe mode: ${CLAUDE_CODE_API_PROBE_MODE}"
     echo "- Probe environment: ${CLAUDE_CODE_PROBE_ENVIRONMENT}"
@@ -2634,6 +2724,10 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
         printf '  "dirty_snapshot_receipt": "%s",\n' "${_INHERITED_DIRTY_SNAPSHOT_RECEIPT:-$DIRTY_SNAPSHOT_RECEIPT_FILE}"
     fi
     printf '  "source_repository": "%s",\n' "$REPO_ROOT"
+    printf '  "runtime_repository_root": "%s",\n' "$RUNTIME_REPO_ROOT"
+    printf '  "worktree_root": "%s",\n' "$WORKTREE_ROOT"
+    printf '  "worktree_layout": "flat-common-root",\n'
+    printf '  "task_card_external_to_source": %s,\n' "$([ "$TASK_CARD_EXTERNAL" -eq 1 ] && echo true || echo false)"
     printf '  "lineage_root_task_id": "%s",\n' "$_LINEAGE_ROOT_TASK_ID"
     printf '  "retry_ordinal": %s,\n' "${_RETRY_ORDINAL:-0}"
     if [ -n "${_WORKTREE_SETUP_DURATION:-}" ]; then
@@ -2680,6 +2774,7 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "write_scope_enforcement": "%s",\n' "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT"
     printf '  "write_scope_receipt": "%s",\n' "$WRITE_SCOPE_RECEIPT_FILE"
     printf '  "product_baseline_receipt": "%s",\n' "$PRODUCT_BASELINE_FILE"
+    printf '  "activity_observation_receipt": "%s",\n' "$ACTIVITY_OBSERVATION_FILE"
     printf '  "task_validation_allowlist": %s,\n' "$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo true || echo false)"
     printf '  "checker_runtime_enforcement": %s,\n' "$([ "$CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT" -eq 1 ] && echo true || echo false)"
     printf '  "checker_file_timeout_seconds": %s,\n' "$CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS"
@@ -2698,7 +2793,8 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "context_acquisition_timeout_seconds": %s,\n' "$CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS"
     printf '  "hard_timeout_seconds": %s,\n' "$CLAUDE_CODE_HARD_TIMEOUT_SECONDS"
     printf '  "active_window_refresh_limit": 1,\n'
-    printf '  "growth_extension_limit": 1,\n'
+    printf '  "growth_extension_limit": 0,\n'
+    printf '  "growth_extension_policy": "renewable-product-growth-until-hard-timeout",\n'
     printf '  "progress_extension_seconds": %s,\n' "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
     printf '  "growing_progress_extension_seconds": %s,\n' "$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS"
     printf '  "recent_activity_window_seconds": %s,\n' "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS"
@@ -3478,6 +3574,92 @@ monitor_event() {
     printf 'monitor_event source=dispatcher task_id=%s %s\n' "$TASK_ID" "$1" >> "$MONITOR_EVENT_LOG"
 }
 
+observe_runtime_activity() {
+    # Observe only filesystem metadata. The dispatcher intentionally does not
+    # read Claude session JSONL/transcript contents, and the resulting signal
+    # is diagnostic only: it never refreshes product-progress deadlines.
+    local now_epoch="$1"
+    local phase="$2"
+    "$PYTHON_CMD" - "$ACTIVITY_OBSERVATION_FILE" "$TASK_ID" \
+        "${_CLAUDE_PROJECTS_SOURCE:-}" "$now_epoch" "${LAST_CONTROL_ACTIVITY_EPOCH:-0}" \
+        "${LAST_PRODUCT_CHANGE_EPOCH:-0}" "${ACTIVE_EXECUTION_DEADLINE:-0}" \
+        "${HARD_TIMEOUT_DEADLINE:-0}" "$phase" <<'PYEOF'
+import json, os, sys, tempfile
+
+(output, task_id, session_root, now_raw, control_raw, product_raw,
+ active_raw, hard_raw, phase) = sys.argv[1:]
+now = int(now_raw)
+control = int(control_raw or 0)
+product = int(product_raw or 0)
+active = int(active_raw or 0)
+hard = int(hard_raw or 0)
+
+session = 0
+visited = 0
+pending = [session_root] if session_root and os.path.isdir(session_root) else []
+while pending and visited < 512:
+    current = pending.pop()
+    try:
+        session = max(session, int(os.stat(current, follow_symlinks=False).st_mtime))
+        entries = list(os.scandir(current))
+    except OSError:
+        continue
+    for entry in entries:
+        if visited >= 512:
+            break
+        visited += 1
+        try:
+            session = max(session, int(entry.stat(follow_symlinks=False).st_mtime))
+            if entry.is_dir(follow_symlinks=False):
+                pending.append(entry.path)
+        except OSError:
+            continue
+
+def optional(value):
+    return value if value > 0 else None
+
+def age(value):
+    return max(0, now - value) if value > 0 else None
+
+def remaining(value):
+    return max(0, value - now) if value > 0 else None
+
+value = {
+    "schema_version": 1,
+    "task_id": task_id,
+    "sampled_at_epoch": now,
+    "execution_state": phase,
+    "last_session_activity_epoch": optional(session),
+    "last_control_activity_epoch": optional(control),
+    "last_product_change_epoch": optional(product),
+    "seconds_since_session_activity": age(session),
+    "seconds_since_control_activity": age(control),
+    "seconds_since_product_change": age(product),
+    "active_window_remaining_seconds": remaining(active),
+    "hard_timeout_remaining_seconds": remaining(hard),
+    "session_entries_sampled": visited,
+    "session_activity_source": "session-store-mtime-without-content-read",
+    "model_tool_split_available": False,
+    "refreshes_product_window": False,
+    "authority": "diagnostic-only",
+}
+directory = os.path.dirname(output) or "."
+fd, temporary = tempfile.mkstemp(prefix=".activity-observation-", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, output)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except OSError:
+        pass
+    raise
+print(session)
+PYEOF
+}
+
 phase_event() {
     # Claude-authored progress is advisory. Normalize it into a compact JSONL
     # stream without treating the phase or command as completion evidence.
@@ -4252,6 +4434,7 @@ common = {
     "claude_first_satisfied": False,
     "workflow_execution_status": "failed-to-dispatch",
     "completion_state": "failed-to-dispatch",
+    "worktree_created": True,
     "attempt_classification": classification if os.path.isfile(classification) else None,
     "host_requested": requested_env == "host",
     "host_authorized": host_authority == "1",
@@ -4356,7 +4539,7 @@ cd "$WORKTREE_DIR"
 : > "$MONITOR_EVENT_LOG"
 write_network_header
 
-progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, context_acquisition_timeout_seconds=${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}, active_execution_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, hard_timeout_seconds=${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${_RUNTIME_STRATEGY:-$CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, growth_extension_limit=1, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, context_acquisition_timeout_seconds=${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}, active_execution_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, hard_timeout_seconds=${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${_RUNTIME_STRATEGY:-$CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, growing_progress_extension_seconds=${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}, growth_extension_policy=renewable-product-growth-until-hard-timeout, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
 
 # Freeze the model-facing helpers from the same managed package as this
 # dispatcher. Historical/reviewed worktrees may contain older ai/* helpers and
@@ -4720,7 +4903,14 @@ If the runtime has neither Edit nor Write, the shell-expansion-free
 forms remain available. Do not run a separate encoding command.
 
 Unique replacement fails without writing unless the old fragment occurs
-exactly once.
+exactly once. Before touching the mounted product file, the writer builds and
+validates the complete candidate. Python candidates must parse and compile,
+must preserve valid dataclass field ordering, and may not introduce duplicate
+top-level definitions/imports or remove an import that remains referenced.
+JSON and TOML candidates must parse. A
+failed candidate leaves the previous checkpoint unchanged. Replacing more
+than 75% of an existing file of at least 4 KiB is rejected unless that exact
+path is explicitly authorized for full-file replacement.
 
 Existing files default to unique-fragment replacement. Complete replacement of
 an existing file is rejected unless the task card explicitly authorizes that
@@ -4869,6 +5059,7 @@ common = {
     "claude_first_satisfied": False,
     "workflow_execution_status": "failed-to-dispatch",
     "completion_state": "failed-to-dispatch",
+    "worktree_created": True,
     "attempt_classification": classification if os.path.isfile(classification) else None,
     "missing_runtime_tools": sorted(filter(None, missing.split(","))),
     "host_requested": host_requested,
@@ -5241,6 +5432,12 @@ _APPROVAL_CONVERGENCE_COUNT=0
 _WRITE_BLOCKER_CONVERGENCE_COUNT=0
 _LAST_APPROVAL_FP=""
 LAST_ACTIVITY_EPOCH="$START_EPOCH"
+LAST_CONTROL_ACTIVITY_EPOCH="$START_EPOCH"
+LAST_SESSION_ACTIVITY_EPOCH=0
+SESSION_ACTIVITY_SECONDS_AGO=-1
+PRODUCT_ACTIVITY_SECONDS_AGO=-1
+ACTIVE_WINDOW_REMAINING_SECONDS=-1
+HARD_TIMEOUT_REMAINING_SECONDS=-1
 LAST_TOTAL_BYTES=0
 LAST_WORKTREE_DIGEST="$DISPATCH_PRODUCT_BASELINE_DIGEST"
 LAST_RESULT_STATUS_BYTES=0
@@ -5277,7 +5474,8 @@ INITIAL_PROGRESS_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" 2>/dev/nul
 # --- Two-stage execution clock ---
 # Context acquisition starts at process launch. The first role-specific
 # substantive signal refreshes exactly one complete active-execution window.
-# One growth extension is available after that; the hard deadline always wins.
+# Product growth may renew the active window after that; the hard deadline
+# always wins. Control/report activity never qualifies for renewal.
 CONTEXT_ACQUISITION_DEADLINE=0
 ACTIVE_EXECUTION_DEADLINE=0
 ACTIVE_WINDOW_REFRESHED=0
@@ -5288,8 +5486,10 @@ fi
 if [ "$CLAUDE_CODE_HARD_TIMEOUT_SECONDS" -gt 0 ]; then
     HARD_TIMEOUT_DEADLINE=$((START_EPOCH + CLAUDE_CODE_HARD_TIMEOUT_SECONDS))
 fi
-# Compatibility names now describe the single post-active-window extension.
+# Compatibility names describe the post-active-window extension state; the
+# same state is renewed only by further product-content growth.
 TIMEOUT_EXTENSION_ACTIVE=0
+TIMEOUT_EXTENSION_COUNT=0
 TIMEOUT_EXTENSION_STARTED_EPOCH=0
 TIMEOUT_EXTENSION_DEADLINE=0
 TIMEOUT_EXTENSION_REASON=""
@@ -5299,7 +5499,8 @@ EXTENSION_START_REPORT_BYTES=0
 EXTENSION_START_PROGRESS_BYTES=0
 EXTENSION_START_REPORT_HASH=""
 EXTENSION_START_PROGRESS_HASH=""
-# Kept in evidence schemas for compatibility; a second extension is forbidden.
+# Kept in evidence schemas for compatibility; this marks the first renewable
+# product-growth window after the initial extension.
 SECOND_EXTENSION_ACTIVE=0
 SECOND_EXTENSION_STARTED_EPOCH=0
 SECOND_EXTENSION_DEADLINE=0
@@ -5349,6 +5550,10 @@ while claude_is_running; do
     [ "$RESULT_STATUS_BYTES" -ne "$LAST_RESULT_STATUS_BYTES" ] && RESULT_STATUS_CHANGED=1
     [ "$CURRENT_REPORT_HASH" != "$LAST_REPORT_HASH" ] && REPORT_CHANGED=1
     [ "$CURRENT_PROGRESS_SEMANTIC_HASH" != "$LAST_PROGRESS_SEMANTIC_HASH" ] && PROGRESS_SEMANTIC_CHANGED=1
+    if [ "$RESULT_STATUS_CHANGED" -eq 1 ] || [ "$REPORT_CHANGED" -eq 1 ] || \
+       [ "$PROGRESS_SEMANTIC_CHANGED" -eq 1 ]; then
+        LAST_CONTROL_ACTIVITY_EPOCH="$NOW_EPOCH"
+    fi
     WORKTREE_CHANGED=0
     if [ "$CURRENT_WORKTREE_DIGEST" != "$LAST_WORKTREE_DIGEST" ]; then
         WORKTREE_CHANGED=1
@@ -5372,6 +5577,18 @@ while claude_is_running; do
         LAST_ACTIVITY_EPOCH="$NOW_EPOCH"
     fi
     QUIET_SECONDS=$((NOW_EPOCH - LAST_ACTIVITY_EPOCH))
+    LAST_SESSION_ACTIVITY_EPOCH="$(observe_runtime_activity "$NOW_EPOCH" "$EXECUTION_ACTIVITY_STATE" 2>/dev/null || echo 0)"
+    case "$LAST_SESSION_ACTIVITY_EPOCH" in ''|*[!0-9]*) LAST_SESSION_ACTIVITY_EPOCH=0 ;; esac
+    SESSION_ACTIVITY_SECONDS_AGO=-1
+    [ "$LAST_SESSION_ACTIVITY_EPOCH" -le 0 ] || SESSION_ACTIVITY_SECONDS_AGO=$((NOW_EPOCH - LAST_SESSION_ACTIVITY_EPOCH))
+    PRODUCT_ACTIVITY_SECONDS_AGO=-1
+    [ "$LAST_PRODUCT_CHANGE_EPOCH" -le 0 ] || PRODUCT_ACTIVITY_SECONDS_AGO=$((NOW_EPOCH - LAST_PRODUCT_CHANGE_EPOCH))
+    ACTIVE_WINDOW_REMAINING_SECONDS=-1
+    [ "$ACTIVE_EXECUTION_DEADLINE" -le 0 ] || ACTIVE_WINDOW_REMAINING_SECONDS=$((ACTIVE_EXECUTION_DEADLINE - NOW_EPOCH))
+    [ "$ACTIVE_WINDOW_REMAINING_SECONDS" -ge 0 ] || [ "$ACTIVE_EXECUTION_DEADLINE" -le 0 ] || ACTIVE_WINDOW_REMAINING_SECONDS=0
+    HARD_TIMEOUT_REMAINING_SECONDS=-1
+    [ "$HARD_TIMEOUT_DEADLINE" -le 0 ] || HARD_TIMEOUT_REMAINING_SECONDS=$((HARD_TIMEOUT_DEADLINE - NOW_EPOCH))
+    [ "$HARD_TIMEOUT_REMAINING_SECONDS" -ge 0 ] || [ "$HARD_TIMEOUT_DEADLINE" -le 0 ] || HARD_TIMEOUT_REMAINING_SECONDS=0
     NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" "$QUIET_SECONDS")"
     _EMIT_HEARTBEAT=0
     if [ "$CLAUDE_CODE_WORKTREE_PROGRESS" = "verbose" ] || \
@@ -5385,7 +5602,7 @@ while claude_is_running; do
         _EMIT_HEARTBEAT=1
     fi
     if [ "$_EMIT_HEARTBEAT" -eq 1 ]; then
-        progress_log "Claude still running: pid=${CLAUDE_PID}, state_change_or_threshold=yes, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE}, first_progress_detected=${FIRST_PROGRESS_DETECTED}, edit_ready=${EDIT_READY_DETECTED}, execution_state=${EXECUTION_ACTIVITY_STATE}, product_idle_seconds=${PRODUCT_IDLE_SECONDS}, idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT}, ${NETWORK_SUMMARY}"
+        progress_log "Claude still running: pid=${CLAUDE_PID}, state_change_or_threshold=yes, elapsed_seconds=${ELAPSED}, quiet_seconds=${QUIET_SECONDS}, session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO}, product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO}, active_window_remaining_seconds=${ACTIVE_WINDOW_REMAINING_SECONDS}, hard_timeout_remaining_seconds=${HARD_TIMEOUT_REMAINING_SECONDS}, result_bytes=${RESULT_BYTES}, status_bytes=${STATUS_BYTES}, report_bytes=${REPORT_BYTES}, claude_progress_bytes=${CLAUDE_PROGRESS_BYTES}, claude_task_bytes=${CLAUDE_TASK_BYTES}, worktree_changes=${WORKTREE_CHANGES}, worktree_changed=${WORKTREE_CHANGED}, product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE}, first_progress_detected=${FIRST_PROGRESS_DETECTED}, edit_ready=${EDIT_READY_DETECTED}, execution_state=${EXECUTION_ACTIVITY_STATE}, product_idle_seconds=${PRODUCT_IDLE_SECONDS}, idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT}, ${NETWORK_SUMMARY}"
     fi
 
     VALIDATION_EVIDENCE_ACTIVE=0
@@ -5544,7 +5761,7 @@ while claude_is_running; do
             fi
             ACTIVE_WINDOW_REFRESHED=1
             progress_log "First substantive progress detected: signal=${_FP_SIGNAL}, first_progress_detected=1, elapsed_seconds=${ELAPSED}, active_window_refreshed=yes, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
-            monitor_event "event=active-window-refreshed running=yes terminal=no elapsed_seconds=${ELAPSED} signal=${_FP_SIGNAL} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} worktree_changes=${WORKTREE_CHANGES} active_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+            monitor_event "event=active-window-refreshed running=yes terminal=no elapsed_seconds=${ELAPSED} signal=${_FP_SIGNAL} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} worktree_changes=${WORKTREE_CHANGES} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS} active_window_remaining_seconds=$((ACTIVE_EXECUTION_DEADLINE > 0 ? ACTIVE_EXECUTION_DEADLINE - NOW_EPOCH : -1)) active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} activity_receipt=${ACTIVITY_OBSERVATION_FILE}"
         elif [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
              [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ]; then
             if [ "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" = "observe" ]; then
@@ -5665,7 +5882,7 @@ while claude_is_running; do
     # this file instead of running ps/tail or starting a second polling watcher.
     _MONITOR_MATERIAL_DIGEST="${RESULT_BYTES}|${STATUS_BYTES}|${CURRENT_REPORT_HASH}|${CURRENT_PROGRESS_SEMANTIC_HASH}|${WORKTREE_CHANGES}|${CURRENT_WORKTREE_DIGEST}|${FIRST_PROGRESS_DETECTED}|${FIRST_PROGRESS_SIGNAL}|${EDIT_READY_DETECTED}|${EXECUTION_ACTIVITY_STATE}|${PRODUCT_IDLE_CONFIRMATION_COUNT}|${BLOCKER_RECORDED}|${IMPLEMENTATION_COMPLETE_DETECTED}|${COMPLETION_READY_DETECTED}|${VALIDATION_STARTED_ELAPSED_SECONDS}"
     if [ "$_MONITOR_MATERIAL_DIGEST" != "$_LAST_MONITOR_MATERIAL_DIGEST" ]; then
-        monitor_event "event=material-change running=yes terminal=no elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET_SECONDS} result_bytes=${RESULT_BYTES} status_bytes=${STATUS_BYTES} report_bytes=${REPORT_BYTES} progress_bytes=${CLAUDE_PROGRESS_BYTES} worktree_changes=${WORKTREE_CHANGES} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} first_progress=${FIRST_PROGRESS_DETECTED} first_progress_signal=${FIRST_PROGRESS_SIGNAL:-none} active_window_refreshed=${ACTIVE_WINDOW_REFRESHED} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} blocker=${BLOCKER_RECORDED} implementation_complete=${IMPLEMENTATION_COMPLETE_DETECTED} completion_ready=${COMPLETION_READY_DETECTED}"
+        monitor_event "event=material-change running=yes terminal=no elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET_SECONDS} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_remaining_seconds=${ACTIVE_WINDOW_REMAINING_SECONDS} hard_timeout_remaining_seconds=${HARD_TIMEOUT_REMAINING_SECONDS} activity_receipt=${ACTIVITY_OBSERVATION_FILE} result_bytes=${RESULT_BYTES} status_bytes=${STATUS_BYTES} report_bytes=${REPORT_BYTES} progress_bytes=${CLAUDE_PROGRESS_BYTES} worktree_changes=${WORKTREE_CHANGES} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} first_progress=${FIRST_PROGRESS_DETECTED} first_progress_signal=${FIRST_PROGRESS_SIGNAL:-none} active_window_refreshed=${ACTIVE_WINDOW_REFRESHED} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} blocker=${BLOCKER_RECORDED} implementation_complete=${IMPLEMENTATION_COMPLETE_DETECTED} completion_ready=${COMPLETION_READY_DETECTED}"
         _LAST_MONITOR_MATERIAL_DIGEST="$_MONITOR_MATERIAL_DIGEST"
     fi
 
@@ -5745,33 +5962,57 @@ while claude_is_running; do
             break
         fi
     elif [ "$ACTIVE_EXECUTION_DEADLINE" -gt 0 ] && [ "$NOW_EPOCH" -ge "$ACTIVE_EXECUTION_DEADLINE" ]; then
-        if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 1 ]; then
-            CLAUDE_TIMED_OUT=1
-            stop_claude "runtime timeout (single growth extension expired)" "$ELAPSED"
-            break
+        _RECENT_PRODUCT_ACTIVITY_SECONDS=$((NOW_EPOCH - LAST_PRODUCT_CHANGE_EPOCH))
+        _EXTENSION_SECONDS="$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
+        _EXTENSION_EVENT="started"
+        _PRODUCT_GROWTH_ELIGIBLE=0
+        if [ "$LAST_PRODUCT_CHANGE_EPOCH" -gt 0 ] && \
+           [ "$_RECENT_PRODUCT_ACTIVITY_SECONDS" -le "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS" ]; then
+            if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 0 ] || \
+               [ "$LAST_WORKTREE_DIGEST" != "$EXTENSION_START_WORKTREE_DIGEST" ]; then
+                _PRODUCT_GROWTH_ELIGIBLE=1
+            fi
         fi
-        _RECENT_ACTIVITY_SECONDS=$((NOW_EPOCH - LAST_ACTIVITY_EPOCH))
-        if [ "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS" -gt 0 ] && \
-           [ "$_RECENT_ACTIVITY_SECONDS" -le "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS" ]; then
+        if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 1 ]; then
+            _EXTENSION_SECONDS="$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS"
+            _EXTENSION_EVENT="renewed"
+        fi
+        if [ "$_EXTENSION_SECONDS" -gt 0 ] && [ "$_PRODUCT_GROWTH_ELIGIBLE" -eq 1 ]; then
             TIMEOUT_EXTENSION_ACTIVE=1
+            TIMEOUT_EXTENSION_COUNT=$((TIMEOUT_EXTENSION_COUNT + 1))
             TIMEOUT_EXTENSION_STARTED_EPOCH="$NOW_EPOCH"
-            TIMEOUT_EXTENSION_DEADLINE=$((NOW_EPOCH + CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS))
+            TIMEOUT_EXTENSION_DEADLINE=$((NOW_EPOCH + _EXTENSION_SECONDS))
             if [ "$HARD_TIMEOUT_DEADLINE" -gt 0 ] && [ "$TIMEOUT_EXTENSION_DEADLINE" -gt "$HARD_TIMEOUT_DEADLINE" ]; then
                 TIMEOUT_EXTENSION_DEADLINE="$HARD_TIMEOUT_DEADLINE"
             fi
             ACTIVE_EXECUTION_DEADLINE="$TIMEOUT_EXTENSION_DEADLINE"
-            TIMEOUT_EXTENSION_REASON="recent_growth_at_active_deadline"
+            TIMEOUT_EXTENSION_REASON="recent_product_growth_at_active_deadline"
             EXTENSION_START_WORKTREE_DIGEST="$LAST_WORKTREE_DIGEST"
             EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
             EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
             EXTENSION_START_REPORT_HASH="$(sha1sum "${WORKTREE_DIR}/CLAUDE_REPORT.md" 2>/dev/null | awk '{print $1}' || true)"
             EXTENSION_START_PROGRESS_HASH="$(progress_semantic_hash "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
-            progress_log "Single growth extension started: active_window=${CLAUDE_CODE_TIMEOUT_SECONDS}s, extension=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s, deadline_epoch=${TIMEOUT_EXTENSION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}, recent_activity_seconds=${_RECENT_ACTIVITY_SECONDS}"
-            monitor_event "event=active-window-extended running=yes terminal=no elapsed_seconds=${ELAPSED} reason=${TIMEOUT_EXTENSION_REASON} extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+            if [ "$TIMEOUT_EXTENSION_COUNT" -ge 2 ]; then
+                SECOND_EXTENSION_ACTIVE=1
+                SECOND_EXTENSION_STARTED_EPOCH="$NOW_EPOCH"
+                SECOND_EXTENSION_DEADLINE="$TIMEOUT_EXTENSION_DEADLINE"
+                SECOND_EXTENSION_REASON="continued_product_growth"
+            fi
+            if [ "$_EXTENSION_EVENT" = "started" ]; then
+                progress_log "Single growth extension started: policy=renewable-product-growth, ordinal=${TIMEOUT_EXTENSION_COUNT}, active_window=${CLAUDE_CODE_TIMEOUT_SECONDS}s, extension=${_EXTENSION_SECONDS}s, deadline_epoch=${TIMEOUT_EXTENSION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}, recent_product_activity_seconds=${_RECENT_PRODUCT_ACTIVITY_SECONDS}"
+            else
+                progress_log "Product-growth extension renewed: ordinal=${TIMEOUT_EXTENSION_COUNT}, extension=${_EXTENSION_SECONDS}s, deadline_epoch=${TIMEOUT_EXTENSION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}, recent_product_activity_seconds=${_RECENT_PRODUCT_ACTIVITY_SECONDS}"
+            fi
+            monitor_event "event=active-window-extended running=yes terminal=no elapsed_seconds=${ELAPSED} reason=${TIMEOUT_EXTENSION_REASON} extension_event=${_EXTENSION_EVENT} extension_ordinal=${TIMEOUT_EXTENSION_COUNT} extension_seconds=${_EXTENSION_SECONDS} recent_product_activity_seconds=${_RECENT_PRODUCT_ACTIVITY_SECONDS} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_remaining_seconds=$((ACTIVE_EXECUTION_DEADLINE > 0 ? ACTIVE_EXECUTION_DEADLINE - NOW_EPOCH : -1)) active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} activity_receipt=${ACTIVITY_OBSERVATION_FILE}"
         else
             CLAUDE_TIMED_OUT=1
-            TIMEOUT_EXTENSION_REASON="stale_progress_at_active_deadline"
-            stop_claude "active execution timeout (last activity ${_RECENT_ACTIVITY_SECONDS}s ago)" "$ELAPSED"
+            if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 1 ]; then
+                TIMEOUT_EXTENSION_REASON="growth_extension_expired_without_recent_product_change"
+                stop_claude "growth extension expired without recent product change (last product change ${_RECENT_PRODUCT_ACTIVITY_SECONDS}s ago)" "$ELAPSED"
+            else
+                TIMEOUT_EXTENSION_REASON="stale_product_progress_at_active_deadline"
+                stop_claude "active execution timeout (last product change ${_RECENT_PRODUCT_ACTIVITY_SECONDS}s ago)" "$ELAPSED"
+            fi
             break
         fi
     fi
@@ -5984,7 +6225,7 @@ elif [ "$CLAUDE_TIMED_OUT" -eq 1 ]; then
         echo "[dispatch] Final hard cap seconds: ${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}"
         echo "[dispatch] Progress log: ${PROGRESS_FILE}"
     } >> "$STATUS_FILE"
-    progress_log "Claude finished by timeout: elapsed_seconds=${ELAPSED}, wait_status=${CLAUDE_STATUS}, active_window_refreshed=${ACTIVE_WINDOW_REFRESHED}, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}, extension_active=${TIMEOUT_EXTENSION_ACTIVE}, extension_reason=${TIMEOUT_EXTENSION_REASON:-none}, growth_extension_limit=1"
+    progress_log "Claude finished by timeout: elapsed_seconds=${ELAPSED}, wait_status=${CLAUDE_STATUS}, active_window_refreshed=${ACTIVE_WINDOW_REFRESHED}, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}, extension_active=${TIMEOUT_EXTENSION_ACTIVE}, extension_count=${TIMEOUT_EXTENSION_COUNT:-0}, extension_reason=${TIMEOUT_EXTENSION_REASON:-none}, growth_extension_policy=renewable-product-growth-until-hard-timeout"
     echo "Warning: claude timed out after ${ELAPSED}s. Check $STATUS_FILE and $PROGRESS_FILE" >&2
 elif [ "$CLAUDE_STATUS" -ne 0 ]; then
     progress_log "Claude exited non-zero: status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
@@ -6047,7 +6288,7 @@ PYEOF
             "${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS:-0}" \
             "${CLAUDE_CODE_HARD_TIMEOUT_SECONDS:-0}" \
             "${ACTIVE_WINDOW_REFRESHED:-0}" "${ACTIVE_EXECUTION_DEADLINE:-0}" \
-            "${HARD_TIMEOUT_DEADLINE:-0}" \
+            "${HARD_TIMEOUT_DEADLINE:-0}" "${TIMEOUT_EXTENSION_COUNT:-0}" \
             <<'PYEOF'
 import json
 import sys
@@ -6085,7 +6326,8 @@ from pathlib import Path
     active_window_refreshed,
     active_execution_deadline,
     hard_timeout_deadline,
-) = sys.argv[1:32]
+    extension_count,
+) = sys.argv[1:33]
 
 payload = {
     "type": "claude_dispatch_fallback",
@@ -6113,7 +6355,9 @@ payload = {
     "active_execution_deadline_epoch": int(active_execution_deadline),
     "hard_timeout_seconds": int(hard_timeout),
     "hard_timeout_deadline_epoch": int(hard_timeout_deadline),
-    "growth_extension_limit": 1,
+    "growth_extension_limit": 0,
+    "growth_extension_policy": "renewable-product-growth-until-hard-timeout",
+    "growth_extension_count": int(extension_count),
     "second_extension_used": second_extension_active == "1",
     "second_extension_seconds": int(second_extension_seconds) if second_extension_active == "1" else 0,
     "second_extension_reason": second_extension_reason if second_extension_active == "1" else None,
@@ -6156,7 +6400,9 @@ PYEOF
             echo "  \"active_execution_deadline_epoch\": ${ACTIVE_EXECUTION_DEADLINE:-0},"
             echo "  \"hard_timeout_seconds\": ${CLAUDE_CODE_HARD_TIMEOUT_SECONDS:-0},"
             echo "  \"hard_timeout_deadline_epoch\": ${HARD_TIMEOUT_DEADLINE:-0},"
-            echo '  "growth_extension_limit": 1,'
+            echo '  "growth_extension_limit": 0,'
+            echo '  "growth_extension_policy": "renewable-product-growth-until-hard-timeout",'
+            echo "  \"growth_extension_count\": ${TIMEOUT_EXTENSION_COUNT:-0},"
             echo "  \"second_extension_used\": $([ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo true || echo false),"
             echo "  \"second_extension_seconds\": $([ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo "${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-0}" || echo 0),"
             _2nd_ext_reason=""
@@ -6844,6 +7090,9 @@ except OSError:
 value = {
     "schema_version": 1, "task_id": task_id,
     "recovery_reason": "missing-claude-report", "changed_files": paths,
+    "report_recovery_source": "deterministic-diff-and-receipts",
+    "evidence_usability": "recoverable",
+    "direct_acceptance_eligible": False,
     "diff_sha256": "sha256:" + hashlib.sha256(diff_bytes).hexdigest(),
     "validation_status": validation, "claude_report_complete": False,
     "tail_timeout_stopped": tail_timeout == "1", "completion_state": completion,
@@ -7452,8 +7701,9 @@ else
         elif [ -n "${TIMEOUT_EXTENSION_REASON:-}" ]; then
             echo "- Base timeout reason: ${TIMEOUT_EXTENSION_REASON}"
         fi
-        echo "- Growth extension limit: 1"
-        echo "- Second extension used: no"
+        echo "- Growth extension policy: renewable product growth until hard timeout"
+        echo "- Growth extension count: ${TIMEOUT_EXTENSION_COUNT:-0}"
+        echo "- Second extension used: $([ "${SECOND_EXTENSION_ACTIVE:-0}" -eq 1 ] && echo yes || echo no)"
         echo "- No-output timed out: $([ "$CLAUDE_NO_OUTPUT_TIMED_OUT" -eq 1 ] && echo yes || echo no)"
         echo "- First-progress timed out: $([ "${CLAUDE_FIRST_PROGRESS_TIMED_OUT:-0}" -eq 1 ] && echo yes || echo no)"
         echo "- First-progress signal: ${FIRST_PROGRESS_SIGNAL:-none}"
@@ -7500,7 +7750,14 @@ else
     } > "$REPORT_FILE"
 fi
 
-monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} dispatch_success=${DISPATCH_SUCCESS} artifact_valid=${ARTIFACT_VALID} validation_success=${VALIDATION_STATUS} semantic_acceptance=${SEMANTIC_ACCEPTANCE} completion_state=${COMPLETION_STATE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED}"
+_FINAL_OBSERVATION_EPOCH="$(date +%s)"
+LAST_SESSION_ACTIVITY_EPOCH="$(observe_runtime_activity "$_FINAL_OBSERVATION_EPOCH" "$EXECUTION_ACTIVITY_STATE" 2>/dev/null || echo 0)"
+case "$LAST_SESSION_ACTIVITY_EPOCH" in ''|*[!0-9]*) LAST_SESSION_ACTIVITY_EPOCH=0 ;; esac
+SESSION_ACTIVITY_SECONDS_AGO=-1
+[ "$LAST_SESSION_ACTIVITY_EPOCH" -le 0 ] || SESSION_ACTIVITY_SECONDS_AGO=$((_FINAL_OBSERVATION_EPOCH - LAST_SESSION_ACTIVITY_EPOCH))
+PRODUCT_ACTIVITY_SECONDS_AGO=-1
+[ "$LAST_PRODUCT_CHANGE_EPOCH" -le 0 ] || PRODUCT_ACTIVITY_SECONDS_AGO=$((_FINAL_OBSERVATION_EPOCH - LAST_PRODUCT_CHANGE_EPOCH))
+monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} dispatch_success=${DISPATCH_SUCCESS} artifact_valid=${ARTIFACT_VALID} validation_success=${VALIDATION_STATUS} semantic_acceptance=${SEMANTIC_ACCEPTANCE} completion_state=${COMPLETION_STATE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} activity_receipt=${ACTIVITY_OBSERVATION_FILE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED}"
 DISPATCH_FINALIZED=1
 
 echo "Report saved to: $REPORT_FILE"
@@ -7533,7 +7790,7 @@ echo "Tool Profile:    $CLAUDE_CODE_TOOL_PROFILE (${_TOOL_PROFILE_DERIVATION})"
 echo "First Progress:  ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s observation"
 echo "Context Window:  ${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}s"
 echo "Active Window:   ${CLAUDE_CODE_TIMEOUT_SECONDS}s (one refresh)"
-echo "Growth Ext:      ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s (max one)"
+echo "Growth Ext:      ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s initial, ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}s renewable (hard-cap bounded)"
 echo "Hard Cap:        ${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}s"
 echo "Dispatch Outcome:${DISPATCH_OUTCOME}"
 echo "Completion State:${COMPLETION_STATE}"

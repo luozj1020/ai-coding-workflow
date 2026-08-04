@@ -80,7 +80,18 @@ case "$TASK_ID" in
         ;;
 esac
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+SOURCE_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_COMMON_GIT_DIR="$(git -C "$SOURCE_REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+case "$_COMMON_GIT_DIR" in
+    /*) ;;
+    *) _COMMON_GIT_DIR="${SOURCE_REPO_ROOT}/${_COMMON_GIT_DIR}" ;;
+esac
+_COMMON_GIT_DIR="$(cd "$_COMMON_GIT_DIR" 2>/dev/null && pwd -P || true)"
+if [ -n "$_COMMON_GIT_DIR" ] && [ "$(basename "$_COMMON_GIT_DIR")" = ".git" ]; then
+    REPO_ROOT="$(dirname "$_COMMON_GIT_DIR")"
+else
+    REPO_ROOT="$SOURCE_REPO_ROOT"
+fi
 if command -v python3 >/dev/null 2>&1; then PYTHON_CMD=python3; else PYTHON_CMD=python; fi
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 DECISION_HELPER="${SCRIPT_DIR}/claude-monitor-decision.py"

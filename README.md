@@ -1026,6 +1026,13 @@ The task card for `controlled-builder` must include:
 
 For large repositories, fill `Worktree / Large Repo Strategy Gate` before dispatch. Defaults keep complete evidence. When `git worktree add`, dispatcher filesystem reads, or full patch generation are the bottleneck, prefer the explicit fast profile:
 
+All dispatches in one Git repository use the common-dir repository root for a
+single flat runtime layout. Invoking the dispatcher from an accepted linked
+worktree creates the next execution worktree as a sibling under the main
+`.worktrees/`, never as a recursively nested child. A reviewed task card may
+remain in the main worktree and be passed by absolute path; it is hash-bound and
+copied into the execution worktree without dirtying the accepted source.
+
 ```bash
 CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo \
 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
@@ -1179,6 +1186,8 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.claude-progress.md` | Claude self-reported milestone progress for status display and review evidence |
 | `*.monitor-events.log` | Material and terminal boundaries consumed by the blocking monitor |
 | `*.phase-metrics.json` | Context, implementation, validation, tail, edit-ready, and product-idle timing |
+| `*.activity-observation.json` | Metadata-only session/control/product activity ages and remaining windows; no transcript content |
+| `*.recovered-completion.json` | Recoverable diff/receipt evidence when Claude prose is missing; never direct acceptance |
 | `*.codegraph-worktree.json` | CodeGraph project/worktree identity, pending state, repair action, and safe-use decision |
 | `*.runtime.json` | Worktree, session, timeout, process identity, and guard configuration |
 | `*.pid` | Transient PID hint while a role is active; removed after confirmed terminal cleanup |
@@ -1190,6 +1199,8 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.codex-usage.txt` | Codex review token/cost usage summary when available |
 
 While Claude is running, the dispatcher distinguishes self-reported edit readiness from durable product-content changes. Agent controllers block on `monitor-claude.sh wait` and review bounded diff/decision evidence only when a material or terminal boundary arrives. `watch-claude.sh` and `status-claude.sh` remain manual diagnostics; they are not polling instructions. Interruption still requires corroborated deviation or confirmed no-progress evidence.
+
+An explicit tool profile is checked against the early stream-init inventory before a full worktree is created. Capability mismatch writes terminal result/outcome receipts with `builder_started=false` and `worktree_created=false`. The metadata-only activity receipt exposes session/control/product ages and remaining windows without reading Claude session JSONL; its combined session signal is diagnostic and cannot extend a product window.
 
 If Direction / Boundary Acknowledgement is required, Claude should write the acknowledgement before editing. When blocking approval is required, Codex gives one final decision before Claude proceeds. After `proceed`, Claude must continue the assigned task instead of repeatedly asking for the same confirmation.
 
@@ -1391,12 +1402,12 @@ While Claude Code is running, `dispatch-to-claude.sh` writes transient PID hints
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` controls heartbeat frequency; default is `30`.
 - `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` bounds reading/orientation before role-specific execution evidence; it defaults to the active-window value (`600` seconds by default) for every execution profile. Execution-only, batch, and test-writing Checker first-progress stops default to this same value, so a shorter first-progress gate cannot pre-empt context acquisition unless the caller explicitly overrides it.
 - `CLAUDE_CODE_TIMEOUT_SECONDS` is the active execution window, default `600` seconds. The first substantive Builder/Checker signal refreshes this complete window once.
-- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` permits at most one later growth extension, default `300` seconds.
+- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` grants the first recent-product-growth extension, default `300` seconds. `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` defaults to `300` seconds and renews the window when product content changed again during the prior extension. Control/report activity does not qualify; the hard timeout remains absolute.
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` is the absolute process cap, default `1500` seconds. It always wins; set a timeout to `0` only when intentionally disabling that boundary.
 - `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` optionally stops Claude when result/status/report/progress artifacts do not change. Default is `0` disabled; set a positive value only when you want fast-fail behavior.
 - `CLAUDE_CODE_WORKTREE_PROGRESS` controls worktree progress verbosity. Default `quiet` shows compact timing and path; `verbose` shows detailed worktree state.
 - `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS` gives a Builder that has completed context acquisition and declared an exact first write a short bridge to produce durable output; default is `120`. The declaration never refreshes the full active window.
-- `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` marks an unchanged product-content digest as an idle candidate after `180` seconds by default. `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` defaults to `2`; both observations are required before stopping. Active validation, explicit blockers, and assigned tail work are exempt.
+- `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` marks an unchanged product-content digest as an idle candidate after `600` seconds by default. `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` defaults to `2`; both observations are required before stopping. Active validation, explicit blockers, and assigned tail work are exempt.
 - `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` rejects pending or different-worktree CodeGraph evidence without paying reindex cost. Use `repair` to sync/reindex the execution worktree explicitly, or `off` to skip probing.
 - `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE` enables conservative approval-blocked early convergence. Default `1` (enabled); set to `0` to disable. When enabled, if a valid complete report exists, changes are test-only scoped, an exact validation approval blocker is present, and two stable heartbeats have been observed, the dispatcher triggers the checker helper. This is not validation success or acceptance — it is an early evidence-gathering path.
 
@@ -1460,6 +1471,12 @@ Zero matches, multiple matches, and
 undeclared targets fail without writing. Its descriptor stays in binary mode on
 Windows, so staged bytes and mixed LF/CRLF content are copied exactly rather
 than passing through text newline translation.
+The writer validates a complete candidate before touching that descriptor:
+Python syntax/compile state, dataclass field order, newly duplicated top-level
+definitions/imports, removed-but-still-referenced imports, and JSON/TOML parsing
+fail closed while preserving the
+previous checkpoint. Oversized fragment rewrites of existing files also require
+explicit full-file authorization.
 
 ```bash
 CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=600 \

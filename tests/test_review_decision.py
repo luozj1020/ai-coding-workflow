@@ -217,6 +217,30 @@ class TestValidateDecisionValid(unittest.TestCase):
         )
         self.assertEqual(rd.validate_decision(data), [])
 
+    def test_partial_evidence_disposition_binds_adopted_and_rejected_units(self):
+        data = _make_valid_decision(
+            decision="revise",
+            next_task=_make_next_task(),
+            evidence_disposition={
+                "status": "partially-adopted",
+                "units": [
+                    {
+                        "path": "src/runner.py",
+                        "symbols": ["run"],
+                        "disposition": "adopted",
+                        "evidence": ["review/diff.patch"],
+                        "baseline_sha256": "sha256:" + "a" * 64,
+                    },
+                    {
+                        "path": "tests/test_runner.py",
+                        "disposition": "rejected",
+                        "evidence": ["review/findings.json"],
+                    },
+                ],
+            },
+        )
+        self.assertEqual(rd.validate_decision(data), [])
+
 
 # ===========================================================================
 # Module: validation — invalid decisions
@@ -272,6 +296,22 @@ class TestValidateDecisionInvalid(unittest.TestCase):
         data = _make_valid_decision(reasoning="")
         errors = rd.validate_decision(data)
         self.assertTrue(any("non-empty string" in e for e in errors))
+
+    def test_partial_evidence_disposition_requires_both_sides(self):
+        data = _make_valid_decision(
+            evidence_disposition={
+                "status": "partially-adopted",
+                "units": [
+                    {
+                        "path": "src/runner.py",
+                        "disposition": "adopted",
+                        "evidence": ["review/diff.patch"],
+                    }
+                ],
+            }
+        )
+        errors = rd.validate_decision(data)
+        self.assertTrue(any("requires both" in error for error in errors))
 
     def test_missing_direction(self):
         data = _make_valid_decision()
@@ -741,6 +781,7 @@ class TestConstants(unittest.TestCase):
         expected = {
             "schema_version", "decision", "scope", "reasoning",
             "direction", "acceptance", "validation", "next_task", "lessons",
+            "evidence_disposition",
         }
         self.assertEqual(rd.TOP_LEVEL_PROPERTY_NAMES, expected)
 

@@ -30,7 +30,10 @@ resolved route, probe environment, and Claude executable. A success is cached
 for 24 hours by default (`CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS`) and useful
 model-owned dispatch evidence refreshes it. The probe uses Claude's stream-init
 event to record the actual runtime tool inventory, bound to the requested tool
-profile. A missing required tool fails before Builder execution; when Bash and
+profile. For an explicit non-default profile, this comparison occurs during the
+early connectivity probe, before a full worktree is created. A mismatch writes
+complete result/outcome receipts with `builder_started=false` and
+`worktree_created=false`. A missing required tool fails before Builder execution; when Bash and
 exact-write enforcement are both present, missing Edit/Write may resolve only
 to the receipt-validated exact-writer fallback. Later zero output, socket/transport
 symptoms, an inconclusive probe, or a changed execution context invalidates or
@@ -115,6 +118,17 @@ must use unique-fragment replacement unless its exact path appears under `Full
 file replacement paths`. Empty mount-only placeholders are removed during
 synchronization and do not survive a preflight-only failure.
 
+The writer validates the complete candidate before changing the mounted staged
+file. Python candidates must parse and compile, retain valid dataclass default
+field ordering, and must not introduce duplicate top-level definitions or
+imports or remove an import that remains globally referenced. JSON and TOML
+candidates must parse. A failed check leaves the prior
+checkpoint bytes intact. For existing files of at least 4 KiB, a unique
+fragment covering more than 75% of the file is rejected unless the card
+explicitly authorizes that exact full-file replacement. These deterministic
+micro-gates run inside the fixed writer command and require no additional Bash
+approval; they do not replace assigned tests or Codex semantic review.
+
 Model-facing helpers never resolve from the execution worktree's historical
 `ai/` or `scripts/` files. Before any connectivity/model probe, the dispatcher
 verifies its sibling helper protocol. It then snapshots the exact-writer and
@@ -128,7 +142,7 @@ Missing or mismatched bundle components stop before Builder execution as
 
 ## Progress and Monitoring
 
-Execution-only, batch, and test-writing Checker tasks default to a 120-second first durable-output deadline with stop action. Generic planning, acknowledgement, timestamps, and claimed command starts do not satisfy it; a worktree delta or valid owned report does. Validation-only Checker work retains the ordinary observation policy. The later active window remains 600 seconds and may receive one 300-second semantic-growth extension; the 1500-second hard cap always wins.
+Execution-only, batch, and test-writing Checker tasks default to a 120-second first durable-output deadline with stop action. Generic planning, acknowledgement, timestamps, and claimed command starts do not satisfy it; a worktree delta or valid owned report does. Validation-only Checker work retains the ordinary observation policy. The later active window remains 600 seconds. At its deadline, recent product-content growth grants a 300-second extension; further product changes may renew that extension while they remain recent. Report, progress, terminal text, and control-file growth never renew it, and the 1500-second hard cap always wins.
 
 After the Claude child exits, finalization waits one bounded drain interval and
 rechecks the worktree. A late change triggers one additional stability sample
@@ -162,7 +176,9 @@ evidence for fail-closed takeover.
 `CLAUDE_CODE_TAIL_TIMEOUT_SECONDS` defaults to 90; expiry stops the lingering
 child, preserves and drains evidence, and records `tail-timeout`. A useful diff
 with missing prose produces `<task-id>.recovered-completion.json` for bounded
-Codex review rather than being discarded.
+Codex review rather than being discarded. That receipt says
+`evidence_usability=recoverable` and `direct_acceptance_eligible=false`; only a
+subsequent Codex Review Decision may identify adopted files or symbols.
 
 `Execution Phase: implementation` is an edit-readiness declaration, not durable progress. It is accepted only with `Context Acquisition Complete: yes` and a non-empty `Planned First Write`, meaning repository scanning, requirement understanding, and local planning are complete. The dispatcher grants a bounded edit-ready bridge (`CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, default 120) but refreshes a Builder's full active window only after product content changes. A report without a Builder product delta never refreshes that implementation window.
 
@@ -173,13 +189,13 @@ product idle use the same full content hash. Each heartbeat synchronizes
 receipt-listed external staging before computing that digest, so a successful
 approved-writer call becomes a product delta and refreshes the active window on
 the next sample. Control files and writer-input scratch never do. An unchanged digest for
-`CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` (default 180) becomes an idle
+`CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` (default 600) becomes an idle
 candidate; `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` consecutive observations
 (default 2) stop the child as `product_idle_confirmed`.
 
 `solution-planner` progress uses `context`, `planning`, `contract-validation`, and `complete`. It must never report `implementation`, because planning progress is not implementation evidence.
 
-Relevant overrides are `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS`, `CLAUDE_CODE_TIMEOUT_SECONDS` (active window), `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS`, and `CLAUDE_CODE_HARD_TIMEOUT_SECONDS`. Context acquisition defaults to the 600-second active window for every execution profile. Execution-only, batch, and test-writing Checker first-progress stops inherit that same context-acquisition timeout unless the caller explicitly overrides the first-progress deadline.
+Relevant overrides are `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS`, `CLAUDE_CODE_TIMEOUT_SECONDS` (active window), `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` (first extension), `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` (product-growth renewals), and `CLAUDE_CODE_HARD_TIMEOUT_SECONDS`. Context acquisition defaults to the 600-second active window for every execution profile. Execution-only, batch, and test-writing Checker first-progress stops inherit that same context-acquisition timeout unless the caller explicitly overrides the first-progress deadline.
 
 Approval-blocked early convergence requires two stable heartbeats by default. `CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS` may lower or raise that count for unusually slow filesystem environments or deterministic tests; production defaults remain conservative.
 
@@ -191,6 +207,14 @@ finalized `terminal` boundaries to
 `monitor-claude.sh wait <task-id> --until terminal` call; repeated
 `watch`, `ps`, `tail`, status, process-tree, or clock-only commands are forbidden. Read a bounded
 decision/diff only after that wait returns.
+
+The dispatcher also writes `<task-id>.activity-observation.json` from bounded
+filesystem metadata only. It records session-store, control, and product
+activity ages plus remaining active/hard windows. It does not read Claude
+session JSONL/transcript contents. Because the current one-shot Claude result
+surface cannot reliably separate model text from tool activity, the receipt
+sets `model_tool_split_available=false`; session activity is diagnostic only
+and never refreshes a product-progress window.
 
 The terminal wait remains one process, but it must stream each structured
 execution-window refresh or extension as soon as the dispatcher records it.

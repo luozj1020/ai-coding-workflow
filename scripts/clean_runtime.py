@@ -42,6 +42,30 @@ def _find_repo_root(start):
         cur = parent
 
 
+def _common_repo_root(source_root):
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"], cwd=source_root,
+            capture_output=True, text=True, check=True,
+        )
+        common = result.stdout.strip()
+        if not os.path.isabs(common):
+            common = os.path.join(source_root, common)
+        common = os.path.realpath(common)
+        if os.path.basename(common) == ".git":
+            return os.path.dirname(common)
+        worktrees = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"], cwd=source_root,
+            capture_output=True, text=True, check=True,
+        )
+        for line in worktrees.stdout.splitlines():
+            if line.startswith("worktree "):
+                return os.path.realpath(line[len("worktree "):])
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return source_root
+
+
 def _git_ignored_paths(repo_root, paths):
     """Return ignored paths using one Git process for the whole scan."""
     paths = list(paths)
@@ -541,10 +565,11 @@ def main():
     if args.json and args.apply:
         parser.error("--json cannot be combined with --apply")
 
-    repo_root = _find_repo_root(args.repo)
-    if repo_root is None:
+    source_root = _find_repo_root(args.repo)
+    if source_root is None:
         print("ERROR: No .git found from {}".format(os.path.abspath(args.repo)))
         sys.exit(1)
+    repo_root = _common_repo_root(source_root)
 
     candidates = collect_candidates(repo_root, task_id=args.task_id)
 

@@ -132,7 +132,19 @@ if [ "$ESCALATION_CONFIRMATIONS" -eq 0 ]; then
 fi
 
 resolve_repo() {
-    git rev-parse --show-toplevel 2>/dev/null || pwd
+    local source common
+    source="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    common="$(git -C "$source" rev-parse --git-common-dir 2>/dev/null || true)"
+    case "$common" in
+        /*) ;;
+        *) common="${source}/${common}" ;;
+    esac
+    common="$(cd "$common" 2>/dev/null && pwd -P || true)"
+    if [ -n "$common" ] && [ "$(basename "$common")" = ".git" ]; then
+        dirname "$common"
+    else
+        printf '%s\n' "$source"
+    fi
 }
 
 file_size() {

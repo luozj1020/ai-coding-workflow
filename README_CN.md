@@ -687,7 +687,7 @@ Codex 接受 Builder 主体方向后，每个修订仍必须在编写下一张�
 
 dirty source 或 stale HEAD 也应按同类逻辑处理：它会阻止可靠委托，但本身不是 Codex 接管实现的理由。应先恢复委托路径，例如提交已接受阶段、stash/patch 未提交改动、刷新 workflow 文件、从更新后的 HEAD 重新派发、请求明确的 dirty-source 派发批准，或停止等待人工处理。如果明确批准当前未提交状态作为基线，应使用 `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot`；环境变量形式仅用于兼容，因为前置变量赋值无法匹配受托管规则保护的稳定 launcher 前缀。
 
-对于原地重试和 reviewed continuation，若 Claude 返回 conversation/session not found，dispatcher 会先将其记录为不计模型失败的恢复故障，再以同一 owner、任务、worktree 和写入范围自动尝试一次新会话；其他恢复错误仍然终止。精确路径写入约束使用工作树外的可写 staging，并在模型交互前通过最终挂载布局真实运行收据约束 writer，分别探测控制文件和一个已声明产品文件，因此错误挂载会在启动模型前作为环境阻断退出。沙箱还会提供任务级 `.aiwf-write-staging/` 输入目录，其父目录可写，内置 Edit 可以在其中原子替换固定的完整内容或 old/new 片段文件；base64 参数作为 Edit 和 Write 都缺失时的后备。writer 在进程内部读取不可变收据，不需要读取工作树外路径、展开 `$TMPDIR`/收据变量或等待人工批准；零匹配、多匹配和未声明路径均失败关闭。Windows 上写入描述符保持二进制模式，因此 staging 字节及混合 LF/CRLF 内容不会经过文本换行转换。dispatcher 还会从自身所在的同版本托管包快照精确 writer 与验证 runner，记录协议和文件哈希，并只读挂载到固定的 `.aiwf-runtime/`。历史 worktree 中的旧版 `ai/`/`scripts/` helper 不再参与执行，因此 reviewed continuation 不会出现“新版启动器 + 旧版 writer”的组合；缺失或协议不匹配会在 Builder 启动前按 `workflow-runtime-mismatch` 失败关闭，且不消耗模型轮次。
+对于原地重试和 reviewed continuation，若 Claude 返回 conversation/session not found，dispatcher 会先将其记录为不计模型失败的恢复故障，再以同一 owner、任务、worktree 和写入范围自动尝试一次新会话；其他恢复错误仍然终止。精确路径写入约束使用工作树外的可写 staging，并在模型交互前通过最终挂载布局真实运行收据约束 writer，分别探测控制文件和一个已声明产品文件，因此错误挂载会在启动模型前作为环境阻断退出。沙箱还会提供任务级 `.aiwf-write-staging/` 输入目录，其父目录可写，内置 Edit 可以在其中原子替换固定的完整内容或 old/new 片段文件；base64 参数作为 Edit 和 Write 都缺失时的后备。writer 在进程内部读取不可变收据，不需要读取工作树外路径、展开 `$TMPDIR`/收据变量或等待人工批准；零匹配、多匹配和未声明路径均失败关闭。Windows 上写入描述符保持二进制模式，因此 staging 字节及混合 LF/CRLF 内容不会经过文本换行转换。dispatcher 还会从自身所在的同版本托管包快照精确 writer 与验证 runner，记录协议和文件哈希，并只读挂载到固定的 `.aiwf-runtime/`。历史 worktree 中的旧版 `ai/`/`scripts/` helper 不再参与执行，因此 reviewed continuation 不会出现“新版启动器 + 旧版 writer”的组合；缺失或协议不匹配会在 Builder 启动前按 `workflow-runtime-mismatch` 失败关闭，且不消耗模型轮次。writer 会先构造完整候选内容，再检查 Python 语法/编译、dataclass 字段顺序、新增的顶层重复定义或 import，以及 JSON/TOML 解析；失败时保留上一个检查点。对于至少 4 KiB 的现有文件，覆盖超过 75% 的片段替换还必须得到该路径的完整文件替换授权。
 
 **步骤 1：初始化项目**（一次性）
 
@@ -929,6 +929,8 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md --mode controlled-builder \
 
 如果大型项目里 `git worktree add`、文件系统读取、dispatcher status/diff 收集很慢，先在任务卡里填写 `Worktree / Large Repo Strategy Gate`。默认保留完整证据。当 gate 接受 managed reuse 和 summary evidence 取舍时，优先使用显式 fast profile：
 
+同一个 Git 仓库的所有派发都会通过 Git common-dir 解析唯一运行时根，并使用平铺的顶层 `.worktrees/`。即使从已验收的 linked worktree 内启动，新的执行 worktree 也只能成为顶层兄弟目录，不能递归创建在 `source/.worktrees/` 下。已审查任务卡可以继续保存在主 worktree，并以绝对路径传入；dispatcher 会绑定其哈希并复制到执行 worktree，而不会把任务卡写进已验收 source。
+
 ```bash
 CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo \
 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
@@ -1080,6 +1082,8 @@ CLAUDE_CODE_NETWORK_MONITOR=1 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-1
 | `*.claude-progress.md` | Claude 自报的里程碑进度，用于状态展示和审查证据 |
 | `*.monitor-events.log` | 供阻塞式监控消费的实质变化与终态边界 |
 | `*.phase-metrics.json` | context、implementation、validation、tail、编辑就绪和产品停滞计时 |
+| `*.activity-observation.json` | 只基于元数据的会话/控制/产品活动年龄和剩余窗口；不读取 transcript 内容 |
+| `*.recovered-completion.json` | Claude 缺少报告时保留的可恢复 diff/收据证据；不能直接验收 |
 | `*.codegraph-worktree.json` | CodeGraph 项目/worktree 身份、pending 状态、修复动作和安全使用结论 |
 | `*.runtime.json` | worktree、会话、超时、进程身份和 guard 配置 |
 | `*.pid` | 角色运行期间的临时 PID 提示；确认终态回收后删除 |
@@ -1091,6 +1095,8 @@ CLAUDE_CODE_NETWORK_MONITOR=1 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-1
 | `*.codex-usage.txt` | 可用时记录的 Codex 审查 Token/费用摘要 |
 
 Claude 运行期间，Dispatcher 会区分自报的编辑就绪和持久产品内容变化。智能体控制器阻塞等待 `monitor-claude.sh wait`，只在实质或终态边界到达后审查有界 diff/decision 证据。`watch-claude.sh` 与 `status-claude.sh` 仍可用于人工诊断，但不是轮询指令。只有出现相互印证的方向偏离或已确认无进展证据时，才考虑中断 Claude。
+
+显式工具档案会在创建完整 worktree 之前，与早期 stream-init 工具清单比较；能力不匹配会生成 `builder_started=false`、`worktree_created=false` 的完整终态收据。活动收据只读取文件系统元数据，不读取 Claude 会话 JSONL；其中合并的会话活动仅供诊断，不能延长产品修改窗口。
 
 如果任务卡要求 Direction / Boundary Acknowledgement，Claude 应先写出确认内容再编辑。若该确认是阻塞式审批，Codex 需要给出一次最终决策后 Claude 才继续。Codex 给出 `proceed` 后，Claude 应继续执行任务，不应围绕同一事项反复请求确认。
 
@@ -1282,12 +1288,12 @@ Windows PowerShell 的控制台代码页, `$OutputEncoding` 和子进程编码�
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` 控制心跳频率，默认 `30`。
 - `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` 限制读取和定位阶段；所有执行 profile 默认都与活动执行窗口相同（默认 `600` 秒）。execution-only、batch 和负责测试编写的 Checker，其首进展停止门禁默认也使用同一数值，因此除非调用方显式覆盖，否则更短的首进展门禁不会提前终止上下文获取。
 - `CLAUDE_CODE_TIMEOUT_SECONDS` 表示活动执行窗口，默认 `600` 秒；首次符合角色要求的实质执行信号会且只会刷新一次完整窗口。
-- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` 最多允许一次后续增长扩展，默认 `300` 秒。
+- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` 在活动窗口到期时为近期产品修改提供首次扩展，默认 `300` 秒。`CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` 默认同为 `300` 秒；如果产品内容在上一扩展期内继续变化，则自动续窗。控制文件、报告或终端文本增长不能续窗，硬上限始终生效。
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` 是绝对总上限，默认 `1500` 秒且始终优先；只有确实需要禁用某一边界时才将对应值设为 `0`。
 - `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` 可选地在 result/status/report/progress 产物长期无变化时停止 Claude；默认 `0` 为禁用，仅在需要快速失败时设为正数。
 - `CLAUDE_CODE_WORKTREE_PROGRESS` 控制 worktree 进度详细程度。默认 `quiet` 显示紧凑时间和路径；`verbose` 显示详细 worktree 状态。
 - `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS` 为已完成上下文获取并声明精确首次写入的 Builder 提供短桥接窗口，默认 `120` 秒；该声明不会刷新完整活动执行窗口。
-- `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` 默认在产品内容 digest 连续 `180` 秒不变后标记 idle candidate；`CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` 默认 `2`，只有连续两次确认才停止。活跃验证、明确 blocker 和已分配 tail work 会被豁免。
+- `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` 默认在产品内容 digest 连续 `600` 秒不变后标记 idle candidate；`CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` 默认 `2`，只有连续两次确认才停止。活跃验证、明确 blocker 和已分配 tail work 会被豁免。
 - `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` 默认拒绝 pending 或来自其他 worktree 的 CodeGraph 证据，不承担重建成本；显式使用 `repair` 才会同步/重建执行 worktree 索引，`off` 则跳过探测。
 - `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE` 启用保守的审批阻塞早期收敛。默认 `1`（启用）；设为 `0` 可禁用。启用后，如果存在完整报告、变更仅为测试范围、存在精确验证审批阻塞器、且观察到两次稳定心跳，dispatcher 会触发 checker helper。这不是验证成功或验收——这是 checker 的早期证据收集路径。
 

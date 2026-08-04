@@ -32,7 +32,18 @@ while [ $# -gt 0 ]; do
     shift || true
 done
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+SOURCE_REPO_ROOT="$(git rev-parse --show-toplevel)"
+_COMMON_GIT_DIR="$(git -C "$SOURCE_REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+case "$_COMMON_GIT_DIR" in
+    /*) ;;
+    *) _COMMON_GIT_DIR="${SOURCE_REPO_ROOT}/${_COMMON_GIT_DIR}" ;;
+esac
+_COMMON_GIT_DIR="$(cd "$_COMMON_GIT_DIR" 2>/dev/null && pwd -P || true)"
+if [ -n "$_COMMON_GIT_DIR" ] && [ "$(basename "$_COMMON_GIT_DIR")" = ".git" ]; then
+    REPO_ROOT="$(dirname "$_COMMON_GIT_DIR")"
+else
+    REPO_ROOT="$SOURCE_REPO_ROOT"
+fi
 WORKTREE_DIR="${REPO_ROOT}/.worktrees/${TASK_ID}"
 PID_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.pid"
 PROGRESS_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.progress.log"

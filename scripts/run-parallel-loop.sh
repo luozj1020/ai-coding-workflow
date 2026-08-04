@@ -148,6 +148,14 @@ for tool in git awk sed; do
 done
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+_COMMON_GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+case "$_COMMON_GIT_DIR" in /*) ;; *) _COMMON_GIT_DIR="${REPO_ROOT}/${_COMMON_GIT_DIR}" ;; esac
+_COMMON_GIT_DIR="$(cd "$_COMMON_GIT_DIR" 2>/dev/null && pwd -P || true)"
+if [ -n "$_COMMON_GIT_DIR" ] && [ "$(basename "$_COMMON_GIT_DIR")" = ".git" ]; then
+    RUNTIME_REPO_ROOT="$(dirname "$_COMMON_GIT_DIR")"
+else
+    RUNTIME_REPO_ROOT="$REPO_ROOT"
+fi
 DISPATCH_BIN="${AI_CODING_WORKFLOW_DISPATCH_BIN:-${SCRIPT_DIR}/dispatch-to-claude.sh}"
 
 if [ ! -f "$DISPATCH_BIN" ] && ! command -v "$DISPATCH_BIN" >/dev/null 2>&1; then
@@ -181,7 +189,7 @@ fi
 # --- Output directory setup ---
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 if [ -z "$OUTPUT_DIR" ]; then
-    OUTPUT_DIR="${REPO_ROOT}/.worktrees/parallel-${TIMESTAMP}"
+    OUTPUT_DIR="${RUNTIME_REPO_ROOT}/.worktrees/parallel-${TIMESTAMP}"
 fi
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"

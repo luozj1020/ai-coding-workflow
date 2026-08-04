@@ -198,6 +198,11 @@ def prepare(
             "source": str(stage.resolve()),
             "target": str(target.resolve()),
             "target_preexisted": target_preexisted,
+            "staged_initial_sha256": None if directory else _sha256(stage),
+            "candidate_validation_required": (
+                not directory and PurePosixPath(relative).suffix.lower()
+                in {".py", ".pyi", ".json", ".toml"}
+            ),
             "complete_file_write_allowed": (
                 not target_preexisted or relative in explicit_full_replacements
                 or relative in CONTROL_WRITES
@@ -217,6 +222,12 @@ def prepare(
         "staging_root": str(staging_root),
         "bindings": bindings,
         "complete_file_write_policy": "new-files-or-explicit-paths-only",
+        "candidate_checkpoint_policy": "validate-before-same-inode-write-and-rollback-on-io-failure",
+        "candidate_validation_extensions": [".json", ".py", ".pyi", ".toml"],
+        "large_fragment_policy": {
+            "minimum_existing_file_bytes": 4096,
+            "maximum_fraction_without_full_replacement_authority": 0.75,
+        },
         "bash_cannot_bypass_scope": True,
     }
     atomic_json(output, value)

@@ -51,7 +51,18 @@ case "$TASK_ID" in
         ;;
 esac
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+SOURCE_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_COMMON_GIT_DIR="$(git -C "$SOURCE_REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+case "$_COMMON_GIT_DIR" in
+    /*) ;;
+    *) _COMMON_GIT_DIR="${SOURCE_REPO_ROOT}/${_COMMON_GIT_DIR}" ;;
+esac
+_COMMON_GIT_DIR="$(cd "$_COMMON_GIT_DIR" 2>/dev/null && pwd -P || true)"
+if [ -n "$_COMMON_GIT_DIR" ] && [ "$(basename "$_COMMON_GIT_DIR")" = ".git" ]; then
+    REPO_ROOT="$(dirname "$_COMMON_GIT_DIR")"
+else
+    REPO_ROOT="$SOURCE_REPO_ROOT"
+fi
 PID_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.pid"
 CLAUDE_PID_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.claude.pid"
 IDENTITY_FILE="${REPO_ROOT}/.worktrees/${TASK_ID}.claude.process.json"

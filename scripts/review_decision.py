@@ -32,11 +32,19 @@ REQUIRED_TOP_LEVEL = [
     "direction", "acceptance", "validation", "next_task", "lessons",
 ]
 
-TOP_LEVEL_PROPERTY_NAMES = set(REQUIRED_TOP_LEVEL)
+TOP_LEVEL_PROPERTY_NAMES = set(REQUIRED_TOP_LEVEL) | {"evidence_disposition"}
 
 VALID_ACCEPTANCE_KEYS = {"id", "status", "evidence"}
 VALID_DIRECTION_KEYS = {"status"}
 VALID_VALIDATION_KEYS = {"status", "failed_checks"}
+VALID_EVIDENCE_DISPOSITION_STATUSES = (
+    "none", "recoverable", "partially-adopted", "fully-adopted",
+)
+VALID_EVIDENCE_UNIT_DISPOSITIONS = ("adopted", "rejected", "needs-revision")
+VALID_EVIDENCE_DISPOSITION_KEYS = {"status", "units"}
+VALID_EVIDENCE_UNIT_KEYS = {
+    "path", "symbols", "disposition", "evidence", "baseline_sha256",
+}
 VALID_NEXT_TASK_KEYS = {"mode", "goal", "acceptance", "scope", "profile"}
 
 
@@ -279,6 +287,79 @@ def validate_decision(data: Any, path: str = "") -> List[str]:
                             f"{_json_path(root, 'validation')}.failed_checks[{j}]: "
                             f"expected non-empty string"
                         )
+
+    # Optional Codex review-layer disposition for partially reusable evidence.
+    # This deliberately does not add another dispatch terminal state.
+    if "evidence_disposition" in data:
+        disposition = data["evidence_disposition"]
+        dp = f"{root}.evidence_disposition"
+        if not isinstance(disposition, dict):
+            errors.append(f"{dp}: expected object")
+        else:
+            for key in disposition:
+                if key not in VALID_EVIDENCE_DISPOSITION_KEYS:
+                    errors.append(f"{dp}: unknown key '{key}'")
+            status = disposition.get("status")
+            units = disposition.get("units")
+            if status not in VALID_EVIDENCE_DISPOSITION_STATUSES:
+                errors.append(
+                    f"{dp}.status: expected one of {VALID_EVIDENCE_DISPOSITION_STATUSES}, "
+                    f"got '{status}'"
+                )
+            if not isinstance(units, list):
+                errors.append(f"{dp}.units: expected array")
+            else:
+                unit_states = []
+                for i, unit in enumerate(units):
+                    up = f"{dp}.units[{i}]"
+                    if not isinstance(unit, dict):
+                        errors.append(f"{up}: expected object")
+                        continue
+                    for key in unit:
+                        if key not in VALID_EVIDENCE_UNIT_KEYS:
+                            errors.append(f"{up}: unknown key '{key}'")
+                    path_value = unit.get("path")
+                    if not isinstance(path_value, str) or not path_value:
+                        errors.append(f"{up}.path: expected non-empty string")
+                    unit_state = unit.get("disposition")
+                    if unit_state not in VALID_EVIDENCE_UNIT_DISPOSITIONS:
+                        errors.append(
+                            f"{up}.disposition: expected one of "
+                            f"{VALID_EVIDENCE_UNIT_DISPOSITIONS}, got '{unit_state}'"
+                        )
+                    else:
+                        unit_states.append(unit_state)
+                    symbols = unit.get("symbols", [])
+                    if not isinstance(symbols, list) or any(
+                        not isinstance(symbol, str) or not symbol for symbol in symbols
+                    ):
+                        errors.append(f"{up}.symbols: expected array of non-empty strings")
+                    evidence = unit.get("evidence")
+                    if not isinstance(evidence, list) or not evidence or any(
+                        not isinstance(item, str) or not item for item in evidence
+                    ):
+                        errors.append(f"{up}.evidence: expected non-empty array of non-empty strings")
+                    baseline = unit.get("baseline_sha256")
+                    if baseline is not None and (
+                        not isinstance(baseline, str)
+                        or re.fullmatch(r"sha256:[0-9a-f]{64}", baseline) is None
+                    ):
+                        errors.append(f"{up}.baseline_sha256: expected sha256:<64 lowercase hex>")
+                if status == "none" and units:
+                    errors.append(f"{dp}: status 'none' requires an empty units array")
+                if status == "partially-adopted" and not (
+                    "adopted" in unit_states
+                    and any(state in {"rejected", "needs-revision"} for state in unit_states)
+                ):
+                    errors.append(
+                        f"{dp}: partially-adopted requires both an adopted unit and a rejected/needs-revision unit"
+                    )
+                if status == "fully-adopted" and (
+                    not unit_states or any(state != "adopted" for state in unit_states)
+                ):
+                    errors.append(f"{dp}: fully-adopted requires only adopted units")
+                if status == "recoverable" and not unit_states:
+                    errors.append(f"{dp}: recoverable requires at least one evidence unit")
 
     # next_task
     if "next_task" not in data:

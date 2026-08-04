@@ -216,6 +216,12 @@ The JSON object MUST have this exact shape:
     {"id": "AC-1", "status": "satisfied|failed|partial|not-evaluated", "evidence": ["artifact/path"]}
   ],
   "validation": {"status": "passed|failed|partial|not-run", "failed_checks": []},
+  "evidence_disposition": {
+    "status": "none|recoverable|partially-adopted|fully-adopted",
+    "units": [
+      {"path": "src/example.py", "symbols": ["Example.run"], "disposition": "adopted|rejected|needs-revision", "evidence": ["artifact/path"], "baseline_sha256": "sha256:<64 lowercase hex>"}
+    ]
+  },
   "next_task": null,
   "lessons": []
 }
@@ -224,7 +230,9 @@ The JSON object MUST have this exact shape:
 Rules:
 - For revise/split, \`next_task\` MUST be an object with at least \`mode\`, \`goal\`, \`acceptance\`.
 - For whole-task accept, \`next_task\` MUST be null. Phase accept may include a next task.
-- All fields are required. No unknown top-level fields.
+- Core fields are required. `evidence_disposition` is optional for backward compatibility, but MUST be present when any Claude file/symbol is recovered or only partially adopted. It records Codex review disposition and never changes the dispatch terminal state.
+- `partially-adopted` requires at least one adopted unit and at least one rejected or needs-revision unit. Bind adopted units to exact paths, symbols when applicable, evidence, and a baseline hash when available.
+- No unknown top-level fields.
 - The JSON decision is authoritative. Human text CANNOT override it.
 
 ### Human Explanation (optional, outside the JSON block)

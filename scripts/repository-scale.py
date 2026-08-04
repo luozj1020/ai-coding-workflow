@@ -95,11 +95,16 @@ def _git_size_kib(repo: Path) -> Optional[int]:
 
 def collect(repo: Path, scale_override: str = "auto") -> Dict[str, object]:
     repo = Path(_git(repo, "rev-parse", "--show-toplevel").strip()).resolve()
+    common = Path(_git(repo, "rev-parse", "--git-common-dir").strip())
+    if not common.is_absolute():
+        common = repo / common
+    common = common.resolve()
+    runtime_repo = common.parent if common.name == ".git" else repo
     paths = [line for line in _git(repo, "ls-files").splitlines() if line]
     tracked = len(paths)
     source = sum(1 for path in paths if Path(path).suffix.lower() in SOURCE_SUFFIXES)
     detected = classify_scale(tracked, source)
-    durations = _worktree_durations(repo / ".worktrees")
+    durations = _worktree_durations(runtime_repo / ".worktrees")
     median = statistics.median(durations) if durations else None
     worktree_cost = "unknown" if median is None else "high" if median >= 120 else "medium" if median >= 30 else "low"
     effective = detected if scale_override == "auto" else scale_override

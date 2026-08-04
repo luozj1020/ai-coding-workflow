@@ -115,10 +115,18 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_COMMON_GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+case "$_COMMON_GIT_DIR" in /*) ;; *) _COMMON_GIT_DIR="${REPO_ROOT}/${_COMMON_GIT_DIR}" ;; esac
+_COMMON_GIT_DIR="$(cd "$_COMMON_GIT_DIR" 2>/dev/null && pwd -P || true)"
+if [ -n "$_COMMON_GIT_DIR" ] && [ "$(basename "$_COMMON_GIT_DIR")" = ".git" ]; then
+    RUNTIME_REPO_ROOT="$(dirname "$_COMMON_GIT_DIR")"
+else
+    RUNTIME_REPO_ROOT="$REPO_ROOT"
+fi
 cd "$REPO_ROOT"
 
 if [ -z "$LOGS_DIR" ]; then
-    LOGS_DIR="${REPO_ROOT}/.worktrees/checker-logs-$(date +%Y%m%d-%H%M%S)"
+    LOGS_DIR="${RUNTIME_REPO_ROOT}/.worktrees/checker-logs-$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p "$LOGS_DIR"
 

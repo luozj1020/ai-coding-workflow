@@ -4,17 +4,29 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import binascii
+from collections import Counter
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import stat
+import symtable
 import sys
+from typing import Optional
+
+try:
+    import tomllib
+except ImportError:  # Python 3.9/3.10 compatibility; fail closed for TOML writes.
+    tomllib = None
 
 
-RUNTIME_PROTOCOL = "aiwf-exact-write-v2"
+RUNTIME_PROTOCOL = "aiwf-exact-write-v3"
+DEFAULT_MAX_BYTES = 16 * 1024 * 1024
+LARGE_FRAGMENT_MIN_BYTES = 4096
+LARGE_FRAGMENT_MAX_FRACTION = 0.75
 
 
 class ApprovedWriteError(ValueError):
@@ -86,7 +98,278 @@ def _replace_descriptor_content(descriptor: int, content: bytes) -> None:
         raise
 
 
-def write_approved(receipt_path: Path, relative_path: str, content: bytes) -> dict[str, object]:
+def _read_descriptor_content(descriptor: int, max_bytes: int) -> bytes:
+    size = os.fstat(descriptor).st_size
+    if size > max_bytes:
+        raise ApprovedWriteError("approved file exceeds --max-bytes")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    current = bytearray()
+    while len(current) < size:
+        chunk = os.read(descriptor, min(1024 * 1024, size - len(current)))
+        if not chunk:
+            break
+        current.extend(chunk)
+    if len(current) != size:
+        raise ApprovedWriteError("approved file changed size while preparing candidate")
+    return bytes(current)
+
+
+def _transactional_descriptor_write(
+    descriptor: int, previous: bytes, candidate: bytes,
+) -> None:
+    try:
+        _replace_descriptor_content(descriptor, candidate)
+    except Exception as write_error:
+        try:
+            _replace_descriptor_content(descriptor, previous)
+        except Exception as rollback_error:
+            raise ApprovedWriteError(
+                "candidate write failed and rollback could not restore the checkpoint: "
+                f"{rollback_error}"
+            ) from write_error
+        raise ApprovedWriteError(
+            "candidate write failed; the previous checkpoint was restored"
+        ) from write_error
+
+
+def _annotation_root_name(node: ast.expr) -> str:
+    while isinstance(node, ast.Subscript):
+        node = node.value
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _call_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
+def _literal_true(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and node.value is True
+
+
+def _literal_false(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and node.value is False
+
+
+def _dataclass_decorator(node: ast.ClassDef) -> Optional[ast.expr]:
+    for decorator in node.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if _call_name(target) == "dataclass":
+            return decorator
+    return None
+
+
+def _field_call_options(value: Optional[ast.expr]) -> tuple[bool, bool, bool]:
+    """Return has_default, participates_in_init, keyword_only."""
+    if not isinstance(value, ast.Call) or _call_name(value.func) != "field":
+        return value is not None, True, False
+    options = {item.arg: item.value for item in value.keywords if item.arg}
+    has_default = "default" in options or "default_factory" in options
+    participates = not (
+        "init" in options and _literal_false(options["init"])
+    )
+    keyword_only = "kw_only" in options and _literal_true(options["kw_only"])
+    return has_default, participates, keyword_only
+
+
+def _validate_dataclass_field_order(tree: ast.AST) -> None:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        decorator = _dataclass_decorator(node)
+        if decorator is None:
+            continue
+        if isinstance(decorator, ast.Call):
+            options = {item.arg: item.value for item in decorator.keywords if item.arg}
+            if "kw_only" in options and _literal_true(options["kw_only"]):
+                continue
+        default_seen = False
+        for statement in node.body:
+            if not isinstance(statement, ast.AnnAssign) or not isinstance(statement.target, ast.Name):
+                continue
+            if _annotation_root_name(statement.annotation) == "ClassVar":
+                continue
+            has_default, participates, keyword_only = _field_call_options(statement.value)
+            if not participates or keyword_only:
+                continue
+            if default_seen and not has_default:
+                raise ApprovedWriteError(
+                    "candidate validation failed: dataclass "
+                    f"{node.name!r} has non-default field {statement.target.id!r} "
+                    "after a default field"
+                )
+            default_seen = default_seen or has_default
+
+
+def _top_level_definitions(tree: ast.Module) -> Counter[str]:
+    return Counter(
+        node.name for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    )
+
+
+def _top_level_imports(tree: ast.Module) -> Counter[tuple[object, ...]]:
+    values: Counter[tuple[object, ...]] = Counter()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                values[("import", alias.name, alias.asname)] += 1
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                values[("from", node.level, node.module, alias.name, alias.asname)] += 1
+    return values
+
+
+def _module_import_bindings(tree: ast.Module) -> set[str]:
+    bindings: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bindings.add(alias.asname or alias.name.split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name != "*":
+                    bindings.add(alias.asname or alias.name)
+    return bindings
+
+
+def _global_references(table: symtable.SymbolTable) -> set[str]:
+    references = {
+        symbol.get_name() for symbol in table.get_symbols()
+        if symbol.is_referenced() and (
+            table.get_type() == "module" or symbol.is_global()
+        )
+    }
+    for child in table.get_children():
+        references.update(_global_references(child))
+    return references
+
+
+def _reject_removed_used_imports(
+    previous_tree: ast.Module, candidate_tree: ast.Module,
+    candidate_source: str, relative_path: str,
+) -> None:
+    removed = _module_import_bindings(previous_tree).difference(
+        _module_import_bindings(candidate_tree)
+    )
+    if not removed:
+        return
+    table = symtable.symtable(candidate_source, relative_path, "exec")
+    global_references = _global_references(table)
+    module_symbols = {symbol.get_name(): symbol for symbol in table.get_symbols()}
+    missing: list[str] = []
+    for name in sorted(removed.intersection(global_references)):
+        symbol = module_symbols.get(name)
+        if symbol is not None and (
+            symbol.is_assigned() or symbol.is_imported() or symbol.is_namespace()
+        ):
+            continue
+        missing.append(name)
+    if missing:
+        raise ApprovedWriteError(
+            "candidate validation failed: removed imports remain globally referenced: "
+            + ", ".join(missing)
+        )
+
+
+def _reject_new_duplicates(
+    label: str, previous: Counter[object], candidate: Counter[object],
+) -> None:
+    introduced = [
+        value for value, count in candidate.items()
+        if count > 1 and count > previous.get(value, 0)
+    ]
+    if introduced:
+        rendered = ", ".join(repr(value) for value in sorted(introduced, key=repr))
+        raise ApprovedWriteError(
+            f"candidate validation failed: newly duplicated top-level {label}: {rendered}"
+        )
+
+
+def _validate_candidate(
+    relative_path: str, previous: bytes, candidate: bytes,
+) -> dict[str, object]:
+    suffix = PurePosixPath(relative_path).suffix.lower()
+    checks: list[str] = []
+    if suffix in {".py", ".pyi"}:
+        try:
+            source = candidate.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ApprovedWriteError(
+                "candidate validation failed: Python source must be UTF-8"
+            ) from exc
+        try:
+            candidate_tree = ast.parse(source, filename=relative_path)
+            compile(candidate_tree, relative_path, "exec", dont_inherit=True)
+        except SyntaxError as exc:
+            location = f"line {exc.lineno}" if exc.lineno else "unknown line"
+            raise ApprovedWriteError(
+                f"candidate validation failed: Python syntax error at {location}: {exc.msg}"
+            ) from exc
+        checks.extend(("python-ast", "python-compile"))
+        _validate_dataclass_field_order(candidate_tree)
+        checks.append("python-dataclass-field-order")
+        try:
+            previous_tree = ast.parse(previous.decode("utf-8"), filename=relative_path)
+        except (SyntaxError, UnicodeDecodeError):
+            previous_tree = None
+        if previous_tree is not None:
+            _reject_new_duplicates(
+                "definitions",
+                _top_level_definitions(previous_tree),
+                _top_level_definitions(candidate_tree),
+            )
+            _reject_new_duplicates(
+                "imports",
+                _top_level_imports(previous_tree),
+                _top_level_imports(candidate_tree),
+            )
+            _reject_removed_used_imports(
+                previous_tree, candidate_tree, source, relative_path
+            )
+            checks.extend((
+                "python-no-new-duplicate-definitions",
+                "python-no-new-duplicate-imports",
+                "python-no-removed-used-imports",
+            ))
+    elif suffix == ".json":
+        try:
+            json.loads(candidate.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ApprovedWriteError(
+                f"candidate validation failed: invalid JSON: {exc}"
+            ) from exc
+        checks.append("json-parse")
+    elif suffix == ".toml":
+        if tomllib is None:
+            raise ApprovedWriteError(
+                "candidate validation failed: TOML parser unavailable; use Python 3.11+"
+            )
+        try:
+            tomllib.loads(candidate.decode("utf-8"))
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            raise ApprovedWriteError(
+                f"candidate validation failed: invalid TOML: {exc}"
+            ) from exc
+        checks.append("toml-parse")
+    return {
+        "status": "passed",
+        "checks": checks,
+        "candidate_sha256": "sha256:" + hashlib.sha256(candidate).hexdigest(),
+    }
+
+
+def write_approved(
+    receipt_path: Path, relative_path: str, content: bytes,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+) -> dict[str, object]:
     relative_path, staged, binding = _approved_staged_file(receipt_path, relative_path)
     if not binding.get("complete_file_write_allowed"):
         raise ApprovedWriteError(
@@ -95,7 +378,9 @@ def write_approved(receipt_path: Path, relative_path: str, content: bytes) -> di
         )
     descriptor = _open_private_file(staged)
     try:
-        _replace_descriptor_content(descriptor, content)
+        previous = _read_descriptor_content(descriptor, max_bytes)
+        validation = _validate_candidate(relative_path, previous, content)
+        _transactional_descriptor_write(descriptor, previous, content)
     finally:
         os.close(descriptor)
     return {
@@ -104,28 +389,21 @@ def write_approved(receipt_path: Path, relative_path: str, content: bytes) -> di
         "relative_path": relative_path,
         "bytes": len(content),
         "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
+        "previous_sha256": "sha256:" + hashlib.sha256(previous).hexdigest(),
+        "candidate_validation": validation,
     }
 
 
 def replace_unique_approved(
     receipt_path: Path, relative_path: str, old: bytes, new: bytes,
-    max_bytes: int = 16 * 1024 * 1024,
+    max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> dict[str, object]:
     if not old:
         raise ApprovedWriteError("unique replacement requires a non-empty old fragment")
-    relative_path, staged, _binding = _approved_staged_file(receipt_path, relative_path)
+    relative_path, staged, binding = _approved_staged_file(receipt_path, relative_path)
     descriptor = _open_private_file(staged)
     try:
-        size = os.fstat(descriptor).st_size
-        if size > max_bytes:
-            raise ApprovedWriteError("approved file exceeds --max-bytes")
-        current = bytearray()
-        while len(current) < size:
-            chunk = os.read(descriptor, min(1024 * 1024, size - len(current)))
-            if not chunk:
-                break
-            current.extend(chunk)
-        current_bytes = bytes(current)
+        current_bytes = _read_descriptor_content(descriptor, max_bytes)
         matches = current_bytes.count(old)
         if matches != 1:
             raise ApprovedWriteError(
@@ -134,7 +412,17 @@ def replace_unique_approved(
         content = current_bytes.replace(old, new, 1)
         if len(content) > max_bytes:
             raise ApprovedWriteError("replacement result exceeds --max-bytes")
-        _replace_descriptor_content(descriptor, content)
+        if (
+            len(current_bytes) >= LARGE_FRAGMENT_MIN_BYTES
+            and len(old) / len(current_bytes) > LARGE_FRAGMENT_MAX_FRACTION
+            and not binding.get("complete_file_write_allowed")
+        ):
+            raise ApprovedWriteError(
+                "replacement fragment covers more than 75% of an existing file; "
+                "split the edit or explicitly declare a full-file replacement"
+            )
+        validation = _validate_candidate(relative_path, current_bytes, content)
+        _transactional_descriptor_write(descriptor, current_bytes, content)
     finally:
         os.close(descriptor)
     return {
@@ -146,6 +434,8 @@ def replace_unique_approved(
         "sha256": "sha256:" + hashlib.sha256(content).hexdigest(),
         "old_sha256": "sha256:" + hashlib.sha256(old).hexdigest(),
         "new_sha256": "sha256:" + hashlib.sha256(new).hexdigest(),
+        "previous_sha256": "sha256:" + hashlib.sha256(current_bytes).hexdigest(),
+        "candidate_validation": validation,
     }
 
 
@@ -207,7 +497,7 @@ def main() -> int:
     source.add_argument("--probe", action="store_true")
     parser.add_argument("--replace-new-source", type=Path)
     parser.add_argument("--replace-new-base64")
-    parser.add_argument("--max-bytes", type=int, default=16 * 1024 * 1024)
+    parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     args = parser.parse_args()
     try:
         receipt_value = args.receipt or os.environ.get("AI_WORKFLOW_WRITE_SCOPE_RECEIPT")
@@ -270,7 +560,7 @@ def main() -> int:
         if not args.replace_old_source and args.replace_old_base64 is None and not args.probe:
             if len(content) > args.max_bytes:
                 raise ApprovedWriteError("replacement content exceeds --max-bytes")
-            result = write_approved(receipt, args.path, content)
+            result = write_approved(receipt, args.path, content, args.max_bytes)
     except (ApprovedWriteError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"approved write: {exc}", file=sys.stderr)
         return 2

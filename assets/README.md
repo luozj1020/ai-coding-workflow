@@ -768,11 +768,21 @@ Schema fields: `schema_version` (must be `1`), `group_id`, `max_concurrency`, `f
 
 Scheduling semantics: the scheduler validates one dependency-ready canary before expansion, then starts only dependency-ready tasks up to the concurrency cap and validates every unit. With `skip-dependents`, a failed prerequisite prevents all transitive dependents from dispatching while unrelated branches continue. All cards still require scope-gate and overlap checks. Review and merge remain serial.
 
-While Claude is running, `*.progress.log` records both artifact growth and implementation worktree changes. `ai/watch-claude.sh` and `ai/status-claude.sh` show partial worktree diffstat/status. In the first waiting rounds, if the worktree is still changing, review the partial diff against the task card and continue waiting when it matches the plan. Interrupt Claude only when the partial implementation is off-plan, risky, or no longer making useful progress.
+While Claude is running, the dispatcher is the sole sampling owner. Use one
+blocking `ai/monitor-claude.sh wait <task-id> --until terminal`; `watch` and
+`status` are exceptional manual diagnostics, not polling instructions. Window
+refresh/extension events expose the new deadline. The metadata-only
+`*.activity-observation.json` records session/control/product ages without
+reading session JSONL and never refreshes a product window.
 
 If Direction / Boundary Acknowledgement is required, Claude should write the acknowledgement before editing. When blocking approval is required, Codex gives one final decision before Claude proceeds. After `proceed`, Claude must continue the assigned task instead of repeatedly asking for the same confirmation.
 
 ### 3. Review Direction with Codex
+
+If only bounded Claude evidence is retained, the optional Review Decision
+`evidence_disposition` binds adopted/rejected/needs-revision units to exact
+paths, symbols, and evidence. It is review evidence, not a partial-success
+dispatcher state.
 
 ```bash
 bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md .worktrees/claude-<timestamp>.result.json .worktrees/claude-<timestamp>.diff
@@ -813,6 +823,12 @@ bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md
 ```
 
 `fast-large-repo` uses the managed reuse worktree, skips unrelated untracked scans, and writes summary diff evidence instead of full patch text. It never resets the source repository. If `.worktrees/reuse/claude-managed` already exists, preserve or review its evidence first, then explicitly add `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` to reset only that managed worktree.
+
+The dispatcher resolves one runtime root from Git's common dir. Starting it
+inside an accepted linked worktree creates a flat sibling under the main
+`.worktrees/`, never another nested `.worktrees/`. A reviewed task card may be
+passed by absolute path from the main worktree; it is copied into the execution
+worktree without dirtying the accepted source.
 
 ### Checker-Only Validation
 
@@ -1043,7 +1059,7 @@ While Claude Code is running, `dispatch-to-claude.sh` writes transient PID hints
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` controls heartbeat frequency; default is `30`.
 - `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` bounds orientation before execution evidence; it defaults to the active window, or `420` seconds for `fast-large-repo`.
 - `CLAUDE_CODE_TIMEOUT_SECONDS` is the active execution window, default `600` seconds; the first role-specific substantive signal refreshes it exactly once.
-- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` permits one later growth extension, default `300` seconds.
+- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` grants the first recent-product-growth extension, default `300` seconds. `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` renews it after further product changes; control/report activity cannot renew it and the hard timeout remains absolute.
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` is the absolute cap, default `1500` seconds.
 - `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` optionally stops Claude when result/status/report/progress artifacts do not change. Default is `0` disabled; set a positive value only when you want fast-fail behavior.
 - `CLAUDE_CODE_WORKTREE_PROGRESS` controls worktree progress verbosity. Default `quiet` shows compact timing and path; `verbose` shows detailed worktree state.
@@ -1067,7 +1083,7 @@ must use one `monitor-claude.sh wait ... --until terminal` call.
 
 For agent-driven runs, the dispatcher is the only sampling owner and appends material/final terminal boundaries to `*.monitor-events.log`. Use one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated `watch`, `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. There is no detached supervisor. On the terminal boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` to compress ambiguous `inspect` or `interrupt-candidate` evidence before Codex sees it. Spark receives only bounded JSON and returns a summary capped at 240 characters plus fixed decision fields; raw evidence stays file-backed. Neither helper authorizes interruption. If an installed project copy rejects `wait --until`, run `python ai/doctor_workflow.py`; monitor helper drift is now included in the version check and the doctor prints the workflow refresh command.
 
-`Execution Phase: implementation` is only edit readiness and must include `Context Acquisition Complete: yes` plus a non-empty `Planned First Write`. It does not refresh the full active window. A product diff or valid owned report is durable progress. After the first product change, an unchanged product digest defaults to an idle candidate at 180 seconds and stops only after two consecutive confirmations; active validation, declared tail work, and explicit blockers are exempt. Configure these bounds with `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS`, and `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS`.
+`Execution Phase: implementation` is only edit readiness and must include `Context Acquisition Complete: yes` plus a non-empty `Planned First Write`. It does not refresh the full active window. A product diff or valid owned report is durable progress. After the first product change, an unchanged product digest defaults to an idle candidate at 600 seconds and stops only after two consecutive confirmations; active validation, declared tail work, and explicit blockers are exempt. Configure these bounds with `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS`, and `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS`.
 
 Builder cards use conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation remain disabled until assigned precisely. After that bounded tail, Claude sets `Completion Ready: yes`, writes its final report/result, and exits normally. Planner/Checker calls with a valid owned report, no blocker, and their role-specific durable evidence receive a final flush window (`CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS`, default 20) before the dispatcher identity-stops a lingering child; this records dispatch convergence, not semantic acceptance. Direct children are frozen as a process tree before termination so a parent shell cannot resume for a last write; brokered calls terminate the model process group and record `cancelled`. The dispatcher writes `<task-id>.phase-metrics.json`; when `AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE` is exported by an experiment run, it also copies the same diagnostic metrics into that run directory automatically.
 

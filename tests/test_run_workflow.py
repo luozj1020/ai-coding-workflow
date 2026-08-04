@@ -126,6 +126,20 @@ def run_cli(*args, check=False):
 class TestRunWorkflowPreview(unittest.TestCase):
     """Test the programmatic preview path."""
 
+    def test_runtime_root_is_primary_checkout_for_linked_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            linked = Path(tmp) / "linked"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "worktree", "add", "--detach", str(linked)], cwd=repo, check=True, capture_output=True)
+            self.assertEqual(run_workflow._runtime_repo_root(linked), repo.resolve())
+
     def test_preview_stops_after_claude_first_route(self):
         """The default Claude-first route stops before model execution."""
         with tempfile.TemporaryDirectory() as tmp:

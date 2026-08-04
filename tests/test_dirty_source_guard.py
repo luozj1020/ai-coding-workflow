@@ -339,6 +339,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    printf 'Progress update during extension.\\n' > CLAUDE_PROGRESS.md\n"
                 "    sleep \"${FAKE_CLAUDE_POST_PROGRESS_SLEEP:-4}\"\n"
                 "    ;;\n"
+                "  continuous-product-growth)\n"
+                "    for i in 1 2 3 4 5 6 7 8; do\n"
+                "      printf '# product revision %s\\n' \"$i\" > NEW_FILE.md\n"
+                "      sleep \"${FAKE_CLAUDE_GROWTH_INTERVAL_SECONDS:-1}\"\n"
+                "    done\n"
+                "    ;;\n"
                 "  clock-only-progress)\n"
                 "    for i in 1 2 3 4 5; do\n"
                 "      printf '%s\\n' 'Current Phase: implementation' 'Substantive progress: yes' \"Last Update: ${i}\" > CLAUDE_PROGRESS.md\n"
@@ -620,7 +626,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertNotIn("approval-blocked early convergence", progress.lower())
 
-    def _dispatch(self, task_arg="task-cards/PROJ.md", extra_env=None, extra_args=None):
+    def _dispatch(
+        self, task_arg="task-cards/PROJ.md", extra_env=None, extra_args=None,
+        cwd=None, dispatcher="scripts/dispatch-to-claude.sh",
+    ):
         env = {
             "PATH": str(self.fake_bin) + os.pathsep + os.environ.get("PATH", ""),
             "HOME": str(self.case_root / "home"),
@@ -640,14 +649,43 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
-            [BASH, "scripts/dispatch-to-claude.sh", task_arg] + list(extra_args or []),
-            cwd=str(self.repo),
+            [BASH, str(dispatcher), str(task_arg)] + list(extra_args or []),
+            cwd=str(cwd or self.repo),
             env=env,
             text=True,
             encoding="utf-8",
             errors="replace",
             capture_output=True,
             timeout=60,
+        )
+
+    def test_dispatch_from_linked_worktree_creates_flat_sibling_runtime(self):
+        external_card = self._write_task_card().resolve()
+        source_worktree = self.repo / ".worktrees" / "accepted-source"
+        source_worktree.parent.mkdir(exist_ok=True)
+        self._run(
+            ["git", "worktree", "add", "-b", "accepted-source", str(source_worktree), "HEAD"],
+            cwd=self.repo,
+        )
+        result = self._dispatch(
+            external_card,
+            cwd=source_worktree,
+            dispatcher=self.repo / "scripts" / "dispatch-to-claude.sh",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        execution_worktree = self._artifact_path(result.stdout, "Worktree").resolve()
+        self.assertEqual(execution_worktree.parent, (self.repo / ".worktrees").resolve())
+        self.assertFalse((source_worktree / ".worktrees").exists())
+        runtime_path = self._artifact_path(result.stdout, "Runtime Identity")
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+        self.assertEqual(pathlib.Path(runtime["source_repository"]), source_worktree.resolve())
+        self.assertEqual(pathlib.Path(runtime["runtime_repository_root"]), self.repo.resolve())
+        self.assertEqual(pathlib.Path(runtime["worktree_root"]), (self.repo / ".worktrees").resolve())
+        self.assertEqual(runtime["worktree_layout"], "flat-common-root")
+        self.assertTrue(runtime["task_card_external_to_source"])
+        self.assertEqual(
+            (execution_worktree / "TASK_CARD_FULL.md").read_bytes(),
+            external_card.read_bytes(),
         )
 
     def _artifact_path(self, stdout, label):
@@ -1200,6 +1238,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         receipt = self.repo / ".worktrees" / f"{runtime['task_id']}.recovered-completion.json"
         value = json.loads(receipt.read_text(encoding="utf-8"))
         self.assertEqual(value["recovery_reason"], "missing-claude-report")
+        self.assertEqual(value["report_recovery_source"], "deterministic-diff-and-receipts")
+        self.assertEqual(value["evidence_usability"], "recoverable")
+        self.assertFalse(value["direct_acceptance_eligible"])
         self.assertTrue(value["tail_timeout_stopped"])
         self.assertIn("NEW_FILE.md", value["changed_files"])
 
@@ -1292,6 +1333,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertTrue(receipt["bash_cannot_bypass_scope"])
         self.assertEqual(runtime["tool_profile_evidence"], "cli-flag-support-only")
         self.assertFalse(runtime["runtime_tool_inventory_verified"])
+        activity_path = pathlib.Path(runtime["activity_observation_receipt"])
+        activity = json.loads(activity_path.read_text(encoding="utf-8"))
+        self.assertEqual(activity["authority"], "diagnostic-only")
+        self.assertEqual(
+            activity["session_activity_source"],
+            "session-store-mtime-without-content-read",
+        )
+        self.assertFalse(activity["model_tool_split_available"])
+        self.assertFalse(activity["refreshes_product_window"])
         self.assertTrue((self.case_root / "home" / ".claude" / "session-env").is_dir())
         prompt = pathlib.Path(runtime["worktree"]) / "CLAUDE_PROMPT.md"
         prompt_text = prompt.read_text(encoding="utf-8")
@@ -1321,7 +1371,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(bundle["status"], "ready")
         self.assertEqual(bundle["bundle_protocol"], "aiwf-task-runtime-v1")
-        self.assertEqual(bundle["exact_write_protocol"], "aiwf-exact-write-v2")
+        self.assertEqual(bundle["exact_write_protocol"], "aiwf-exact-write-v3")
         self.assertEqual(
             bundle["validation_runner_protocol"],
             "aiwf-validation-runner-v1",
@@ -1404,11 +1454,49 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         payload = json.loads(result_file.read_text(encoding="utf-8"))
         self.assertFalse(payload["builder_started"])
         self.assertFalse(payload["claude_first_satisfied"])
+        self.assertFalse(payload["worktree_created"])
         self.assertEqual(payload["missing_runtime_tools"], ["Glob", "Grep"])
+        self.assertFalse(
+            any(
+                path.is_dir() and path.name.startswith("claude-")
+                for path in (self.repo / ".worktrees").iterdir()
+            )
+        )
         outcome_file = next((self.repo / ".worktrees").glob("claude-*.outcome.json"))
         outcome = json.loads(outcome_file.read_text(encoding="utf-8"))
         self.assertFalse(outcome["dispatch_success"])
         self.assertEqual(outcome["completion_state"], "failed-to-dispatch")
+
+    def test_early_tool_inventory_accepts_exact_writer_fallback(self):
+        self._write_builder_task_card()
+        card = self.repo / "task-cards" / "BUILDER.md"
+        card.write_text(
+            card.read_text(encoding="utf-8")
+            + "\n## Scope\n\n- Write paths:\n  - `NEW_FILE.md`\n",
+            encoding="utf-8",
+        )
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_API_PROBE_MODE": "always",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
+                "CLAUDE_CODE_TOOL_PROFILE": "minimal-builder",
+                "CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "required",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_TOOL_INVENTORY": '["Read","Bash"]',
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            runtime["runtime_tool_inventory_status"],
+            "verified-exact-writer-fallback",
+        )
 
     def test_reuse_managed_worktree_requires_explicit_reset_when_existing(self):
         self._write_task_card()
@@ -2438,7 +2526,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             {
                 "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "2",
                 "CLAUDE_CODE_TIMEOUT_SECONDS": "5",
-                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "10",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "12",
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
                 "CLAUDE_CODE_EDIT_READY_GRACE_SECONDS": "2",
                 "FAKE_CLAUDE_MODE": "builder-editing-phase",
@@ -2937,8 +3025,13 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(runtime["base_timeout_seconds"], 30)
         self.assertEqual(runtime["context_acquisition_timeout_seconds"], 30)
         self.assertEqual(runtime["hard_timeout_seconds"], 1500)
+        self.assertEqual(runtime["product_idle_timeout_seconds"], 600)
         self.assertEqual(runtime["active_window_refresh_limit"], 1)
-        self.assertEqual(runtime["growth_extension_limit"], 1)
+        self.assertEqual(runtime["growth_extension_limit"], 0)
+        self.assertEqual(
+            runtime["growth_extension_policy"],
+            "renewable-product-growth-until-hard-timeout",
+        )
         self.assertEqual(runtime["progress_extension_seconds"], 60)
 
     def test_fallback_result_includes_extension_fields(self):
@@ -3793,10 +3886,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("first_progress_timeout", progress.lower())
         self.assertIn("First-progress timed out: yes", status)
 
-    # --- Single growth-extension tests ---
+    # --- Renewable product-growth extension tests ---
 
-    def test_growth_during_extension_never_starts_another_round(self):
-        """Growth may earn one extension, but cannot roll or start a second."""
+    def test_control_file_growth_does_not_renew_product_window(self):
+        """Progress-file growth alone cannot renew the product window."""
         self._write_builder_task_card()
         t0 = time.monotonic()
         result = self._dispatch(
@@ -3818,11 +3911,66 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         data = json.loads(self._artifact_path(result.stdout, "Result").read_text(encoding="utf-8"))
         self.assertEqual(progress.count("Single growth extension started:"), 1)
         self.assertNotIn("Second extension started:", progress)
-        self.assertIn("single growth extension expired", progress)
+        self.assertIn("growth extension expired without recent product change", progress)
         self.assertIn("Second extension used: no", status)
         self.assertFalse(data["second_extension_used"])
-        self.assertEqual(data["growth_extension_limit"], 1)
+        self.assertEqual(data["growth_extension_limit"], 0)
         self.assertLess(wall, 25, "Wall-clock exceeded hard bounded single-extension behavior")
+
+    def test_continuous_product_growth_renews_until_child_finishes(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "2",
+                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "2",
+                "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "2",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "12",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "10",
+                "FAKE_CLAUDE_MODE": "continuous-product-growth",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
+        events = self._artifact_path(result.stdout, "Progress Log").with_name(
+            self._artifact_path(result.stdout, "Progress Log").name.replace(
+                ".progress.log", ".monitor-events.log"
+            )
+        ).read_text(encoding="utf-8")
+        self.assertIn("Single growth extension started:", progress)
+        self.assertIn("Product-growth extension renewed:", progress)
+        self.assertIn("event=active-window-extended", events)
+        self.assertIn("extension_event=renewed", events)
+        self.assertIn("extension_ordinal=2", events)
+        self.assertIn("last_product_change_epoch=", events)
+        self.assertIn("active_window_remaining_seconds=", events)
+        self.assertNotIn("growth extension expired", progress)
+        self.assertIn("Dispatch outcome: success", status)
+
+    def test_hard_timeout_still_caps_renewed_product_growth(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "2",
+                "CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS": "2",
+                "CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS": "3",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "10",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "10",
+                "FAKE_CLAUDE_MODE": "continuous-product-growth",
+                "FAKE_CLAUDE_GROWTH_INTERVAL_SECONDS": "2",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Single growth extension started:", progress)
+        self.assertIn("Product-growth extension renewed:", progress)
+        self.assertIn("hard runtime timeout", progress)
 
     # --- Recent activity window validation and stale-progress tests ---
 

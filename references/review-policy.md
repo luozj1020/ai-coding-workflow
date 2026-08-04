@@ -283,6 +283,13 @@ evidence-bound findings.
 
 When Codex/GPT reviews an evidence packet, it must produce a structured decision with the following fields:
 
+When Claude evidence is useful but not accepted as a complete round, the
+optional `evidence_disposition` records review-layer units by exact path,
+optional symbol, evidence reference, and `adopted`, `rejected`, or
+`needs-revision` disposition. `partially-adopted` requires evidence on both
+sides. This never becomes a dispatcher terminal state and never upgrades a
+missing report, failed validation, or unreviewed diff into success.
+
 ### Decision
 
 One of: **accept**, **revise**, **split**, **reject**.

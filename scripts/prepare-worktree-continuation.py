@@ -271,10 +271,25 @@ def repository_root() -> Path:
     return Path(git(Path.cwd(), "rev-parse", "--show-toplevel").strip()).resolve()
 
 
+def runtime_repository_root(source: Path) -> Path:
+    common = Path(git(source, "rev-parse", "--git-common-dir").strip())
+    if not common.is_absolute():
+        common = source / common
+    common = common.resolve()
+    if common.name == ".git":
+        return common.parent
+    primary = git(source, "worktree", "list", "--porcelain")
+    for line in primary.splitlines():
+        if line.startswith("worktree "):
+            return Path(line[len("worktree "):]).resolve()
+    raise ContinuationError("cannot resolve Git common runtime repository root")
+
+
 def validate_runtime(root: Path, task_id: str) -> tuple[Dict[str, Any], Path, Path]:
     if not re.fullmatch(r"[A-Za-z0-9._-]+", task_id):
         raise ContinuationError("unsafe prior task id")
-    runtime_path = root / ".worktrees" / f"{task_id}.runtime.json"
+    runtime_root = runtime_repository_root(root)
+    runtime_path = runtime_root / ".worktrees" / f"{task_id}.runtime.json"
     runtime = load_json(runtime_path)
     if runtime.get("task_id") != task_id:
         raise ContinuationError("prior runtime task id mismatch")
@@ -287,9 +302,9 @@ def validate_runtime(root: Path, task_id: str) -> tuple[Dict[str, Any], Path, Pa
         raise ContinuationError("parallel/DAG worktrees cannot be continued")
     source = Path(str(runtime.get("source_repository", ""))).resolve()
     worktree = Path(str(runtime.get("worktree", ""))).resolve()
-    if source != root or not is_within(worktree, root / ".worktrees"):
+    if source != root or not is_within(worktree, runtime_root / ".worktrees"):
         raise ContinuationError("runtime repository/worktree boundary mismatch")
-    for takeover_marker in (root / ".worktrees").glob("*.codex-write-owner.json"):
+    for takeover_marker in (runtime_root / ".worktrees").glob("*.codex-write-owner.json"):
         marker = load_json(takeover_marker)
         marker_worktree = Path(str(marker.get("worktree", ""))).resolve()
         if marker_worktree == worktree:

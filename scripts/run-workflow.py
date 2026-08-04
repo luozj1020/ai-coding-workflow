@@ -513,6 +513,29 @@ def _find_repo_root(task_path: Path) -> Path:
     return task_path.resolve().parent
 
 
+def _runtime_repo_root(source_root: Path) -> Path:
+    """Return the primary checkout that owns the shared Git worktree registry."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(source_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode == 0:
+            common_dir = Path(result.stdout.strip())
+            if not common_dir.is_absolute():
+                common_dir = source_root / common_dir
+            common_dir = common_dir.resolve()
+            if common_dir.name == ".git":
+                return common_dir.parent
+    except (FileNotFoundError, OSError):
+        pass
+    return source_root.resolve()
+
+
 # ---------------------------------------------------------------------------
 # Phase implementations
 # ---------------------------------------------------------------------------
@@ -1369,7 +1392,8 @@ def run_lifecycle(
         return {"status": "failed", "error": f"Task file not found: {task_path}"}
 
     repo_root = repo or _find_repo_root(task_path)
-    base = run_dir_base or repo_root / ".worktrees"
+    runtime_root = _runtime_repo_root(repo_root)
+    base = run_dir_base or runtime_root / ".worktrees"
 
     # Safely derive a non-empty task id from Task JSON before emitting run_start.
     # Valid tasks use their id; missing/malformed tasks use a stable provisional id

@@ -22,6 +22,7 @@ KEEP_SUFFIXES = (
     ".validation-capability.json",
     ".checker-contract.json",
     ".recovered-completion.json",
+    ".activity-observation.json",
     ".codex-write-owner.json",
     ".final-index.json",
 )
@@ -29,6 +30,21 @@ KEEP_SUFFIXES = (
 
 class ArchiveError(RuntimeError):
     pass
+
+
+def runtime_repo_root(source: Path) -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=str(source), capture_output=True, text=True, check=False,
+    )
+    if result.returncode == 0:
+        common = Path(result.stdout.strip())
+        if not common.is_absolute():
+            common = source / common
+        common = common.resolve()
+        if common.name == ".git":
+            return common.parent
+    return source.resolve()
 
 
 def _hash(path: Path) -> str:
@@ -51,7 +67,7 @@ def atomic_json(path: Path, value: Dict[str, Any]) -> None:
 def plan(repo: Path, task_id: str) -> Dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9._-]+", task_id):
         raise ArchiveError("unsafe task id")
-    root = repo.resolve() / ".worktrees"
+    root = runtime_repo_root(repo) / ".worktrees"
     runtime_path = root / f"{task_id}.runtime.json"
     if not runtime_path.is_file():
         raise ArchiveError("runtime receipt is missing")

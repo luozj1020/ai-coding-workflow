@@ -15,6 +15,18 @@ source HEAD to match `source_base_commit`, require worktree HEAD to match
 second snapshot. Source working-copy dirty state after the initial snapshot is not
 silently imported into the continuation.
 
+The current source worktree and the workflow runtime root are also separate
+identities. The dispatcher resolves the runtime root from Git's common dir and
+stores every fresh execution worktree and adjacent receipt as a direct child of
+that one top-level `.worktrees/`. Dispatching while the shell is inside an
+accepted linked worktree must therefore create a sibling, never
+`source/.worktrees/child`. Fresh creation fails closed unless its target is the
+expected direct child. A task card may be read from outside the current source
+worktree (for example, the main worktree's reviewed `ai/plans/` copy); the
+dispatcher hashes and copies it into the execution worktree without adding it
+to the accepted source baseline. Runtime identity records both
+`source_repository` and `runtime_repository_root`.
+
 Default to complete evidence. For large repositories, explicitly select `fast-large-repo`, `reuse-managed`, `CLAUDE_CODE_LARGE_REPO_MODE=1`, or summary evidence only after recording the tradeoff. `reuse-managed` may reuse only `.worktrees/reuse/claude-managed`; reset it only with `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` after preserving or reviewing evidence. Never reset the source repository.
 
 CodeGraph indexes and results from the source worktree do not automatically transfer to a fresh execution worktree. After worktree creation the dispatcher writes a CodeGraph identity receipt. A mismatch or pending index defaults to deterministic local fallback and graph output is excluded from execution evidence. Set `CLAUDE_CODE_CODEGRAPH_POLICY=repair` only when explicitly accepting the index/sync cost; continuation may reuse a `ready` index in the same worktree.

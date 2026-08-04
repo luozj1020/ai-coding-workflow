@@ -21,7 +21,20 @@ def repo_root(start: Path) -> Path:
             capture_output=True,
             check=True,
         )
-        return Path(result.stdout.strip())
+        source = Path(result.stdout.strip())
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(source), text=True, encoding="utf-8", errors="replace",
+            capture_output=True, check=False,
+        )
+        common_path = Path(common.stdout.strip()) if common.returncode == 0 else None
+        if common_path is not None and not common_path.is_absolute():
+            common_path = source / common_path
+        if common_path is not None:
+            common_path = common_path.resolve()
+        if common_path is not None and common_path.name == ".git":
+            return common_path.parent
+        return source
     except (subprocess.CalledProcessError, FileNotFoundError):
         return start.resolve()
 
@@ -168,4 +181,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

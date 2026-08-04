@@ -125,6 +125,12 @@ Dirty source/stale HEAD is a delegation blocker, not a forced Codex edit. Restor
 a reliable base or obtain explicit authority. After Codex accepts the main
 direction, prefer one reviewed same-worktree Claude continuation. A fresh route
 may select a reviewer-owned correction only for a deterministic local delta.
+Resolve the workflow runtime root from Git's common dir. Every fresh execution
+worktree must be a direct child of that one top-level `.worktrees/`; dispatching
+from a linked worktree must create a sibling and never a recursive
+`source/.worktrees/child`. A reviewed task card may remain outside the selected
+source worktree and be passed by absolute path; do not copy it into the accepted
+product baseline merely to make dispatch find it.
 
 Missing prose is an evidence gap. Recover from matching diff and deterministic
 checks when possible. Seeded/fallback reports never count as Claude completion.

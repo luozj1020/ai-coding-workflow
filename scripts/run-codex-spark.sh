@@ -548,6 +548,17 @@ if [ "$INPUT_KIND" = "task-card" ]; then
 else
     REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 fi
+_COMMON_GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
+case "$_COMMON_GIT_DIR" in
+    /*) ;;
+    *) _COMMON_GIT_DIR="${REPO_ROOT}/${_COMMON_GIT_DIR}" ;;
+esac
+_COMMON_GIT_DIR="$(cd "$_COMMON_GIT_DIR" 2>/dev/null && pwd -P || true)"
+if [ -n "$_COMMON_GIT_DIR" ] && [ "$(basename "$_COMMON_GIT_DIR")" = ".git" ]; then
+    RUNTIME_REPO_ROOT="$(dirname "$_COMMON_GIT_DIR")"
+else
+    RUNTIME_REPO_ROOT="$REPO_ROOT"
+fi
 
 is_source_writing_mode() {
     case "$MODE" in
@@ -841,7 +852,7 @@ if [ "$RESULT_MODE" = "direct" ]; then
 elif [ "$RESULT_MODE" = "minimal" ]; then
     # Minimal mode: OUTPUT_DIR holds only the report; working files are transient
     if [ -z "$OUTPUT_DIR" ]; then
-        OUTPUT_DIR="${REPO_ROOT}/.worktrees/codex-spark-${TIMESTAMP}"
+        OUTPUT_DIR="${RUNTIME_REPO_ROOT}/.worktrees/codex-spark-${TIMESTAMP}"
     fi
     mkdir -p "$OUTPUT_DIR"
     OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
@@ -866,7 +877,7 @@ elif [ "$RESULT_MODE" = "minimal" ]; then
 else
     # Full mode: everything in OUTPUT_DIR
     if [ -z "$OUTPUT_DIR" ]; then
-        OUTPUT_DIR="${REPO_ROOT}/.worktrees/codex-spark-${TIMESTAMP}"
+        OUTPUT_DIR="${RUNTIME_REPO_ROOT}/.worktrees/codex-spark-${TIMESTAMP}"
     fi
     mkdir -p "$OUTPUT_DIR"
     OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
@@ -929,15 +940,15 @@ fi
 # the working directory is writable. Give advisory calls a transient writable
 # home while linking only the existing read-only identity/config inputs.
 if is_advisory_mode; then
-    if [ ! -d "${REPO_ROOT}/.worktrees" ]; then
-        mkdir -p "${REPO_ROOT}/.worktrees"
+    if [ ! -d "${RUNTIME_REPO_ROOT}/.worktrees" ]; then
+        mkdir -p "${RUNTIME_REPO_ROOT}/.worktrees"
         CODEX_RUNTIME_PARENT_CREATED="yes"
     fi
-    CODEX_RUNTIME_HOME="$(mktemp -d "${REPO_ROOT}/.worktrees/.codex-spark-runtime.XXXXXX")"
+    CODEX_RUNTIME_HOME="$(mktemp -d "${RUNTIME_REPO_ROOT}/.worktrees/.codex-spark-runtime.XXXXXX")"
     cleanup_codex_runtime_home() {
         [ -z "$CODEX_RUNTIME_HOME" ] || rm -rf "$CODEX_RUNTIME_HOME"
         if [ "$CODEX_RUNTIME_PARENT_CREATED" = "yes" ]; then
-            rmdir "${REPO_ROOT}/.worktrees" 2>/dev/null || true
+            rmdir "${RUNTIME_REPO_ROOT}/.worktrees" 2>/dev/null || true
         fi
     }
     trap 'spark_exit_handler $?' EXIT
@@ -1577,7 +1588,7 @@ write_compact_diagnostic() {
         fi
     fi
 
-    DIAGNOSTIC_DIR="$(mktemp -d "${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}-XXXXXX")"
+    DIAGNOSTIC_DIR="$(mktemp -d "${RUNTIME_REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}-XXXXXX")"
 
     {
         echo "# Codex Spark Compact Diagnostic"
@@ -1622,7 +1633,7 @@ write_compact_diagnostic() {
 write_full_diagnostic() {
     local codex_exit="$1"
     # Create a permanent diagnostic directory for full mode
-    DIAGNOSTIC_DIR="$(mktemp -d "${REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}-XXXXXX")"
+    DIAGNOSTIC_DIR="$(mktemp -d "${RUNTIME_REPO_ROOT}/.worktrees/spark-diagnostic-${TIMESTAMP}-XXXXXX")"
 
     # Copy all evidence files from the (possibly transient) temp dir into
     # the permanent diagnostic directory so all report paths are real.

@@ -45,6 +45,19 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         self.assertTrue(
             all(Path(item["source"]).resolve().is_relative_to(staging_root) for item in value["bindings"])
         )
+        python_binding = next(
+            item for item in value["bindings"] if item["relative_path"] == "src/a.py"
+        )
+        self.assertTrue(python_binding["candidate_validation_required"])
+        self.assertTrue(str(python_binding["staged_initial_sha256"]).startswith("sha256:"))
+        self.assertEqual(
+            value["candidate_checkpoint_policy"],
+            "validate-before-same-inode-write-and-rollback-on-io-failure",
+        )
+        self.assertEqual(
+            value["large_fragment_policy"]["maximum_fraction_without_full_replacement_authority"],
+            0.75,
+        )
 
     def test_glob_and_parent_escape_fail_closed(self) -> None:
         for path in (

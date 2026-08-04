@@ -85,7 +85,22 @@ def repo_root(start: Path) -> Path:
     result = git(start, "rev-parse", "--show-toplevel")
     if result.returncode:
         raise ValueError("not inside a Git repository")
-    return Path(result.stdout.strip()).resolve()
+    source = Path(result.stdout.strip()).resolve()
+    common_result = git(source, "rev-parse", "--git-common-dir")
+    if common_result.returncode:
+        return source
+    common = Path(common_result.stdout.strip())
+    if not common.is_absolute():
+        common = source / common
+    common = common.resolve()
+    if common.name == ".git":
+        return common.parent
+    worktrees = git(source, "worktree", "list", "--porcelain")
+    if not worktrees.returncode:
+        for line in worktrees.stdout.splitlines():
+            if line.startswith("worktree "):
+                return Path(line[len("worktree "):]).resolve()
+    return source
 
 
 def latest_task(worktrees: Path) -> Optional[str]:

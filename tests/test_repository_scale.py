@@ -53,6 +53,27 @@ class RepositoryScaleTests(unittest.TestCase):
             self.assertEqual(result["routing_scale"], "large")
             self.assertFalse(result["io_promoted"])
 
+    def test_linked_worktree_reads_primary_runtime_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            linked = pathlib.Path(tmp) / "linked"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            (repo / "main.py").write_text("pass\n", encoding="utf-8")
+            subprocess.run(["git", "add", "main.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "worktree", "add", "--detach", str(linked)], cwd=repo, check=True, capture_output=True)
+            worktrees = repo / ".worktrees"
+            worktrees.mkdir()
+            (worktrees / "one.runtime.json").write_text(
+                json.dumps({"worktree_setup_seconds": 150}), encoding="utf-8"
+            )
+            result = mod.collect(linked)
+            self.assertEqual(result["worktree_history_samples"], 1)
+            self.assertEqual(result["worktree_cost"], "high")
+
 
 if __name__ == "__main__":
     unittest.main()

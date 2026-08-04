@@ -73,6 +73,27 @@ class CleanRuntimeTests(unittest.TestCase):
 
     # --- Dry-run behavior ---
 
+    def test_linked_worktree_uses_common_runtime_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            repo = root / "repo"
+            linked = root / "linked"
+            repo.mkdir()
+            _init_repo(repo)
+            subprocess.run(
+                ["git", "worktree", "add", "-b", "linked-clean-preview", str(linked), "HEAD"],
+                cwd=str(repo), capture_output=True, check=True,
+            )
+            artifact = repo / ".worktrees" / "claude-linked.result.json"
+            artifact.parent.mkdir(exist_ok=True)
+            artifact.write_text("{}", encoding="utf-8")
+
+            result = self.run_clean(linked)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(".worktrees/claude-linked.result.json", result.stdout)
+            self.assertTrue(artifact.exists())
+
     def test_dry_run_reports_candidates(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"

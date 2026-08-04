@@ -99,6 +99,47 @@
       },
       "description": "Validation status."
     },
+    "evidence_disposition": {
+      "type": "object",
+      "required": ["status", "units"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["none", "recoverable", "partially-adopted", "fully-adopted"],
+          "description": "Codex review disposition for model-produced evidence; this is not a dispatch terminal state."
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "disposition", "evidence"],
+            "additionalProperties": false,
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "symbols": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1}
+              },
+              "disposition": {
+                "type": "string",
+                "enum": ["adopted", "rejected", "needs-revision"]
+              },
+              "evidence": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1}
+              },
+              "baseline_sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      },
+      "description": "Optional file/symbol-level record of recovered or partially adopted Claude evidence."
+    },
     "next_task": {
       "oneOf": [
         { "type": "null" },

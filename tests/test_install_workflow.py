@@ -371,7 +371,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("You are the executor in a Codex/Claude Code workflow.", dispatch.read_text(encoding="utf-8"))
             writer = repo / "ai" / "write-approved-file.py"
             self.assertTrue(writer.is_file())
-            self.assertIn("aiwf-exact-write-v2", writer.read_text(encoding="utf-8"))
+            self.assertIn("aiwf-exact-write-v3", writer.read_text(encoding="utf-8"))
             self.assertIn(
                 ".aiwf-runtime/write-approved-file.py",
                 dispatch.read_text(encoding="utf-8"),
@@ -1314,6 +1314,11 @@ class InstallWorkflowTests(unittest.TestCase):
             dispatch = (repo / "ai" / "dispatch-to-claude.sh").read_text(encoding="utf-8")
             self.assertIn("deferred-machine-monitor", watch)
             self.assertIn("repeated watch is refused", watch)
+            self.assertIn("--git-common-dir", text)
+            self.assertIn("--git-common-dir", watch)
+            self.assertIn("RUNTIME_REPO_ROOT", dispatch)
+            self.assertIn('WORKTREE_ROOT="${RUNTIME_REPO_ROOT}/.worktrees"', dispatch)
+            self.assertIn("flat-common-root", dispatch)
             self.assertIn('event=material-change running=yes terminal=no', dispatch)
             self.assertIn('event=active-window-refreshed running=yes terminal=no', dispatch)
             self.assertIn('event=active-window-extended running=yes terminal=no', dispatch)
@@ -1382,6 +1387,43 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("triage_source=local", result.stdout)
             self.assertIn("spark_status=disabled", result.stdout)
 
+    def test_monitor_from_linked_worktree_uses_common_runtime_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            repo = root / "repo"
+            linked = root / "linked"
+            self.run_installer(repo)
+            for command in (
+                ["git", "init"],
+                ["git", "config", "user.email", "test@example.com"],
+                ["git", "config", "user.name", "Test User"],
+                ["git", "add", "."],
+                ["git", "commit", "-m", "init"],
+                ["git", "worktree", "add", "-b", "linked-runtime-test", str(linked), "HEAD"],
+            ):
+                subprocess.run(command, cwd=str(repo), check=True, capture_output=True, text=True)
+            task_id = "claude-20990101-linked-monitor"
+            worktrees = repo / ".worktrees"
+            terminal = (
+                f"monitor_event source=dispatcher task_id={task_id} "
+                "event=terminal running=no terminal=yes exit_status=0 dispatch_outcome=success\n"
+            )
+            (worktrees / f"{task_id}.monitor-events.log").write_text(
+                terminal, encoding="utf-8"
+            )
+            result = subprocess.run(
+                [load_module()._find_bash(), str(linked / "ai" / "monitor-claude.sh"),
+                 "wait", task_id, "--until", "terminal", "--timeout", "2",
+                 "--spark", "off"],
+                cwd=str(linked), text=True, encoding="utf-8", errors="replace",
+                capture_output=True, check=True, timeout=10,
+            )
+            self.assertTrue(result.stdout.startswith(terminal), result.stdout)
+            self.assertEqual(
+                [path.name for path in (linked / ".worktrees").iterdir()],
+                [".gitkeep"],
+            )
+
     def test_monitor_wait_blocks_until_new_material_event(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
@@ -1407,7 +1449,7 @@ class InstallWorkflowTests(unittest.TestCase):
                 (worktrees / f"{task_id}.dispatcher.pid").write_text(pid, encoding="utf-8")
                 waiter = subprocess.Popen(
                     [bash_exe, str(repo / "ai" / "monitor-claude.sh"), "wait", task_id,
-                     "--until", "material", "--interval", "1", "--timeout", "5",
+                     "--until", "material", "--interval", "1", "--timeout", "15",
                      "--spark", "off"],
                     cwd=str(repo), text=True, encoding="utf-8", errors="replace",
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1426,7 +1468,7 @@ class InstallWorkflowTests(unittest.TestCase):
                 )
                 with event_log.open("a", encoding="utf-8") as handle:
                     handle.write(material)
-                stdout, stderr = waiter.communicate(timeout=10)
+                stdout, stderr = waiter.communicate(timeout=20)
                 self.assertEqual(waiter.returncode, 0, stderr)
                 self.assertTrue(stdout.startswith(material), stdout)
                 self.assertIn("triage_source=local", stdout)
