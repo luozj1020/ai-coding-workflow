@@ -1931,11 +1931,15 @@ import json, os, sys
 result, outcome, task_id, category, needs_host, requested_env, authority, health, classification, task_card, dirty_mode, reviewed = sys.argv[1:]
 needs_host_execution = needs_host == "1"
 host_retry_args = None
+host_retry_environment = None
 if needs_host_execution:
+    host_retry_environment = {"CLAUDE_CODE_HOST_AUTHORITY": "1"}
     host_retry_args = [task_card, "--execution-env", "host"]
     if dirty_mode == "snapshot":
+        host_retry_environment["CLAUDE_CODE_DIRTY_SOURCE_MODE"] = "snapshot"
         host_retry_args += ["--dirty-source-mode", "snapshot"]
     if reviewed:
+        host_retry_environment["CLAUDE_CODE_REVIEWED_CONTINUATION"] = reviewed
         host_retry_args += ["--reviewed-continuation", reviewed]
     else:
         host_retry_args += ["--preflight-task-id", task_id]
@@ -1946,6 +1950,12 @@ common = {
     "workflow_execution_status": "failed-to-dispatch",
     "completion_state": "failed-to-dispatch", "needs_host_execution": needs_host_execution,
     "host_handoff_required": needs_host_execution,
+    "host_handoff_action": (
+        "rerun-identical-dispatch-on-authorized-host-once"
+        if needs_host_execution else None
+    ),
+    "host_retry_environment": host_retry_environment,
+    "host_retry_environment_legacy": needs_host_execution,
     "host_retry_args": host_retry_args,
     "host_retry_args_authoritative": needs_host_execution,
     "host_retry_command_form": "stable-cli" if needs_host_execution else None,
