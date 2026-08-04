@@ -138,6 +138,7 @@ SPARK_PIPELINE_STAGE=""
 SPARK_ROLES_EXECUTED=""
 SPARK_CALLS_USED=0
 DIRECT_ENVELOPE_STARTED="no"
+DIRECT_ENVELOPE_HEADER_EMITTED="no"
 DIRECT_ENVELOPE_TERMINAL_EMITTED="no"
 SPARK_PROVISIONAL_ACCEPTANCE="not applicable"
 ARTIFACTS=()
@@ -162,6 +163,7 @@ spark_exit_handler() {
     if [ "${RESULT_MODE:-}" = "direct" ] && \
        [ "${DIRECT_ENVELOPE_STARTED:-no}" = "yes" ] && \
        [ "${DIRECT_ENVELOPE_TERMINAL_EMITTED:-no}" != "yes" ]; then
+        emit_direct_envelope_start
         echo "spark_status=failed"
         echo "spark_auto_disabled=no"
         echo "spark_disable_reason=wrapper exited before terminal envelope"
@@ -1373,12 +1375,22 @@ DIAGNOSTIC_FAILURE_CLASS="none"
 
 emit_direct_envelope_start() {
     [ "$RESULT_MODE" = "direct" ] || return 0
-    [ "$DIRECT_ENVELOPE_STARTED" = "no" ] || return 0
+    DIRECT_ENVELOPE_STARTED="yes"
+    [ "$DIRECT_ENVELOPE_HEADER_EMITTED" = "no" ] || return 0
     echo "spark_protocol=aiwf-spark-stdout-v1"
     echo "spark_status=started"
     echo "spark_mode=${MODE}"
     echo "spark_routing_event=${ROUTING_EVENT}"
     echo "spark_routing_event_requested=${ROUTING_EVENT_REQUESTED}"
+    DIRECT_ENVELOPE_HEADER_EMITTED="yes"
+}
+
+mark_direct_envelope_started() {
+    [ "$RESULT_MODE" = "direct" ] || return 0
+    # Do not emit a partial stdout envelope before the blocking model call.
+    # Some terminal orchestrators yield on the first output chunk and can lose
+    # the later review body. The complete v1 envelope is flushed only after a
+    # result or terminal failure is available.
     DIRECT_ENVELOPE_STARTED="yes"
 }
 
@@ -2014,9 +2026,9 @@ fi
 
 append_artifact_excerpts
 
-# Direct callers receive a protocol header before the potentially blocking
-# model call. Even an external caller timeout therefore has a usable state.
-emit_direct_envelope_start
+# Mark the logical start without exposing a started-only stdout chunk. Direct
+# stdout is emitted as one complete envelope after the blocking model call.
+mark_direct_envelope_started
 
 SPARK_CALL_STARTED_EPOCH="$(date +%s)"
 set +e
@@ -2636,7 +2648,9 @@ fi
 # Emit result based on result mode
 case "$RESULT_MODE" in
     direct)
-        # Direct mode: emit raw result to stdout, diagnostics to stderr
+        # Direct mode: emit the header, raw result, and terminal status without
+        # a blocking gap that an outer terminal could mistake for completion.
+        emit_direct_envelope_start
         if [ -s "$RESULT_FILE" ]; then
             emit_bounded_direct_result
             if { [ "$MODE" = "execution-cost-estimator" ] || [ "$MODE" = "task-size-classifier" ] || [ "$MODE" = "preflight-bundle" ]; } && _estimator_schema_valid; then

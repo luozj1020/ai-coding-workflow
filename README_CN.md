@@ -894,7 +894,7 @@ Claude 用量记录还会保存仅含哈希的缓存归因：provider route、�
 
 **Spark 诊断（`--diagnostics`）：** 当 direct 模式调用产生不可用结果（空响应、可用性/执行失败、或 schema-invalid 估算器输出）时，`--diagnostics failure`（默认）在唯一的 `.worktrees/spark-diagnostic-<timestamp>-<suffix>/` 下写入紧凑脱敏记录，避免同秒失败互相覆盖。stderr 摘要中的密钥会被剥离。`--diagnostics off` 禁用所有持久化。`--diagnostics full` 将全部证据复制到永久目录以供复现。成功调用保持零持久化。
 
-direct stdout 使用 `aiwf-spark-stdout-v1` envelope：阻塞调用前输出 `spark_status=started`，完成后输出唯一终态。使用 `python ai/parse-spark-output.py FILE --require-terminal` 解析。broker 默认用 `CODEX_SPARK_CALL_TIMEOUT_SECONDS=75` 管理模型进程组，并在 wrapper 结束前写入 terminal ledger。
+direct stdout 使用 `aiwf-spark-stdout-v1` envelope。为避免终端编排器把首个输出 chunk 误判为完成，wrapper 会在阻塞模型调用期间缓冲 stdout，模型返回后再无阻塞地连续输出 `spark_status=started`、有界审查正文和唯一终态。使用 `python ai/parse-spark-output.py FILE --require-terminal` 解析完整 envelope。若 wrapper 在逻辑启动后未经过正常终态路径就退出，EXIT finalizer 会输出带 `spark_failure_class=wrapper-exit-before-terminal` 的完整 `failed` envelope。broker 默认用 `CODEX_SPARK_CALL_TIMEOUT_SECONDS=75` 管理模型进程组，并在 wrapper 结束前写入 terminal ledger。
 
 **Controlled-builder 权限模式** 为 Spark 提供窄范围、可审计的源码写入权限：
 

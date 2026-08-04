@@ -4,6 +4,7 @@ import pathlib
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -1396,7 +1397,7 @@ class RunCodexSparkTests(unittest.TestCase):
     # --- Direct result mode tests ---
 
     def test_direct_advisory_stdout_has_complete_envelope_and_result(self):
-        """Direct mode emits an immediate header, bounded result, and terminal status."""
+        """Direct mode emits a complete header, bounded result, and terminal status."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = pathlib.Path(tmp)
             repo, task_card = self._make_repo_with_task_card(tmp_path, "# Task\nSmall task.\n")
@@ -1425,6 +1426,62 @@ class RunCodexSparkTests(unittest.TestCase):
             self.assertIn("direct result line", result.stdout)
             self.assertIn("spark_status=success", result.stdout)
             self.assertIn("spark_protocol_end=aiwf-spark-stdout-v1", result.stdout)
+
+    def test_direct_stdout_waits_for_complete_model_result(self):
+        """A blocking model call cannot expose a misleading started-only chunk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            repo, task_card = self._make_repo_with_task_card(
+                tmp_path, "# Task\nSmall task.\n"
+            )
+            fake_codex = tmp_path / "codex"
+            marker = tmp_path / "model-blocking"
+            fake_codex.write_text(
+                "#!/usr/bin/env bash\n"
+                "cat > /dev/null\n"
+                ": > \"$CODEX_FAKE_STARTED\"\n"
+                "sleep 1\n"
+                "echo 'delayed review body'\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(fake_codex.stat().st_mode | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["CODEX_SPARK_CODEX_BIN"] = bash_path(fake_codex)
+            env["CODEX_FAKE_STARTED"] = bash_path(marker)
+            env["AI_CODING_WORKFLOW_BYPASS_BROKER"] = "1"
+            stdout_path = tmp_path / "stdout.txt"
+            with stdout_path.open("w", encoding="utf-8") as stdout_file:
+                process = subprocess.Popen(
+                    [
+                        bash_exe(), bash_path(SCRIPT), bash_path(task_card),
+                        "--mode", "task-card-drafter",
+                        "--result-mode", "direct",
+                    ],
+                    cwd=str(repo), env=env,
+                    text=True, encoding="utf-8", errors="replace",
+                    stdout=stdout_file, stderr=subprocess.PIPE,
+                )
+                try:
+                    deadline = time.monotonic() + 5
+                    while not marker.exists() and process.poll() is None:
+                        if time.monotonic() >= deadline:
+                            self.fail("fake model did not enter its blocking interval")
+                        time.sleep(0.02)
+                    self.assertIsNone(process.poll(), "model exited before blocking assertion")
+                    self.assertEqual(stdout_path.read_text(encoding="utf-8"), "")
+                    _, stderr = process.communicate(timeout=10)
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(timeout=5)
+
+            output = stdout_path.read_text(encoding="utf-8")
+            self.assertEqual(process.returncode, 0, stderr + output)
+            self.assertIn("spark_status=started", output)
+            self.assertIn("delayed review body", output)
+            self.assertIn("spark_status=success", output)
+            self.assertIn("spark_protocol_end=aiwf-spark-stdout-v1", output)
 
     def test_direct_result_without_final_newline_keeps_envelope_fields_separate(self):
         with tempfile.TemporaryDirectory() as tmp:

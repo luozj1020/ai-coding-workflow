@@ -187,9 +187,11 @@ avoid persisting successful advisory prose.
   estimator-family results are reduced to recognized machine fields; other
   modes retain a bounded head/tail. The wrapper appends
   `spark_output_truncated` and byte-count fields.
-  Direct stdout is an `aiwf-spark-stdout-v1` envelope: it emits
-  `spark_status=started` before the model call and ends with one terminal status
-  (`success`, `failed`, or `unavailable`) plus `spark_protocol_end`. Parse it
+  Direct stdout is an `aiwf-spark-stdout-v1` envelope. The wrapper marks the
+  logical start internally, buffers stdout across the blocking model call, then
+  emits `spark_status=started`, the bounded advisory body, and one terminal
+  status (`success`, `failed`, or `unavailable`) plus `spark_protocol_end`
+  without a blocking output gap. Parse it
   with `aiwf spark-output [FILE] --require-terminal`. An EXIT finalizer turns
   any wrapper exit after `started` into a terminal `failed` envelope with
   `spark_failure_class=wrapper-exit-before-terminal`; a started-only envelope
