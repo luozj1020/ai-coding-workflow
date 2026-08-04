@@ -4448,6 +4448,10 @@ PYEOF
             exit 1
         fi
         _WRITE_APPROVED_HELPER_REL="$(basename "$SCRIPT_DIR")/write-approved-file.py"
+        # Invoke the Python helper through the interpreter.  Installed workflow
+        # copies intentionally keep data/helper files at 0644, and WSL-backed
+        # worktrees can mask that mode difference during local probes.
+        _WRITE_APPROVED_HELPER_CMD=("$PYTHON_CMD" "$_WRITE_APPROVED_HELPER_REL")
         export AI_WORKFLOW_WRITE_SCOPE_RECEIPT="$WRITE_SCOPE_RECEIPT_FILE"
         mkdir -p "$_CLAUDE_SESSION_ENV_SOURCE" "$_CLAUDE_SESSION_ENV_TARGET" \
             "$_CLAUDE_PROJECTS_SOURCE" "$_CLAUDE_PROJECTS_TARGET" \
@@ -4503,7 +4507,7 @@ PYEOF
             _WRITE_SCOPE_PROBE_PATHS+=("$_WRITE_SCOPE_PRODUCT_PROBE_PATH")
         fi
         for _write_probe_path in "${_WRITE_SCOPE_PROBE_PATHS[@]}"; do
-            if ! "${_CLAUDE_SANDBOX_PREFIX[@]}" "$_WRITE_APPROVED_HELPER_REL" \
+            if ! "${_CLAUDE_SANDBOX_PREFIX[@]}" "${_WRITE_APPROVED_HELPER_CMD[@]}" \
                     --path "$_write_probe_path" --probe >/dev/null; then
                 echo "Error: exact approved writer could not write its receipt-bound staging file: ${_write_probe_path}" >&2
                 echo "failure_category=write-sandbox-approved-writer-unavailable" >&2
@@ -4523,13 +4527,13 @@ internally, so do not expand environment variables. For a new file, or an
 existing path listed under \`Full file replacement paths\`, use Edit or Write
 to place the complete bytes in \`.aiwf-write-staging/CONTENT\`, then run exactly:
 
-\`${_WRITE_APPROVED_HELPER_REL} --path REPOSITORY_RELATIVE_PATH --source .aiwf-write-staging/CONTENT\`
+\`${PYTHON_CMD} ${_WRITE_APPROVED_HELPER_REL} --path REPOSITORY_RELATIVE_PATH --source .aiwf-write-staging/CONTENT\`
 
 For a narrow edit, place the exact old and new byte fragments in
 \`.aiwf-write-staging/OLD_FRAGMENT\` and
 \`.aiwf-write-staging/NEW_FRAGMENT\`, then use the unique-match mode:
 
-\`${_WRITE_APPROVED_HELPER_REL} --path REPOSITORY_RELATIVE_PATH --replace-old-source .aiwf-write-staging/OLD_FRAGMENT --replace-new-source .aiwf-write-staging/NEW_FRAGMENT\`
+\`${PYTHON_CMD} ${_WRITE_APPROVED_HELPER_REL} --path REPOSITORY_RELATIVE_PATH --replace-old-source .aiwf-write-staging/OLD_FRAGMENT --replace-new-source .aiwf-write-staging/NEW_FRAGMENT\`
 
 If the runtime has neither Edit nor Write, the shell-expansion-free
 \`--content-base64\` and \`--replace-old-base64 ... --replace-new-base64 ...\`
@@ -4546,10 +4550,10 @@ The receipt rejects every undeclared path. Do not use Edit after an atomic-temp
 failure and do not create repository-local helper files.
 EOF
         if [[ "${_TOOL_PROFILE_AVAILABLE_TOOLS}" == *Bash* ]] && [ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ]; then
-            _approved_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --path * --source .aiwf-write-staging/CONTENT)"
-            _approved_fragment_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --path * --replace-old-source .aiwf-write-staging/OLD_FRAGMENT --replace-new-source .aiwf-write-staging/NEW_FRAGMENT)"
-            _approved_base64_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --path * --content-base64 *)"
-            _approved_base64_fragment_writer_allow="Bash(${_WRITE_APPROVED_HELPER_REL} --path * --replace-old-base64 * --replace-new-base64 *)"
+            _approved_writer_allow="Bash(${PYTHON_CMD} ${_WRITE_APPROVED_HELPER_REL} --path * --source .aiwf-write-staging/CONTENT)"
+            _approved_fragment_writer_allow="Bash(${PYTHON_CMD} ${_WRITE_APPROVED_HELPER_REL} --path * --replace-old-source .aiwf-write-staging/OLD_FRAGMENT --replace-new-source .aiwf-write-staging/NEW_FRAGMENT)"
+            _approved_base64_writer_allow="Bash(${PYTHON_CMD} ${_WRITE_APPROVED_HELPER_REL} --path * --content-base64 *)"
+            _approved_base64_fragment_writer_allow="Bash(${PYTHON_CMD} ${_WRITE_APPROVED_HELPER_REL} --path * --replace-old-base64 * --replace-new-base64 *)"
             if [ ${#_CLAUDE_ALLOWED_ARGS[@]} -gt 0 ]; then
                 _CLAUDE_ALLOWED_ARGS[1]="${_CLAUDE_ALLOWED_ARGS[1]},${_approved_writer_allow},${_approved_fragment_writer_allow},${_approved_base64_writer_allow},${_approved_base64_fragment_writer_allow}"
             else

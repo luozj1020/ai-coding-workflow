@@ -1285,7 +1285,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         prompt = pathlib.Path(runtime["worktree"]) / "CLAUDE_PROMPT.md"
         prompt_text = prompt.read_text(encoding="utf-8")
         self.assertIn("EXACT APPROVED FILE WRITER", prompt_text)
-        self.assertIn("write-approved-file.py", prompt_text)
+        self.assertIn("python3 scripts/write-approved-file.py", prompt_text)
         self.assertIn("--replace-old-base64", prompt_text)
         self.assertIn("--content-base64", prompt_text)
         self.assertIn(".aiwf-write-staging/CONTENT", prompt_text)
@@ -1293,7 +1293,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotIn(str(self.repo / ".worktrees" / f"{runtime['task_id']}.write-scope-enforcement.json"), prompt_text)
         argv_text = argv_log.read_text(encoding="utf-8")
         self.assertIn("--content-base64", argv_text)
-        self.assertIn("--source .aiwf-write-staging/CONTENT", argv_text)
+        self.assertIn(
+            "python3 scripts/write-approved-file.py --path * "
+            "--source .aiwf-write-staging/CONTENT",
+            argv_text,
+        )
         self.assertNotIn("$AI_WORKFLOW_WRITE_SCOPE_RECEIPT", argv_text)
         self.assertNotIn(str(self.repo / ".worktrees"), argv_text)
 
