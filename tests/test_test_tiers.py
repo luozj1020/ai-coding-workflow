@@ -47,10 +47,37 @@ class TestTiers(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("test_dirty_source_guard.py", result.stdout.splitlines())
 
-    def test_ci_uses_quick_matrix_and_one_premerge_full_job(self):
+    def test_case_shards_are_complete_disjoint_and_balanced(self):
+        cases = [f"tests.test_example.Case.test_{index:02d}" for index in range(23)]
+        shards = [set(run_tests.select_shard(cases, (index, 4))) for index in range(1, 5)]
+        self.assertEqual(set().union(*shards), set(cases))
+        for left_index, left in enumerate(shards):
+            for right in shards[left_index + 1:]:
+                self.assertTrue(left.isdisjoint(right))
+        self.assertLessEqual(max(map(len, shards)) - min(map(len, shards)), 1)
+
+    def test_parse_shard_rejects_invalid_ranges(self):
+        self.assertEqual(run_tests.parse_shard("2/4"), (2, 4))
+        for value in ("0/4", "5/4", "1/0", "bad"):
+            with self.subTest(value=value), self.assertRaises(run_tests.argparse.ArgumentTypeError):
+                run_tests.parse_shard(value)
+
+    def test_integration_shard_list_uses_individual_test_ids(self):
+        result = subprocess.run(
+            [sys.executable, str(RUNNER), "integration", "--shard", "1/4", "--list"],
+            cwd=ROOT, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertTrue(lines)
+        self.assertTrue(all(line.startswith("tests.test_") for line in lines))
+
+    def test_ci_uses_quick_matrix_and_sharded_integration_without_duplicate_full(self):
         text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
         self.assertEqual(text.count("python scripts/run-tests.py quick"), 1)
-        self.assertEqual(text.count("python scripts/run-tests.py full"), 1)
+        self.assertEqual(text.count("python scripts/run-tests.py integration --shard"), 1)
+        self.assertNotIn("python scripts/run-tests.py full", text)
+        self.assertIn("shard: [1, 2, 3, 4]", text)
         self.assertNotIn("unittest discover", text)
         self.assertNotIn("if: github.event_name == 'push'", text)
         self.assertIn("Enable and verify bubblewrap user namespaces", text)

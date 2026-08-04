@@ -1163,11 +1163,14 @@ python scripts/run-tests.py quick
 # 修改工作流编排时运行集成覆盖
 python scripts/run-tests.py integration
 
-# 发布前完整覆盖（CI 中也只运行一次）
+# 一个确定性的 integration 分片（CI 会并行运行四片）
+python scripts/run-tests.py integration --shard 1/4
+
+# 本地发布前完整覆盖
 python scripts/run-tests.py full
 ```
 
-quick 层会排除创建临时仓库、worktree、调度进程或运行 installer 的 integration 文件。修改这些区域时使用 `integration`，发布前使用 `full`。PR 在 OS/Python 矩阵中只运行 quick；推送到 `main` 后，才在 Ubuntu/Python 3.12 上运行一次 full。
+quick 层会排除创建临时仓库、worktree、调度进程或运行 installer 的 integration 文件。修改这些区域时使用 `integration`，本地发布检查可使用 `full`。CI 会在 OS/Python 矩阵中运行 quick，并把单个 integration 测试用例确定性地划分为四个 Ubuntu/Python 3.12 分片并行运行。各分片完整且互不重叠，因此无需在单独的 full job 中重复 quick 测试；每个分片内部仍保持串行，以保护进程、环境变量和 worktree 隔离。
 
 **Workflow 质量汇总：** `ai/run-loop.sh` 还会写入 `.worktrees/loop-<timestamp>/loop-quality-summary.md` 和 `.json`。也可以手动汇总已有运行：
 

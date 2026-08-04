@@ -27,9 +27,13 @@ jobs:
       - name: Run quick tests
         run: python scripts/run-tests.py quick
 
-  test-full:
-    name: Tests (full suite, Ubuntu, Python 3.12)
+  test-integration:
+    name: Tests (integration ${{ matrix.shard }}/4, Ubuntu, Python 3.12)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +43,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install full-suite system dependencies
+      - name: Install integration-test system dependencies
         run: sudo apt-get install --no-install-recommends -y bubblewrap
 
       - name: Enable and verify bubblewrap user namespaces
@@ -64,8 +68,8 @@ jobs:
             -- sh -c "printf smoke > '${probe_file}'"
           test "$(tr -d '\r\n' < "${probe_file}")" = "smoke"
 
-      - name: Run full tests
-        run: python scripts/run-tests.py full
+      - name: Run integration test shard
+        run: python scripts/run-tests.py integration --shard ${{ matrix.shard }}/4
 
   shell-check:
     name: Shell syntax

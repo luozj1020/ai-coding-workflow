@@ -1261,11 +1261,14 @@ python scripts/run-tests.py quick
 # Integration coverage when changing workflow orchestration
 python scripts/run-tests.py integration
 
-# Full release confidence (also runs once in CI)
+# One deterministic integration shard (CI runs four in parallel)
+python scripts/run-tests.py integration --shard 1/4
+
+# Full local release confidence
 python scripts/run-tests.py full
 ```
 
-The quick tier excludes integration files that create temporary repositories, worktrees, dispatch processes, or installer runs. Use `integration` when changing those areas and `full` before a release. Pull requests run quick across the OS/Python matrix; the full suite runs once on Ubuntu/Python 3.12 after a push to `main`.
+The quick tier excludes integration files that create temporary repositories, worktrees, dispatch processes, or installer runs. Use `integration` when changing those areas and `full` for a local release check. CI runs quick across the OS/Python matrix and partitions individual integration test cases into four deterministic Ubuntu/Python 3.12 shards. The shards are complete and disjoint, so CI covers the same files without rerunning quick tests in a separate full-suite job. Each shard remains serial internally to preserve process, environment, and worktree isolation.
 
 **Workflow quality summary:** `ai/run-loop.sh` also writes `.worktrees/loop-<timestamp>/loop-quality-summary.md` and `.json`. To summarize an existing run manually:
 
