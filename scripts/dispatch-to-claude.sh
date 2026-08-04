@@ -304,11 +304,7 @@ case "$CLAUDE_CODE_EXECUTION_PROFILE" in
         ;;
 esac
 if [ -z "$CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS" ]; then
-    if [ "$CLAUDE_CODE_EXECUTION_PROFILE" = "fast-large-repo" ]; then
-        CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=420
-    else
-        CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS="$CLAUDE_CODE_TIMEOUT_SECONDS"
-    fi
+    CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS="$CLAUDE_CODE_TIMEOUT_SECONDS"
 fi
 
 # --- Spec item 1: task-mode-aware worktree strategy default ---
@@ -674,7 +670,11 @@ if [ -z "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
     elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || \
          [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ] || \
          [ "$_CHECKER_WRITES_TESTS" -eq 1 ]; then
-        CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=120
+        # A role-specific first-progress stop must not pre-empt the context
+        # acquisition window. Keep both deadlines aligned by default while
+        # preserving explicit FIRST_PROGRESS overrides for callers that need
+        # a different policy.
+        CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS="$CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS"
     else
         CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS=0
     fi

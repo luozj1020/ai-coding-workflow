@@ -1388,7 +1388,7 @@ While Claude Code is running, `dispatch-to-claude.sh` writes transient PID hints
 - `.worktrees/claude-<id>.progress.log` records start, heartbeat, timeout, and completion events.
 - Machine-readable status fields after finalization: `overall_running=yes`, `running=no`, `claude=not-running`. Only the dispatcher sets these fields; Claude does not finalize its own status.
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` controls heartbeat frequency; default is `30`.
-- `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` bounds reading/orientation before role-specific execution evidence; it defaults to the active-window value, or `420` seconds under `fast-large-repo`.
+- `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` bounds reading/orientation before role-specific execution evidence; it defaults to the active-window value (`600` seconds by default) for every execution profile. Execution-only, batch, and test-writing Checker first-progress stops default to this same value, so a shorter first-progress gate cannot pre-empt context acquisition unless the caller explicitly overrides it.
 - `CLAUDE_CODE_TIMEOUT_SECONDS` is the active execution window, default `600` seconds. The first substantive Builder/Checker signal refreshes this complete window once.
 - `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` permits at most one later growth extension, default `300` seconds.
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` is the absolute process cap, default `1500` seconds. It always wins; set a timeout to `0` only when intentionally disabling that boundary.
@@ -1452,7 +1452,7 @@ Windows, so staged bytes and mixed LF/CRLF content are copied exactly rather
 than passing through text newline translation.
 
 ```bash
-CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=420 \
+CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=600 \
 CLAUDE_CODE_TIMEOUT_SECONDS=600 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS=300 \
 CLAUDE_CODE_HARD_TIMEOUT_SECONDS=1500 CLAUDE_CODE_HEARTBEAT_SECONDS=15 \
   bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md

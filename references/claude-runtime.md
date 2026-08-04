@@ -160,7 +160,7 @@ candidate; `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` consecutive observations
 
 `solution-planner` progress uses `context`, `planning`, `contract-validation`, and `complete`. It must never report `implementation`, because planning progress is not implementation evidence.
 
-Relevant overrides are `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS`, `CLAUDE_CODE_TIMEOUT_SECONDS` (active window), `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS`, and `CLAUDE_CODE_HARD_TIMEOUT_SECONDS`.
+Relevant overrides are `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS`, `CLAUDE_CODE_TIMEOUT_SECONDS` (active window), `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS`, and `CLAUDE_CODE_HARD_TIMEOUT_SECONDS`. Context acquisition defaults to the 600-second active window for every execution profile. Execution-only, batch, and test-writing Checker first-progress stops inherit that same context-acquisition timeout unless the caller explicitly overrides the first-progress deadline.
 
 Approval-blocked early convergence requires two stable heartbeats by default. `CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS` may lower or raise that count for unusually slow filesystem environments or deterministic tests; production defaults remain conservative.
 

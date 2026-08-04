@@ -1280,7 +1280,7 @@ Windows PowerShell 的控制台代码页, `$OutputEncoding` 和子进程编码�
 - `.worktrees/claude-<id>.progress.log` 记录启动、心跳、超时和完成事件。
 - 最终化后的机器可读状态字段：`overall_running=yes`、`running=no`、`claude=not-running`。只有 dispatcher 设置这些字段；Claude 不自行最终化状态。
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` 控制心跳频率，默认 `30`。
-- `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` 限制读取和定位阶段，默认与活动执行窗口相同；`fast-large-repo` 下默认 `420` 秒。
+- `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` 限制读取和定位阶段；所有执行 profile 默认都与活动执行窗口相同（默认 `600` 秒）。execution-only、batch 和负责测试编写的 Checker，其首进展停止门禁默认也使用同一数值，因此除非调用方显式覆盖，否则更短的首进展门禁不会提前终止上下文获取。
 - `CLAUDE_CODE_TIMEOUT_SECONDS` 表示活动执行窗口，默认 `600` 秒；首次符合角色要求的实质执行信号会且只会刷新一次完整窗口。
 - `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` 最多允许一次后续增长扩展，默认 `300` 秒。
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` 是绝对总上限，默认 `1500` 秒且始终优先；只有确实需要禁用某一边界时才将对应值设为 `0`。
@@ -1319,7 +1319,7 @@ Spark 的路由、Claude 监控、失败归因和并行规划现在共用一套�
 
 对于复杂或多次修订的任务，在任务卡中添加 `## Execution Phases` 表。Claude 必须将它作为外层执行合同，在阶段边界更新进度，并在长时间验证或跨过停止门之前写入 `CLAUDE_REPORT.md`。
 ```bash
-CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=420 \
+CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS=600 \
 CLAUDE_CODE_TIMEOUT_SECONDS=600 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS=300 \
 CLAUDE_CODE_HARD_TIMEOUT_SECONDS=1500 CLAUDE_CODE_HEARTBEAT_SECONDS=15 \
   bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-123.md

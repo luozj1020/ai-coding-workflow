@@ -525,7 +525,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Worktree Strategy: reuse-managed", result.stdout)
         self.assertNotIn("Updating files:", result.stdout + result.stderr)
 
-    def test_test_writing_checker_gets_120_second_durable_output_deadline(self):
+    def test_test_writing_checker_gets_context_aligned_durable_output_deadline(self):
         task = self._write_low_risk_checker_card()
         with task.open("a", encoding="utf-8") as handle:
             handle.write(
@@ -533,10 +533,14 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "| Test writing | Claude |\n| Narrow validation | Claude |\n"
                 "\n## Scope\n\n- Write paths: tests/test_fixture.py\n"
             )
-        result = self._dispatch("task-cards/CHECKER.md")
+        result = self._dispatch(
+            "task-cards/CHECKER.md",
+            {"CLAUDE_CODE_TIMEOUT_SECONDS": "600"},
+        )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
-        self.assertEqual(runtime["first_progress_timeout_seconds"], 120)
+        self.assertEqual(runtime["first_progress_timeout_seconds"], 600)
+        self.assertEqual(runtime["context_acquisition_timeout_seconds"], 600)
         self.assertEqual(runtime["first_progress_action"], "stop")
         self.assertFalse(str(runtime["task_tmpdir"]).startswith(str(self.repo)))
         prompt = (self._artifact_path(result.stdout, "Worktree") / "CLAUDE_PROMPT.md").read_text(encoding="utf-8")
@@ -910,6 +914,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         result = self._dispatch(
             extra_env={
                 "CLAUDE_CODE_EXECUTION_PROFILE": "fast-large-repo",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "600",
                 "FAKE_CLAUDE_MODE": "stage-change",
             }
         )
@@ -920,7 +925,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Large Repo Mode: 1", result.stdout)
         self.assertIn("Evidence Mode:   summary", result.stdout)
         runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8"))
-        self.assertEqual(runtime["context_acquisition_timeout_seconds"], 420)
+        self.assertEqual(runtime["context_acquisition_timeout_seconds"], 600)
         worktree = self._artifact_path(result.stdout, "Worktree")
         self.assertEqual(worktree, self.repo / ".worktrees" / "reuse" / "claude-managed")
         diff = self._artifact_path(result.stdout, "Diff").read_text(encoding="utf-8")
@@ -2004,21 +2009,23 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("## Acceptance Criteria", claude_card)
         self.assertNotIn("execution-only view", claude_card.lower())
 
-    def test_execution_only_defaults_to_120_second_stop_and_compact_prompt(self):
+    def test_execution_only_defaults_to_context_aligned_stop_and_compact_prompt(self):
         self._write_builder_task_card()
         capture = self.case_root / "execution-only-prompt.md"
         result = self._dispatch(
             "task-cards/BUILDER.md",
             {
                 "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "600",
                 "FAKE_CLAUDE_PROMPT_CAPTURE": str(capture),
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("First Progress:  120s observation", result.stdout)
+        self.assertIn("First Progress:  600s observation", result.stdout)
         self.assertIn("Builder Mode:    execution-only", result.stdout)
         runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
-        self.assertEqual(runtime["first_progress_timeout_seconds"], 120)
+        self.assertEqual(runtime["first_progress_timeout_seconds"], 600)
+        self.assertEqual(runtime["context_acquisition_timeout_seconds"], 600)
         self.assertEqual(runtime["first_progress_action"], "stop")
         worktree = self._artifact_path(result.stdout, "Worktree")
         claude_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
