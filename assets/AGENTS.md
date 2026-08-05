@@ -33,8 +33,8 @@ ROUTE from a short current brief. `ownership_profile=claude-first` is the
 default. Claude owns source-writing unless the human explicitly chooses Codex,
 the task is confirmed high-risk core semantics, or Codex is applying a reviewed
 deterministic correction. `economy-first` is an explicit alternative profile.
-Codex owns the short core plan inside the Task Card. The Task Card is Codex's
-only normal handwritten workflow artifact. Deterministic helpers render route,
+Codex owns the short core plan in the Task Card, its only normal handwritten
+workflow artifact. Deterministic helpers render route,
 review, hash, receipt, freeze, and continuation artifacts; Codex must not
 hand-edit `*.route.json`, `adversarial-review.json`,
 `solution-contract*.json`, or runtime receipts. Claude `solution-planner` is
