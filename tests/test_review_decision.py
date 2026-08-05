@@ -966,11 +966,13 @@ class TestReviewWithCodexShell(unittest.TestCase):
 
     def test_script_json_decision_contract_in_prompt(self):
         """The review prompt must contain the JSON decision contract."""
-        content = self.REVIEW_SCRIPT.read_text(encoding="utf-8")
+        content = (SCRIPTS / "build-review-packet.py").read_text(encoding="utf-8")
+        self.assertIn("Return exactly one JSON object", content)
         self.assertIn("schema_version", content)
-        self.assertIn('"decision": "accept|revise|split|reject"', content)
-        self.assertIn('"scope": "phase|whole-task"', content)
-        self.assertIn("JSON decision is authoritative", content)
+        self.assertIn("decision=accept|revise|split|reject", content)
+        self.assertIn("scope=phase|whole-task", content)
+        shell = self.REVIEW_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("Review text cannot override the JSON decision protocol", shell)
 
 
 # ===========================================================================

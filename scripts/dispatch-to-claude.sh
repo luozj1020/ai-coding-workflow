@@ -27,6 +27,12 @@ set -euo pipefail
 PATH="${PATH}:/usr/bin:/bin:/mingw64/bin"
 export PATH
 
+# Workflow helpers are executed from the source tree and import sibling
+# modules.  Never let those control-plane imports create __pycache__ entries:
+# they would make a clean source worktree appear dirty during a later dispatch.
+PYTHONDONTWRITEBYTECODE=1
+export PYTHONDONTWRITEBYTECODE
+
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--tool-profile PROFILE] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL] [--preflight-task-id TASK_ID]" >&2
     exit 1
