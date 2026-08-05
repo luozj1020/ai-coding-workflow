@@ -7,9 +7,8 @@
 ## 是否应该使用这个 Skill？
 
 这是一个额度分配工作流，不是所有代码任务的通用执行方式。它的核心收益
-是把有规模的规划和实现交给 Claude Code 接入的国产高性价比模型，让
-Codex 集中在意图冻结和有界
-语义审查。
+是把有规模的实现交给 Claude Code 接入的国产高性价比模型，让 Codex
+集中在核心规划、意图冻结和有界语义审查。
 
 | 适合使用 | 更适合直接使用 Codex/本地工具 |
 |---|---|
@@ -24,9 +23,10 @@ Codex 集中在意图冻结和有界
 
 ## 面向稀缺 Codex 额度的 Claude-first 路由
 
-默认 `claude-first` Profile 优化的是 Codex 规划和编辑消耗。Claude
-负责方案、实现、修订、指定测试和长验证；Codex只冻结意图并做一次
-有界语义审查。用户可在不同终端分别运行不同仓库，因此单任务时延只作
+默认 `claude-first` Profile 优化的是 Codex 编辑和重复审查消耗。Codex
+负责短核心规划和规划文件；Claude 负责实现、修订、指定测试和长验证。
+`solution-planner` 不会被自动选择，只有显式设置
+`solution_planner_opt_in=true` 才可启用。用户可在不同终端分别运行不同仓库，因此单任务时延只作
 观测指标。需要恢复严格总成本/时延 Gate 时，设置
 `ownership_profile=economy-first`。
 
@@ -43,9 +43,9 @@ python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview
 ```
 
 `aiwf run` 串联 lint → Profile 重验 → 仓库事实 → 确定性路由。正常结果
-是一张上下文只内联一次的 Claude 短执行卡。开放多阶段功能先由 Claude
-`solution-planner` 形成契约，再将冻结切片交给 `exploratory-builder`、
-`batch-builder` 或 `execution-builder`。显式/高风险 Codex 路由不生成卡；
+是一张在 Codex 冻结短规划后、上下文只内联一次的 Claude 执行卡。开放
+多阶段功能默认不增加 Claude 规划轮次；只有用户显式选择时才启用
+`solution-planner`。显式/高风险 Codex 路由不生成卡；
 Spark 仅在结构化结果能够替代 Codex 分析时介入。普通风险任务卡不再等待第二次
 人工确认；产品方向仍有实质歧义，或涉及破坏性/高影响操作时，仍须取得明确人工
 授权。显式 `--preview` 保持零模型调用，`--execute` 继续作为兼容写法。
@@ -126,7 +126,7 @@ flowchart TD
     DI --> IW[隔离 worktree · 干净 HEAD 或哈希绑定 dirty snapshot]
     IW --> WG[实时写入门禁 · 只读根 / 外部 staging / 任务级 session-env]
     WG --> ROLE{Claude 角色}
-    ROLE -- 开放多阶段目标 --> CPL[Claude Solution Planner · 一次结构化契约]
+    ROLE -- 显式 solution_planner_opt_in --> CPL[Claude Solution Planner · 一次结构化契约]
     CPL --> CAR[Codex · 一次对抗性规划审查]
     CAR --> CF[本地工具 · 冻结契约 / 非阻塞项进入 Backlog]
     CF --> C
@@ -176,9 +176,11 @@ Claude 是默认实现者：`exploratory-builder` 负责边界明确但路径不
 对抗性审查，再由 helper 冻结契约。冻结后的实现切片重新交给 Claude；
 只有阻塞约束或明确规格变更才重新规划。
 
-选定角色会直接传到运行时：`solution-planner` 映射为
+显式选定的角色会直接传到运行时：`solution-planner` 映射为
 `solution-planning`，`exploratory-builder` 映射为 `exploratory`，
 `batch-builder` 映射为 `batch`，`execution-builder` 映射为 `execution-only`。
+这些是 Builder mode；任务卡 `Mode` 仍为 `builder`。若该字段误填了已知角色
+别名，Harness 会在工具探针前归一化；冲突组合则在 Claude 启动前失败。
 
 ## 常用动作
 
@@ -625,10 +627,10 @@ python scripts/update_skill.py --bootstrap-current
 
 工作流是一个显式循环：**观察  ->  计划  ->  调度  ->  执行  ->  验证  ->  审查  ->  学习  ->  重复。**
 
-**核心原则：** Claude 默认负责方案与实现；Codex冻结意图并审查有界语义
-证据。工具优先收集低 Token 证据，Claude只返回压缩摘要和产物路径。
+**核心原则：** Codex负责核心规划和冻结规划文件；Claude默认负责实现与
+修订。确定性工具生成路由、任务卡、哈希、收据和冻结产物；Spark只提供建议。
 
-对于目标清晰但实现路径开放的大型或多阶段功能，可让 Claude 以 `solution-planner` 身份先生成一次结构化终局方案，Codex 只进行一轮对抗性审查，再由确定性 helper 冻结验收契约。只有阻塞性的约束/验收缺陷，或明确决定纳入的规格变更，才允许重新打开规划；推荐项进入 backlog。冻结后的每个实现切片重新独立路由，既利用 Claude 的规划收敛能力，也避免 Claude 扩大执行范围和 Codex 反复重新设计。
+大型或多阶段功能默认由 Codex完成短核心规划，再交给 helper 生成执行卡并由 Claude Builder 实施。只有用户明确接受额外串行延迟并设置 `solution_planner_opt_in=true` 时，才让 Claude 先生成结构化终局方案；该方案仍只接受一轮 Codex 对抗性审查和确定性冻结。
 
 对于非平凡修改，优先把 Claude 工作拆成两个角色：
 
@@ -1083,6 +1085,7 @@ CLAUDE_CODE_NETWORK_MONITOR=1 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-1
 | `*.monitor-events.log` | 供阻塞式监控消费的实质变化与终态边界 |
 | `*.phase-metrics.json` | context、implementation、validation、tail、编辑就绪和产品停滞计时 |
 | `*.activity-observation.json` | 只基于元数据的会话/控制/产品活动年龄和剩余窗口；不读取 transcript 内容 |
+| `*.extension-capsule.json` / `*.extension-advisor.json` | 隐私受限的近期 assistant/tool 活动，以及绑定产品哈希的 Spark 超时判断 |
 | `*.recovered-completion.json` | Claude 缺少报告时保留的可恢复 diff/收据证据；不能直接验收 |
 | `*.codegraph-worktree.json` | CodeGraph 项目/worktree 身份、pending 状态、修复动作和安全使用结论 |
 | `*.runtime.json` | worktree、会话、超时、进程身份和 guard 配置 |
@@ -1287,13 +1290,14 @@ Windows PowerShell 的控制台代码页, `$OutputEncoding` 和子进程编码�
 - 最终化后的机器可读状态字段：`overall_running=yes`、`running=no`、`claude=not-running`。只有 dispatcher 设置这些字段；Claude 不自行最终化状态。
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` 控制心跳频率，默认 `30`。
 - `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` 限制读取和定位阶段；所有执行 profile 默认都与活动执行窗口相同（默认 `600` 秒）。execution-only、batch 和负责测试编写的 Checker，其首进展停止门禁使用同一数值。narrow、retry、revision 和 split-child 只缩小任务范围，绝不缩短响应窗口；任务卡自然语言不会改变调度计时。
-- `CLAUDE_CODE_TIMEOUT_SECONDS` 表示活动执行窗口，默认 `600` 秒；首次符合角色要求的实质执行信号会且只会刷新一次完整窗口。
-- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` 在活动窗口到期时为近期产品修改提供首次扩展，默认 `300` 秒。`CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` 默认同为 `300` 秒；如果产品内容在上一扩展期内继续变化，则自动续窗。控制文件、报告或终端文本增长不能续窗，硬上限始终生效。
+- `CLAUDE_CODE_TIMEOUT_SECONDS` 表示活动执行窗口，默认 `600` 秒；首次符合角色要求的实质执行信号会启动完整窗口，之后每次真实产品内容哈希变化都会再次刷新该窗口，但仍受硬上限约束。
+- 临近首次上下文获取边界以及后续每个活动窗口截止时间时，`CLAUDE_CODE_TIMEOUT_ADVISOR=auto` 会在 Claude 继续运行的同时启动一次有界 Spark `monitor-triage`。`CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS` 默认 `60` 秒，调用上限默认 `90` 秒，每个窗口最多尝试 `2` 次。窗口到期后进入 `extension-pending`；Spark 缺失或结果无效不会直接停止 Claude。首次真实产品写入会作废上下文阶段判断并启动完整活动窗口。
+- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` 在产品内容保持静默时提供首次经当前哈希绑定、Spark 确认的扩展，默认 `300` 秒；`CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` 默认同为 `300` 秒。每次真实产品修改都会刷新完整活动窗口；若 Spark 正在判断，该修改还会取消过期判断。控制文件、报告、文本或 token 活动不能续窗，硬上限始终生效。
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` 是绝对总上限，默认 `1500` 秒且始终优先；只有确实需要禁用某一边界时才将对应值设为 `0`。
 - `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` 可选地在 result/status/report/progress 产物长期无变化时停止 Claude；默认 `0` 为禁用，仅在需要快速失败时设为正数。
 - `CLAUDE_CODE_WORKTREE_PROGRESS` 控制 worktree 进度详细程度。默认 `quiet` 显示紧凑时间和路径；`verbose` 显示详细 worktree 状态。
 - `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS` 为已完成上下文获取并声明精确首次写入的 Builder 提供短桥接窗口，默认 `120` 秒；该声明不会刷新完整活动执行窗口。
-- `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` 默认在产品内容 digest 连续 `600` 秒不变后标记 idle candidate；`CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` 默认 `2`，只有连续两次确认才停止。活跃验证、明确 blocker 和已分配 tail work 会被豁免。
+- `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` 默认在产品内容 digest 连续 `600` 秒不变后标记 idle candidate；`CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` 默认 `2`。启用 timeout advisor 时，这些确认只用于佐证 Spark 的高置信度停止建议，不再单独停止 Claude。活跃验证、明确 blocker 和已分配 tail work 会被豁免；`CLAUDE_CODE_TIMEOUT_ADVISOR=off` 保留兼容行为。
 - `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` 默认拒绝 pending 或来自其他 worktree 的 CodeGraph 证据，不承担重建成本；显式使用 `repair` 才会同步/重建执行 worktree 索引，`off` 则跳过探测。
 - `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE` 启用保守的审批阻塞早期收敛。默认 `1`（启用）；设为 `0` 可禁用。启用后，如果存在完整报告、变更仅为测试范围、存在精确验证审批阻塞器、且观察到两次稳定心跳，dispatcher 会触发 checker helper。这不是验证成功或验收——这是 checker 的早期证据收集路径。
 
@@ -1309,7 +1313,7 @@ Claude 会在自然里程碑更新 `CLAUDE_PROGRESS.md`。只有同时包含 `Co
 
 `watch-claude.sh` 和 `status-claude.sh` 还会打印机器可读监控字段（`monitor_level`、`action`、`evidence_state`、quiet/elapsed 秒数，以及可用时的 suspect count）。Codex 应优先读取这些低 token 字段，再决定是否展开完整 status、progress 或 network tail。
 
-智能体运行时由 Dispatcher 作为唯一采样者，只把实质变化、窗口变化和完成后的终态写入 `*.monitor-events.log`。Codex 应只发起一次阻塞式 `monitor-claude.sh wait <task-id> --until terminal`；禁止重复执行 `watch`、`ps`、`tail`、status、进程树或纯时钟检查。同一个 terminal wait 会在 Dispatcher 刷新或扩展执行窗口时立即流出 `active-window-refreshed` / `active-window-extended` 结构化通知（包括新的截止时间），随后继续等待终态；Codex 不得再根据已等待时长推断窗口是否刷新。不再启动分离的 supervisor。到达终态边界时，`wait` 会附加一次紧凑本地判断；只有本地状态为 `inspect` 或 `interrupt-candidate` 时，才可能调用 Spark `monitor-triage`。Spark 只接收有边界的 JSON，并返回最多 240 字符的摘要和固定决策字段；原始进程列表、完整日志、network tail 和源码 diff 都不会发送给 Spark。任何 helper 都不会授权中断。
+智能体运行时由 Dispatcher 作为唯一采样者，只把实质变化、窗口变化和完成后的终态写入 `*.monitor-events.log`。Codex 应只发起一次阻塞式 `monitor-claude.sh wait <task-id> --until terminal`；禁止重复执行 `watch`、`ps`、`tail`、status、进程树或纯时钟检查。同一个 terminal wait 会立即流出 `active-window-refreshed`、`active-window-extended` 和 `extension-evaluation-*` 结构化通知，随后继续等待终态；因此 Codex 无需轮询就能看到新截止时间以及 Spark 的等待/结果状态，也不得再根据已等待时长自行推断。不再启动分离的 supervisor。活动窗口到期时，Spark 还可以在 Claude 继续运行期间读取隐私受限的 extension capsule 并返回有界建议；它不会收到原始进程列表、完整日志、network tail、源码 diff、thinking 内容、用户输入或工具结果正文。Spark 不直接控制任何进程；dispatcher 校验产品哈希并执行固定的延长/停止规则，hard timeout 始终优先。
 
 Spark 的路由、Claude 监控、失败归因和并行规划现在共用一套严格控制协议。成功的 direct 调用会输出 `spark_decision_json`，下游直接校验并消费紧凑对象，不再重新阅读建议正文；证据哈希会抑制重复监控判断。Spark 不能授权中断、接管、派发、验收或合并；并行建议最多两个 worker，并且必须串行协调与审查。
 
@@ -1357,8 +1361,8 @@ Claude 内置工具 profile（Bash、Edit、文件操作）是自动可用的。
 
 ## 控制面例外
 
-默认角色分工是：Claude负责方案和实现；Codex冻结意图并审查。workflow
-控制面修复也使用同一 owner route。
+默认角色分工是：Codex负责核心规划和审查；Claude负责实现与修订。
+workflow 控制面修复也使用同一 owner route。
 
 ## Claude 调度运维
 

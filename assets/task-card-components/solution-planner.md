@@ -2,6 +2,7 @@
 
 | Field | Value |
 |---|---|
+| Builder mode | solution-planning |
 | Planning owner | Claude |
 | Adversarial review owner | Codex |
 | Maximum Codex planning review rounds | 1 |
@@ -32,7 +33,7 @@ The JSON draft must contain `schema_version`, `task_id`, `goal`, `end_state`,
 `invariants`, `non_goals`, `unknowns`, `acceptance`, and `slices`. Each slice
 declares its write scope, dependencies, and acceptance IDs. Validate it with:
 
-```bash
+```validation
 python ai/solution-contract.py validate solution-contract.draft.json
 ```
 

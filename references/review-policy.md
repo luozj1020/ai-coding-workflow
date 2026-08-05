@@ -116,8 +116,9 @@ remains reviewer-only and must not race the Builder.
 
 ### Planning Review and Stop Rule
 
-When routing selects `solution-planner`, Claude owns one convergent structured
-draft and Codex owns one adversarial review. Codex classifies findings as:
+When explicit `solution_planner_opt_in=true` routing selects
+`solution-planner`, Claude owns one convergent structured draft and Codex owns
+one adversarial review. Codex classifies findings as:
 
 - `blocking`: violates the stated goal, invariant, required compatibility, or
   acceptance surface; it must be resolved before freeze;

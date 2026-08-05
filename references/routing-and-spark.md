@@ -5,8 +5,9 @@ Load this reference for pre-task-card ownership routing, Spark invocation, Spark
 ## Pre-Card Route
 
 Run the deterministic owner route before an execution artifact. `claude-first`
-is the default profile: source-writing routes to Claude, while Codex freezes
-intent and reviews bounded semantic evidence. `economy-first` restores the
+is the default profile: source-writing routes to Claude, while Codex owns the
+short core plan, frozen planning files, and bounded semantic review.
+`economy-first` restores the
 strict positive delegation gate for users optimizing single-task latency or
 total model usage. Invoke Spark `execution-cost-estimator` when structured
 estimation can replace Codex analysis. `preflight-bundle` is diagnostic.
@@ -85,8 +86,8 @@ gate, provided scope and solution remain bounded. Repository scale affects this
 judgment because context reacquisition and worktree costs rise with project size.
 
 Claude roles are `solution-planner`, `exploratory-builder`, `batch-builder`, and
-`execution-builder`. Use one structured planner for a large open feature, freeze
-the contract after one Codex review, then return its slices to Claude. Use
+`execution-builder`. The default path is Codex short planning followed by
+deterministic card generation and one Claude Builder execution. Use
 `exploratory-builder` when the goal and boundary are stable but the implementation
 path is unclear; it must create source changes and evidence rather than prose.
 A prose plan, repository summary, unverified bug list, or document summary is
@@ -99,8 +100,11 @@ test, patch candidate, or executable structured issue artifact; document parsing
 needs a checked-in index/configuration/generated asset or equivalent downstream
 input. Do not pay Claude merely to hand prose back to Codex.
 
-Select `solution-planner` only for a multi-phase, multi-module, or large-repository
-feature whose goal is clear but implementation path remains open. It must write a
+Never infer `solution-planner` from task size, repository scale, or an open
+implementation path. Select it only when the user explicitly supplies
+`solution_planner_opt_in=true` (legacy `allow_claude_planner=true` is the
+compatibility alias) for latency-tolerant multi-phase, multi-module, or
+large-repository work. It must write a
 validated `solution-contract.draft.json`, not a prose summary, and the expected
 reduction in Codex planning work must be at least 30%. Codex performs exactly one
 adversarial planning review. The deterministic solution-contract helper freezes
@@ -122,7 +126,8 @@ The scarce-cost path is duplicated Codex semantic context, not downstream-model 
 Avoid those costs with bounded locators, one on-demand reference, component card
 composition, local persistent monitoring, delta-only same-worktree continuation,
 and conditional Checker dispatch. In `claude-first`, accept slower productive
-execution when it removes Codex planning, editing, polling, or full-diff rereview.
+execution when it removes Codex editing, polling, or full-diff rereview; do not
+add a serial Claude planning round merely to reduce Codex planning tokens.
 Run separate projects in separate user terminals; the Skill does not orchestrate
 portfolio parallelism.
 

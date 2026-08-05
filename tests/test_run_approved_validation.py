@@ -79,6 +79,72 @@ class ApprovedValidationTests(unittest.TestCase):
             self.assertEqual(value["status"], "rejected")
             self.assertEqual(value["unsafe"], 1)
 
+    def test_lint_normalizes_role_alias_without_rejecting_card(self):
+        with tempfile.TemporaryDirectory() as raw:
+            card = Path(raw) / "task-card.md"
+            card.write_text(
+                "| Field | Value |\n|---|---|\n"
+                "| Mode | solution-planner |\n"
+                "| Builder mode | solution-planning |\n",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = validation.main(["lint", "--task-card", str(card)])
+            self.assertEqual(result, 0)
+            value = json.loads(output.getvalue())
+            self.assertEqual(value["status"], "normalized")
+            self.assertEqual(value["declared_task_mode"], "solution-planner")
+            self.assertEqual(value["effective_task_mode"], "builder")
+            self.assertEqual(value["builder_mode_hint"], "solution-planning")
+
+    def test_lint_rejects_role_and_builder_mode_conflict(self):
+        with tempfile.TemporaryDirectory() as raw:
+            card = Path(raw) / "task-card.md"
+            card.write_text(
+                "| Field | Value |\n|---|---|\n"
+                "| Mode | solution-planner |\n"
+                "| Builder mode | batch |\n",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = validation.main(["lint", "--task-card", str(card)])
+            self.assertEqual(result, 2)
+            value = json.loads(output.getvalue())
+            self.assertEqual(value["status"], "rejected")
+            self.assertEqual(value["task_mode_error"], "task-mode-builder-mode-conflict")
+
+    def test_lint_rejects_unknown_task_mode(self):
+        with tempfile.TemporaryDirectory() as raw:
+            card = Path(raw) / "task-card.md"
+            card.write_text(
+                "| Field | Value |\n|---|---|\n| Mode | planner-ish |\n",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = validation.main(["lint", "--task-card", str(card)])
+            self.assertEqual(result, 2)
+            self.assertEqual(
+                json.loads(output.getvalue())["task_mode_error"], "unknown-task-mode"
+            )
+
+    def test_lint_keeps_standard_mode_compatible_with_mixed_exception(self):
+        with tempfile.TemporaryDirectory() as raw:
+            card = Path(raw) / "task-card.md"
+            card.write_text(
+                "| Field | Value |\n|---|---|\n"
+                "| Mode | mixed-exception |\n"
+                "| Builder mode | standard |\n",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = validation.main(["lint", "--task-card", str(card)])
+            self.assertEqual(result, 0)
+            self.assertEqual(json.loads(output.getvalue())["status"], "accepted")
+
 
 if __name__ == "__main__":
     unittest.main()

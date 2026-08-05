@@ -241,6 +241,7 @@ class TestPipelineExecution(unittest.TestCase):
             "routing_facts": {
                 "execution_owner": "claude-builder",
                 "claude_role": "solution-planner",
+                "solution_planner_opt_in": True,
                 "goal_clarity": "high",
                 "implementation_path_clarity": "low",
                 "bounded_exploration_scope": True,

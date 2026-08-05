@@ -7,9 +7,9 @@ English | [中文](README_CN.md)
 ## Should you use this Skill?
 
 This is a quota-allocation workflow, not a universal way to edit code. Its main
-benefit is moving substantial planning and implementation to a cost-efficient
-model accessed through Claude Code while
-keeping Codex focused on intent and bounded semantic review.
+benefit is moving substantial implementation to a cost-efficient model accessed
+through Claude Code while keeping Codex focused on core planning, frozen intent,
+and bounded semantic review.
 
 | Use it when | Prefer ordinary Codex/local tools when |
 |---|---|
@@ -25,9 +25,10 @@ Spark overhead.
 
 ## Claude-first routing for scarce Codex quota
 
-The default `claude-first` profile minimizes Codex planning and editing work.
-Claude owns planning, implementation, revision, assigned tests, and long
-validation; Codex freezes intent and performs one bounded semantic review.
+The default `claude-first` profile minimizes Codex editing and rereview work.
+Codex owns the short core plan and planning files; Claude owns implementation,
+revision, assigned tests, and long validation. `solution-planner` is never
+selected automatically and requires explicit `solution_planner_opt_in=true`.
 Single-task latency is advisory because users can run different repositories in
 independent CLI terminals. Set `ownership_profile=economy-first` to restore the
 strict total-cost and latency gate.
@@ -47,8 +48,8 @@ python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview
 
 `aiwf run` performs lint → profile validation → repository facts → deterministic
 routing. The normal result is a short Claude execution card with context inlined
-once. Open multi-phase features use Claude `solution-planner`, then return frozen
-slices to `exploratory-builder`, `batch-builder`, or `execution-builder`.
+once after Codex freezes a compact plan. Open multi-phase features do not add a
+Claude planning round unless the user explicitly opts into `solution-planner`.
 Explicit/high-risk Codex work stops before card construction. Spark may fill a
 structured uncertainty when that avoids Codex analysis. A valid ordinary-risk
 card does not wait for a second human confirmation; material product ambiguity
@@ -135,7 +136,7 @@ flowchart TD
     DI --> IW[Isolated worktree · clean HEAD or hash-bound dirty snapshot]
     IW --> WG[Real-time write gate · read-only root / external staging / task-local session-env]
     WG --> ROLE{Claude role}
-    ROLE -- open multi-phase goal --> CPL[Claude Solution Planner · one structured contract]
+    ROLE -- explicit solution_planner_opt_in --> CPL[Claude Solution Planner · one structured contract]
     CPL --> CAR[Codex · one adversarial planning review]
     CAR --> CF[Local tools · freeze contract / defer non-blocking findings]
     CF --> C
@@ -188,9 +189,11 @@ contract, Codex performs one adversarial review, and the helper freezes it. Each
 frozen slice then returns to Claude implementation. Only blocking invariants or
 explicit spec changes reopen planning.
 
-The selected role reaches runtime directly: `solution-planner` maps to
+When explicitly selected, the role reaches runtime directly: `solution-planner` maps to
 `solution-planning`, `exploratory-builder` to `exploratory`, `batch-builder` to
-`batch`, and `execution-builder` to `execution-only`.
+`batch`, and `execution-builder` to `execution-only`. These are Builder modes;
+the task-card `Mode` remains `builder`. Known role aliases in that field are
+normalized before tool probing, while conflicting combinations fail early.
 
 ## Common actions
 
@@ -675,9 +678,9 @@ python scripts/update_skill.py --bootstrap-current
 
 The workflow is an explicit loop: **OBSERVE  ->  PLAN  ->  DISPATCH  ->  EXECUTE  ->  VERIFY  ->  REVIEW  ->  LEARN  ->  repeat.**
 
-**Core principle:** Claude plans and implements by default; Codex freezes intent
-and reviews bounded semantic evidence. Tools gather low-token evidence first;
-Claude returns compact summaries and artifact paths.
+**Core principle:** Codex owns core planning and frozen plan files; Claude
+implements and revises by default. Deterministic tools generate routing, cards,
+hashes, receipts, and freeze artifacts; Spark remains advisory.
 
 For non-trivial changes, split the work into two Claude roles:
 
@@ -856,7 +859,7 @@ preflight failure writes a terminal outcome with `builder_started=false` and
 - `revision-drafter`: read-only mode for drafting revision instructions.
 - `lesson-extractor`: read-only mode for extracting lessons from completed work.
 - `monitor-triage`: read-only bounded triage of the deterministic Claude monitor packet. It never reads raw process/log/diff output and never authorizes interruption.
-- `execution-cost-estimator`: read-only mode that predicts diff range/files, task role, and relative direct/delegated work units. Invoke it only for a concrete Claude planner/batch candidate when deterministic facts cannot settle the economics. Work units are relative estimates, not token accounting. Invalid or absent output keeps Codex ownership.
+- `execution-cost-estimator`: read-only mode that predicts diff range/files, task role, and relative direct/delegated work units. Invoke it only for a concrete Claude execution candidate when deterministic facts cannot settle the economics. It cannot introduce a `solution-planner` round unless the input already contains `solution_planner_opt_in=true`. Work units are relative estimates, not token accounting. Invalid or absent output keeps Codex ownership.
 
 Bundle output uses seven compressed headings: Decision Summary, Risk Flags, Scope and Boundaries, Acceptance Matrix, Evidence Conflicts, Required Codex Decisions, Recommended Next Action.
 
@@ -1187,6 +1190,7 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.monitor-events.log` | Material and terminal boundaries consumed by the blocking monitor |
 | `*.phase-metrics.json` | Context, implementation, validation, tail, edit-ready, and product-idle timing |
 | `*.activity-observation.json` | Metadata-only session/control/product activity ages and remaining windows; no transcript content |
+| `*.extension-capsule.json` / `*.extension-advisor.json` | Privacy-limited recent assistant/tool activity and the hash-bound Spark timeout judgment |
 | `*.recovered-completion.json` | Recoverable diff/receipt evidence when Claude prose is missing; never direct acceptance |
 | `*.codegraph-worktree.json` | CodeGraph project/worktree identity, pending state, repair action, and safe-use decision |
 | `*.runtime.json` | Worktree, session, timeout, process identity, and guard configuration |
@@ -1200,7 +1204,7 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 
 While Claude is running, the dispatcher distinguishes self-reported edit readiness from durable product-content changes. Agent controllers block on `monitor-claude.sh wait` and review bounded diff/decision evidence only when a material or terminal boundary arrives. `watch-claude.sh` and `status-claude.sh` remain manual diagnostics; they are not polling instructions. Interruption still requires corroborated deviation or confirmed no-progress evidence.
 
-An explicit tool profile is checked against the early stream-init inventory before a full worktree is created. Capability mismatch writes terminal result/outcome receipts with `builder_started=false` and `worktree_created=false`. The metadata-only activity receipt exposes session/control/product ages and remaining windows without reading Claude session JSONL; its combined session signal is diagnostic and cannot extend a product window.
+An explicit tool profile is checked against the early stream-init inventory before a full worktree is created. Capability mismatch writes terminal result/outcome receipts with `builder_started=false` and `worktree_created=false`. The ordinary metadata-only activity receipt exposes session/control/product ages and remaining windows without reading Claude session JSONL; its combined session signal is diagnostic and cannot extend a product window. Only near an active deadline, the timeout-advisor capsule reads the current session UUID's bounded transcript tail, strips thinking and successful tool-result payloads, redacts assistant text, and records normalized tool events for Spark advice.
 
 If Direction / Boundary Acknowledgement is required, Claude should write the acknowledgement before editing. When blocking approval is required, Codex gives one final decision before Claude proceeds. After `proceed`, Claude must continue the assigned task instead of repeatedly asking for the same confirmation.
 
@@ -1401,13 +1405,14 @@ While Claude Code is running, `dispatch-to-claude.sh` writes transient PID hints
 - Machine-readable status fields after finalization: `overall_running=yes`, `running=no`, `claude=not-running`. Only the dispatcher sets these fields; Claude does not finalize its own status.
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` controls heartbeat frequency; default is `30`.
 - `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` bounds reading/orientation before role-specific execution evidence; it defaults to the active-window value (`600` seconds by default) for every execution profile. Execution-only, batch, and test-writing Checker first-progress stops use this same value. Narrow, retry, revision, and split-child routing reduce task scope but never shorten the response window; task-card prose never changes scheduler timing.
-- `CLAUDE_CODE_TIMEOUT_SECONDS` is the active execution window, default `600` seconds. The first substantive Builder/Checker signal refreshes this complete window once.
-- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` grants the first recent-product-growth extension, default `300` seconds. `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` defaults to `300` seconds and renews the window when product content changed again during the prior extension. Control/report activity does not qualify; the hard timeout remains absolute.
+- `CLAUDE_CODE_TIMEOUT_SECONDS` is the active execution window, default `600` seconds. The first substantive Builder/Checker signal starts this complete window; every later canonical product-content change refreshes it again, subject to the hard cap.
+- Shortly before the initial context-acquisition boundary and each later active deadline, `CLAUDE_CODE_TIMEOUT_ADVISOR=auto` starts one bounded Spark `monitor-triage` call while Claude continues running. `CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS` defaults to `60`, the call timeout to `90`, and the attempt cap to `2`. An elapsed window enters `extension-pending`; missing or invalid Spark output does not stop Claude. A first product write supersedes a context evaluation and starts the full active window.
+- `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` grants the first hash-current Spark-confirmed extension when product content is quiet, default `300` seconds. `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` defaults to `300` seconds for later confirmed windows. Every real product change refreshes a complete active window; if Spark is evaluating, that change also cancels the stale evaluation. Control/report/text/token activity does not qualify; the hard timeout remains absolute.
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` is the absolute process cap, default `1500` seconds. It always wins; set a timeout to `0` only when intentionally disabling that boundary.
 - `CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS` optionally stops Claude when result/status/report/progress artifacts do not change. Default is `0` disabled; set a positive value only when you want fast-fail behavior.
 - `CLAUDE_CODE_WORKTREE_PROGRESS` controls worktree progress verbosity. Default `quiet` shows compact timing and path; `verbose` shows detailed worktree state.
 - `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS` gives a Builder that has completed context acquisition and declared an exact first write a short bridge to produce durable output; default is `120`. The declaration never refreshes the full active window.
-- `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` marks an unchanged product-content digest as an idle candidate after `600` seconds by default. `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` defaults to `2`; both observations are required before stopping. Active validation, explicit blockers, and assigned tail work are exempt.
+- `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` marks an unchanged product-content digest as an idle candidate after `600` seconds by default. `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` defaults to `2`; with the timeout advisor enabled these observations corroborate a high-confidence Spark stop suggestion but do not stop Claude by themselves. Active validation, explicit blockers, and assigned tail work are exempt. `CLAUDE_CODE_TIMEOUT_ADVISOR=off` retains compatibility behavior.
 - `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` rejects pending or different-worktree CodeGraph evidence without paying reindex cost. Use `repair` to sync/reindex the execution worktree explicitly, or `off` to skip probing.
 - `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE` enables conservative approval-blocked early convergence. Default `1` (enabled); set to `0` to disable. When enabled, if a valid complete report exists, changes are test-only scoped, an exact validation approval blocker is present, and two stable heartbeats have been observed, the dispatcher triggers the checker helper. This is not validation success or acceptance — it is an early evidence-gathering path.
 
@@ -1425,7 +1430,7 @@ refused so an accidental caller loop cannot keep producing
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, the dispatcher is the only sampling owner and writes material/window/finalized terminal boundaries to `*.monitor-events.log`. Codex should make one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated `watch`, `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. That single terminal wait streams `active-window-refreshed` and `active-window-extended` notices immediately, including the new deadline, while continuing to block for terminal; Codex must not infer a refresh from elapsed time. There is no detached supervisor. On the terminal boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` only for ambiguous `inspect` or `interrupt-candidate` evidence. Spark receives bounded JSON, returns a summary capped at 240 characters plus fixed decision fields, and never receives raw process listings, full logs, network tails, or source diffs. No helper authorizes interruption.
+For agent-driven runs, the dispatcher is the only sampling owner and writes material/window/finalized terminal boundaries to `*.monitor-events.log`. Codex should make one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated `watch`, `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. That single terminal wait streams `active-window-refreshed`, `active-window-extended`, and `extension-evaluation-*` notices immediately while continuing to block for terminal, so Codex sees both the new deadline and Spark's pending/result state without polling; Codex must not infer a refresh from elapsed time. There is no detached supervisor. Near the initial context boundary or a later active deadline, Spark may receive the privacy-limited extension capsule and return bounded advice while Claude keeps running. It never receives raw process listings, full logs, network tails, source diffs, thinking content, user input, or tool-result payloads. Spark does not control either process; the dispatcher validates the product hash, applies the fixed extension/stop policy, and keeps the hard cap authoritative.
 
 Spark routing, Claude monitoring, failure triage, and parallel planning now use
 one strict control protocol. Successful direct calls emit
@@ -1511,8 +1516,8 @@ When integrations are allowed:
 
 ## Control-Plane Exception
 
-The normal role split is: Claude plans and implements; Codex freezes intent and
-reviews. Workflow control-plane repair follows the same owner route.
+The normal role split is: Codex performs core planning and review; Claude
+implements and revises. Workflow control-plane repair follows the same route.
 
 ## Claude Dispatch Operations
 

@@ -54,7 +54,7 @@ class OptimizationEfficiencyTests(unittest.TestCase):
  def test_solution_planner_role_reaches_execution_plan_and_preview(self):
   with tempfile.TemporaryDirectory() as d:
    root=Path(d);facts=root/'facts.json';card=root/'task.md';out=root/'run';no={k:'no' for k in ('public_api','data_model','security','migration','permission','concurrency','cross_module','production_impact')}
-   facts.write_text(json.dumps({'task_id':'PLAN','goal':'design feature','target_files_count':8,'predicted_diff_lines':600,'exact_validation':False,'effective_risks':no,'execution_owner':'claude-builder','claude_role':'solution-planner','goal_clarity':'high','implementation_path_clarity':'low','bounded_exploration_scope':True,'durable_structured_output':True,'expected_codex_work_reduction_ratio':.4,'multi_phase_task':True}))
+   facts.write_text(json.dumps({'task_id':'PLAN','goal':'design feature','target_files_count':8,'predicted_diff_lines':600,'exact_validation':False,'effective_risks':no,'execution_owner':'claude-builder','claude_role':'solution-planner','solution_planner_opt_in':True,'goal_clarity':'high','implementation_path_clarity':'low','bounded_exploration_scope':True,'durable_structured_output':True,'expected_codex_work_reduction_ratio':.4,'multi_phase_task':True}))
    card.write_text('| Mode | builder |\n| Planning owner | Claude |\n')
    run('efficiency-control.py','prepare','--facts',facts,'--task-card',card,'--output-dir',out)
    plan=json.loads((out/'execution-plan.json').read_text());self.assertEqual(plan['execution']['claude_role'],'solution-planner');self.assertEqual(plan['execution']['builder_mode'],'solution-planning')

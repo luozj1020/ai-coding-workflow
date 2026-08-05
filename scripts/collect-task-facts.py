@@ -236,6 +236,7 @@ def collect_facts(
         "durable_structured_output": hints.get("durable_structured_output", False) is True,
         "read_only_task": hints.get("read_only_task", False) is True,
         "multi_phase_task": hints.get("multi_phase_task", False) is True,
+        "solution_planner_opt_in": hints.get("solution_planner_opt_in", False) is True,
         "allow_claude_planner": hints.get("allow_claude_planner", False) is True,
         "allow_high_risk_claude": hints.get("allow_high_risk_claude", False) is True,
         "solution_contract_frozen": hints.get("solution_contract_frozen", False) is True,

@@ -2,19 +2,20 @@
 
 ## Core Principle
 
-**Codex freezes intent and reviews. Claude plans, implements, revises, tests, and validates. Tools gather low-token evidence first.**
+**Codex owns core planning and review. Claude implements, revises, tests, and validates. Tools generate control artifacts from low-token evidence.**
 
 This is the default operating principle for all work in this workflow:
 
-1. Codex/GPT is responsible for a bounded intent freeze, high-risk decisions, and final semantic review.
-2. Claude Code is the default source-writing owner and handles solution planning, exploratory implementation, mechanical batches, revisions, assigned tests, and long validation.
+1. Codex/GPT is responsible for bounded core planning, frozen planning files, high-risk decisions, and final semantic review.
+2. Claude Code is the default source-writing owner and handles implementation, mechanical batches, revisions, assigned tests, and long validation. Solution planning is explicit opt-in only.
 3. LSP, bounded locator search, CodeGraph, and MCP tools are used before broad file reads or repository scans to reduce token consumption and wall-clock stalls.
 
 ## Agent Roles
 
-### Codex / GPT  -  Intent Freezer and Reviewer
+### Codex / GPT  -  Core Planner and Reviewer
 
 - Routes every initial, revision, split-child, and next-phase brief before any delegation card.
+- Owns the compact core plan, invariants, acceptance, and Codex planning files.
 - Avoids implementation unless the human selects it, confirmed high-risk core semantics require it, or a reviewed correction is deterministic and local.
 - Decomposes only positively delegated work into short component cards with clear acceptance criteria.
 - Reviews execution evidence and returns structured accept / revise / split / reject decisions with explicit next-loop instructions.
@@ -22,9 +23,9 @@ This is the default operating principle for all work in this workflow:
 - Gathers context using low-token tools (LSP, `ai/locate-code.py`, bounded CodeGraph, MCP) during the OBSERVE phase.
 - May apply reviewer-owned bounded corrections after a fresh route when the accepted context and deterministic delta are already known.
 
-### Claude Code  -  Primary Planner and Execution Agent
+### Claude Code  -  Primary Execution Agent
 
-- Produces a validated structured solution contract for eligible bounded open multi-phase work, without source edits.
+- Produces a validated structured solution contract only after explicit Planner opt-in, without source edits.
 - Implements frozen, exploratory, mechanical, core, and auxiliary task cards in isolated git worktrees.
 - Runs only assigned narrow checks, tests, long validation, or evidence processing.
 - Produces evidence packets documenting what changed, why, and how it was verified.
@@ -62,8 +63,8 @@ OBSERVE -> ROUTE -> PLAN/DIRECT -> EXECUTE -> VERIFY -> REVIEW
 Each iteration:
 
 1. **OBSERVE:** Codex gathers context using low-token tools.
-2. **ROUTE:** deterministic facts select a Claude role by default; explicit/high-risk core work may select Codex. Spark can replace Codex estimation.
-3. **PLAN/DIRECT:** local components compose a short Claude card; Codex reviews only goal, boundaries, acceptance, and critical invariants.
+2. **ROUTE:** deterministic facts select a Claude execution role by default; Planner requires explicit opt-in. Spark can replace Codex estimation.
+3. **PLAN/DIRECT:** Codex freezes the short core plan; local helpers compose the Claude card and structured artifacts.
 4. **EXECUTE:** Claude produces its assigned durable result in an isolated worktree; Codex direct is exceptional.
 5. **VERIFY:** local deterministic tools run by default; Checker/Test Claude is conditional.
 6. **REVIEW:** Codex evaluates the evidence and decides.

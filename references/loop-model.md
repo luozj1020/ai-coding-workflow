@@ -6,9 +6,10 @@ The AI coding workflow is an explicit observe/plan/execute/verify/review/learn l
 
 Core principle:
 
-**Codex freezes intent and reviews. Claude Code converges the solution contract,
-implements, revises, tests, and validates. LSP/locator/CodeGraph/MCP tools gather
-low-token evidence first.**
+**Codex owns the short core plan, freezes intent, and reviews. Claude Code
+implements, revises, tests, and validates. A separate Claude solution-contract
+round is explicit opt-in only. LSP/locator/CodeGraph/MCP tools gather low-token
+evidence first.**
 
 ## State Machine
 
@@ -94,9 +95,10 @@ Each handoff should be directly checkable:
 
 **Purpose:** Select the least expensive owner before any delegation artifact.
 
-**Output:** Codex direct, Claude solution planner, Claude batch/auxiliary Builder,
-conditional Checker/Test, or human clarification. Optional Spark advice is used
-only for a concrete economically uncertain Claude candidate.
+**Output:** Codex direct, Claude batch/auxiliary/execution Builder, an explicitly
+opted-in Claude solution planner, conditional Checker/Test, or human
+clarification. Optional Spark advice is used only for a concrete economically
+uncertain Claude execution candidate and cannot introduce a planning round.
 
 ### 3. PLAN
 

@@ -140,8 +140,9 @@ emit_boundary_summary() {
 
 emit_continuing_window_notice() {
     local boundary="$1"
+    local reason="${2:-execution-window-updated}"
     printf '%s\n' "$boundary"
-    printf '%s\n' "monitor_wait status=continuing task_id=${TASK_ID} until=terminal reason=execution-window-updated"
+    printf '%s\n' "monitor_wait status=continuing task_id=${TASK_ID} until=terminal reason=${reason}"
 }
 
 case "$ACTION" in
@@ -156,17 +157,21 @@ case "$ACTION" in
             exit 0
         fi
         _existing_material_event=""
-        _existing_window_event=""
+        _existing_continuing_event=""
         if [ -f "$EVENT_LOG" ]; then
             _existing_material_event="$(grep -E ' event=(material-change|active-window-refreshed|active-window-extended)([[:space:]]|$)' "$EVENT_LOG" | tail -1 || true)"
-            _existing_window_event="$(grep -E ' event=active-window-(refreshed|extended)([[:space:]]|$)' "$EVENT_LOG" | tail -1 || true)"
+            _existing_continuing_event="$(grep -E ' event=(active-window-(refreshed|extended)|extension-evaluation-(started|pending|result))([[:space:]]|$)' "$EVENT_LOG" | tail -1 || true)"
         fi
         if [ "$WAIT_UNTIL" = "material" ] && [ -n "$_existing_material_event" ]; then
             emit_boundary_summary "$_existing_material_event"
             exit 0
         fi
-        if [ -n "$_existing_window_event" ]; then
-            emit_continuing_window_notice "$_existing_window_event"
+        if [ -n "$_existing_continuing_event" ]; then
+            if printf '%s\n' "$_existing_continuing_event" | grep -q ' event=extension-evaluation-'; then
+                emit_continuing_window_notice "$_existing_continuing_event" "timeout-advisor-state"
+            else
+                emit_continuing_window_notice "$_existing_continuing_event"
+            fi
         fi
         _started="$(date +%s)"
         while true; do
@@ -180,9 +185,16 @@ case "$ACTION" in
                     emit_boundary_summary "$_terminal"
                     exit 0
                 fi
-                _window_event="$(printf '%s\n' "$_new_events" | grep -E ' event=active-window-(refreshed|extended)([[:space:]]|$)' | tail -1 || true)"
-                if [ -n "$_window_event" ] && [ "$WAIT_UNTIL" = "terminal" ]; then
-                    emit_continuing_window_notice "$_window_event"
+                _continuing_events="$(printf '%s\n' "$_new_events" | grep -E ' event=(active-window-(refreshed|extended)|extension-evaluation-(started|pending|result))([[:space:]]|$)' || true)"
+                if [ -n "$_continuing_events" ] && [ "$WAIT_UNTIL" = "terminal" ]; then
+                    while IFS= read -r _continuing_event; do
+                        [ -n "$_continuing_event" ] || continue
+                        if printf '%s\n' "$_continuing_event" | grep -q ' event=extension-evaluation-'; then
+                            emit_continuing_window_notice "$_continuing_event" "timeout-advisor-state"
+                        else
+                            emit_continuing_window_notice "$_continuing_event"
+                        fi
+                    done <<< "$_continuing_events"
                 fi
                 if [ "$WAIT_UNTIL" = "material" ]; then
                     _material="$(printf '%s\n' "$_new_events" | grep -E ' event=(material-change|active-window-refreshed|active-window-extended)([[:space:]]|$)' | tail -1 || true)"

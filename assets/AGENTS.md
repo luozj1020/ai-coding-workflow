@@ -5,8 +5,8 @@ Project-specific text outside the managed block is preserved by the installer.
 <!-- AI-CODING-WORKFLOW:BEGIN managed -->
 ## AI Coding Workflow Core
 
-**Minimize scarce Codex work while preserving correctness.** Codex freezes
-intent and performs bounded semantic review; Claude owns planning,
+**Minimize scarce Codex work while preserving correctness.** Codex owns core
+planning, frozen plan files, and bounded semantic review; Claude owns
 implementation, revision, assigned tests, and long validation; Spark supplies
 optional bounded advice; humans own merge and destructive/high-impact approval.
 
@@ -33,6 +33,9 @@ ROUTE from a short current brief. `ownership_profile=claude-first` is the
 default. Claude owns source-writing unless the human explicitly chooses Codex,
 the task is confirmed high-risk core semantics, or Codex is applying a reviewed
 deterministic correction. `economy-first` is an explicit alternative profile.
+Codex owns the short core plan; deterministic helpers render routing, task-card,
+hash, receipt, freeze, and revision artifacts. Claude `solution-planner` is
+never inferred and requires explicit `solution_planner_opt_in=true`.
 Spark may replace Codex estimation when ownership or task shape is uncertain.
 When Spark quota is available, every non-Express Claude delegation should use
 one bounded `task-card-audit` by default; an unresolved owner instead uses
@@ -65,19 +68,15 @@ updater refreshes an already-bootstrapped current repository by default;
 
 Use Claude `execution-builder` for a frozen solution, `batch-builder` for
 mechanical work, and `exploratory-builder` for bounded new-feature work whose
-implementation path is not yet clear. Single-task wall time is advisory because
-portfolio concurrency belongs to independent user terminals. Optimize accepted
-output per Codex token, not total downstream-model tokens. Confirmed high-risk core semantics
-may bias only toward Codex; unknown risk raises review rigor without silently
-changing the owner.
+implementation path is not yet clear. Prefer one Claude execution round; do not
+add serial model roles merely to save Codex tokens. Confirmed high-risk core
+semantics may bias only toward Codex; unknown risk raises review rigor.
 
-For a large or multi-phase feature with a clear goal but open implementation
-path, ROUTE should prefer Claude `solution-planner` when the structured contract
-is expected to remove at least 30% of Codex planning work. Claude produces a validated
-structured solution contract; Codex performs one adversarial review and freezes
-it. Only blocking findings or incorporated spec changes reopen planning.
-Recommended findings become backlog. Route every frozen implementation slice
-back to Claude independently and do not repeat whole-project planning in cards.
+For large or multi-phase work, default to a short Codex plan followed by
+deterministic card generation and Claude Builder execution. Preserve
+`solution-planner` only as a latency-tolerant explicit opt-in; its validated
+contract receives one Codex adversarial review before deterministic freeze.
+Route every frozen implementation slice to Claude independently.
 
 For delegated work, read only `ai/task-card-components/catalog.md`, select one
 preset plus material gates, and run `python ai/compose_task_card.py ...`. Fill the
@@ -108,12 +107,13 @@ cards bind accepted evidence and describe only the delta.
 
 ## Recovery and Intervention
 
-Do not spend Codex turns polling unchanged processes, and never use `ps`,
-`tail`, or clock-only commands for liveness. Block once on
-`monitor-claude.sh wait`; inspect compact
-material/terminal events and bounded diffs only at review boundaries.
-Useful on-plan diff/report/progress favors waiting or reviewed same-worktree
-continuation. Interrupt only for corroborated no-progress or confirmed deviation.
+Do not poll or use `ps`, `tail`, or clock-only liveness. Block once on
+`monitor-claude.sh wait`; inspect bounded evidence only at review boundaries.
+Interrupt only for corroborated no-progress or deviation.
+At timeout boundaries, keep Claude running during one bounded Spark evaluation.
+Product growth refreshes the full window and invalidates pending advice. The
+dispatcher owns stop/extend, requires product-idle corroboration, and enforces
+the hard cap.
 
 Classify a failed Claude round before retry/takeover. Transport before useful
 interaction, approval/sandbox blockers, dirty source, and stale HEAD are not model

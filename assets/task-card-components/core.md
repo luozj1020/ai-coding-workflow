@@ -62,7 +62,8 @@
 ## Validation Contract
 
 - Local validation allowed: yes/no; validation required: yes/no
-- Exact narrow command: <!-- one shell-free argv command; no ; && || | or redirection -->
+- Exact narrow command: TBD
+<!-- Replace TBD with one shell-free argv command. Shell operators are forbidden. -->
 - Required evidence:
 - Small isolated task: prefer the smallest reusable implementation or fixture; target <=30 changed lines or explain why the frozen contract requires more.
 - Use `$TMPDIR` for scratch/generated validation helpers; repository-local scratch is forbidden unless listed in Write paths.

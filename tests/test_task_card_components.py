@@ -98,16 +98,58 @@ class TaskCardComponentTests(unittest.TestCase):
             root, module.load_catalog(root), "solution-planner", []
         )
         self.assertEqual(selected, ["core", "solution-planner"])
+        self.assertIn("preset=solution-planner; task-mode=builder; builder-mode=solution-planning", text)
+        self.assertIn("| Mode | builder |", text)
+        self.assertIn("| Builder mode | solution-planning |", text)
         self.assertIn("Required durable output", text)
         self.assertIn("Maximum Codex planning review rounds | 1", text)
         self.assertIn("solution-contract.py validate", text)
+        self.assertIn("```validation", text)
+
+    def test_generated_solution_planner_card_passes_semantic_lint(self):
+        with tempfile.TemporaryDirectory() as td:
+            card = Path(td) / "planner.md"
+            composed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--preset",
+                    "solution-planner",
+                    "--output",
+                    str(card),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(composed.returncode, 0, composed.stderr)
+            linted = subprocess.run(
+                [sys.executable, str(SCRIPT), "--lint-card", str(card)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(linted.returncode, 0, linted.stderr)
+            value = json.loads(linted.stdout)
+            self.assertEqual(value["status"], "accepted")
+            self.assertEqual(value["accepted"], 1)
+            self.assertEqual(value["effective_task_mode"], "builder")
+            self.assertEqual(value["builder_mode_hint"], "solution-planning")
 
     def test_routing_facts_select_solution_planner_preset(self):
         module = load_module()
         result = module.recommend_components({
-            "execution": {"owner": "claude-builder", "claude_role": "solution-planner"}
+            "execution": {"owner": "claude-builder", "claude_role": "solution-planner"},
+            "solution_planner_opt_in": True,
         })
         self.assertEqual(result["preset"], "solution-planner")
+
+    def test_routing_facts_do_not_select_solution_planner_without_opt_in(self):
+        module = load_module()
+        result = module.recommend_components({
+            "execution": {"owner": "claude-builder", "claude_role": "solution-planner"}
+        })
+        self.assertEqual(result["preset"], "builder")
 
     def test_routing_facts_select_exploratory_preset(self):
         module = load_module()
@@ -156,6 +198,25 @@ class TaskCardComponentTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 2)
             self.assertEqual(json.loads(result.stdout)["status"], "rejected")
+
+    def test_lint_card_normalizes_solution_planner_role_alias(self):
+        with tempfile.TemporaryDirectory() as td:
+            card = Path(td) / "card.md"
+            card.write_text(
+                "| Field | Value |\n|---|---|\n| Mode | solution-planner |\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--lint-card", str(card)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            value = json.loads(result.stdout)
+            self.assertEqual(value["status"], "normalized")
+            self.assertEqual(value["effective_task_mode"], "builder")
+            self.assertEqual(value["builder_mode_hint"], "solution-planning")
 
 
 if __name__ == "__main__":

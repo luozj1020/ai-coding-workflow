@@ -142,7 +142,15 @@ Missing or mismatched bundle components stop before Builder execution as
 
 ## Progress and Monitoring
 
-Execution-only, batch, and test-writing Checker tasks use a first durable-output stop action. Its deadline is the 600-second context-acquisition window. Narrow, retry, revision, and split-child routing reduce task scope but never shorten this response window, and natural-language task-card prose never changes scheduler policy. Generic planning, acknowledgement, timestamps, and claimed command starts do not satisfy the deadline; a canonical product delta does. Validation-only Checker work retains the ordinary observation policy. After the first product delta, a fresh 600-second active window begins. At its deadline, recent product-content growth grants a 300-second extension; further product changes may renew that extension while they remain recent. Report, progress, terminal text, and receipt-bound root control-file growth never renew it, and the 1500-second hard cap always wins.
+Execution-only, batch, and test-writing Checker tasks use a first durable-output boundary at the 600-second context-acquisition window. Narrow, retry, revision, and split-child routing reduce task scope but never shorten this response window, and natural-language task-card prose never changes scheduler policy. Generic planning, acknowledgement, timestamps, and claimed command starts do not satisfy durable progress; a canonical product delta does. Validation-only Checker work retains the ordinary observation policy. Shortly before the initial context boundary and every later active deadline, the dispatcher starts one bounded Spark `monitor-triage` evaluation while Claude continues running. At the context boundary, a hash-current `continue` may extend orientation, while a high-confidence `interrupt-candidate` may stop only while the product digest still equals the approved baseline. After the first product delta, a fresh 600-second active window begins, and every later canonical product-content change refreshes that complete window. At an active boundary, a high-confidence stop candidate additionally requires deterministic product-idle corroboration. The capsule contains the frozen contract, product-state summary, redacted recent assistant output, and normalized tool events. Missing, late, low-confidence, or invalid Spark output never stops Claude; the 1500-second hard cap remains absolute.
+
+The active deadline therefore enters `extension-pending`, not immediate termination. If Claude produces a canonical product-content change while Spark is running or while its snapshot is pending, the dispatcher cancels the task-scoped Spark process group and invalidates the stale judgment; the ordinary product-growth rule has already refreshed a complete active window from that change. Spark results are accepted only when their bound product digest still matches. When the digest is quiet but Spark confirms useful on-plan activity, further extensions use `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` and `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS`; report, progress, terminal text, token use, and control-file growth never refresh a product window.
+
+The single terminal monitor wait streams `extension-evaluation-started`,
+`extension-evaluation-pending`, and `extension-evaluation-result` notices as
+continuing boundaries. These notices never end the wait or authorize Codex to
+poll or stop either process; they make the dispatcher-owned state transition
+visible until the next product-window or terminal event.
 
 After the Claude child exits, finalization waits one bounded drain interval and
 rechecks the worktree. A late change triggers one additional stability sample
@@ -191,11 +199,14 @@ approved-writer call becomes a product delta and refreshes the active window on
 the next sample. Control files and writer-input scratch never do. An unchanged digest for
 `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS` (default 600) becomes an idle
 candidate; `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS` consecutive observations
-(default 2) stop the child as `product_idle_confirmed`.
+(default 2) make that candidate eligible as local corroboration for the timeout
+advisor. With the advisor enabled, product-idle evidence alone does not stop
+Claude before an actionable Spark judgment. Explicit `CLAUDE_CODE_TIMEOUT_ADVISOR=off`
+retains the compatibility stop behavior.
 
 `solution-planner` progress uses `context`, `planning`, `contract-validation`, and `complete`. It must never report `implementation`, because planning progress is not implementation evidence.
 
-Relevant overrides are `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS`, `CLAUDE_CODE_TIMEOUT_SECONDS` (active window), `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` (first extension), `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` (product-growth renewals), and `CLAUDE_CODE_HARD_TIMEOUT_SECONDS`. Context acquisition defaults to the 600-second active window for every execution profile. Execution-only, batch, and test-writing Checker first-progress stops inherit that same context-acquisition timeout; routing shape does not alter it. The legacy first-progress environment override remains compatibility-only and is never derived from task narrowing.
+Relevant overrides are `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS`, `CLAUDE_CODE_TIMEOUT_SECONDS` (active window), `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` (first extension), `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` (product-growth renewals), and `CLAUDE_CODE_HARD_TIMEOUT_SECONDS`. Timeout-advisor controls are `CLAUDE_CODE_TIMEOUT_ADVISOR=auto|on|off`, `CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS` (default 60), `CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS` (default 90), `CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS` (default 2), and `CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS` (default 30). Context acquisition defaults to the 600-second active window for every execution profile. Execution-only, batch, and test-writing Checker first-progress stops inherit that same context-acquisition timeout; routing shape does not alter it. The legacy first-progress environment override remains compatibility-only and is never derived from task narrowing.
 
 Approval-blocked early convergence requires two stable heartbeats by default. `CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS` may lower or raise that count for unusually slow filesystem environments or deterministic tests; production defaults remain conservative.
 
@@ -208,19 +219,25 @@ finalized `terminal` boundaries to
 `watch`, `ps`, `tail`, status, process-tree, or clock-only commands are forbidden. Read a bounded
 decision/diff only after that wait returns.
 
-The dispatcher also writes `<task-id>.activity-observation.json` from bounded
-filesystem metadata only. It records session-store, control, and product
-activity ages plus remaining active/hard windows. It does not read Claude
-session JSONL/transcript contents. Because the current one-shot Claude result
-surface cannot reliably separate model text from tool activity, the receipt
-sets `model_tool_split_available=false`; session activity is diagnostic only
-and never refreshes a product-progress window.
+The dispatcher continuously writes `<task-id>.activity-observation.json` from
+bounded filesystem metadata only. It records session-store, control, and
+product activity ages plus remaining active/hard windows; this ordinary sample
+does not read transcript content and keeps `model_tool_split_available=false`.
+Only near an active timeout, `claude-extension-capsule.py` may read the current
+session UUID's recent JSONL tail. It persists no chain-of-thought or successful
+tool-result payloads. Assistant text is redacted, bounded, and marked untrusted;
+tool activity is reduced to names, target hints, and error state. The resulting
+`<task-id>.extension-capsule.json` is advisory evidence only and never refreshes
+the product window by itself.
 
 The terminal wait remains one process, but it must stream each structured
-execution-window refresh or extension as soon as the dispatcher records it.
-The notice includes the progress signal, elapsed time, and new active/hard
-deadlines, then states that the same wait is continuing toward terminal. Codex
-must consume that notice instead of inferring a refresh from elapsed wall time.
+execution-window refresh/extension and timeout-advisor state transition as soon
+as the dispatcher records it. Window notices include the progress signal,
+elapsed time, and new active/hard deadlines; advisor notices expose only the
+evaluation identity, state, bounded decision fields, and whether Claude keeps
+running. Every notice states that the same wait is continuing toward terminal.
+Codex must consume these notices instead of polling or inferring state from
+elapsed wall time.
 `--until material` also returns immediately when a refresh already exists or
 arrives after the wait starts.
 
@@ -238,8 +255,10 @@ Do not start a detached monitoring supervisor. It duplicates dispatcher
 sampling and is not part of the installed workflow. When `wait` reaches a
 material or terminal boundary, it appends one compact local decision and may
 invoke Spark `monitor-triage` to compress ambiguous evidence only when the local decision is `inspect` or
-`interrupt-candidate`; Spark receives compact JSON rather than raw process
-listings, logs, network tails, or diffs. Its diagnostic summary is capped at 240 characters and explicitly distinguishes edit readiness, durable writes, and confirmed product-idle duration. Codex receives that summary plus fixed decision fields; raw evidence remains file-backed. Stable `continue`, `terminal`, and
+`interrupt-candidate`; active-window extension evaluation also uses this mode
+with the privacy-limited capsule above. Spark receives compact JSON rather than
+raw process listings, full logs, network tails, source diffs, thinking content,
+or tool-result payloads. Its diagnostic summary is capped at 240 characters and explicitly distinguishes edit readiness, durable writes, and confirmed product-idle duration. Codex receives that summary plus fixed decision fields; raw evidence remains file-backed. Stable `continue`, `terminal`, and
 `visibility-unknown` states use no model call. `monitor-claude.sh decision`
 provides the same one-shot path manually. Neither local monitoring nor Spark
 authorizes interruption. Use

@@ -193,6 +193,11 @@ CLAUDE_CODE_HEARTBEAT_SECONDS="${CLAUDE_CODE_HEARTBEAT_SECONDS:-30}"
 CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-300}"
 CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-300}"
+CLAUDE_CODE_TIMEOUT_ADVISOR="${CLAUDE_CODE_TIMEOUT_ADVISOR:-auto}"
+CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS="${CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS:-60}"
+CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS:-90}"
+CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS="${CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS:-2}"
+CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS="${CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS:-30}"
 CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS="${CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS:-60}"
 CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS="${CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS:-120}"
 CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS="${CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS:-2}"
@@ -224,6 +229,13 @@ for _idle_name in CLAUDE_CODE_EDIT_READY_GRACE_SECONDS CLAUDE_CODE_PRODUCT_IDLE_
     case "$_idle_value" in ''|*[!0-9]*) echo "Error: ${_idle_name} must be a non-negative integer." >&2; exit 1 ;; esac
 done
 case "$CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS must be a positive integer." >&2; exit 1 ;; esac
+case "$CLAUDE_CODE_TIMEOUT_ADVISOR" in auto|on|off) ;; *) echo "Error: CLAUDE_CODE_TIMEOUT_ADVISOR must be auto, on, or off." >&2; exit 1 ;; esac
+for _advisor_name in CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS; do
+    _advisor_value="${!_advisor_name}"
+    case "$_advisor_value" in ''|*[!0-9]*) echo "Error: ${_advisor_name} must be a non-negative integer." >&2; exit 1 ;; esac
+done
+case "$CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS" in 0) echo "Error: CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS must be greater than 0." >&2; exit 1 ;; esac
+case "$CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS must be a positive integer." >&2; exit 1 ;; esac
 if [ "$CLAUDE_CODE_PROXY_MODE" != "direct" ] && [ "$CLAUDE_CODE_PROXY_MODE" != "inherit" ]; then
     echo "Error: CLAUDE_CODE_PROXY_MODE must be 'direct' or 'inherit'." >&2
     exit 1
@@ -313,6 +325,11 @@ fi
 # Builder/mixed, missing/ambiguous mode, or any risk keyword stays fresh.
 _PARSED_TASK_MODE=""
 _DECLARED_TASK_MODE=""
+_TASK_CARD_BUILDER_MODE=""
+_TASK_MODE_BUILDER_HINT=""
+_TASK_MODE_NORMALIZED=0
+_TASK_MODE_NORMALIZATION_REASON="none"
+_TASK_MODE_ROLE_ALIAS="none"
 if [ -f "$TASK_CARD" ]; then
     _PARSED_TASK_MODE="$(awk -F'|' '
         /^\|/ && NF >= 3 {
@@ -322,12 +339,84 @@ if [ -f "$TASK_CARD" ]; then
             if (tolower(field) == "mode") { print tolower(value); exit }
         }
     ' "$TASK_CARD" 2>/dev/null || true)"
+    _TASK_CARD_BUILDER_MODE="$(awk -F'|' '
+        /^\|/ && NF >= 3 {
+            field = $2; value = $3
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", field)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (tolower(field) == "builder mode") { print tolower(value); exit }
+        }
+    ' "$TASK_CARD" 2>/dev/null || true)"
 fi
 _DECLARED_TASK_MODE="$_PARSED_TASK_MODE"
-# A revision card is a narrowed Builder continuation, not a third runtime role.
-# Preserve the declared value in evidence while using Builder ownership/tooling.
-if [ "$_PARSED_TASK_MODE" = "revision" ]; then
-    _PARSED_TASK_MODE="builder"
+# Routing roles/presets are not runtime task modes. Normalize known legacy or
+# hand-written aliases before capability negotiation, while retaining the
+# declared value in receipts. Unknown and conflicting combinations fail early.
+case "$_PARSED_TASK_MODE" in
+    solution-planner)
+        _PARSED_TASK_MODE="builder"
+        _TASK_MODE_BUILDER_HINT="solution-planning"
+        _TASK_MODE_ROLE_ALIAS="solution-planner"
+        _TASK_MODE_NORMALIZED=1
+        _TASK_MODE_NORMALIZATION_REASON="role-alias-to-runtime-mode"
+        ;;
+    execution-builder)
+        _PARSED_TASK_MODE="builder"
+        _TASK_MODE_BUILDER_HINT="execution-only"
+        _TASK_MODE_ROLE_ALIAS="execution-builder"
+        _TASK_MODE_NORMALIZED=1
+        _TASK_MODE_NORMALIZATION_REASON="role-alias-to-runtime-mode"
+        ;;
+    batch-builder)
+        _PARSED_TASK_MODE="builder"
+        _TASK_MODE_BUILDER_HINT="batch"
+        _TASK_MODE_ROLE_ALIAS="batch-builder"
+        _TASK_MODE_NORMALIZED=1
+        _TASK_MODE_NORMALIZATION_REASON="role-alias-to-runtime-mode"
+        ;;
+    exploratory-builder)
+        _PARSED_TASK_MODE="builder"
+        _TASK_MODE_BUILDER_HINT="exploratory"
+        _TASK_MODE_ROLE_ALIAS="exploratory-builder"
+        _TASK_MODE_NORMALIZED=1
+        _TASK_MODE_NORMALIZATION_REASON="role-alias-to-runtime-mode"
+        ;;
+    checker)
+        _PARSED_TASK_MODE="checker-test"
+        _TASK_MODE_ROLE_ALIAS="checker"
+        _TASK_MODE_NORMALIZED=1
+        _TASK_MODE_NORMALIZATION_REASON="role-alias-to-runtime-mode"
+        ;;
+    revision)
+        _PARSED_TASK_MODE="builder"
+        _TASK_MODE_NORMALIZED=1
+        _TASK_MODE_NORMALIZATION_REASON="revision-to-builder"
+        ;;
+    builder|checker-test|mixed-exception|control-plane|"") ;;
+    *)
+        echo "Error: task card Mode '${_DECLARED_TASK_MODE}' is unknown; use builder, checker-test, mixed-exception, control-plane, or revision. Routing roles such as solution-planner are normalized only when recognized." >&2
+        exit 1
+        ;;
+esac
+case "$_TASK_CARD_BUILDER_MODE" in
+    ""|auto) ;;
+    standard|execution-only|solution-planning|batch|exploratory)
+        if [ -n "$_TASK_MODE_BUILDER_HINT" ] && [ "$_TASK_MODE_BUILDER_HINT" != "$_TASK_CARD_BUILDER_MODE" ]; then
+            echo "Error: task card Mode '${_DECLARED_TASK_MODE}' implies Builder mode '${_TASK_MODE_BUILDER_HINT}', but the card declares '${_TASK_CARD_BUILDER_MODE}'." >&2
+            exit 1
+        fi
+        _TASK_MODE_BUILDER_HINT="$_TASK_CARD_BUILDER_MODE"
+        ;;
+    *)
+        echo "Error: task card Builder mode '${_TASK_CARD_BUILDER_MODE}' is unknown." >&2
+        exit 1
+        ;;
+esac
+if [ -n "$_TASK_MODE_BUILDER_HINT" ] && \
+   [ "$_TASK_MODE_BUILDER_HINT" != "standard" ] && \
+   [ "$_PARSED_TASK_MODE" != "builder" ]; then
+    echo "Error: task card Builder mode '${_TASK_MODE_BUILDER_HINT}' requires effective task Mode 'builder', found '${_PARSED_TASK_MODE:-unknown}'." >&2
+    exit 1
 fi
 
 _IS_DAG_DISPATCH=0
@@ -544,6 +633,14 @@ case "$CLAUDE_CODE_BUILDER_MODE" in
         exit 1
         ;;
 esac
+if [ -n "$_TASK_MODE_BUILDER_HINT" ]; then
+    if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
+        CLAUDE_CODE_BUILDER_MODE="$_TASK_MODE_BUILDER_HINT"
+    elif [ "$CLAUDE_CODE_BUILDER_MODE" != "$_TASK_MODE_BUILDER_HINT" ]; then
+        echo "Error: task card role/mode requires CLAUDE_CODE_BUILDER_MODE=${_TASK_MODE_BUILDER_HINT}, but '${CLAUDE_CODE_BUILDER_MODE}' was requested." >&2
+        exit 1
+    fi
+fi
 CLAUDE_CODE_TOOL_PROFILE="${CLAUDE_CODE_TOOL_PROFILE:-auto}"
 case "$CLAUDE_CODE_TOOL_PROFILE" in
     auto|default|editor-only|minimal-builder|locator-builder|checker|diagnostic) ;;
@@ -628,12 +725,13 @@ if [ "$CLAUDE_CODE_TOOL_PROFILE" = "auto" ]; then
     if grep -Eiq '^\|[[:space:]]*(Tool profile|Shell access)[[:space:]]*\|[[:space:]]*(editor-only|forbidden|none)([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD" 2>/dev/null; then
         CLAUDE_CODE_TOOL_PROFILE="editor-only"
         _TOOL_PROFILE_DERIVATION="task-card-hard-restriction"
-    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ]; then
+    elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || \
+         [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] || \
+         [ "$CLAUDE_CODE_BUILDER_MODE" = "batch" ]; then
         CLAUDE_CODE_TOOL_PROFILE="minimal-builder"
     elif [ "$_PARSED_TASK_MODE" = "checker-test" ]; then
         CLAUDE_CODE_TOOL_PROFILE="checker"
     elif [ "$CLAUDE_CODE_BUILDER_MODE" = "standard" ] || \
-         [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ] || \
          [ "$CLAUDE_CODE_BUILDER_MODE" = "exploratory" ]; then
         CLAUDE_CODE_TOOL_PROFILE="locator-builder"
     else
@@ -1755,6 +1853,10 @@ PRODUCT_BASELINE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-baseline.json"
 PRODUCT_LIVE_STATE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-state.live.json"
 PRODUCT_STATE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-state.json"
 CHANGE_SIZE_ADVISORY_FILE="${WORKTREE_ROOT}/${TASK_ID}.change-size-advisory.json"
+EXTENSION_CAPSULE_FILE="${WORKTREE_ROOT}/${TASK_ID}.extension-capsule.json"
+EXTENSION_ADVISOR_OUTPUT_FILE="${WORKTREE_ROOT}/${TASK_ID}.extension-advisor.txt"
+EXTENSION_ADVISOR_STDERR_FILE="${WORKTREE_ROOT}/${TASK_ID}.extension-advisor.stderr.txt"
+EXTENSION_ADVISOR_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.extension-advisor.json"
 VALIDATION_CAPABILITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.validation-capability.json"
 MANAGED_RUNTIME_BUNDLE_FILE="${WORKTREE_ROOT}/${TASK_ID}.managed-runtime-bundle.json"
 REVISION_CARD_VALIDATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.revision-card-validation.json"
@@ -2772,6 +2874,10 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "builder_mode": "%s",\n' "$CLAUDE_CODE_BUILDER_MODE"
     printf '  "task_mode": "%s",\n' "${_PARSED_TASK_MODE:-unknown}"
     printf '  "declared_task_mode": "%s",\n' "${_DECLARED_TASK_MODE:-unknown}"
+    printf '  "task_mode_normalized": %s,\n' "$([ "$_TASK_MODE_NORMALIZED" -eq 1 ] && echo true || echo false)"
+    printf '  "task_mode_normalization_reason": "%s",\n' "$_TASK_MODE_NORMALIZATION_REASON"
+    printf '  "task_mode_role_alias": "%s",\n' "$_TASK_MODE_ROLE_ALIAS"
+    printf '  "task_card_builder_mode": "%s",\n' "${_TASK_CARD_BUILDER_MODE:-auto}"
     printf '  "tool_profile": "%s",\n' "$CLAUDE_CODE_TOOL_PROFILE"
     printf '  "tool_profile_derivation": "%s",\n' "$_TOOL_PROFILE_DERIVATION"
     printf '  "tool_profile_supported": %s,\n' "$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo true || echo false)"
@@ -2783,6 +2889,8 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "product_live_state_receipt": "%s",\n' "$PRODUCT_LIVE_STATE_FILE"
     printf '  "product_state_receipt": "%s",\n' "$PRODUCT_STATE_FILE"
     printf '  "activity_observation_receipt": "%s",\n' "$ACTIVITY_OBSERVATION_FILE"
+    printf '  "extension_capsule_receipt": "%s",\n' "$EXTENSION_CAPSULE_FILE"
+    printf '  "extension_advisor_receipt": "%s",\n' "$EXTENSION_ADVISOR_RECEIPT_FILE"
     printf '  "task_validation_allowlist": %s,\n' "$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo true || echo false)"
     printf '  "checker_runtime_enforcement": %s,\n' "$([ "$CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT" -eq 1 ] && echo true || echo false)"
     printf '  "checker_file_timeout_seconds": %s,\n' "$CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS"
@@ -2800,12 +2908,17 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "base_timeout_seconds": %s,\n' "$CLAUDE_CODE_TIMEOUT_SECONDS"
     printf '  "context_acquisition_timeout_seconds": %s,\n' "$CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS"
     printf '  "hard_timeout_seconds": %s,\n' "$CLAUDE_CODE_HARD_TIMEOUT_SECONDS"
-    printf '  "active_window_refresh_limit": 1,\n'
+    printf '  "active_window_refresh_limit": 0,\n'
+    printf '  "active_window_refresh_policy": "canonical-product-growth-until-hard-timeout",\n'
     printf '  "growth_extension_limit": 0,\n'
     printf '  "growth_extension_policy": "renewable-product-growth-until-hard-timeout",\n'
     printf '  "progress_extension_seconds": %s,\n' "$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
     printf '  "growing_progress_extension_seconds": %s,\n' "$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS"
     printf '  "recent_activity_window_seconds": %s,\n' "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS"
+    printf '  "timeout_advisor": "%s",\n' "$CLAUDE_CODE_TIMEOUT_ADVISOR"
+    printf '  "timeout_advisor_lead_seconds": %s,\n' "$CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS"
+    printf '  "timeout_advisor_call_timeout_seconds": %s,\n' "$CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS"
+    printf '  "timeout_advisor_max_attempts": %s,\n' "$CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS"
     printf '  "probe_mode": "%s",\n' "$CLAUDE_CODE_API_PROBE_MODE"
     printf '  "probe_environment": "%s",\n' "$CLAUDE_CODE_PROBE_ENVIRONMENT"
     printf '  "host_requested": %s,\n' "$([ "$DISPATCH_EXECUTION_ENV" = host ] && echo true || echo false)"
@@ -3450,6 +3563,11 @@ CLAUDE_CODE_HEARTBEAT_SECONDS="${CLAUDE_CODE_HEARTBEAT_SECONDS:-30}"
 CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS="${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS:-0}"
 CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS:-300}"
 CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS="${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS:-300}"
+CLAUDE_CODE_TIMEOUT_ADVISOR="${CLAUDE_CODE_TIMEOUT_ADVISOR:-auto}"
+CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS="${CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS:-60}"
+CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS="${CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS:-90}"
+CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS="${CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS:-2}"
+CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS="${CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS:-30}"
 
 PYTHON_CMD=""
 if command -v python3 &>/dev/null; then
@@ -3561,6 +3679,34 @@ esac
 case "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS" in
     ''|*[!0-9]*)
         echo "Error: CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS must be a non-negative integer." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_TIMEOUT_ADVISOR" in
+    auto|on|off) ;;
+    *)
+        echo "Error: CLAUDE_CODE_TIMEOUT_ADVISOR must be auto, on, or off." >&2
+        exit 1
+        ;;
+esac
+for _advisor_name in CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS; do
+    _advisor_value="${!_advisor_name}"
+    case "$_advisor_value" in
+        ''|*[!0-9]*)
+            echo "Error: ${_advisor_name} must be a non-negative integer." >&2
+            exit 1
+            ;;
+    esac
+done
+case "$CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS" in
+    ''|*[!0-9]*|0)
+        echo "Error: CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS must be a positive integer." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS" in
+    ''|*[!0-9]*|0)
+        echo "Error: CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS must be a positive integer." >&2
         exit 1
         ;;
 esac
@@ -4450,6 +4596,10 @@ PYEOF
 
     if [ "$CLAUDE_LAUNCHED" -eq 1 ] && [ "$DISPATCH_FINALIZED" -ne 1 ]; then
         set +e
+        if [ "${EXTENSION_ADVISOR_STATE:-idle}" = "running" ] && \
+           declare -F cancel_extension_advisor >/dev/null 2>&1; then
+            cancel_extension_advisor "dispatcher-abnormal-exit-${original_status}"
+        fi
         stop_claude "dispatcher-abnormal-exit-${original_status}" "unknown"
         local cleanup_status=$?
         set -e
@@ -4523,7 +4673,7 @@ cd "$WORKTREE_DIR"
 : > "$MONITOR_EVENT_LOG"
 write_network_header
 
-progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, context_acquisition_timeout_seconds=${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}, active_execution_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, hard_timeout_seconds=${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${_RUNTIME_STRATEGY:-$CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, growing_progress_extension_seconds=${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}, growth_extension_policy=renewable-product-growth-until-hard-timeout, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
+progress_log "Starting Claude Code: execution_profile=${CLAUDE_CODE_EXECUTION_PROFILE}, prompt_profile=${CLAUDE_CODE_PROMPT_PROFILE}, evidence_mode=${CLAUDE_CODE_EVIDENCE_MODE}, proxy_mode=${CLAUDE_CODE_PROXY_MODE}, route_source=${_ROUTE_SOURCE}, context_acquisition_timeout_seconds=${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}, active_execution_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS}, hard_timeout_seconds=${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}, heartbeat_seconds=${CLAUDE_CODE_HEARTBEAT_SECONDS}, no_output_timeout_seconds=${CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS}, network_monitor=${CLAUDE_CODE_NETWORK_MONITOR}, worktree_strategy=${_RUNTIME_STRATEGY:-$CLAUDE_CODE_WORKTREE_STRATEGY}, large_repo_mode=${CLAUDE_CODE_LARGE_REPO_MODE}, task_mode=${_PARSED_TASK_MODE:-unknown}, declared_task_mode=${_DECLARED_TASK_MODE:-unknown}, task_mode_normalized=${_TASK_MODE_NORMALIZED}, verbose=${CLAUDE_CODE_VERBOSE}, approval_convergence=${CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE}, worktree_progress=${CLAUDE_CODE_WORKTREE_PROGRESS}, builder_mode=${CLAUDE_CODE_BUILDER_MODE}, tool_profile=${CLAUDE_CODE_TOOL_PROFILE}, tool_profile_derivation=${_TOOL_PROFILE_DERIVATION}, tool_profile_supported=$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo yes || echo no), task_validation_allowlist=$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo yes || echo no), external_integrations_allowed=${_EXTERNAL_INTEGRATIONS_ALLOWED}, strict_mcp_isolation=${_STRICT_MCP_ISOLATION}, mcp_config_paths=${_MCP_CONFIG_PATHS_EVIDENCE}, plugin_paths=${_PLUGIN_PATHS_EVIDENCE}, external_integration_rejection=${_EXTERNAL_INTEGRATION_REJECTION:-none}, first_progress_timeout=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, first_progress_timeout_source=${_FIRST_PROGRESS_TIMEOUT_SOURCE}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, progress_extension_seconds=${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}, growing_progress_extension_seconds=${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}, growth_extension_policy=renewable-product-growth-until-hard-timeout, api_probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, startup_probe_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}"
 
 # Freeze the model-facing helpers from the same managed package as this
 # dispatcher. Historical/reviewed worktrees may contain older ai/* helpers and
@@ -5505,6 +5655,350 @@ SECOND_EXTENSION_START_REPORT_BYTES=0
 SECOND_EXTENSION_START_PROGRESS_BYTES=0
 _LOOP_SLEEP_SECONDS="$CLAUDE_CODE_HEARTBEAT_SECONDS"
 PRODUCT_STATE_SAMPLING_FAILED=0
+EXTENSION_ADVISOR_STATE="idle"
+EXTENSION_ADVISOR_PID=""
+EXTENSION_ADVISOR_PROCESS_GROUP=0
+EXTENSION_ADVISOR_ATTEMPTS=0
+EXTENSION_ADVISOR_EVALUATION_ID=""
+EXTENSION_ADVISOR_WINDOW_KIND=""
+EXTENSION_ADVISOR_BASE_DIGEST=""
+EXTENSION_ADVISOR_DECISION=""
+EXTENSION_ADVISOR_CONFIDENCE=""
+EXTENSION_ADVISOR_REASON=""
+EXTENSION_ADVISOR_SUMMARY=""
+EXTENSION_ADVISOR_NEXT_EPOCH=0
+EXTENSION_ADVISOR_LAST_STATUS="not-run"
+EXTENSION_ADVISOR_WAITING_FOR_IDLE_RECORDED=0
+EXTENSION_PENDING_ACTIVE=0
+EXTENSION_PENDING_RECORDED=0
+
+write_extension_advisor_receipt() {
+    local status="$1"
+    local reason="${2:-none}"
+    local decision="${3:-}"
+    local confidence="${4:-}"
+    EXTENSION_ADVISOR_LAST_STATUS="$status"
+    [ -n "$PYTHON_CMD" ] || return 0
+    "$PYTHON_CMD" - "$EXTENSION_ADVISOR_RECEIPT_FILE" "$TASK_ID" \
+        "$EXTENSION_ADVISOR_EVALUATION_ID" "$EXTENSION_ADVISOR_WINDOW_KIND" \
+        "$status" "$reason" "$decision" "$confidence" \
+        "$EXTENSION_ADVISOR_BASE_DIGEST" "${CURRENT_WORKTREE_DIGEST:-}" \
+        "$EXTENSION_ADVISOR_ATTEMPTS" "$EXTENSION_CAPSULE_FILE" \
+        "$EXTENSION_ADVISOR_OUTPUT_FILE" "${NOW_EPOCH:-0}" <<'PYEOF'
+import hashlib, json, os, sys, tempfile
+
+(path, task_id, evaluation_id, window_kind, status, reason, decision, confidence,
+ baseline_digest, current_digest, attempts, capsule, output, sampled_at) = sys.argv[1:]
+
+def digest(candidate):
+    try:
+        with open(candidate, "rb") as handle:
+            return "sha256:" + hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return None
+
+value = {
+    "schema_version": 1,
+    "task_id": task_id,
+    "evaluation_id": evaluation_id or None,
+    "window_kind": window_kind or None,
+    "status": status,
+    "reason": reason or None,
+    "decision": decision or None,
+    "confidence": confidence or None,
+    "baseline_product_digest": baseline_digest or None,
+    "current_product_digest": current_digest or None,
+    "attempt": int(attempts or 0),
+    "sampled_at_epoch": int(sampled_at or 0),
+    "capsule": capsule,
+    "capsule_sha256": digest(capsule),
+    "spark_output_sha256": digest(output),
+    "spark_is_advisory": True,
+    "interrupt_authorized_by_spark": False,
+    "hard_timeout_still_authoritative": True,
+}
+history = []
+try:
+    with open(path, "r", encoding="utf-8") as handle:
+        previous = json.load(handle)
+    if isinstance(previous, dict) and isinstance(previous.get("events"), list):
+        history = previous["events"][-31:]
+except (OSError, ValueError, TypeError):
+    pass
+history.append({
+    "evaluation_id": evaluation_id or None,
+    "window_kind": window_kind or None,
+    "status": status,
+    "reason": reason or None,
+    "decision": decision or None,
+    "confidence": confidence or None,
+    "baseline_product_digest": baseline_digest or None,
+    "current_product_digest": current_digest or None,
+    "sampled_at_epoch": int(sampled_at or 0),
+})
+value["events"] = history[-32:]
+directory = os.path.dirname(path) or "."
+fd, temporary = tempfile.mkstemp(prefix=".extension-advisor-", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, path)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except OSError:
+        pass
+    raise
+PYEOF
+}
+
+extension_advisor_available() {
+    [ "$CLAUDE_CODE_TIMEOUT_ADVISOR" != "off" ] && \
+    [ -n "$PYTHON_CMD" ] && \
+    command -v timeout >/dev/null 2>&1 && \
+    [ -f "${SCRIPT_DIR}/claude-extension-capsule.py" ] && \
+    [ -f "${SCRIPT_DIR}/run-codex-spark.sh" ]
+}
+
+start_extension_advisor() {
+    local now_epoch="$1"
+    local window_kind="${2:-active-execution}"
+    local window_deadline="${3:-$ACTIVE_EXECUTION_DEADLINE}"
+    local advisor_use_setsid=0
+    if ! extension_advisor_available; then
+        EXTENSION_ADVISOR_STATE="unavailable"
+        EXTENSION_ADVISOR_REASON="runtime-helper-unavailable"
+        write_extension_advisor_receipt "unavailable" "$EXTENSION_ADVISOR_REASON"
+        return 1
+    fi
+    if [ "$EXTENSION_ADVISOR_ATTEMPTS" -ge "$CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS" ]; then
+        EXTENSION_ADVISOR_STATE="exhausted"
+        EXTENSION_ADVISOR_REASON="attempt-budget-exhausted"
+        write_extension_advisor_receipt "exhausted" "$EXTENSION_ADVISOR_REASON"
+        return 1
+    fi
+
+    EXTENSION_ADVISOR_ATTEMPTS=$((EXTENSION_ADVISOR_ATTEMPTS + 1))
+    EXTENSION_ADVISOR_WINDOW_KIND="$window_kind"
+    EXTENSION_ADVISOR_EVALUATION_ID="${TASK_ID}-${window_kind}-${EXTENSION_ADVISOR_ATTEMPTS}-${now_epoch}"
+    EXTENSION_ADVISOR_BASE_DIGEST="$CURRENT_WORKTREE_DIGEST"
+    EXTENSION_ADVISOR_DECISION=""
+    EXTENSION_ADVISOR_CONFIDENCE=""
+    EXTENSION_ADVISOR_REASON=""
+    EXTENSION_ADVISOR_SUMMARY=""
+    EXTENSION_ADVISOR_WAITING_FOR_IDLE_RECORDED=0
+    : > "$EXTENSION_ADVISOR_OUTPUT_FILE"
+    : > "$EXTENSION_ADVISOR_STDERR_FILE"
+    if ! "$PYTHON_CMD" "${SCRIPT_DIR}/claude-extension-capsule.py" \
+        --session-root "${_CLAUDE_PROJECTS_SOURCE:-}" \
+        --session-id "$CLAUDE_SESSION_ID" \
+        --task-id "$TASK_ID" \
+        --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
+        --product-state "$PRODUCT_LIVE_STATE_FILE" \
+        --status-file "$STATUS_FILE" \
+        --output "$EXTENSION_CAPSULE_FILE" \
+        --evaluation-id "$EXTENSION_ADVISOR_EVALUATION_ID" \
+        --window-kind "$window_kind" \
+        --window-deadline "$window_deadline" \
+        --hard-deadline "$HARD_TIMEOUT_DEADLINE" \
+        --sampled-at "$now_epoch" \
+        --last-product-change "$LAST_PRODUCT_CHANGE_EPOCH" \
+        --last-session-activity "$LAST_SESSION_ACTIVITY_EPOCH" \
+        --recent-activity-window "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS"; then
+        EXTENSION_ADVISOR_STATE="failed"
+        EXTENSION_ADVISOR_REASON="capsule-build-failed"
+        EXTENSION_ADVISOR_NEXT_EPOCH=$((now_epoch + CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS))
+        write_extension_advisor_receipt "failed" "$EXTENSION_ADVISOR_REASON"
+        return 1
+    fi
+
+    command -v setsid >/dev/null 2>&1 && advisor_use_setsid=1
+    (
+        cd "$WORKTREE_DIR"
+        if [ "$advisor_use_setsid" -eq 1 ]; then
+            exec setsid timeout "${CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS}s" \
+                bash "${SCRIPT_DIR}/run-codex-spark.sh" \
+                --brief-file "$EXTENSION_CAPSULE_FILE" \
+                --mode monitor-triage --result-mode direct --diagnostics off --sandbox read-only \
+                --execution-env "$DISPATCH_EXECUTION_ENV"
+        fi
+        exec timeout "${CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS}s" \
+            bash "${SCRIPT_DIR}/run-codex-spark.sh" \
+            --brief-file "$EXTENSION_CAPSULE_FILE" \
+            --mode monitor-triage --result-mode direct --diagnostics off --sandbox read-only \
+            --execution-env "$DISPATCH_EXECUTION_ENV"
+    ) > "$EXTENSION_ADVISOR_OUTPUT_FILE" 2> "$EXTENSION_ADVISOR_STDERR_FILE" &
+    EXTENSION_ADVISOR_PID=$!
+    EXTENSION_ADVISOR_PROCESS_GROUP="$advisor_use_setsid"
+    EXTENSION_ADVISOR_STATE="running"
+    write_extension_advisor_receipt "running" "awaiting-spark-judgment"
+    progress_log "Spark timeout evaluation started: window_kind=${window_kind}, evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID}, attempt=${EXTENSION_ADVISOR_ATTEMPTS}/${CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS}, baseline_product_digest=${EXTENSION_ADVISOR_BASE_DIGEST}, claude_continues=yes"
+    monitor_event "event=extension-evaluation-started running=yes terminal=no window_kind=${window_kind} evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID} attempt=${EXTENSION_ADVISOR_ATTEMPTS} window_deadline_epoch=${window_deadline} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} claude_continues=yes"
+}
+
+cancel_extension_advisor() {
+    local reason="$1"
+    [ "$EXTENSION_ADVISOR_STATE" = "running" ] || return 0
+    if kill -0 "$EXTENSION_ADVISOR_PID" 2>/dev/null; then
+        if [ "$EXTENSION_ADVISOR_PROCESS_GROUP" -eq 1 ]; then
+            kill -TERM -- "-${EXTENSION_ADVISOR_PID}" 2>/dev/null || true
+        else
+            kill -TERM "$EXTENSION_ADVISOR_PID" 2>/dev/null || true
+        fi
+        sleep 1
+        if kill -0 "$EXTENSION_ADVISOR_PID" 2>/dev/null; then
+            if [ "$EXTENSION_ADVISOR_PROCESS_GROUP" -eq 1 ]; then
+                kill -KILL -- "-${EXTENSION_ADVISOR_PID}" 2>/dev/null || true
+            else
+                kill -KILL "$EXTENSION_ADVISOR_PID" 2>/dev/null || true
+            fi
+        fi
+    fi
+    wait "$EXTENSION_ADVISOR_PID" 2>/dev/null || true
+    EXTENSION_ADVISOR_STATE="superseded"
+    EXTENSION_ADVISOR_REASON="$reason"
+    write_extension_advisor_receipt "superseded" "$reason"
+}
+
+collect_extension_advisor() {
+    [ "$EXTENSION_ADVISOR_STATE" = "running" ] || return 0
+    if kill -0 "$EXTENSION_ADVISOR_PID" 2>/dev/null; then
+        return 0
+    fi
+    local advisor_status=0
+    if wait "$EXTENSION_ADVISOR_PID" 2>/dev/null; then
+        advisor_status=0
+    else
+        advisor_status=$?
+    fi
+    EXTENSION_ADVISOR_PID=""
+    EXTENSION_ADVISOR_PROCESS_GROUP=0
+    EXTENSION_ADVISOR_DECISION="$(awk -F= '$1=="decision" {v=$2} END {print v}' "$EXTENSION_ADVISOR_OUTPUT_FILE" 2>/dev/null || true)"
+    EXTENSION_ADVISOR_CONFIDENCE="$(awk -F= '$1=="confidence" {v=$2} END {print v}' "$EXTENSION_ADVISOR_OUTPUT_FILE" 2>/dev/null || true)"
+    EXTENSION_ADVISOR_REASON="$(awk -F= '$1=="reason_code" {v=$2} END {print substr(v,1,160)}' "$EXTENSION_ADVISOR_OUTPUT_FILE" 2>/dev/null || true)"
+    EXTENSION_ADVISOR_SUMMARY="$(awk -F= '$1=="summary" {sub(/^[^=]*=/, ""); v=$0} END {print substr(v,1,240)}' "$EXTENSION_ADVISOR_OUTPUT_FILE" 2>/dev/null | tr '\r\n' '  ' || true)"
+    local spark_status="$(awk -F= '$1=="spark_status" {v=$2} END {print v}' "$EXTENSION_ADVISOR_OUTPUT_FILE" 2>/dev/null || true)"
+    local response_received="$(awk -F= '$1=="spark_model_response_received" {v=$2} END {print v}' "$EXTENSION_ADVISOR_OUTPUT_FILE" 2>/dev/null || true)"
+    local activity_evidence="false"
+    if [ -s "$EXTENSION_CAPSULE_FILE" ]; then
+        activity_evidence="$($PYTHON_CMD -c 'import json,sys; print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("activity_evidence_available") else "false")' "$EXTENSION_CAPSULE_FILE" 2>/dev/null || echo false)"
+    fi
+    case "$EXTENSION_ADVISOR_DECISION" in continue|inspect|interrupt-candidate|uncertain) ;; *) EXTENSION_ADVISOR_DECISION="" ;; esac
+    case "$EXTENSION_ADVISOR_CONFIDENCE" in high|medium|low) ;; *) EXTENSION_ADVISOR_CONFIDENCE="low" ;; esac
+    if [ "$EXTENSION_ADVISOR_DECISION" = "continue" ] && [ "$activity_evidence" != "true" ]; then
+        EXTENSION_ADVISOR_DECISION="uncertain"
+        EXTENSION_ADVISOR_CONFIDENCE="low"
+        EXTENSION_ADVISOR_REASON="no-recent-model-or-tool-activity"
+    fi
+    if [ "$advisor_status" -eq 0 ] && [ "$spark_status" = "success" ] && \
+       [ "$response_received" = "yes" ] && [ -n "$EXTENSION_ADVISOR_DECISION" ]; then
+        EXTENSION_ADVISOR_STATE="ready"
+        write_extension_advisor_receipt "ready" "${EXTENSION_ADVISOR_REASON:-spark-judgment}" \
+            "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
+        progress_log "Spark timeout judgment ready: window_kind=${EXTENSION_ADVISOR_WINDOW_KIND}, evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID}, decision=${EXTENSION_ADVISOR_DECISION}, confidence=${EXTENSION_ADVISOR_CONFIDENCE}, product_digest_bound=${EXTENSION_ADVISOR_BASE_DIGEST}"
+        monitor_event "event=extension-evaluation-result running=yes terminal=no window_kind=${EXTENSION_ADVISOR_WINDOW_KIND} evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID} decision=${EXTENSION_ADVISOR_DECISION} confidence=${EXTENSION_ADVISOR_CONFIDENCE} reason=${EXTENSION_ADVISOR_REASON:-spark-judgment} product_digest=${EXTENSION_ADVISOR_BASE_DIGEST}"
+    else
+        EXTENSION_ADVISOR_STATE="failed"
+        EXTENSION_ADVISOR_REASON="spark-unavailable-or-invalid"
+        EXTENSION_ADVISOR_NEXT_EPOCH=$((${NOW_EPOCH:-0} + CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS))
+        write_extension_advisor_receipt "failed" "$EXTENSION_ADVISOR_REASON"
+        progress_log "Spark active-window evaluation produced no valid judgment: evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID}, exit_status=${advisor_status}, retry_after_epoch=${EXTENSION_ADVISOR_NEXT_EPOCH}, claude_continues=yes"
+    fi
+}
+
+refresh_active_window_for_product_growth() {
+    local now_epoch="$1"
+    local previous_evaluation="$EXTENSION_ADVISOR_EVALUATION_ID"
+    local refresh_reason="canonical_product_growth"
+    local refresh_signal="canonical_product_growth"
+    if [ "$EXTENSION_ADVISOR_STATE" = "running" ]; then
+        cancel_extension_advisor "product-growth-during-evaluation"
+        refresh_reason="product_growth_during_extension_evaluation"
+        refresh_signal="product_growth_during_extension_evaluation"
+    elif [ "$EXTENSION_PENDING_ACTIVE" -eq 1 ] || \
+         [ "$EXTENSION_ADVISOR_STATE" = "ready" ] || \
+         [ "$EXTENSION_ADVISOR_STATE" = "failed" ] || \
+         [ "$EXTENSION_ADVISOR_STATE" = "unavailable" ] || \
+         [ "$EXTENSION_ADVISOR_STATE" = "exhausted" ]; then
+        EXTENSION_ADVISOR_STATE="superseded"
+        EXTENSION_ADVISOR_REASON="product-growth-after-evaluation-snapshot"
+        write_extension_advisor_receipt "superseded" "$EXTENSION_ADVISOR_REASON"
+        refresh_reason="product_growth_during_extension_evaluation"
+        refresh_signal="product_growth_during_extension_evaluation"
+    fi
+    ACTIVE_EXECUTION_DEADLINE=$((now_epoch + CLAUDE_CODE_TIMEOUT_SECONDS))
+    if [ "$HARD_TIMEOUT_DEADLINE" -gt 0 ] && [ "$ACTIVE_EXECUTION_DEADLINE" -gt "$HARD_TIMEOUT_DEADLINE" ]; then
+        ACTIVE_EXECUTION_DEADLINE="$HARD_TIMEOUT_DEADLINE"
+    fi
+    TIMEOUT_EXTENSION_DEADLINE="$ACTIVE_EXECUTION_DEADLINE"
+    TIMEOUT_EXTENSION_REASON="$refresh_reason"
+    EXTENSION_PENDING_ACTIVE=0
+    EXTENSION_PENDING_RECORDED=0
+    EXTENSION_ADVISOR_STATE="idle"
+    EXTENSION_ADVISOR_ATTEMPTS=0
+    EXTENSION_ADVISOR_NEXT_EPOCH=0
+    EXTENSION_ADVISOR_WAITING_FOR_IDLE_RECORDED=0
+    if [ "$refresh_reason" = "product_growth_during_extension_evaluation" ]; then
+        progress_log "Spark evaluation superseded by real product growth: evaluation_id=${previous_evaluation:-none}, active_window_refreshed=yes, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+    else
+        progress_log "Canonical product growth refreshed the active window: active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+    fi
+    monitor_event "event=active-window-refreshed running=yes terminal=no elapsed_seconds=${ELAPSED} signal=${refresh_signal} reason=${refresh_reason} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} worktree_changes=${WORKTREE_CHANGES} product_changes=${WORKTREE_CHANGES} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS} active_window_remaining_seconds=$((ACTIVE_EXECUTION_DEADLINE > 0 ? ACTIVE_EXECUTION_DEADLINE - now_epoch : -1)) active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+}
+
+apply_spark_confirmed_extension() {
+    local now_epoch="$1"
+    local window_kind="$2"
+    local extension_seconds="$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
+    local extension_event="started"
+    local extension_deadline=0
+    if [ "$TIMEOUT_EXTENSION_ACTIVE" -eq 1 ]; then
+        extension_seconds="$CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS"
+        extension_event="renewed"
+    fi
+    [ "$extension_seconds" -gt 0 ] || return 1
+
+    TIMEOUT_EXTENSION_ACTIVE=1
+    TIMEOUT_EXTENSION_COUNT=$((TIMEOUT_EXTENSION_COUNT + 1))
+    TIMEOUT_EXTENSION_STARTED_EPOCH="$now_epoch"
+    extension_deadline=$((now_epoch + extension_seconds))
+    if [ "$HARD_TIMEOUT_DEADLINE" -gt 0 ] && [ "$extension_deadline" -gt "$HARD_TIMEOUT_DEADLINE" ]; then
+        extension_deadline="$HARD_TIMEOUT_DEADLINE"
+    fi
+    TIMEOUT_EXTENSION_DEADLINE="$extension_deadline"
+    TIMEOUT_EXTENSION_REASON="spark_confirmed_active_on_plan"
+    if [ "$window_kind" = "context-acquisition" ]; then
+        CONTEXT_ACQUISITION_DEADLINE="$extension_deadline"
+    else
+        ACTIVE_EXECUTION_DEADLINE="$extension_deadline"
+    fi
+    EXTENSION_START_WORKTREE_DIGEST="$LAST_WORKTREE_DIGEST"
+    EXTENSION_START_REPORT_BYTES="$REPORT_BYTES"
+    EXTENSION_START_PROGRESS_BYTES="$CLAUDE_PROGRESS_BYTES"
+    if [ "$TIMEOUT_EXTENSION_COUNT" -ge 2 ]; then
+        SECOND_EXTENSION_ACTIVE=1
+        SECOND_EXTENSION_STARTED_EPOCH="$now_epoch"
+        SECOND_EXTENSION_DEADLINE="$extension_deadline"
+        SECOND_EXTENSION_REASON="spark_confirmed_continued_activity"
+    fi
+    write_extension_advisor_receipt "applied-extend" "$TIMEOUT_EXTENSION_REASON" \
+        "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
+    if [ "$window_kind" = "active-execution" ]; then
+        progress_log "Spark-confirmed active window extension: evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID}, ordinal=${TIMEOUT_EXTENSION_COUNT}, extension_seconds=${extension_seconds}, deadline_epoch=${extension_deadline}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+    else
+        progress_log "Spark-confirmed context-acquisition extension: evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID}, ordinal=${TIMEOUT_EXTENSION_COUNT}, extension_seconds=${extension_seconds}, deadline_epoch=${extension_deadline}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+    fi
+    monitor_event "event=active-window-extended running=yes terminal=no window_kind=${window_kind} elapsed_seconds=${ELAPSED} reason=${TIMEOUT_EXTENSION_REASON} extension_event=${extension_event} extension_ordinal=${TIMEOUT_EXTENSION_COUNT} extension_seconds=${extension_seconds} advisor_decision=${EXTENSION_ADVISOR_DECISION} advisor_confidence=${EXTENSION_ADVISOR_CONFIDENCE} active_window_remaining_seconds=$((extension_deadline - now_epoch)) active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} context_deadline_epoch=${CONTEXT_ACQUISITION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+    EXTENSION_PENDING_ACTIVE=0
+    EXTENSION_PENDING_RECORDED=0
+    EXTENSION_ADVISOR_STATE="idle"
+    EXTENSION_ADVISOR_ATTEMPTS=0
+    EXTENSION_ADVISOR_NEXT_EPOCH=0
+    EXTENSION_ADVISOR_WAITING_FOR_IDLE_RECORDED=0
+    return 0
+}
+
 if [ -n "$PYTHON_CMD" ]; then
     phase_event "exploring" ""
     _LAST_EMITTED_PHASE="exploring"
@@ -5597,6 +6091,14 @@ PYEOF
         # approved baseline is still an edit and must reset the idle clock.
         LAST_PRODUCT_CHANGE_EPOCH="$NOW_EPOCH"
         PRODUCT_IDLE_CONFIRMATION_COUNT=0
+    fi
+    collect_extension_advisor
+    # After the first durable delta, every later canonical product-content
+    # change renews the complete active window. This closes the race between a
+    # Spark snapshot and a concurrent Claude write; the hard deadline remains
+    # authoritative. Control/report/session activity never enters this path.
+    if [ "$WORKTREE_CHANGED" -eq 1 ] && [ "$FIRST_PROGRESS_DETECTED" -eq 1 ]; then
+        refresh_active_window_for_product_growth "$NOW_EPOCH"
     fi
     if [ "$RESULT_STATUS_BYTES" -ne "$LAST_RESULT_STATUS_BYTES" ] || \
        [ "$CURRENT_REPORT_HASH" != "$LAST_REPORT_HASH" ] || \
@@ -5795,6 +6297,22 @@ PYEOF
             ACTIVE_WINDOW_REFRESHED=1
             progress_log "First substantive progress detected: signal=${_FP_SIGNAL}, first_progress_detected=1, elapsed_seconds=${ELAPSED}, active_window_refreshed=yes, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
             monitor_event "event=active-window-refreshed running=yes terminal=no elapsed_seconds=${ELAPSED} signal=${_FP_SIGNAL} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} worktree_changes=${WORKTREE_CHANGES} product_changes=${WORKTREE_CHANGES} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS} active_window_remaining_seconds=$((ACTIVE_EXECUTION_DEADLINE > 0 ? ACTIVE_EXECUTION_DEADLINE - NOW_EPOCH : -1)) active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} activity_receipt=${ACTIVITY_OBSERVATION_FILE}"
+            if [ "$EXTENSION_ADVISOR_WINDOW_KIND" = "context-acquisition" ] && \
+               [ "$EXTENSION_ADVISOR_STATE" != "idle" ]; then
+                if [ "$EXTENSION_ADVISOR_STATE" = "running" ]; then
+                    cancel_extension_advisor "first-product-growth-during-context-evaluation"
+                else
+                    EXTENSION_ADVISOR_STATE="superseded"
+                    EXTENSION_ADVISOR_REASON="first-product-growth-after-context-snapshot"
+                    write_extension_advisor_receipt "superseded" "$EXTENSION_ADVISOR_REASON"
+                fi
+                EXTENSION_PENDING_ACTIVE=0
+                EXTENSION_PENDING_RECORDED=0
+                EXTENSION_ADVISOR_STATE="idle"
+                EXTENSION_ADVISOR_ATTEMPTS=0
+                EXTENSION_ADVISOR_NEXT_EPOCH=0
+                progress_log "Context timeout evaluation superseded by first product progress: evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID:-none}, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}"
+            fi
         elif [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
              [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ]; then
             if [ "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" = "observe" ]; then
@@ -5817,11 +6335,15 @@ PYEOF
                     FIRST_PROGRESS_OBSERVATION_RECORDED=1
                     progress_log "First-progress observation: no substantive progress within ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s; continuing within context-acquisition window (action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, probe_mode=${CLAUDE_CODE_API_PROBE_MODE})"
                 fi
-            else
-                # Legacy stop mode
+            elif [ "$CLAUDE_CODE_TIMEOUT_ADVISOR" = "off" ]; then
+                # Compatibility stop mode. With the advisor enabled, this
+                # boundary is handled below without interrupting Claude first.
                 CLAUDE_FIRST_PROGRESS_TIMED_OUT=1
                 stop_claude "first_progress_timeout after ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s" "$ELAPSED"
                 break
+            elif [ "$FIRST_PROGRESS_OBSERVATION_RECORDED" -eq 0 ]; then
+                FIRST_PROGRESS_OBSERVATION_RECORDED=1
+                progress_log "First-progress boundary reached; Claude continues pending Spark timeout judgment: timeout_seconds=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}, advisor=${CLAUDE_CODE_TIMEOUT_ADVISOR}"
             fi
         fi
     fi
@@ -5858,14 +6380,19 @@ PYEOF
         elif [ "$CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS" -gt 0 ] && \
              [ "$PRODUCT_IDLE_SECONDS" -ge "$CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS" ]; then
             EXECUTION_ACTIVITY_STATE="implementation-idle"
-            PRODUCT_IDLE_CONFIRMATION_COUNT=$((PRODUCT_IDLE_CONFIRMATION_COUNT + 1))
-            progress_log "Product edit idle candidate: idle_seconds=${PRODUCT_IDLE_SECONDS}, confirmation=${PRODUCT_IDLE_CONFIRMATION_COUNT}/${CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS}, validation=no, tail=no, blocker=no"
+            if [ "$PRODUCT_IDLE_CONFIRMATION_COUNT" -lt "$CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS" ]; then
+                PRODUCT_IDLE_CONFIRMATION_COUNT=$((PRODUCT_IDLE_CONFIRMATION_COUNT + 1))
+                progress_log "Product edit idle candidate: idle_seconds=${PRODUCT_IDLE_SECONDS}, confirmation=${PRODUCT_IDLE_CONFIRMATION_COUNT}/${CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS}, validation=no, tail=no, blocker=no, timeout_advisor=${CLAUDE_CODE_TIMEOUT_ADVISOR}"
+            fi
             if [ "$PRODUCT_IDLE_CONFIRMATION_COUNT" -ge "$CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS" ]; then
-                PRODUCT_IDLE_STOPPED=1
-                CLAUDE_TIMED_OUT=1
-                TIMEOUT_EXTENSION_REASON="product_idle_confirmed"
-                stop_claude "product content unchanged for ${PRODUCT_IDLE_SECONDS}s across ${PRODUCT_IDLE_CONFIRMATION_COUNT} confirmations" "$ELAPSED"
-                break
+                if [ "$CLAUDE_CODE_TIMEOUT_ADVISOR" = "off" ]; then
+                    PRODUCT_IDLE_STOPPED=1
+                    CLAUDE_TIMED_OUT=1
+                    TIMEOUT_EXTENSION_REASON="product_idle_confirmed"
+                    stop_claude "product content unchanged for ${PRODUCT_IDLE_SECONDS}s across ${PRODUCT_IDLE_CONFIRMATION_COUNT} confirmations" "$ELAPSED"
+                    break
+                fi
+                EXECUTION_ACTIVITY_STATE="implementation-idle-candidate"
             fi
         else
             EXECUTION_ACTIVITY_STATE="implementation-active"
@@ -5981,20 +6508,153 @@ PYEOF
         _WRITE_BLOCKER_CONVERGENCE_COUNT=0
     fi
 
+    # Start the bounded Spark evaluation shortly before either the initial
+    # context-acquisition deadline or a later active-execution deadline.
+    # Claude remains the writing owner. A failed/absent judgment never stops it.
+    _ADVISOR_WINDOW_KIND=""
+    _ADVISOR_WINDOW_DEADLINE=0
+    if [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && [ "$EDIT_READY_DETECTED" -eq 0 ]; then
+        _ADVISOR_WINDOW_KIND="context-acquisition"
+        _ADVISOR_WINDOW_DEADLINE="$CONTEXT_ACQUISITION_DEADLINE"
+    elif [ "$FIRST_PROGRESS_DETECTED" -eq 1 ]; then
+        _ADVISOR_WINDOW_KIND="active-execution"
+        _ADVISOR_WINDOW_DEADLINE="$ACTIVE_EXECUTION_DEADLINE"
+    fi
+    if [ "$CLAUDE_CODE_TIMEOUT_ADVISOR" != "off" ] && \
+       [ "$_ADVISOR_WINDOW_DEADLINE" -gt 0 ] && \
+       [ "$NOW_EPOCH" -ge $((_ADVISOR_WINDOW_DEADLINE - CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS)) ] && \
+       [ "$NOW_EPOCH" -lt "$_ADVISOR_WINDOW_DEADLINE" ] && \
+       [ "$NOW_EPOCH" -ge "$EXTENSION_ADVISOR_NEXT_EPOCH" ]; then
+        if [ "$EXTENSION_ADVISOR_STATE" = "idle" ] || \
+           { [ "$EXTENSION_ADVISOR_STATE" = "failed" ] && \
+             [ "$EXTENSION_ADVISOR_ATTEMPTS" -lt "$CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS" ]; }; then
+            start_extension_advisor "$NOW_EPOCH" "$_ADVISOR_WINDOW_KIND" "$_ADVISOR_WINDOW_DEADLINE" || true
+        fi
+    fi
+
     if [ "$HARD_TIMEOUT_DEADLINE" -gt 0 ] && [ "$NOW_EPOCH" -ge "$HARD_TIMEOUT_DEADLINE" ]; then
         CLAUDE_TIMED_OUT=1
+        if [ "$EXTENSION_ADVISOR_STATE" = "running" ]; then
+            cancel_extension_advisor "hard-timeout"
+        fi
         stop_claude "hard runtime timeout" "$ELAPSED"
         break
     fi
 
     if [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && [ "$EDIT_READY_DETECTED" -eq 0 ]; then
         if [ "$CONTEXT_ACQUISITION_DEADLINE" -gt 0 ] && [ "$NOW_EPOCH" -ge "$CONTEXT_ACQUISITION_DEADLINE" ]; then
-            CLAUDE_TIMED_OUT=1
-            TIMEOUT_EXTENSION_REASON="context_acquisition_expired"
-            stop_claude "context acquisition timeout without substantive execution progress" "$ELAPSED"
-            break
+            if [ "$CLAUDE_CODE_TIMEOUT_ADVISOR" = "off" ]; then
+                CLAUDE_TIMED_OUT=1
+                TIMEOUT_EXTENSION_REASON="context_acquisition_expired"
+                stop_claude "context acquisition timeout without substantive execution progress" "$ELAPSED"
+                break
+            fi
+            EXTENSION_PENDING_ACTIVE=1
+            EXECUTION_ACTIVITY_STATE="context-extension-pending"
+            if [ "$EXTENSION_PENDING_RECORDED" -eq 0 ]; then
+                EXTENSION_PENDING_RECORDED=1
+                progress_log "Context-acquisition window elapsed; Claude continues while Spark judgment is pending: context_deadline_epoch=${CONTEXT_ACQUISITION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}, advisor_state=${EXTENSION_ADVISOR_STATE}"
+                monitor_event "event=extension-evaluation-pending running=yes terminal=no window_kind=context-acquisition elapsed_seconds=${ELAPSED} advisor_state=${EXTENSION_ADVISOR_STATE} attempt=${EXTENSION_ADVISOR_ATTEMPTS} window_deadline_epoch=${CONTEXT_ACQUISITION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} claude_continues=yes"
+            fi
+            if [ "$EXTENSION_ADVISOR_STATE" = "idle" ] || \
+               { [ "$EXTENSION_ADVISOR_STATE" = "failed" ] && \
+                 [ "$EXTENSION_ADVISOR_ATTEMPTS" -lt "$CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS" ] && \
+                 [ "$NOW_EPOCH" -ge "$EXTENSION_ADVISOR_NEXT_EPOCH" ]; }; then
+                start_extension_advisor "$NOW_EPOCH" "context-acquisition" "$CONTEXT_ACQUISITION_DEADLINE" || true
+            fi
+            if [ "$EXTENSION_ADVISOR_STATE" = "ready" ]; then
+                if [ "$EXTENSION_ADVISOR_DECISION" = "continue" ] && \
+                   { [ "$EXTENSION_ADVISOR_CONFIDENCE" = "high" ] || \
+                     [ "$EXTENSION_ADVISOR_CONFIDENCE" = "medium" ]; }; then
+                    apply_spark_confirmed_extension "$NOW_EPOCH" "context-acquisition" || true
+                elif [ "$EXTENSION_ADVISOR_DECISION" = "interrupt-candidate" ] && \
+                     [ "$EXTENSION_ADVISOR_CONFIDENCE" = "high" ] && \
+                     [ "$CURRENT_WORKTREE_DIGEST" = "$EXTENSION_ADVISOR_BASE_DIGEST" ]; then
+                    CLAUDE_TIMED_OUT=1
+                    TIMEOUT_EXTENSION_REASON="spark_stop_without_initial_product_progress"
+                    write_extension_advisor_receipt "applied-stop" "$TIMEOUT_EXTENSION_REASON" \
+                        "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
+                    stop_claude "context acquisition timeout after Spark stop advice and no product progress" "$ELAPSED"
+                    break
+                else
+                    EXTENSION_ADVISOR_REASON="spark-no-actionable-judgment"
+                    EXTENSION_ADVISOR_NEXT_EPOCH=$((NOW_EPOCH + CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS))
+                    if [ "$EXTENSION_ADVISOR_ATTEMPTS" -ge "$CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS" ]; then
+                        EXTENSION_ADVISOR_STATE="exhausted"
+                        write_extension_advisor_receipt "exhausted" "$EXTENSION_ADVISOR_REASON" \
+                            "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
+                    else
+                        EXTENSION_ADVISOR_STATE="failed"
+                        write_extension_advisor_receipt "no-judgment" "$EXTENSION_ADVISOR_REASON" \
+                            "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
+                    fi
+                    progress_log "Spark context-acquisition judgment was not actionable; Claude continues: decision=${EXTENSION_ADVISOR_DECISION:-none}, confidence=${EXTENSION_ADVISOR_CONFIDENCE:-low}, retry_after_epoch=${EXTENSION_ADVISOR_NEXT_EPOCH}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+                fi
+            fi
+        fi
+    elif [ "$ACTIVE_EXECUTION_DEADLINE" -gt 0 ] && [ "$NOW_EPOCH" -ge "$ACTIVE_EXECUTION_DEADLINE" ] && \
+         [ "$CLAUDE_CODE_TIMEOUT_ADVISOR" != "off" ]; then
+        EXTENSION_PENDING_ACTIVE=1
+        EXECUTION_ACTIVITY_STATE="extension-pending"
+        if [ "$EXTENSION_PENDING_RECORDED" -eq 0 ]; then
+            EXTENSION_PENDING_RECORDED=1
+            progress_log "Active window elapsed; Claude continues while Spark judgment is pending: active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}, advisor_state=${EXTENSION_ADVISOR_STATE}"
+            monitor_event "event=extension-evaluation-pending running=yes terminal=no elapsed_seconds=${ELAPSED} advisor_state=${EXTENSION_ADVISOR_STATE} attempt=${EXTENSION_ADVISOR_ATTEMPTS} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} claude_continues=yes"
+        fi
+
+        if [ "$EXTENSION_ADVISOR_STATE" = "idle" ] || \
+           { [ "$EXTENSION_ADVISOR_STATE" = "failed" ] && \
+             [ "$EXTENSION_ADVISOR_ATTEMPTS" -lt "$CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS" ] && \
+             [ "$NOW_EPOCH" -ge "$EXTENSION_ADVISOR_NEXT_EPOCH" ]; }; then
+            start_extension_advisor "$NOW_EPOCH" || true
+        fi
+
+        if [ "$EXTENSION_ADVISOR_STATE" = "ready" ]; then
+            if [ "$CURRENT_WORKTREE_DIGEST" != "$EXTENSION_ADVISOR_BASE_DIGEST" ]; then
+                refresh_active_window_for_product_growth "$NOW_EPOCH"
+            elif [ "$EXTENSION_ADVISOR_DECISION" = "continue" ] && \
+                 { [ "$EXTENSION_ADVISOR_CONFIDENCE" = "high" ] || \
+                   [ "$EXTENSION_ADVISOR_CONFIDENCE" = "medium" ]; }; then
+                apply_spark_confirmed_extension "$NOW_EPOCH" "active-execution" || true
+            elif [ "$EXTENSION_ADVISOR_DECISION" = "interrupt-candidate" ] && \
+                 [ "$EXTENSION_ADVISOR_CONFIDENCE" = "high" ]; then
+                if [ "$PRODUCT_IDLE_CONFIRMATION_COUNT" -ge "$CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS" ]; then
+                    CLAUDE_TIMED_OUT=1
+                    PRODUCT_IDLE_STOPPED=1
+                    TIMEOUT_EXTENSION_REASON="spark_stop_with_confirmed_product_idle"
+                    write_extension_advisor_receipt "applied-stop" "$TIMEOUT_EXTENSION_REASON" \
+                        "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
+                    stop_claude "active execution timeout after Spark stop advice and confirmed product idle" "$ELAPSED"
+                    break
+                fi
+                # Preserve the hash-current Spark candidate until deterministic
+                # idle corroboration catches up. Do not spend another model call
+                # or treat the pending local condition as an invalid judgment.
+                if [ "$EXTENSION_ADVISOR_WAITING_FOR_IDLE_RECORDED" -eq 0 ]; then
+                    EXTENSION_ADVISOR_WAITING_FOR_IDLE_RECORDED=1
+                    write_extension_advisor_receipt "pending-local-corroboration" \
+                        "awaiting-product-idle-confirmations" \
+                        "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
+                    progress_log "Spark stop candidate is waiting for deterministic product-idle corroboration: confirmation=${PRODUCT_IDLE_CONFIRMATION_COUNT}/${CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS}, claude_continues=yes"
+                    monitor_event "event=extension-evaluation-pending running=yes terminal=no evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID} reason=awaiting-product-idle-corroboration idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT}/${CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS} claude_continues=yes"
+                fi
+            else
+                EXTENSION_ADVISOR_REASON="spark-no-actionable-judgment"
+                EXTENSION_ADVISOR_NEXT_EPOCH=$((NOW_EPOCH + CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS))
+                if [ "$EXTENSION_ADVISOR_ATTEMPTS" -ge "$CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS" ]; then
+                    EXTENSION_ADVISOR_STATE="exhausted"
+                    write_extension_advisor_receipt "exhausted" "$EXTENSION_ADVISOR_REASON" \
+                        "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
+                else
+                    EXTENSION_ADVISOR_STATE="failed"
+                    write_extension_advisor_receipt "no-judgment" "$EXTENSION_ADVISOR_REASON" \
+                        "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
+                fi
+                progress_log "Spark judgment was not actionable; Claude continues: decision=${EXTENSION_ADVISOR_DECISION:-none}, confidence=${EXTENSION_ADVISOR_CONFIDENCE:-low}, retry_after_epoch=${EXTENSION_ADVISOR_NEXT_EPOCH}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
+            fi
         fi
     elif [ "$ACTIVE_EXECUTION_DEADLINE" -gt 0 ] && [ "$NOW_EPOCH" -ge "$ACTIVE_EXECUTION_DEADLINE" ]; then
+        # Compatibility path when the timeout advisor is explicitly disabled.
         _RECENT_PRODUCT_ACTIVITY_SECONDS=$((NOW_EPOCH - LAST_PRODUCT_CHANGE_EPOCH))
         _EXTENSION_SECONDS="$CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS"
         _EXTENSION_EVENT="started"
@@ -6050,13 +6710,19 @@ PYEOF
         fi
     fi
 
-    if [ "$CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && [ "$QUIET_SECONDS" -ge "$CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS" ]; then
+    if [ "$CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS" -gt 0 ] && \
+       [ "$QUIET_SECONDS" -ge "$CLAUDE_CODE_NO_OUTPUT_TIMEOUT_SECONDS" ] && \
+       [ "$EXTENSION_PENDING_ACTIVE" -eq 0 ] && \
+       [ "$EXTENSION_ADVISOR_STATE" != "running" ]; then
         CLAUDE_NO_OUTPUT_TIMED_OUT=1
         stop_claude "no output for ${QUIET_SECONDS}s" "$ELAPSED"
         break
     fi
 done
 
+if [ "$EXTENSION_ADVISOR_STATE" = "running" ]; then
+    cancel_extension_advisor "claude-terminal"
+fi
 wait "$CLAUDE_PID"
 CLAUDE_STATUS=$?
 if ! sync_write_scope_staging; then
@@ -7070,7 +7736,10 @@ if [ -n "$PYTHON_CMD" ]; then
         "$DISPATCH_EXECUTION_ENV" "$CLAUDE_CODE_HOST_AUTHORITY" \
         "${_STARTUP_PROBE_CONCLUSION:-not-run}" "$WRITE_RUNTIME_BLOCKED" \
         "$DISPATCH_EVIDENCE_CODE" "$IMPLEMENTATION_CHANGES" "$TOTAL_PRODUCT_CHANGES" "$CONTROL_CHANGES" \
-        "$FINAL_PRODUCT_DIGEST" "$FINAL_PRODUCT_DELTA" "$PRODUCT_STATE_FILE" <<'PYEOF'
+        "$FINAL_PRODUCT_DIGEST" "$FINAL_PRODUCT_DELTA" "$PRODUCT_STATE_FILE" \
+        "${EXTENSION_ADVISOR_STATE:-not-run}" "${EXTENSION_ADVISOR_LAST_STATUS:-not-run}" \
+        "${EXTENSION_ADVISOR_ATTEMPTS:-0}" \
+        "$EXTENSION_ADVISOR_RECEIPT_FILE" <<'PYEOF'
 import json, os, sys, tempfile
 (
     output, task_id, dispatch_outcome, dispatch_success, report_consistency,
@@ -7078,7 +7747,9 @@ import json, os, sys, tempfile
     builder_launched, claude_first_satisfied, workflow_status,
     requested_env, host_authority, startup_probe, write_runtime_blocked,
     evidence_state, product_changes, total_product_changes, control_changes, product_hash,
-    product_delta, product_state_receipt,
+    product_delta, product_state_receipt, extension_advisor_state,
+    extension_advisor_last_status, extension_advisor_attempts,
+    extension_advisor_receipt,
 ) = sys.argv[1:]
 value = {
     "schema_version": 1,
@@ -7104,6 +7775,12 @@ value = {
     "product_hash": product_hash or None,
     "product_delta_from_baseline": product_delta == "1",
     "product_state_receipt": product_state_receipt,
+    "extension_advisor_state": extension_advisor_state,
+    "extension_advisor_last_status": extension_advisor_last_status,
+    "extension_advisor_attempts": int(extension_advisor_attempts),
+    "extension_advisor_receipt": (
+        extension_advisor_receipt if os.path.isfile(extension_advisor_receipt) else None
+    ),
 }
 directory = os.path.dirname(output) or "."
 fd, temporary = tempfile.mkstemp(prefix=".outcome-", dir=directory)
@@ -7841,7 +8518,7 @@ SESSION_ACTIVITY_SECONDS_AGO=-1
 PRODUCT_ACTIVITY_SECONDS_AGO=-1
 [ "$LAST_PRODUCT_CHANGE_EPOCH" -le 0 ] || PRODUCT_ACTIVITY_SECONDS_AGO=$((_FINAL_OBSERVATION_EPOCH - LAST_PRODUCT_CHANGE_EPOCH))
 ALL_WORKTREE_CHANGES=$((TOTAL_PRODUCT_CHANGES + CONTROL_CHANGES))
-monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} dispatch_success=${DISPATCH_SUCCESS} artifact_valid=${ARTIFACT_VALID} validation_success=${VALIDATION_STATUS} semantic_acceptance=${SEMANTIC_ACCEPTANCE} completion_state=${COMPLETION_STATE} evidence_state=${DISPATCH_EVIDENCE_CODE} worktree_changes=${ALL_WORKTREE_CHANGES} product_changes=${IMPLEMENTATION_CHANGES} total_product_changes=${TOTAL_PRODUCT_CHANGES} control_changes=${CONTROL_CHANGES} product_delta_from_baseline=${FINAL_PRODUCT_DELTA} product_hash=${FINAL_PRODUCT_DIGEST:-unavailable} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} activity_receipt=${ACTIVITY_OBSERVATION_FILE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED}"
+monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} dispatch_success=${DISPATCH_SUCCESS} artifact_valid=${ARTIFACT_VALID} validation_success=${VALIDATION_STATUS} semantic_acceptance=${SEMANTIC_ACCEPTANCE} completion_state=${COMPLETION_STATE} evidence_state=${DISPATCH_EVIDENCE_CODE} worktree_changes=${ALL_WORKTREE_CHANGES} product_changes=${IMPLEMENTATION_CHANGES} total_product_changes=${TOTAL_PRODUCT_CHANGES} control_changes=${CONTROL_CHANGES} product_delta_from_baseline=${FINAL_PRODUCT_DELTA} product_hash=${FINAL_PRODUCT_DIGEST:-unavailable} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} activity_receipt=${ACTIVITY_OBSERVATION_FILE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED} extension_advisor_state=${EXTENSION_ADVISOR_STATE:-not-run} extension_advisor_last_status=${EXTENSION_ADVISOR_LAST_STATUS:-not-run} extension_advisor_attempts=${EXTENSION_ADVISOR_ATTEMPTS:-0} extension_advisor_receipt=${EXTENSION_ADVISOR_RECEIPT_FILE}"
 DISPATCH_FINALIZED=1
 
 echo "Report saved to: $REPORT_FILE"
@@ -7869,11 +8546,16 @@ echo "Phase Metrics:    $PHASE_METRICS_FILE"
 echo "Large Repo Mode: $CLAUDE_CODE_LARGE_REPO_MODE"
 echo "Prompt Profile:  $CLAUDE_CODE_PROMPT_PROFILE"
 echo "Evidence Mode:   $CLAUDE_CODE_EVIDENCE_MODE"
+if [ "$_TASK_MODE_NORMALIZED" -eq 1 ]; then
+    echo "Task Mode:       ${_PARSED_TASK_MODE} (normalized from ${_DECLARED_TASK_MODE}; ${_TASK_MODE_NORMALIZATION_REASON})"
+else
+    echo "Task Mode:       ${_PARSED_TASK_MODE:-unknown}"
+fi
 echo "Builder Mode:    $CLAUDE_CODE_BUILDER_MODE"
 echo "Tool Profile:    $CLAUDE_CODE_TOOL_PROFILE (${_TOOL_PROFILE_DERIVATION})"
 echo "First Progress:  ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s ${CLAUDE_CODE_FIRST_PROGRESS_ACTION}"
 echo "Context Window:  ${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}s"
-echo "Active Window:   ${CLAUDE_CODE_TIMEOUT_SECONDS}s (one refresh)"
+echo "Active Window:   ${CLAUDE_CODE_TIMEOUT_SECONDS}s (renewed by product growth; hard-cap bounded)"
 echo "Growth Ext:      ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s initial, ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}s renewable (hard-cap bounded)"
 echo "Hard Cap:        ${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}s"
 echo "Dispatch Outcome:${DISPATCH_OUTCOME}"

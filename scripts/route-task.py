@@ -176,8 +176,8 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     c, cl, s = budgets.get(lane, budgets["standard"])
 
     # Explicit human ownership is authoritative. Otherwise Claude-first keeps
-    # planning, implementation, revision, test writing, and long validation on
-    # Claude; Codex freezes intent and performs one bounded semantic review.
+    # implementation, revision, test writing, and long validation on Claude;
+    # Codex owns core planning and bounded semantic review. Planner is opt-in.
     # Economy-first retains the stricter positive delegation gate.
     owner_hint = data.get("execution_owner", data.get("recommended_owner"))
     explicit_owner_hint = bool(owner_hint)
@@ -198,8 +198,18 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     delegation_value = False if evidence_closes_acceptance else data.get("delegation_value")
     requested_role = str(data.get("claude_role") or "none")
     solution_planner_requested = requested_role == "solution-planner"
+    # A Planner adds a complete serial Claude round before implementation.
+    # Never infer or select it from repository size/open-path facts alone.
+    # The legacy allow_claude_planner flag remains an explicit compatibility
+    # alias; ordinary claude_role hints are not sufficient authority.
+    solution_planner_opt_in = bool(
+        data.get("solution_planner_opt_in") is True
+        or data.get("allow_claude_planner") is True
+    )
     explicit_read_only_task = data.get("read_only_task") is True
-    read_only_task = explicit_read_only_task or solution_planner_requested
+    read_only_task = explicit_read_only_task or (
+        solution_planner_requested and solution_planner_opt_in
+    )
     durable_output_required = data.get("durable_output_required") is True
     durable_structured_output = data.get("durable_structured_output") is True
     work_reduction = data.get("expected_codex_work_reduction_ratio")
@@ -236,8 +246,11 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         or data.get("repository_size") in ("large", "giant", "monorepo")
         or (isinstance(file_count, (int, float)) and file_count >= 4)
     )
+    automatic_planner_shape = bool(
+        durable_structured_output and open_solution_path and large_or_multiphase
+    )
     solution_planner_candidate = bool(
-        (solution_planner_requested or data.get("allow_claude_planner") is True)
+        solution_planner_opt_in
         and durable_structured_output
         and (
             ownership_profile == "claude-first"
@@ -290,22 +303,12 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     ):
         if data.get("mechanical_batch") is True:
             inferred_claude_role = "batch-builder"
-        elif (
-            open_solution_path and large_or_multiphase
-            and data.get("solution_contract_frozen") is not True
-            and durable_structured_output
-        ):
+        elif solution_planner_candidate:
             inferred_claude_role = "solution-planner"
-        elif open_solution_path and data.get("bounded_exploration_scope") is True:
-            inferred_claude_role = "exploratory-builder"
         else:
             inferred_claude_role = "execution-builder"
     elif inferred_claude_role == "solution-planner" and not solution_planner_candidate:
-        inferred_claude_role = (
-            "exploratory-builder"
-            if open_solution_path and data.get("bounded_exploration_scope") is True
-            else "execution-builder"
-        )
+        inferred_claude_role = "execution-builder"
 
     execution_owner = "codex-fast-path"
     claude_role = "none"
@@ -341,8 +344,8 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         execution_owner, claude_role = "claude-builder", "exploratory-builder"
         owner_source = "continuation-lease" if continuity_selected else "exploratory-positive-gate"
     elif explicit_claude:
-        # Explicit human ownership remains authoritative, but broad/open
-        # implementation is converted to planning when the planner gate fits.
+        # Explicit human ownership remains authoritative. A Planner is selected
+        # only when the separate explicit opt-in and structural gate both fit.
         execution_owner = "claude-builder"
         claude_role = "solution-planner" if solution_planner_candidate else (
             requested_role if requested_role in ("execution-builder", "batch-builder") else "execution-builder"
@@ -509,12 +512,35 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
             "strategy": (
                 "claude-converge-codex-freeze"
                 if claude_role == "solution-planner"
-                else ("claude-owned-implementation" if execution_owner == "claude-builder" else "codex-owned")
+                else (
+                    "codex-short-plan-then-claude-build"
+                    if execution_owner == "claude-builder"
+                    else "codex-owned"
+                )
             ),
-            "draft_owner": "claude" if execution_owner == "claude-builder" else "codex",
+            "draft_owner": "claude" if claude_role == "solution-planner" else "codex",
+            "core_plan_owner": "codex",
+            "generated_artifact_owner": "deterministic-tools",
             "adversarial_review_owner": "codex",
             "max_adversarial_review_rounds": 1,
             "solution_contract_required": claude_role == "solution-planner",
+            "solution_planner_opt_in": solution_planner_opt_in,
+            "solution_planner_automatic_candidate_suppressed": bool(
+                automatic_planner_shape and not solution_planner_opt_in
+            ),
+            "solution_planner_skip_reason": (
+                None if claude_role == "solution-planner"
+                else (
+                    "explicit-opt-in-required"
+                    if not solution_planner_opt_in and (
+                        solution_planner_requested or automatic_planner_shape
+                    )
+                    else (
+                        "planner-structural-gate-failed"
+                        if solution_planner_opt_in else "not-requested"
+                    )
+                )
+            ),
             "implementation_replan_allowed_after_freeze": False,
             "nonblocking_findings_destination": "backlog",
         },

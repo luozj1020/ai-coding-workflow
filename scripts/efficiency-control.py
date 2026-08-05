@@ -145,6 +145,7 @@ def prepare(args):
                 "require_new_evidence_for_retry": False,
                 "economy_gate": route["execution"].get("economy_gate", {}),
             },
+            "planning": route.get("planning", {}),
             "spark": {
                 "invoke": False,
                 "stage": "precard-route",
@@ -190,6 +191,7 @@ def prepare(args):
             "task_card": str(task_card.resolve()), "task_type": hints.get("task_type", "unknown"),
             "repository_scale": hints.get("repository_size", hints.get("repository_scale", "unknown")),
             "execution": {"owner": route["execution"]["owner"], "owner_source": route["execution"].get("owner_source"), "ownership_profile": route["execution"].get("ownership_profile", "claude-first"), "claude_role": route["execution"].get("claude_role", "execution-builder"), "builder_mode": route["execution"].get("builder_mode", "standard"), "durable_output_required": route["execution"].get("durable_output_required", False), "delegation_mode": route["execution"].get("delegation_mode", "unproven"), "parallel_release_allowed": False, "portfolio_concurrency_owner": "independent-user-terminals", "builder_checker_split": route["execution"]["builder_checker_split"], "checker_model_dispatch": route["execution"]["checker_model_dispatch"], "checker_value_reasons": route["execution"]["checker_value_reasons"], "checker_skip_reason": route["execution"]["checker_skip_reason"], "single_pass_allowed": single, "single_pass_reason": route["execution"]["single_pass_reason"], "max_iterations": 2, "require_new_evidence_for_retry": True, "economy_gate": route["execution"].get("economy_gate", {})},
+            "planning": route.get("planning", {}),
             "review": {"reserved_for": route["budget"].get("codex_reserved_for", []), "milestones": ["implementation-complete", "validation-complete", "final-candidate"], "incremental": True},
             "spark": {"invoke": bool(spark_use), "stage": "pre-dispatch", "mode": spark_mode, "reason": spark_reason, "skip_reason": spark_skip_reason, "trigger_codes": spark_trigger_codes, "max_calls": 1},
             "context": {"cache_key": digest(cache_identity), "levels": levels, "default_level": "L1", "allow_l2_on_gap": True},

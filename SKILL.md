@@ -19,9 +19,10 @@ references preemptively.
 ## Core Contract
 
 - Follow `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
-- `claude-first` is the default: Codex freezes intent and performs bounded
-  semantic review; Claude owns planning, implementation, revision, and assigned
-  Builder or Checker/Test work. Explicit human ownership remains authoritative.
+- `claude-first` is the default: Codex owns core planning, frozen planning
+  files, and bounded semantic review; Claude owns implementation, revision, and
+  assigned Builder or Checker/Test work. `solution-planner` is explicit opt-in,
+  never an automatic route. Explicit human ownership remains authoritative.
 - Gather bounded deterministic evidence before model work. Treat every model
   report as a claim until diff, receipt, and validation evidence agree.
 - Keep one writing owner, exact write scope, isolated worktrees, and hash-bound
@@ -35,8 +36,8 @@ references preemptively.
    reads.
 2. Route from current facts before creating a card. Load routing policy only
    when ownership or Spark behavior is relevant.
-3. Compose one short preset-based card with frozen scope and measurable
-   acceptance; load task-card policy for details.
+3. Freeze one short Codex plan, then let deterministic helpers compose the card
+   and structured control artifacts. Load task-card policy for details.
 4. Dispatch with `bash ai/dispatch-to-claude.sh <card>` and use the runtime
    reference for host retry, monitoring, continuation, or failure attribution.
 5. Verify deterministically. Use Checker/Test only when assigned test or

@@ -8,6 +8,17 @@ import subprocess
 import sys
 
 
+PRESET_RUNTIME = {
+    "builder": {"task_mode": "builder", "builder_mode": "auto"},
+    "batch-builder": {"task_mode": "builder", "builder_mode": "batch"},
+    "solution-planner": {"task_mode": "builder", "builder_mode": "solution-planning"},
+    "exploratory-builder": {"task_mode": "builder", "builder_mode": "exploratory"},
+    "checker": {"task_mode": "checker-test", "builder_mode": "auto"},
+    "revision": {"task_mode": "revision", "builder_mode": "auto"},
+    "control-plane": {"task_mode": "control-plane", "builder_mode": "auto"},
+}
+
+
 def component_root(script_path=None):
     script = Path(script_path or __file__).resolve()
     repo_root = script.parent.parent
@@ -56,19 +67,17 @@ def compose(root, catalog, preset, gates):
         if not path.is_file():
             raise FileNotFoundError("component not found: {}".format(path))
         parts.append(path.read_text(encoding="utf-8").strip())
-    metadata = "<!-- task-card-components: preset={}; gates={}; schema=1 -->".format(
-        preset, ",".join(gates) if gates else "none"
+    runtime = PRESET_RUNTIME[preset]
+    metadata = (
+        "<!-- task-card-components: preset={}; task-mode={}; builder-mode={}; "
+        "gates={}; schema=1 -->"
+    ).format(
+        preset,
+        runtime["task_mode"],
+        runtime["builder_mode"],
+        ",".join(gates) if gates else "none",
     )
-    task_mode = {
-        "builder": "builder",
-        "batch-builder": "builder",
-        "solution-planner": "builder",
-        "exploratory-builder": "builder",
-        "checker": "checker-test",
-        "revision": "revision",
-        "control-plane": "control-plane",
-    }[preset]
-    body = "\n\n".join(parts).replace("{{TASK_MODE}}", task_mode)
+    body = "\n\n".join(parts).replace("{{TASK_MODE}}", runtime["task_mode"])
     return metadata + "\n\n" + body + "\n", selected
 
 
@@ -82,7 +91,13 @@ def recommend_components(facts):
     mode = str(facts.get("mode") or facts.get("task_mode") or "builder").lower()
     event = str(facts.get("routing_event") or "initial").lower()
     claude_role = str(facts.get("claude_role") or execution.get("claude_role") or "").lower()
-    if claude_role == "solution-planner" or mode == "solution-planner":
+    planning = facts.get("planning", {}) if isinstance(facts.get("planning"), dict) else {}
+    solution_planner_opt_in = bool(
+        facts.get("solution_planner_opt_in") is True
+        or facts.get("allow_claude_planner") is True
+        or planning.get("solution_planner_opt_in") is True
+    )
+    if (claude_role == "solution-planner" or mode == "solution-planner") and solution_planner_opt_in:
         preset = "solution-planner"
     elif claude_role == "batch-builder" or mode == "batch-builder":
         preset = "batch-builder"
@@ -172,7 +187,13 @@ def main(argv=None):
         # Path.write_text(newline=...) is unavailable on Python 3.9.
         with output.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
-        print(json.dumps({"output": str(output), "preset": args.preset, "components": selected}, sort_keys=True))
+        print(json.dumps({
+            "output": str(output),
+            "preset": args.preset,
+            "task_mode": PRESET_RUNTIME[args.preset]["task_mode"],
+            "builder_mode": PRESET_RUNTIME[args.preset]["builder_mode"],
+            "components": selected,
+        }, sort_keys=True))
         return 0
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print("Error: {}".format(exc), file=sys.stderr)

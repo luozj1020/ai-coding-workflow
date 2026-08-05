@@ -54,14 +54,15 @@ annotation. Backtick-quote a legitimate path that itself contains spaces.
 
 Use the `revision` preset for narrowed retries and reviewer-requested corrections. Bind the accepted baseline and describe only the delta; do not copy the original task card. The dispatcher preserves the composed card as the full audit artifact and derives Claude's current-phase view with an execution-section allowlist.
 
-Use `exploratory-builder` for a bounded new feature whose goal is stable but
-implementation path remains unclear. It must produce source changes plus
-evidence, not a prose-only repository survey. Use `solution-planner` first for
-large/multi-phase work, then bind each implementation card to the frozen
-contract and return execution ownership to Claude.
+Use `exploratory-builder` only when explicitly selected for a bounded feature
+whose goal is stable but implementation path remains unclear. It must produce
+source changes plus evidence, not a prose-only repository survey. Large or
+multi-phase work defaults to a short Codex plan, deterministic card generation,
+and Claude Builder execution.
 
-Use `solution-planner` only when pre-card routing selects
-`claude-converge-codex-freeze`. Claude must produce the structured solution
+Use `solution-planner` only when the user explicitly opts in and pre-card routing
+selects `claude-converge-codex-freeze`; size and open implementation paths never
+select it automatically. Claude must produce the structured solution
 contract named by the card. Codex reviews that artifact once and classifies every
 finding as `blocking`, `recommended`, `backlog`, or `spec-change`. Resolve
 blocking findings; defer recommendations/backlog; reject or explicitly
@@ -69,6 +70,17 @@ incorporate spec changes. Then freeze with `aiwf solution-contract freeze`.
 Implementation cards bind the frozen contract hash and include only their slice;
 they must not invite Claude to repeat repository-wide planning. Codex performs
 one adversarial freeze review, not full task-card authorship plus replanning.
+
+Role/preset names and runtime task modes are separate namespaces. A composed
+`solution-planner` card therefore declares `Mode = builder` and
+`Builder mode = solution-planning`; `execution-builder`, `batch-builder`, and
+`exploratory-builder` map similarly. Card lint and dispatch normalize these
+known role aliases for compatibility before capability probing, preserve both
+declared and effective values in receipts, and reject unknown or conflicting
+combinations before Claude starts. `solution-planning` uses the minimal Builder
+profile: Read/Edit/Bash plus the receipt-bound exact writer when native Write is
+absent. Repository location stays available through bounded Bash/`rg`, so
+missing native Glob/Grep does not block a planning session.
 
 Testing responsibility must state whether Checker model dispatch is required.
 Default to local deterministic validation. Select Checker only for assigned test

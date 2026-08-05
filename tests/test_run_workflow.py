@@ -181,6 +181,7 @@ class TestRunWorkflowPreview(unittest.TestCase):
             task["extensions"]["routing_hints"] = {
                 "execution_owner": "claude-builder",
                 "claude_role": "solution-planner",
+                "solution_planner_opt_in": True,
                 "goal_clarity": "high",
                 "implementation_path_clarity": "low",
                 "bounded_exploration_scope": True,
@@ -224,6 +225,41 @@ class TestRunWorkflowPreview(unittest.TestCase):
             preview = json.loads((run_dir / "dispatch-preview.json").read_text())
             self.assertEqual(preview["dispatch_card"], str(card_path))
             self.assertEqual(result["model_calls"], [])
+
+    def test_open_multiphase_preview_does_not_auto_select_solution_planner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(task_id="codex-short-plan", write_paths=["README.md"])
+            task["extensions"]["routing_hints"] = {
+                "execution_owner": "claude-builder",
+                "claude_role": "solution-planner",
+                "goal_clarity": "high",
+                "implementation_path_clarity": "low",
+                "bounded_exploration_scope": True,
+                "durable_structured_output": True,
+                "multi_phase_task": True,
+            }
+            result = run_workflow.run_lifecycle(
+                task_path=write_task(tmp, task),
+                run_dir_base=Path(tmp),
+                repo=ROOT,
+                profiles_dir=PROFILES,
+            )
+            run_dir = Path(result["run_dir"])
+            plan = json.loads((run_dir / "execution-plan.json").read_text())
+            self.assertEqual(plan["execution"]["claude_role"], "execution-builder")
+            self.assertEqual(
+                plan["planning"]["strategy"],
+                "codex-short-plan-then-claude-build",
+            )
+            self.assertEqual(
+                plan["planning"]["solution_planner_skip_reason"],
+                "explicit-opt-in-required",
+            )
+            self.assertEqual(plan["task_card_components"], ["core", "builder"])
+            self.assertNotIn(
+                "Claude Solution Planner Contract",
+                (run_dir / "delegation-task-card.md").read_text(encoding="utf-8"),
+            )
 
     def test_preview_writes_result_json(self):
         """Preview mode writes result.json with all required fields."""

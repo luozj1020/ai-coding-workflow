@@ -17,6 +17,20 @@ FENCE_RE = re.compile(r"```[^\n]*(?:validation|check)[^\n]*\n(.*?)```", re.I | r
 EXACT_RE = re.compile(r"(?im)^\s*-\s*Exact narrow command:\s*`?([^`\n]+?)`?\s*$")
 EMPTY_VALUES = {"none", "not-required", "not required", "tbd"}
 RUNTIME_PROTOCOL = "aiwf-validation-runner-v1"
+TABLE_MODE_RE = re.compile(r"(?im)^\|\s*Mode\s*\|\s*([^|]+?)\s*\|")
+TABLE_BUILDER_MODE_RE = re.compile(r"(?im)^\|\s*Builder mode\s*\|\s*([^|]+?)\s*\|")
+VALID_TASK_MODES = {"builder", "checker-test", "mixed-exception", "control-plane"}
+VALID_BUILDER_MODES = {
+    "auto", "standard", "execution-only", "solution-planning", "batch", "exploratory"
+}
+TASK_MODE_ALIASES = {
+    "solution-planner": ("builder", "solution-planning"),
+    "execution-builder": ("builder", "execution-only"),
+    "batch-builder": ("builder", "batch"),
+    "exploratory-builder": ("builder", "exploratory"),
+    "checker": ("checker-test", None),
+    "revision": ("builder", None),
+}
 
 
 def extract_commands(text: str) -> tuple[list[str], dict[str, object]]:
@@ -51,8 +65,51 @@ def extract_commands(text: str) -> tuple[list[str], dict[str, object]]:
     return commands, {"accepted": len(commands), "first_launcher": first_launcher, **counts}
 
 
+def audit_task_modes(text: str) -> dict[str, object]:
+    mode_match = TABLE_MODE_RE.search(text)
+    builder_match = TABLE_BUILDER_MODE_RE.search(text)
+    declared = mode_match.group(1).strip().lower() if mode_match else None
+    declared_builder = builder_match.group(1).strip().lower() if builder_match else None
+    effective = declared
+    builder_hint = None
+    normalized = False
+    reason = None
+    error = None
+
+    if declared in TASK_MODE_ALIASES:
+        effective, builder_hint = TASK_MODE_ALIASES[declared]
+        normalized = True
+        reason = "role-alias-to-runtime-mode" if declared != "revision" else "revision-to-builder"
+    elif declared and declared not in VALID_TASK_MODES:
+        error = "unknown-task-mode"
+
+    if declared_builder:
+        if declared_builder not in VALID_BUILDER_MODES:
+            error = error or "unknown-builder-mode"
+        elif declared_builder != "auto":
+            if builder_hint and declared_builder != builder_hint:
+                error = error or "task-mode-builder-mode-conflict"
+            else:
+                builder_hint = declared_builder
+
+    if effective and effective != "builder" and builder_hint not in (None, "standard"):
+        error = error or "builder-mode-requires-builder-task-mode"
+
+    return {
+        "declared_task_mode": declared,
+        "effective_task_mode": effective,
+        "declared_builder_mode": declared_builder,
+        "builder_mode_hint": builder_hint,
+        "task_mode_normalized": normalized,
+        "task_mode_normalization_reason": reason,
+        "task_mode_error": error,
+    }
+
+
 def audit_task_card(path: Path) -> tuple[list[str], dict[str, object]]:
-    return extract_commands(path.read_text(encoding="utf-8", errors="replace"))
+    text = path.read_text(encoding="utf-8", errors="replace")
+    commands, summary = extract_commands(text)
+    return commands, {**summary, **audit_task_modes(text)}
 
 
 def run_commands(commands: Sequence[str], *, cwd: Path, timeout: int) -> int:
@@ -100,8 +157,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(json.dumps(summary, sort_keys=True))
         return 0
     if args.action == "lint":
-        rejected = any(summary[key] for key in ("unsafe", "oversized", "overflow"))
-        print(json.dumps({"status": "rejected" if rejected else "accepted", **summary}, sort_keys=True))
+        rejected = any(summary[key] for key in ("unsafe", "oversized", "overflow")) or bool(
+            summary["task_mode_error"]
+        )
+        status = "rejected" if rejected else (
+            "normalized" if summary["task_mode_normalized"] else "accepted"
+        )
+        print(json.dumps({"status": status, **summary}, sort_keys=True))
         return 2 if rejected else 0
     if any(summary[key] for key in ("unsafe", "oversized", "overflow")):
         print(json.dumps({"status": "rejected", **summary}, sort_keys=True))

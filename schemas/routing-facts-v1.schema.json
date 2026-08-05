@@ -150,6 +150,9 @@
         "allow_claude_planner": {
             "type": "boolean"
         },
+        "solution_planner_opt_in": {
+            "type": "boolean"
+        },
         "allow_high_risk_claude": {
             "type": "boolean"
         },

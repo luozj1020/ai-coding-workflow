@@ -34,6 +34,7 @@ WRITE_APPROVED_FILE = ROOT / "scripts" / "write-approved-file.py"
 OWNER_LEASE = ROOT / "scripts" / "owner_lease.py"
 MODEL_USAGE = ROOT / "scripts" / "model-usage.py"
 RUN_APPROVED_VALIDATION = ROOT / "scripts" / "run-approved-validation.py"
+CLAUDE_EXTENSION_CAPSULE = ROOT / "scripts" / "claude-extension-capsule.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -108,6 +109,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(OWNER_LEASE, self.repo / "scripts" / "owner_lease.py")
         shutil.copy2(MODEL_USAGE, self.repo / "scripts" / "model-usage.py")
         shutil.copy2(RUN_APPROVED_VALIDATION, self.repo / "scripts" / "run-approved-validation.py")
+        shutil.copy2(CLAUDE_EXTENSION_CAPSULE, self.repo / "scripts" / "claude-extension-capsule.py")
+        self._write_fake_spark()
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
                    "scripts/dispatch-preflight.py", "scripts/process-identity.py",
@@ -123,6 +126,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self._run(["git", "add", "scripts/write-approved-file.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/model-usage.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/run-approved-validation.py"], cwd=self.repo)
+        self._run(["git", "add", "scripts/claude-extension-capsule.py",
+                   "scripts/run-codex-spark.sh"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
     def tearDown(self):
@@ -183,6 +188,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "else\n"
                 "  cat >/dev/null\n"
                 "fi\n"
+                "if [ \"${FAKE_CLAUDE_STATUS_ACTIVITY:-0}\" = 1 ]; then echo 'tool activity: editing declared target' >&2; fi\n"
                 "case \"${FAKE_CLAUDE_MODE:-success}\" in\n"
                 "  fail-empty)\n"
                 "    exit 42\n"
@@ -345,6 +351,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "      sleep \"${FAKE_CLAUDE_GROWTH_INTERVAL_SECONDS:-1}\"\n"
                 "    done\n"
                 "    ;;\n"
+                "  product-during-advisor)\n"
+                "    printf '# first product revision\\n' > NEW_FILE.md\n"
+                "    sleep \"${FAKE_CLAUDE_SECOND_WRITE_DELAY_SECONDS:-3}\"\n"
+                "    printf '# second product revision\\n' > NEW_FILE.md\n"
+                "    sleep \"${FAKE_CLAUDE_POST_PROGRESS_SLEEP:-2}\"\n"
+                "    ;;\n"
                 "  clock-only-progress)\n"
                 "    for i in 1 2 3 4 5; do\n"
                 "      printf '%s\\n' 'Current Phase: implementation' 'Substantive progress: yes' \"Last Update: ${i}\" > CLAUDE_PROGRESS.md\n"
@@ -462,6 +474,24 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "esac\n"
                 "printf '%s\\n' '{\"total_cost_usd\":0,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}'\n"
             )
+        os.chmod(fake, 0o755)
+
+    def _write_fake_spark(self):
+        fake = self.repo / "scripts" / "run-codex-spark.sh"
+        fake.write_text(
+            "#!/usr/bin/env bash\n"
+            "sleep \"${FAKE_SPARK_SLEEP_SECONDS:-0}\"\n"
+            "if [ \"${FAKE_SPARK_INVALID:-0}\" = 1 ]; then exit 0; fi\n"
+            "echo \"decision=${FAKE_SPARK_DECISION:-continue}\"\n"
+            "echo \"confidence=${FAKE_SPARK_CONFIDENCE:-high}\"\n"
+            "echo 'reason_code=fake-timeout-advice'\n"
+            "echo 'summary=bounded fake timeout advice'\n"
+            "echo 'codex_review_required=no'\n"
+            "echo 'interrupt_authorized=no'\n"
+            "echo 'spark_status=success'\n"
+            "echo 'spark_model_response_received=yes'\n",
+            encoding="utf-8",
+        )
         os.chmod(fake, 0o755)
 
     def _run(self, args, cwd=None, env=None, timeout=60):
@@ -644,6 +674,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             # Legacy fixture cards intentionally omit exact Scope declarations.
             # Enforcement-specific tests override this and use scoped cards.
             "CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "off",
+            # Timeout-advisor integration tests opt in explicitly. Keeping it
+            # off here preserves the narrow intent and duration of unrelated
+            # dispatcher tests.
+            "CLAUDE_CODE_TIMEOUT_ADVISOR": "off",
         }
         (self.case_root / "home").mkdir(exist_ok=True)
         if extra_env:
@@ -1498,6 +1532,68 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "verified-exact-writer-fallback",
         )
 
+    def test_solution_planner_mode_alias_normalizes_before_exact_writer_probe(self):
+        card = self._write_builder_task_card()
+        text = card.read_text(encoding="utf-8").replace(
+            "| Mode | builder |", "| Mode | solution-planner |"
+        )
+        card.write_text(
+            text
+            + "\n## Scope\n\n- Write paths:\n  - `solution-contract.draft.json`\n"
+            + "\n## Claude Solution Planner Contract\n\n"
+            + "| Field | Value |\n|---|---|\n"
+            + "| Planning owner | Claude |\n"
+            + "| Required durable output | `solution-contract.draft.json` |\n",
+            encoding="utf-8",
+        )
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_API_PROBE_MODE": "always",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
+                "CLAUDE_CODE_TOOL_PROFILE": "auto",
+                "CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "required",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_TOOL_INVENTORY": '["Read","Edit","Bash"]',
+                "FAKE_CLAUDE_MODE": "planner-contract",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(runtime["declared_task_mode"], "solution-planner")
+        self.assertEqual(runtime["task_mode"], "builder")
+        self.assertEqual(runtime["builder_mode"], "solution-planning")
+        self.assertEqual(runtime["tool_profile"], "minimal-builder")
+        self.assertTrue(runtime["task_mode_normalized"])
+        self.assertEqual(runtime["task_mode_role_alias"], "solution-planner")
+        self.assertEqual(
+            runtime["runtime_tool_inventory_status"],
+            "verified-exact-writer-fallback",
+        )
+
+    def test_dispatch_rejects_conflicting_role_and_builder_mode_before_claude(self):
+        card = self._write_builder_task_card()
+        card.write_text(
+            card.read_text(encoding="utf-8").replace(
+                "| Mode | builder |",
+                "| Mode | solution-planner |\n| Builder mode | batch |",
+            ),
+            encoding="utf-8",
+        )
+        invocation_log = self.case_root / "claude-invocations.log"
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_INVOCATION_LOG": str(invocation_log)},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("implies Builder mode 'solution-planning'", result.stderr)
+        self.assertFalse(invocation_log.exists())
+
     def test_reuse_managed_worktree_requires_explicit_reset_when_existing(self):
         self._write_task_card()
 
@@ -2248,7 +2344,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Do not finish with only a repository summary", prompt)
         self.assertIn("Produce at least one durable assigned output", prompt)
 
-    def test_solution_planner_card_auto_selects_planning_prompt_and_locator_tools(self):
+    def test_solution_planner_card_auto_selects_planning_prompt_and_minimal_tools(self):
         task = self._write_builder_task_card()
         with task.open("a", encoding="utf-8") as handle:
             handle.write(
@@ -2266,7 +2362,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Builder Mode:    solution-planning", result.stdout)
-        self.assertIn("Tool Profile:    locator-builder", result.stdout)
+        self.assertIn("Tool Profile:    minimal-builder", result.stdout)
         prompt = capture.read_text(encoding="utf-8")
         self.assertIn("solution planner in a Codex/Claude Code workflow", prompt)
         self.assertIn("Do not edit product source", prompt)
@@ -2547,7 +2643,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             {
                 "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "2",
                 "CLAUDE_CODE_TIMEOUT_SECONDS": "5",
-                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "12",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "15",
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
                 "CLAUDE_CODE_EDIT_READY_GRACE_SECONDS": "2",
                 "FAKE_CLAUDE_MODE": "builder-editing-phase",
@@ -3047,7 +3143,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(runtime["context_acquisition_timeout_seconds"], 30)
         self.assertEqual(runtime["hard_timeout_seconds"], 1500)
         self.assertEqual(runtime["product_idle_timeout_seconds"], 600)
-        self.assertEqual(runtime["active_window_refresh_limit"], 1)
+        self.assertEqual(runtime["active_window_refresh_limit"], 0)
+        self.assertEqual(
+            runtime["active_window_refresh_policy"],
+            "canonical-product-growth-until-hard-timeout",
+        )
         self.assertEqual(runtime["growth_extension_limit"], 0)
         self.assertEqual(
             runtime["growth_extension_policy"],
@@ -3921,6 +4021,214 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("evidence_state=seeded-report-only", terminal_text)
 
     # --- Renewable product-growth extension tests ---
+
+    def test_context_deadline_waits_for_spark_and_can_reach_first_product_write(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_ADVISOR": "on",
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS": "5",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS": "1",
+                "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "stop",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "3",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "4",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "12",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "20",
+                "FAKE_CLAUDE_MODE": "delayed-diff",
+                "FAKE_CLAUDE_PRE_DIFF_SLEEP": "7",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "1",
+                "FAKE_CLAUDE_STATUS_ACTIVITY": "1",
+                "FAKE_SPARK_SLEEP_SECONDS": "2",
+                "FAKE_SPARK_DECISION": "continue",
+                "FAKE_SPARK_CONFIDENCE": "high",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Context-acquisition window elapsed; Claude continues", progress)
+        self.assertIn("Spark-confirmed context-acquisition extension", progress)
+        self.assertIn("First substantive progress detected", progress)
+        self.assertNotIn("first_progress_timeout after", progress)
+        self.assertNotIn("context acquisition timeout without substantive", progress)
+
+    def test_missing_context_judgment_never_stops_claude_before_hard_cap(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_ADVISOR": "on",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS": "1",
+                "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "6",
+                "FAKE_CLAUDE_MODE": "seed-only",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+                "FAKE_SPARK_INVALID": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Context-acquisition window elapsed; Claude continues", progress)
+        self.assertIn("produced no valid judgment", progress)
+        self.assertIn("hard runtime timeout", progress)
+        self.assertNotIn("context acquisition timeout without substantive", progress)
+
+    def test_active_deadline_waits_for_spark_judgment_before_extending(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_ADVISOR": "on",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS": "8",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS": "1",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "4",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "12",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "20",
+                "FAKE_CLAUDE_MODE": "worktree-change",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+                "FAKE_CLAUDE_STATUS_ACTIVITY": "1",
+                "FAKE_SPARK_SLEEP_SECONDS": "3",
+                "FAKE_SPARK_DECISION": "continue",
+                "FAKE_SPARK_CONFIDENCE": "high",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("Claude continues while Spark judgment is pending", progress)
+        self.assertIn("Spark-confirmed active window extension", progress)
+        self.assertNotIn("active execution timeout", progress)
+        receipt = json.loads(
+            next((self.repo / ".worktrees").glob("claude-*.extension-advisor.json")).read_text()
+        )
+        applied = [event for event in receipt["events"] if event["status"] == "applied-extend"]
+        self.assertEqual(len(applied), 1)
+        self.assertEqual(applied[0]["decision"], "continue")
+
+    def test_product_growth_supersedes_running_spark_and_refreshes_full_window(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_ADVISOR": "on",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS": "3",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS": "10",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "4",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "15",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "20",
+                "FAKE_CLAUDE_MODE": "product-during-advisor",
+                "FAKE_CLAUDE_SECOND_WRITE_DELAY_SECONDS": "5",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "2",
+                "FAKE_SPARK_SLEEP_SECONDS": "8",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress_path = self._artifact_path(result.stdout, "Progress Log")
+        progress = progress_path.read_text(encoding="utf-8")
+        events = progress_path.with_name(
+            progress_path.name.replace(".progress.log", ".monitor-events.log")
+        ).read_text(encoding="utf-8")
+        self.assertIn("Spark evaluation superseded by real product growth", progress)
+        self.assertIn("signal=product_growth_during_extension_evaluation", events)
+        self.assertNotIn("Spark-confirmed active window extension", progress)
+
+    def test_each_later_product_change_refreshes_the_complete_active_window(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_ADVISOR": "on",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "4",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "12",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "20",
+                "FAKE_CLAUDE_MODE": "product-during-advisor",
+                "FAKE_CLAUDE_SECOND_WRITE_DELAY_SECONDS": "2",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "2",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress_path = self._artifact_path(result.stdout, "Progress Log")
+        progress = progress_path.read_text(encoding="utf-8")
+        events = progress_path.with_name(
+            progress_path.name.replace(".progress.log", ".monitor-events.log")
+        ).read_text(encoding="utf-8")
+        self.assertIn("Canonical product growth refreshed the active window", progress)
+        self.assertIn("signal=canonical_product_growth", events)
+        self.assertNotIn("active execution timeout", progress)
+
+    def test_missing_spark_judgment_never_stops_claude_before_hard_cap(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_ADVISOR": "on",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS": "1",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "6",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "1",
+                "CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS": "1",
+                "FAKE_CLAUDE_MODE": "worktree-change",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+                "FAKE_SPARK_INVALID": "1",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("produced no valid judgment", progress)
+        self.assertIn("Claude continues while Spark judgment is pending", progress)
+        self.assertIn("hard runtime timeout", progress)
+        self.assertNotIn("active execution timeout", progress)
+
+    def test_spark_stop_requires_confirmed_product_idle(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_ADVISOR": "on",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS": "3",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS": "1",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "10",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS": "3",
+                "FAKE_CLAUDE_MODE": "worktree-change",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+                "FAKE_SPARK_DECISION": "interrupt-candidate",
+                "FAKE_SPARK_CONFIDENCE": "high",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn(
+            "active execution timeout after Spark stop advice and confirmed product idle",
+            progress,
+        )
+        self.assertIn("waiting for deterministic product-idle corroboration", progress)
+        self.assertNotIn("hard runtime timeout", progress)
+        receipt = json.loads(
+            next((self.repo / ".worktrees").glob("claude-*.extension-advisor.json")).read_text()
+        )
+        self.assertEqual(receipt["status"], "applied-stop")
 
     def test_control_file_growth_does_not_renew_product_window(self):
         """Progress-file growth alone cannot renew the product window."""

@@ -523,6 +523,10 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertLess(len(agents.encode("utf-8")), 12_000)
             self.assertIn("## Claude-First Ownership", agents)
             self.assertIn("Minimize scarce Codex work", agents)
+            self.assertIn("Codex owns the short core plan", agents)
+            self.assertIn("solution_planner_opt_in=true", agents)
+            self.assertIn("never inferred", agents)
+            self.assertIn("Prefer one Claude execution round", agents)
             self.assertIn("workflow bypassed:", agents)
             self.assertIn("task-card-components/catalog.md", agents)
             self.assertIn("Builder Claude", agents)
@@ -1345,6 +1349,7 @@ class InstallWorkflowTests(unittest.TestCase):
             monitor = repo / "ai" / "monitor-claude.sh"
             self.assertTrue(monitor.exists())
             self.assertTrue((repo / "ai" / "claude-monitor-decision.py").exists())
+            self.assertTrue((repo / "ai" / "claude-extension-capsule.py").exists())
             self.assertTrue((repo / "ai" / "codegraph-worktree-guard.py").exists())
             self.assertTrue((repo / "ai" / "parallel-task-gate.py").exists())
             text = monitor.read_text(encoding="utf-8")
@@ -1592,6 +1597,21 @@ class InstallWorkflowTests(unittest.TestCase):
                     handle.write(refreshed)
                 time.sleep(1.2)
                 self.assertIsNone(waiter.poll(), "terminal wait must continue after notice")
+                advisor_started = (
+                    f"monitor_event source=dispatcher task_id={task_id} "
+                    "event=extension-evaluation-started running=yes terminal=no "
+                    "evaluation_id=eval-1 claude_continues=yes\n"
+                )
+                advisor_pending = (
+                    f"monitor_event source=dispatcher task_id={task_id} "
+                    "event=extension-evaluation-pending running=yes terminal=no "
+                    "evaluation_id=eval-1 claude_continues=yes\n"
+                )
+                with event_log.open("a", encoding="utf-8") as handle:
+                    handle.write(advisor_started)
+                    handle.write(advisor_pending)
+                time.sleep(1.2)
+                self.assertIsNone(waiter.poll(), "advisor notices must not end terminal wait")
                 terminal = (
                     f"monitor_event source=dispatcher task_id={task_id} "
                     "event=terminal running=no terminal=yes exit_status=0\n"
@@ -1601,9 +1621,16 @@ class InstallWorkflowTests(unittest.TestCase):
                 stdout, stderr = waiter.communicate(timeout=10)
                 self.assertEqual(waiter.returncode, 0, stderr)
                 self.assertLess(stdout.index(refreshed.strip()), stdout.index(terminal.strip()))
+                self.assertLess(stdout.index(advisor_started.strip()), stdout.index(terminal.strip()))
+                self.assertLess(stdout.index(advisor_pending.strip()), stdout.index(terminal.strip()))
                 self.assertIn(
                     "monitor_wait status=continuing "
                     f"task_id={task_id} until=terminal reason=execution-window-updated",
+                    stdout,
+                )
+                self.assertIn(
+                    "monitor_wait status=continuing "
+                    f"task_id={task_id} until=terminal reason=timeout-advisor-state",
                     stdout,
                 )
             finally:

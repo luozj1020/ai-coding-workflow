@@ -740,6 +740,7 @@ def phase_plan(ctx: RunContext) -> None:
             "single_pass_reason": execution.get("single_pass_reason", ""),
             "remote_rounds": execution.get("remote_rounds", 1),
         },
+        "planning": ctx.routing.get("planning", {}),
         "context_packet": None,
         "context_delivery": "inline-delegation-task-card" if delegation_card else "none",
         "spark": {
