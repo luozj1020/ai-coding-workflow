@@ -4282,11 +4282,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 ".progress.log", ".monitor-events.log"
             )
         ).read_text(encoding="utf-8")
-        self.assertIn("Single growth extension started:", progress)
-        self.assertIn("Product-growth extension renewed:", progress)
-        self.assertIn("event=active-window-extended", events)
-        self.assertIn("extension_event=renewed", events)
-        self.assertIn("extension_ordinal=2", events)
+        self.assertGreaterEqual(
+            progress.count("Canonical product growth refreshed the active window:"),
+            2,
+        )
+        self.assertIn("event=active-window-refreshed", events)
+        self.assertIn("signal=canonical_product_growth", events)
         self.assertIn("last_product_change_epoch=", events)
         self.assertIn("active_window_remaining_seconds=", events)
         self.assertNotIn("growth extension expired", progress)
@@ -4310,8 +4311,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
-        self.assertIn("Single growth extension started:", progress)
-        self.assertIn("Product-growth extension renewed:", progress)
+        self.assertGreaterEqual(
+            progress.count("Canonical product growth refreshed the active window:"),
+            2,
+        )
         self.assertIn("hard runtime timeout", progress)
 
     # --- Recent activity window validation and stale-progress tests ---
