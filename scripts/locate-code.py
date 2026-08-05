@@ -8,7 +8,6 @@ evidence.
 """
 
 import argparse
-import collections
 import fnmatch
 import json
 import os
@@ -400,6 +399,50 @@ def search_lexical(repo_root, terms, paths, includes, excludes, timeout, max_mat
     return matches, status
 
 
+def codegraph_status_guard(repo_root, timeout=5.0):
+    """Return whether CodeGraph evidence is bound to the clean current worktree."""
+    codegraph_cli = shutil.which("codegraph")
+    if not codegraph_cli:
+        return False, "codegraph CLI missing"
+    result = run_command([codegraph_cli, "status", ".", "-j"], repo_root, timeout)
+    if result["timed_out"]:
+        return False, "codegraph status timeout"
+    if result["rc"] != 0:
+        return False, "codegraph status failed rc={}".format(result["rc"])
+    try:
+        status = json.loads(result["stdout"])
+    except (TypeError, ValueError):
+        return False, "codegraph status malformed"
+    if not isinstance(status, dict):
+        return False, "codegraph status malformed"
+
+    project_path = status.get("projectPath")
+    if not isinstance(project_path, str) or (
+        os.path.normcase(os.path.realpath(project_path))
+        != os.path.normcase(os.path.realpath(repo_root))
+    ):
+        return False, "codegraph project mismatch"
+    if status.get("worktreeMismatch") not in (None, False, ""):
+        return False, "codegraph worktree mismatch"
+
+    pending = status.get("pendingChanges")
+    if not isinstance(pending, dict):
+        return False, "codegraph pending state missing"
+    for key in ("added", "modified", "removed"):
+        value = pending.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return False, "codegraph pending state malformed"
+        if value != 0:
+            return False, "codegraph pending changes"
+
+    index = status.get("index")
+    if isinstance(index, dict) and index.get("reindexRecommended") is True:
+        return False, "codegraph reindex recommended"
+    if status.get("warning") or status.get("warnings"):
+        return False, "codegraph status warning"
+    return True, "ready"
+
+
 def should_try_codegraph(mode, repo_root, tracked_count, threshold):
     """Return broad permission, narrowed permission, and routing reason."""
     if mode == "off":
@@ -407,9 +450,12 @@ def should_try_codegraph(mode, repo_root, tracked_count, threshold):
     if not os.path.isdir(os.path.join(repo_root, ".codegraph")):
         return False, False, "no .codegraph index"
     if mode == "auto" and tracked_count > threshold:
-        return False, True, "auto skipped broad: tracked files {} > threshold {}".format(tracked_count, threshold)
+        return False, False, "auto skipped CodeGraph: tracked files {} > threshold {}".format(tracked_count, threshold)
     if not shutil.which("codegraph"):
         return False, False, "codegraph CLI missing"
+    status_ready, status_reason = codegraph_status_guard(repo_root)
+    if not status_ready:
+        return False, False, status_reason
     if mode == "try":
         return True, True, "explicit try"
     return True, True, "auto small-enough repo"
@@ -441,7 +487,64 @@ def _narrow_codegraph_query(query, ranked, max_paths=5):
     ).format(", ".join(paths), ", ".join(terms[:6]) or query)
 
 
-def build_report(args):
+def _suggested_read(path, data, context):
+    quoted_path = shlex.quote(path)
+    if data["examples"]:
+        first_line = data["examples"][0][0]
+        start = max(1, first_line - context)
+        end = first_line + context
+        return "nl -ba {} | sed -n '{},{}p'".format(quoted_path, start, end)
+    return "nl -ba {} | sed -n '1,160p'".format(quoted_path)
+
+
+def _bounded_utf8(text, max_bytes):
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    suffix = "\n... [compact capsule truncated; use --format full or --details-output]\n"
+    suffix_bytes = suffix.encode("utf-8")
+    budget = max(0, max_bytes - len(suffix_bytes))
+    return encoded[:budget].decode("utf-8", errors="ignore").rstrip() + suffix
+
+
+def render_compact_capsule(capsule, max_bytes=4096):
+    lines = [
+        "# Locate Code Capsule",
+        "status={} backend={} candidates={}".format(
+            capsule["status"], capsule["backend"], len(capsule["candidates"])
+        ),
+        "CodeGraph: {}".format(capsule["codegraph"]["status"]),
+        "",
+        "## Candidates",
+    ]
+    if not capsule["candidates"]:
+        lines.append("- none; refine identifiers or path scope")
+    for item in capsule["candidates"]:
+        location = item["path"]
+        if item["line"]:
+            location += ":{}".format(item["line"])
+        lines.append(
+            "- `{}` score={} hits={} terms={}".format(
+                location,
+                item["score"],
+                item["hits"],
+                ",".join(item["terms"]) or "-",
+            )
+        )
+    if capsule["suggested_reads"]:
+        lines.extend(["", "## Suggested Targeted Reads"])
+        for command in capsule["suggested_reads"]:
+            lines.append("- `{}`".format(command))
+    lines.extend([
+        "",
+        "Expansion: rerun with `--format full` or use `--details-output PATH`.",
+    ])
+    if capsule.get("details_path"):
+        lines.append("Details: `{}`".format(capsule["details_path"]))
+    return _bounded_utf8("\n".join(lines).rstrip() + "\n", max_bytes)
+
+
+def build_outputs(args):
     repo_root = find_repo_root(args.repo)
     query = " ".join(args.query)
     terms = extract_terms(query)
@@ -554,10 +657,7 @@ def build_report(args):
         ),
     )[: args.max_files]
 
-    should_narrow = narrowed_allowed and ranked and (
-        codegraph_broad == "timeout" or
-        (codegraph_broad == "skipped" and codegraph_reason.startswith("auto skipped broad:"))
-    )
+    should_narrow = narrowed_allowed and ranked and codegraph_broad == "timeout"
     if should_narrow:
         narrowed_query = _narrow_codegraph_query(query, ranked, max_paths=5)
         narrow_result, narrow_text = run_codegraph(
@@ -639,14 +739,7 @@ def build_report(args):
     lines.append("")
     lines.append("## Suggested Targeted Reads")
     for path, data in ranked[: min(8, len(ranked))]:
-        quoted_path = shlex.quote(path)
-        if data["examples"]:
-            first_line = data["examples"][0][0]
-            start = max(1, first_line - args.context)
-            end = first_line + args.context
-            lines.append("- `nl -ba {} | sed -n '{} ,{}p'`".format(quoted_path, start, end).replace(" ,", ","))
-        else:
-            lines.append("- `nl -ba {} | sed -n '1,160p'`".format(quoted_path))
+        lines.append("- `{}`".format(_suggested_read(path, data, args.context)))
     lines.append("")
     lines.append("## Search Status")
     for item in backend_status:
@@ -659,7 +752,47 @@ def build_report(args):
         lines.append("```text")
         lines.append(codegraph_text)
         lines.append("```")
-    return "\n".join(lines).rstrip() + "\n"
+    full_report = "\n".join(lines).rstrip() + "\n"
+    capsule_candidates = []
+    for path, data in ranked[:8]:
+        line_no = data["examples"][0][0] if data["examples"] else None
+        capsule_candidates.append({
+            "path": path[:512],
+            "line": line_no,
+            "score": len(data["terms"]) * 10 + data["hits"] + (2 if data["path_hint"] else 0),
+            "hits": data["hits"],
+            "terms": sorted(str(value)[:64] for value in data["terms"])[:8],
+        })
+    capsule = {
+        "schema_version": 1,
+        "kind": "aiwf-locate-code-capsule",
+        "status": "ok" if ranked else "no-candidates",
+        "repo": repo_root,
+        "query": query[:512],
+        "backend": selected_backend,
+        "codegraph": {
+            "status": codegraph_status[:512],
+            "reason": codegraph_reason[:256],
+            "broad": codegraph_broad,
+            "narrowed": codegraph_narrowed,
+            "excerpt_available_in_full": bool(codegraph_text),
+        },
+        "candidates": capsule_candidates,
+        "suggested_reads": [
+            _suggested_read(path, data, args.context)
+            for path, data in ranked[: min(4, len(ranked))]
+        ],
+        "details_path": os.path.abspath(args.details_output) if args.details_output else None,
+    }
+    return {
+        "compact": render_compact_capsule(capsule),
+        "full": full_report,
+        "json": json.dumps(capsule, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+    }
+
+
+def build_report(args):
+    return build_outputs(args)[args.format]
 
 
 def parse_args(argv=None):
@@ -706,13 +839,28 @@ def parse_args(argv=None):
         help="Tracked-file threshold above which auto mode skips CodeGraph.",
     )
     parser.add_argument("--codegraph-max-bytes", type=int, default=6000, help="Maximum CodeGraph excerpt bytes.")
-    parser.add_argument("--output", help="Write report to a file instead of stdout.")
+    parser.add_argument(
+        "--format",
+        choices=["compact", "full", "json"],
+        default="compact",
+        help="Output view. Default compact keeps Codex context bounded; full preserves diagnostics.",
+    )
+    parser.add_argument("--output", help="Write the selected view to a file instead of stdout.")
+    parser.add_argument(
+        "--details-output",
+        help="Additionally write the full report here while keeping compact/json as the selected view.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     args = parse_args(argv)
-    report = build_report(args)
+    outputs = build_outputs(args)
+    report = outputs[args.format]
+    if args.details_output:
+        os.makedirs(os.path.dirname(os.path.abspath(args.details_output)), exist_ok=True)
+        with open(args.details_output, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(outputs["full"])
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         with open(args.output, "w", encoding="utf-8", newline="\n") as fh:

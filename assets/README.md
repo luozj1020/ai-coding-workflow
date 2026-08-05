@@ -811,6 +811,17 @@ bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
 
 Codex reviews the work and returns a structured decision: accept, revise, split, or reject, with explicit next-loop instructions.
 
+Review is tool-backed by default. The helper stores the full packet, sends Codex
+only a bounded capsule prompt, verifies task-card/diff/HEAD hashes, and expands
+only selected paths or symbols. When the capsule predicts at least 8 KiB of
+avoidable Codex input and the evidence is structurally complex, it runs one
+advisory Spark `postflight-bundle` pass and reduces the full Spark response to a
+bounded summary capsule. Pass `--spark-compression off` to disable that optional
+pass or `--spark-compression required` to fail when it is unavailable. The
+equivalent environment variable remains a compatibility default; the stable CLI
+flag avoids changing an approved launcher prefix. Spark cannot accept,
+interrupt, merge, or replace Codex semantic review.
+
 If the Builder result matches the plan, run exact deterministic checks first. Dispatch `checker-test` only for assigned test writing, long validation, or evidence processing that materially reduces Codex work; otherwise record the deterministic-evidence skip reason.
 
 Dispatch defaults to the `balanced` execution profile: compact Claude task card, brief prompt, fresh worktree, and full diff evidence. This reduces prompt/task-card tokens while preserving review evidence. The full planning card remains available as `TASK_CARD_FULL.md`.

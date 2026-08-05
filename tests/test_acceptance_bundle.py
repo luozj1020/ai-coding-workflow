@@ -3,12 +3,15 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "build-acceptance-bundle.py"
+if str(SCRIPT.parent) not in sys.path:
+    sys.path.insert(0, str(SCRIPT.parent))
 
 
 def load_module():
@@ -120,6 +123,97 @@ class AcceptanceBundleTests(unittest.TestCase):
         self.assertEqual(selection["expanded_acceptance_ids"], [])
         self.assertFalse(selection["deep_codex_review_required"])
         self.assertEqual(risks, [])
+
+    def test_compact_stdout_capsule_references_full_bundle_without_evidence_bodies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "changed.py").write_text("value = 1\n", encoding="utf-8")
+            outcome = root / "outcome.json"
+            output = root / "acceptance-bundle.json"
+            outcome.write_text(json.dumps({
+                "task_id": "task-capsule",
+                "dispatch_success": True,
+                "artifact_valid": True,
+                "validation_success": True,
+                "semantic_acceptance": "pending-codex-review",
+            }), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    sys.executable, str(SCRIPT),
+                    "--worktree", str(root),
+                    "--outcome", str(outcome),
+                    "--output", str(output),
+                ],
+                text=True, encoding="utf-8", capture_output=True, check=True,
+            )
+
+            capsule = json.loads(result.stdout)
+            full = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(capsule["kind"], "aiwf-acceptance-capsule")
+            self.assertEqual(capsule["output_path"], str(output.resolve()))
+            self.assertEqual(capsule["changed_path_count"], len(full["changed_paths"]))
+            self.assertNotIn("changed_paths", capsule)
+            self.assertNotIn("acceptance_index", capsule)
+            self.assertIn("changed.py", full["changed_paths"])
+            self.assertLessEqual(len(result.stdout.encode("utf-8")), 2048)
+
+    def test_complex_evidence_recommends_optional_spark_compression(self):
+        module = load_module()
+        from evidence_capsule import acceptance_compression_route
+
+        value = {
+            "changed_paths": ["src/file-{}.py".format(index) for index in range(8)],
+            "acceptance_index": [],
+            "review_selection": {"expanded_acceptance_ids": []},
+            "unresolved_risks": [],
+            "frozen_invariants": [],
+            "changed_symbols": [],
+        }
+
+        route = acceptance_compression_route(value, full_bytes=20_000)
+
+        self.assertTrue(route["spark_recommended"])
+        self.assertEqual(route["spark_mode"], "postflight-bundle")
+        self.assertIn("many-changed-paths", route["reason_codes"])
+        self.assertTrue(route["advisory_only"])
+        self.assertFalse(route["spark_can_authorize_acceptance"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            task_card = root / "task-card.md"
+            output = root / "acceptance-bundle.json"
+            task_card.write_text("# Task\n", encoding="utf-8")
+            output.write_text("{}\n", encoding="utf-8")
+            value["compression_route"] = route
+            capsule = module.compact_capsule(value, output, task_card, root)
+            request = capsule["compression_route"]["tool_request"]
+            self.assertEqual(request["argv"][:2], ["bash", "ai/run-codex-spark.sh"])
+            self.assertIn("postflight-bundle", request["argv"])
+            self.assertIn(str(output.resolve()), request["argv"])
+            self.assertEqual(request["result_contract"], "advisory-summary-only")
+            self.assertEqual(request["input_artifact"]["sha256"], capsule["evidence"]["sha256"])
+
+    def test_stdout_off_keeps_full_bundle_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            outcome = root / "outcome.json"
+            output = root / "acceptance-bundle.json"
+            outcome.write_text(json.dumps({"task_id": "task-off"}), encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable, str(SCRIPT),
+                    "--worktree", str(root),
+                    "--outcome", str(outcome),
+                    "--output", str(output),
+                    "--stdout-mode", "off",
+                ],
+                text=True, encoding="utf-8", capture_output=True, check=True,
+            )
+            self.assertEqual(result.stdout, "")
+            self.assertTrue(output.is_file())
 
 
 if __name__ == "__main__":

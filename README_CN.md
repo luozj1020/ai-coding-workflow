@@ -1131,6 +1131,15 @@ bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
   .worktrees/claude-<id>.untracked.txt
 ```
 
+最终审查默认使用绑定哈希的证据胶囊，不再把旧版完整 review prompt 直接传给
+Codex。完整 packet、diff 和日志仍保存在文件中，Codex只按选择器展开语义热点。
+当证据结构复杂且预计至少可减少 8 KiB Codex 输入时，工作流会进行一次可选的
+Spark `postflight-bundle` 压缩；Spark 完整输出留在文件中，Codex只接收有界的
+advisory 胶囊。优先用稳定 CLI 参数
+`--spark-compression auto|off|required` 配置，默认是 `auto`；同名环境变量仅作
+兼容默认值，避免前置环境变量破坏已批准的 launcher 前缀。Spark 仍不能授权
+验收、中断、合并或替代 Codex 语义审查。
+
 如果 Builder 结果符合计划，应先运行精确的确定性检查。只有新增测试、长时间验证或证据处理能够实质减少 Codex 工作时，才派发 `checker-test`；否则记录 `checker skipped: deterministic evidence sufficient` 并进入 Codex 审查。
 
 **步骤 5：循环或合并**

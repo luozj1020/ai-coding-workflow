@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # review-with-codex.sh  -  Send execution evidence to Codex/GPT for review.
 #
-# Usage: bash ai/review-with-codex.sh <task-card> <result-json> <diff-file> [extra-evidence ...]
+# Usage: bash ai/review-with-codex.sh <task-card> <result-json> <diff-file>
+#        [--spark-compression auto|off|required] [extra-evidence ...]
 #
 # This script:
 #   1. Validates that codex CLI exists.
@@ -29,6 +30,7 @@ if [ $# -lt 3 ]; then
     echo "  report.md           - Claude modification report" >&2
     echo "  progress.log        - Claude dispatch heartbeat/progress log" >&2
     echo "  pid                 - Claude subprocess PID artifact" >&2
+    echo "  --spark-compression - auto, off, or required (default: auto)" >&2
     exit 1
 fi
 
@@ -36,7 +38,21 @@ TASK_CARD="$1"
 RESULT_JSON="$2"
 DIFF_FILE="$3"
 shift 3
-EXTRA_FILES=("$@")
+SPARK_COMPRESSION_MODE="${AI_WORKFLOW_SPARK_COMPRESSION:-auto}"
+EXTRA_FILES=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --spark-compression)
+            [ $# -ge 2 ] || { echo "Error: --spark-compression requires a value." >&2; exit 1; }
+            SPARK_COMPRESSION_MODE="$2"
+            shift 2
+            ;;
+        *)
+            EXTRA_FILES+=("$1")
+            shift
+            ;;
+    esac
+done
 
 for f in "$TASK_CARD" "$RESULT_JSON" "$DIFF_FILE"; do
     if [ ! -f "$f" ]; then
@@ -61,7 +77,10 @@ REVIEW_OUTPUT_FILE="${REVIEW_PREFIX}.review.txt"
 CODEX_EVENTS_FILE="${REVIEW_PREFIX}.codex-events.jsonl"
 CODEX_USAGE_FILE="${REVIEW_PREFIX}.codex-usage.txt"
 REVIEW_PACKET_FILE="${REVIEW_PREFIX}.review-packet.json"
+REVIEW_CAPSULE_FILE="${REVIEW_PREFIX}.review-capsule.json"
 REVIEW_PROMPT_FILE="${REVIEW_PREFIX}.review-prompt.txt"
+SPARK_COMPRESSION_OUTPUT_FILE="${REVIEW_PREFIX}.spark-compression.stdout"
+SPARK_COMPRESSION_CAPSULE_FILE="${REVIEW_PREFIX}.spark-compression-capsule.json"
 
 # Build review packet if build-review-packet.py is available
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -84,20 +103,23 @@ fi
 # Build review packet from run directory
 if [ -n "$PYTHON_CMD" ] && [ -f "$BUILD_PACKET_SCRIPT" ]; then
     # Collect supplemental files
-    SUPPLEMENTAL_ARGS=""
+    SUPPLEMENTAL_ARGS=()
     for f in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
         if [ -n "$f" ] && [ -f "$f" ]; then
-            SUPPLEMENTAL_ARGS="$SUPPLEMENTAL_ARGS $f"
+            SUPPLEMENTAL_ARGS+=("$f")
         fi
     done
 
     set +e
     "$PYTHON_CMD" "$BUILD_PACKET_SCRIPT" "$RUN_DIR" \
         --output "$REVIEW_PACKET_FILE" \
+        --capsule-output "$REVIEW_CAPSULE_FILE" \
         --prompt-output "$REVIEW_PROMPT_FILE" \
+        --prompt-mode capsule \
         --task-card "$TASK_CARD" \
         --diff-file "$DIFF_FILE" \
-        --supplemental $SUPPLEMENTAL_ARGS \
+        --supplemental "${SUPPLEMENTAL_ARGS[@]}" \
+        --stdout-mode off \
         >/dev/null 2>&1
     PACKET_STATUS=$?
     set -e
@@ -107,220 +129,76 @@ if [ -n "$PYTHON_CMD" ] && [ -f "$BUILD_PACKET_SCRIPT" ]; then
     fi
 fi
 
-# Use review prompt from packet if available, otherwise build a bounded fallback
-if [ -f "$REVIEW_PROMPT_FILE" ]; then
-    REVIEW_PROMPT="$(cat "$REVIEW_PROMPT_FILE")"
-else
-    # Bounded fallback: do not concatenate full logs/diff
-    TASK_CONTENT="$(head -c 4000 "$TASK_CARD")"
-    RESULT_CONTENT="$(head -c 4000 "$RESULT_JSON")"
-    DIFF_CONTENT="$(head -c 20000 "$DIFF_FILE")"
+case "$SPARK_COMPRESSION_MODE" in
+    auto|off|required) ;;
+    *)
+        echo "Error: AI_WORKFLOW_SPARK_COMPRESSION must be auto, off, or required." >&2
+        exit 1
+        ;;
+esac
 
-    EXTRA_EVIDENCE=""
-    for f in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
-        if [ -n "$f" ] && [ -f "$f" ]; then
-            LABEL="$(basename "$f")"
-            FILE_CONTENT="$(tail -c 4000 "$f")"
-            EXTRA_EVIDENCE="${EXTRA_EVIDENCE}
+# Complex evidence may receive one advisory Spark compression pass. The full
+# response remains file-backed; Codex receives only the bounded summary capsule.
+SPARK_COMPRESSION_RECOMMENDED="no"
+if [ -n "$PYTHON_CMD" ] && [ -s "$REVIEW_CAPSULE_FILE" ]; then
+    SPARK_COMPRESSION_RECOMMENDED="$("$PYTHON_CMD" - "$REVIEW_CAPSULE_FILE" <<'PYEOF'
+import json, sys
+from pathlib import Path
+value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print("yes" if value.get("compression_route", {}).get("spark_recommended") else "no")
+PYEOF
+)"
+fi
 
-## Extra Evidence: ${LABEL}
-\`\`\`
-${FILE_CONTENT}
-\`\`\`"
-        fi
-    done
+if [ "$SPARK_COMPRESSION_MODE" != "off" ] && [ "$SPARK_COMPRESSION_RECOMMENDED" = "yes" ] && \
+   [ -f "${SCRIPT_DIR}/run-codex-spark.sh" ]; then
+    set +e
+    bash "${SCRIPT_DIR}/run-codex-spark.sh" "$TASK_CARD" \
+        --mode postflight-bundle \
+        --artifact "$REVIEW_PACKET_FILE" \
+        --result-mode direct \
+        --execution-env host \
+        >"$SPARK_COMPRESSION_OUTPUT_FILE" 2>"${SPARK_COMPRESSION_OUTPUT_FILE}.stderr"
+    SPARK_COMPRESSION_STATUS=$?
+    set -e
+    if [ -n "$PYTHON_CMD" ] && [ -s "$SPARK_COMPRESSION_OUTPUT_FILE" ] && \
+       [ -f "${SCRIPT_DIR}/build-spark-summary-capsule.py" ]; then
+        "$PYTHON_CMD" "${SCRIPT_DIR}/build-spark-summary-capsule.py" \
+            "$SPARK_COMPRESSION_OUTPUT_FILE" \
+            --output "$SPARK_COMPRESSION_CAPSULE_FILE" \
+            --stdout-mode off || true
+    fi
+    if [ "$SPARK_COMPRESSION_STATUS" -ne 0 ] && [ "$SPARK_COMPRESSION_MODE" = "required" ]; then
+        echo "Error: required Spark compression failed with exit ${SPARK_COMPRESSION_STATUS}." >&2
+        exit "$SPARK_COMPRESSION_STATUS"
+    fi
+fi
 
+if [ -s "$SPARK_COMPRESSION_CAPSULE_FILE" ] && [ -s "$REVIEW_PROMPT_FILE" ]; then
+    {
+        echo ""
+        echo "Spark advisory capsule: ${SPARK_COMPRESSION_CAPSULE_FILE}"
+        echo "Read it as a bounded advisory index only; verify cited original evidence before deciding."
+    } >> "$REVIEW_PROMPT_FILE"
+fi
+
+# Use the capsule prompt when available. If packet generation failed, keep the
+# fallback tool-backed too; never paste task, diff, result, or log bodies.
+if [ ! -f "$REVIEW_PROMPT_FILE" ]; then
     REVIEW_PROMPT=$(cat <<_REVIEW_EOF_
-You are a code reviewer in a multi-agent workflow. Review the following execution evidence and make a structured decision.
+# Tool-backed review fallback
 
-## Your Role
-- You are reviewing, NOT implementing. Do NOT write code or suggest code edits.
-- Do not directly patch implementation files after a Claude run unless a direct-intervention threshold is reached: max iterations, repeated same failure, non-decreasing failures, repeated timeout/unavailability, or explicit human request.
-- Claude no-progress, early exit, invalid result JSON, missing report, or one failed attempt is NOT enough for Codex takeover by failure. Classify the attempt and route the remaining delta. Prefer a smaller same-worktree Claude continuation when useful evidence and scope remain valid.
-- Separate failure takeover from reviewer-owned bounded correction. After accepting the main direction, ROUTE the remaining delta from a compact brief; Spark estimation is optional and only for genuinely uncertain ownership. Codex may own a deterministic correction only when it already holds the exact reviewed context, no new design decision is required, and an explicit Claude-first exception applies. Record that label, paths, and narrow validation. A first architectural or broad direction deviation is never eligible; revise, split, or reject. Otherwise prefer reviewed same-worktree Claude continuation.
-- Prior-session Claude failures are context only and do not prove a current-task takeover threshold. Every fresh session or phase uses the current Claude-first owner route.
-- Missing result/report/acceptance prose is an evidence gap, not automatically an implementation failure. If the diff matches the task card and assigned validation is green, reconstruct minimal review evidence from artifacts, diff, and verification output instead of revising only to obtain prose.
-- Treat reports containing AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT or AI-CODING-WORKFLOW:DISPATCH-FALLBACK-REPORT as missing valid Claude-owned reports, not as completion evidence.
-- Classify Claude evidence explicitly when reviewing: valid report, seeded report only, fallback report, no report but diff accepted, diff without report, acknowledgement only, or no useful progress.
-- Treat acknowledgement-only as no implementation progress when there is no code diff, no valid Claude-owned report, and only acknowledgement/proceed text.
-- Do not require new tests merely because none were written. Treat missing tests as a revise reason only when the task card assigned Claude to write tests, the user requested tests, or you now explicitly mark tests acceptance-critical for the next iteration.
-- When revising only for missing task-card-required tests or evidence, preserve the accepted implementation direction and route that narrow delta again. Dispatch Checker/Test Claude only when its test/evidence work materially reduces Codex effort; otherwise use deterministic local checks.
-- If one Builder attempt exits after acknowledgement with no code diff and no valid report, classify and route the remaining delta. Tighten and re-dispatch Claude once unless an explicit Claude-first exception applies. A second counted no-progress attempt may permit scoped failure-based takeover; cite both attempts and preserve accepted evidence.
-- If the first attempt produced useful scoped diff but no valid report/evidence, accept that direction only after running assigned narrow checks. If a tightened retry produces no useful progress, direct intervention may salvage that accepted direction.
-- For multi-phase or multi-part tasks, accepting the current Claude result may accept only that phase. Route every remaining implementation or test-writing slice independently; Claude remains the default writer and each next card binds only the accepted evidence and remaining delta.
-- Respect Task Mode. For Builder results, first decide whether direction matches the plan, then run deterministic local checks. Dispatch Checker/Test Claude only when assigned test writing, long validation, or evidence processing materially reduces Codex work; otherwise record `checker skipped: deterministic evidence sufficient`. For Checker/Test results, review validation evidence and avoid broad implementation changes.
-- If a task mixes implementation, test writing, broad validation, and phase stop gates without an explicit mixed-exception rationale, treat apparent stalls as likely orchestration ambiguity. Prefer SPLIT into Builder and Checker/Test task cards before blaming Claude execution.
-- Builder tasks should not be marked failed only because they did not write or run acceptance tests. Checker-test tasks should be marked incomplete when assigned tests, validation commands, or reports are missing.
-- When Claude appears stuck, classify the primary attribution before deciding: Claude execution, task-card ambiguity, mixed-role task, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifact, or external environment. Check progress log, Claude progress, task-card checklist, report, status output, and partial diff before interrupting or allowing takeover.
-- If network diagnostics are present, use them as environment evidence only: proxy mode, optional healthcheck status, and process socket states can support network/auth/model-wait attribution, but they do not expose request contents or prove implementation correctness.
-- Treat dirty source/stale HEAD as a delegation restoration problem, not a takeover trigger. Before another delegation, require a reliable base or explicit dirty-source authority. This blocker does not override an independently selected Codex direct route; distinguish that economic owner decision from failure-based takeover.
-- Treat permission, sandbox, forbidden-file, network, authentication, missing CLI, or approval blockers as environment/orchestration blockers unless repeated current-task evidence shows Claude ignored an available path forward.
-- Check Direction / Boundary Acknowledgement when present. If blocking Codex approval was required and Claude edited before approval, treat that as a process failure. If Claude had material confusion about target, boundaries, acceptance criteria, testing responsibility, or high-risk areas and guessed instead of stopping, normally choose REVISE or REJECT.
-- Also check for acknowledgement loops. If Claude already received a proceed decision and asks for the same approval again without a material goal/scope/boundary/risk change, treat it as no-progress and give a concrete next action. Codex review should return one final acknowledgement decision: proceed, narrow-once/re-dispatch, split, or stop.
-- If direct intervention is justified, state the failed attempts, why another Claude revision is unlikely to help, the allowed scope, and required validation.
-- Compare the implementation against the original task card requirements.
-- Use the Claude modification report if present, but verify it against the diff and evidence.
-- Evaluate whether the implementation matches the task card intent.
-- Review the task card Unknowns and Decision Gates. Decide whether known unknowns were resolved, new unknown-unknowns were surfaced, and any decision gate was crossed with appropriate authority.
-- Review the Phase Responsibility Matrix when present. Verify that Codex and Claude stayed inside the active phase ownership boundaries, and do not treat work outside Claude's assigned phase as Claude failure.
-- Review any Deviations From Plan. Accept deviations only when the discovered constraint is real, the action taken is conservative or explicitly allowed, and the reviewer briefing makes the behavioral impact clear.
-- Check the Handoff Contract if present. Verify Must do, Must not do, May decide, Must report, and Stop condition against the diff and evidence.
-- Check Small Change Fast Path Gate if present or if Claude dispatch was skipped. Verify a fresh pre-card Spark estimate (or recorded tiny skip), repository detected/routing scale, historical worktree cost, `task_role`, and 1.5x/2.0 calibration. Verify the selected deterministic gates: small 100/2 with no concentrated expansion; medium 100/2 ordinary and 250/3 concentrated; large 150/3 and 500/5; giant 200/3 and 500/5. Large/giant concentrated routing is core-semantic only; auxiliary work above one file/50 calibrated lines should normally remain Claude-owned. Every concentrated route must also prove local/bounded context, high solution clarity and semantic concentration, high Claude reacquisition, full Codex rereview, and delegated/direct ratio >=1.5. Risk raises rigor but must not push work from Codex to Claude. Actual edits exceeding the estimate are acceptable while scope, solution, and context remain stable.
-- Read `*.report-consistency.json` when present. Mechanical report/diff conflicts require reconciliation before trusting Claude prose; a matched result never replaces semantic review or validation.
-- Check Codex Spark Gate if present. If Spark was enabled, verify its requested/resolved mode, model, sandbox, artifact, task-size classification, routing recommendation, source-edit permission, isolated worktree use for micro-builder, accepted_suggestions, ignored_suggestions, conflicts_with_claude, conflicts_with_local_evidence, acceptance_satisfied_by_spark, and whether strong-model fallback was explicitly prohibited or approved. Treat Spark as auxiliary evidence only; it cannot satisfy acceptance by itself, replace Claude Builder ownership, or approve Codex final review.
-- Check Worktree / Large Repo Strategy Gate if present. If worktree reuse or large-repo mode was used, verify it was explicitly allowed, resets/cleans were limited to `.worktrees/reuse/claude-managed`, the source repo was not reset or cleaned, skipped untracked evidence is called out as a review risk, and any `Claude Context Packet` was sufficient to avoid broad repository rediscovery.
-- Check Parallel Execution Gate if present. If parallel dispatch was enabled, verify that each task card explicitly allowed it, file/module scopes did not overlap unless intentionally waived, no automatic merge occurred, and review/merge remains serial or manually reconciled.
-- Check Spec Gate if present. If a spec was required, verify the spec artifact was reviewed, implementation matched the spec, non-goals were respected, and Claude did not invent product/API/UX decisions outside the spec.
-- Check Root Cause Gate for bugfixes, regressions, failing tests, flaky behavior, performance issues, and repeated failed attempts. Verify symptom reproduction or cited evidence, likely root cause, similar-pattern scan, and whether the fix targets the cause rather than the symptom.
-- Check Testing Responsibility if present. Verify whether test code changes were user-requested, acceptance-critical, or out of scope; whether Claude was assigned to write/update tests; and whether Claude or Codex/human was responsible for running tests.
-- Check Test-First / TDD Contract when present. If TDD was required, require red evidence before production edits and green evidence after implementation. If Builder/Checker ownership was split, verify the evidence came from the assigned owner or request the correct next task.
-- Check Finish Branch Gate before saying a whole task or branch is ready for human merge. Require fresh verification, dirty/untracked artifact classification, out-of-scope change review, remaining risks, and human review/merge instructions.
-- Check Plan Match, Validation Confidence, and Reviewer Should Check fields when present. If confidence is low or the reviewer briefing is insufficient, normally choose REVISE.
-- Assess regression risk and design coherence.
-- Check for security implications.
-- Review token/cost usage for efficiency anomalies if usage data is present.
-- Check repository status evidence for baseline drift if status data is present.
-- Treat checker evidence as first-class validation evidence when present.
-- If checker evidence is missing, lossy, or contradicts Claude's success claim, call that out and normally choose REVISE unless the task explicitly allowed skipping checks.
-- If failed command, exit code, file:line, or key original output is missing from a failure report, require the next loop to preserve it.
-- If checker commands mutated the worktree, treat that as a validation failure.
-- Your decision drives the next loop iteration.
+The deterministic review-packet builder was unavailable. Do not implement or merge.
+Use local read-only tools and inspect these exact files selectively:
+- Task card: $TASK_CARD
+- Result receipt: $RESULT_JSON
+- Diff: $DIFF_FILE
 
-## Task Card
-${TASK_CONTENT}
-
-## Execution Result
-${RESULT_CONTENT}
-
-## Diff
-\`\`\`
-${DIFF_CONTENT}
-\`\`\`
-${EXTRA_EVIDENCE}
-
-## Required Output
-
-Your response MUST contain exactly one JSON decision object, either as the entire response or inside exactly one fenced \`\`\`json block. Human-readable explanation MAY follow outside that block.
-
-### JSON Decision Contract
-
-The JSON object MUST have this exact shape:
-\`\`\`json
-{
-  "schema_version": 1,
-  "decision": "accept|revise|split|reject",
-  "scope": "phase|whole-task",
-  "reasoning": "non-empty concise explanation",
-  "direction": {"status": "accepted|rejected|needs-revision|not-applicable"},
-  "acceptance": [
-    {"id": "AC-1", "status": "satisfied|failed|partial|not-evaluated", "evidence": ["artifact/path"]}
-  ],
-  "validation": {"status": "passed|failed|partial|not-run", "failed_checks": []},
-  "evidence_disposition": {
-    "status": "none|recoverable|partially-adopted|fully-adopted",
-    "units": [
-      {"path": "src/example.py", "symbols": ["Example.run"], "disposition": "adopted|rejected|needs-revision", "evidence": ["artifact/path"], "baseline_sha256": "sha256:<64 lowercase hex>"}
-    ]
-  },
-  "next_task": null,
-  "lessons": []
-}
-\`\`\`
-
-Rules:
-- For revise/split, \`next_task\` MUST be an object with at least \`mode\`, \`goal\`, \`acceptance\`.
-- For whole-task accept, \`next_task\` MUST be null. Phase accept may include a next task.
-- Core fields are required. `evidence_disposition` is optional for backward compatibility, but MUST be present when any Claude file/symbol is recovered or only partially adopted. It records Codex review disposition and never changes the dispatch terminal state.
-- `partially-adopted` requires at least one adopted unit and at least one rejected or needs-revision unit. Bind adopted units to exact paths, symbols when applicable, evidence, and a baseline hash when available.
-- No unknown top-level fields.
-- The JSON decision is authoritative. Human text CANNOT override it.
-
-### Human Explanation (optional, outside the JSON block)
-
-You may follow the JSON block with human-readable explanation sections covering: Requirements Comparison, Task Mode / Direction Review, Phase Responsibility, Small Change Fast Path, Stall / Ambiguity Triage, Delegation Restoration, Direction / Boundary Acknowledgement, Testing Responsibility, and other analysis.
-
-### Requirements Comparison
-Map the task card acceptance criteria to the observed implementation and evidence.
-
-### Task Mode / Direction Review
-State whether this was a builder, checker-test, mixed-exception, or control-plane task. For Builder tasks, state whether direction matches the plan and whether to wait, verify locally, dispatch Checker/Test under its value gate, interrupt/narrow, or consider takeover. For Checker/Test tasks, state whether test writing, validation, and reporting were completed.
-
-### Phase Responsibility
-State the active phase, what Codex owned, what Claude owned, and whether either side crossed a non-owner boundary. If a missing artifact or test was outside Claude's assigned phase, do not count it as Claude failure; produce the correct next task owner instead.
-
-### Small Change Fast Path
-State whether Codex skipped Claude dispatch, the routing event, raw and calibrated Spark upper estimates, whether the economic owner gate was satisfied, files touched, why direct Codex editing was economical, whether scope/solution/context stayed stable, which extra rigor the risk flags required, what validation ran or why validation was skipped, and whether material expansion required a fresh route decision. Do not treat actual lines above the estimate alone as a routing violation.
-
-### Stall / Ambiguity Triage
-State whether any apparent stall or incomplete evidence is better explained by Claude execution, task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission/tool approval blocker, network/proxy/auth/model wait, long-running validation, missing progress artifacts, or external environment. State which artifacts were checked and whether the next action is continue waiting, narrow and re-dispatch, split builder/checker, stop for human, or allow Codex takeover.
-
-### Delegation Restoration
-If dirty source, stale HEAD, outdated local workflow files, permission/tool approval, or external environment blocked reliable Claude dispatch, state the restoration path attempted or required. Choose one: commit accepted phase, stash/patch source changes, refresh workflow files, re-dispatch from updated HEAD, request explicit dirty-source override, stop for human, or takeover only after an independent threshold/human override. Dirty source alone is not enough for Codex takeover.
-
-### Direction / Boundary Acknowledgement
-State whether acknowledgement was required, whether it was blocking, whether Claude stated understanding/scope/out-of-scope boundaries/acceptance interpretation/testing responsibility/confusions, whether any confusion should have stopped execution, whether Claude waited for required Codex approval, and whether the acknowledgement stayed within the maximum allowed rounds. If deciding the acknowledgement, choose exactly one: proceed, narrow-once/re-dispatch, split, or stop.
-
-### Testing Responsibility
-State whether the task card assigned test writing and test execution to Claude, Codex/human, or neither, and whether the evidence matches that assignment.
-
-### Codex Spark Gate
-State the fixed Spark fields: enabled/disabled/not recorded, requested mode, resolved mode, model, sandbox, artifact path, exit code, auto-disabled reason, strong-model fallback status, task-size classification, routing recommendation, classification confidence, accepted_suggestions, ignored_suggestions, conflicts_with_claude, conflicts_with_local_evidence, and acceptance_satisfied_by_spark. Also state whether source edits were allowed, whether micro-builder work used an isolated worktree, whether strong-model fallback was avoided or explicitly approved, and that Spark evidence cannot satisfy acceptance without separate Codex verification.
-
-### Claude Evidence Classification
-Classify the Claude evidence as one of: valid report, seeded report only, fallback report, no report but diff accepted, diff without report, acknowledgement only, or no useful progress. State whether a valid Claude-owned report exists, whether implementation diff is present, and whether any accepted diff is being accepted with a report/evidence gap.
-
-### Worktree / Large Repo Strategy
-State whether fresh or reuse-managed worktree strategy was used, whether `CLAUDE_CODE_LARGE_REPO_MODE=1` skipped untracked scans or untracked patch evidence, whether the task card accepted that evidence tradeoff, whether a Claude Context Packet was provided and sufficient, whether broad repository search was avoided, and whether any reset/clean touched only `.worktrees/reuse/claude-managed`.
-
-### Parallel Execution Gate
-State whether experimental parallel execution was enabled, which aggregate artifact was reviewed, whether task scopes overlapped, whether all dispatches completed, whether any automatic merge occurred, and whether the next action is serial review, aggregate review, checker after merge, manual reconcile, or stop.
-
-### Spec Gate
-State whether a spec was required, which spec artifact or task-card section was reviewed, whether implementation matched the spec, whether non-goals were respected, and whether any product/API/UX decision was invented outside the spec.
-
-### Root Cause Gate
-For bugfix/debugging/regression work, state whether root cause was required, whether the symptom was reproduced or cited, what root cause evidence was provided, whether similar patterns were checked, and whether the fix targets the cause rather than the symptom.
-
-### Test-First / TDD Contract
-State whether TDD was required/recommended/not applicable, whether red evidence existed before production edits, whether green evidence exists after implementation, and whether the test owner and production-change owner matched the task card.
-
-### Finish Branch Gate
-State whether the whole task or branch is actually ready for human merge. Check fresh verification, evidence packet completeness, dirty/untracked artifact classification, out-of-scope changes, remaining risks, and review/merge instructions. If only a phase is accepted, say that Finish Branch Gate is not yet satisfied.
-
-### Unknowns / Decision Gates
-State which unknowns were resolved, which remain open, whether new unknown-unknowns were discovered, and whether any decision gate was crossed appropriately.
-
-### Deviations From Plan
-List each deviation, whether it was justified, and whether it requires follow-up.
-
-### Reviewer Understanding
-Briefly state the behavior changed, critical paths affected, and the verification evidence that supports your understanding. If the evidence is insufficient to understand the change, choose REVISE.
-
-### Next-Loop Instructions
-- For ACCEPT: state either that the whole task is ready for human merge, or that only the current phase is accepted and provide a compact remaining-work brief for a fresh owner route.
-- For REVISE: provide specific, actionable revision instructions for the next iteration.
-- For SPLIT: decompose into smaller task cards with goals and acceptance criteria.
-- For REJECT: explain why the approach is wrong and suggest an alternative.
-
-### Codex Direct Intervention
-State whether failure-based Codex takeover is allowed now. If yes, cite the exact threshold reached, files/modules in scope, and validation required. If no, say so without pre-assigning the next owner; provide the facts needed for a fresh route.
-
-### Review-to-Next-Task Contract
-For REVISE, SPLIT, or REJECT, provide a task-card-ready handoff with:
-- Carry Forward Context
-- Next Task Mode: builder / checker-test / mixed-exception / control-plane
-- Keep
-- Change
-- Do Not Repeat
-- New Acceptance Criteria
-- New Unknowns / Decision Gates
-- New Spec / Spark / Parallel / Root Cause / TDD / Finish Branch requirements
-- New Handoff Contract
-
-For phase-only ACCEPT with remaining implementation/test-writing work, also provide this contract as input to the next owner route. It becomes a Claude card only after a positive gate.
-
-### Reusable Lessons
-Record any knowledge that could inform future planning.
+Do not cat whole files or logs. Start with file sizes, hashes, diffstat, changed paths,
+and failed gates; then read only semantic hotspots. Treat unreadable or stale evidence
+as needs-review. Return exactly one JSON object with schema_version=1;
+decision=accept|revise|split|reject; scope=phase|whole-task; reasoning;
+direction.status; acceptance; validation; next_task; lessons.
 _REVIEW_EOF_
 )
 fi
@@ -340,7 +218,8 @@ write_codex_usage() {
         return 0
     fi
 
-    "$PYTHON_CMD" - "$CODEX_EVENTS_FILE" "$REVIEW_OUTPUT_FILE" "$CODEX_USAGE_FILE" <<'PYEOF'
+    "$PYTHON_CMD" - "$CODEX_EVENTS_FILE" "$REVIEW_OUTPUT_FILE" "$CODEX_USAGE_FILE" \
+        "$REVIEW_PROMPT_FILE" "$REVIEW_CAPSULE_FILE" "$SPARK_COMPRESSION_CAPSULE_FILE" <<'PYEOF'
 import json
 import re
 import sys
@@ -349,6 +228,9 @@ from pathlib import Path
 events_path = Path(sys.argv[1])
 text_path = Path(sys.argv[2])
 usage_path = Path(sys.argv[3])
+prompt_path = Path(sys.argv[4])
+capsule_path = Path(sys.argv[5])
+spark_capsule_path = Path(sys.argv[6])
 
 keys = {
     "input_tokens", "output_tokens", "total_tokens", "cached_input_tokens",
@@ -403,6 +285,21 @@ if found:
 else:
     lines.append("Usage unavailable: no recognizable token/cost fields were found in Codex output.")
 lines.append("")
+lines.append("## Evidence transfer")
+lines.append("")
+lines.append(f"- Codex prompt bytes: {prompt_path.stat().st_size if prompt_path.is_file() else 'unavailable'}")
+lines.append(f"- Review capsule bytes: {capsule_path.stat().st_size if capsule_path.is_file() else 'unavailable'}")
+lines.append(f"- Spark capsule bytes: {spark_capsule_path.stat().st_size if spark_capsule_path.is_file() else 0}")
+if capsule_path.is_file():
+    try:
+        capsule = json.loads(capsule_path.read_text(encoding="utf-8"))
+        transfer = capsule.get("transfer_metrics", {})
+        lines.append(f"- Legacy full prompt bytes avoided: {capsule.get('legacy_full_prompt_bytes', 'unknown')}")
+        lines.append(f"- Estimated Codex bytes saved: {capsule.get('compression_route', {}).get('estimated_codex_bytes_saved', 'unknown')}")
+        lines.append(f"- Capsule hard limit respected: {transfer.get('within_limit', False)}")
+    except (OSError, ValueError):
+        lines.append("- Capsule metrics unavailable: invalid capsule")
+lines.append("")
 lines.append(f"Review output: {text_path}")
 lines.append(f"Codex events: {events_path}")
 usage_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -418,6 +315,12 @@ echo "Codex Events:  $CODEX_EVENTS_FILE"
 echo "Codex Usage:   $CODEX_USAGE_FILE"
 if [ -f "$REVIEW_PACKET_FILE" ]; then
     echo "Review Packet: $REVIEW_PACKET_FILE"
+fi
+if [ -f "$REVIEW_CAPSULE_FILE" ]; then
+    echo "Review Capsule: $REVIEW_CAPSULE_FILE"
+fi
+if [ -f "$SPARK_COMPRESSION_CAPSULE_FILE" ]; then
+    echo "Spark Compression Capsule: $SPARK_COMPRESSION_CAPSULE_FILE"
 fi
 echo ""
 

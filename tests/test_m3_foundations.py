@@ -822,10 +822,22 @@ class TestReviewShellStdin(unittest.TestCase):
         content = self.REVIEW_SCRIPT.read_text(encoding="utf-8")
         self.assertIn("build-review-packet.py", content)
 
+    def test_script_uses_capsule_prompt_and_optional_spark_compression(self):
+        content = self.REVIEW_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("--prompt-mode capsule", content)
+        self.assertIn("AI_WORKFLOW_SPARK_COMPRESSION", content)
+        self.assertIn("--spark-compression", content)
+        self.assertIn("build-spark-summary-capsule.py", content)
+        self.assertNotIn('REVIEW_PROMPT="$(cat "$REVIEW_PROMPT_FILE")"', content)
+        packet_builder = (SCRIPTS / "build-review-packet.py").read_text(encoding="utf-8")
+        self.assertIn("verify-evidence-capsule.py", packet_builder)
+
     def test_script_has_bounded_fallback(self):
         """review-with-codex.sh must have bounded fallback when packet build fails."""
         content = self.REVIEW_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("head -c", content)
+        self.assertIn("# Tool-backed review fallback", content)
+        self.assertIn("Do not cat whole files or logs", content)
+        self.assertNotIn('DIFF_CONTENT="$(head -c', content)
 
 
 # ===========================================================================
@@ -874,6 +886,9 @@ class TestInstallerCopiesM3(unittest.TestCase):
         content = (SCRIPTS / "install_workflow.py").read_text(encoding="utf-8")
         self.assertIn("build_review_packet.py", content)
         self.assertIn("build-review-packet.py", content)
+        self.assertIn("evidence_capsule.py", content)
+        self.assertIn("build-spark-summary-capsule.py", content)
+        self.assertIn("verify-evidence-capsule.py", content)
 
     def test_resume_run_installed(self):
         content = (SCRIPTS / "install_workflow.py").read_text(encoding="utf-8")
@@ -908,6 +923,9 @@ class TestInstallerCopiesM3(unittest.TestCase):
             self.assertTrue((repo / "ai" / "validate-run-events.py").exists())
             self.assertTrue((repo / "ai" / "build_review_packet.py").exists())
             self.assertTrue((repo / "ai" / "build-review-packet.py").exists())
+            self.assertTrue((repo / "ai" / "evidence_capsule.py").exists())
+            self.assertTrue((repo / "ai" / "build-spark-summary-capsule.py").exists())
+            self.assertTrue((repo / "ai" / "verify-evidence-capsule.py").exists())
             self.assertTrue((repo / "ai" / "resume-run.py").exists())
             self.assertTrue((repo / "ai" / "replay-run.py").exists())
             self.assertTrue((repo / "ai" / "schemas" / "run-event-v2.schema.json").exists())

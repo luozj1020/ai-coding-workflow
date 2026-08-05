@@ -12,6 +12,17 @@ import subprocess
 import tempfile
 from typing import Any
 
+from evidence_capsule import (
+    acceptance_compression_route,
+    artifact_ref,
+    bounded_selector,
+    bounded_text,
+    compact_bytes,
+    finalize_capsule,
+    repository_head,
+    spark_tool_request,
+)
+
 
 def load(path: Path | None) -> dict[str, Any] | None:
     if path is None or not path.is_file():
@@ -246,12 +257,51 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     return value
 
 
-def atomic_write(path: Path, value: dict[str, Any]) -> None:
+def compact_capsule(
+    value: dict[str, Any], output: Path, task_card: Path | None, worktree: Path,
+) -> dict[str, Any]:
+    selection = value.get("review_selection", {})
+    acceptance = value.get("acceptance_index", [])
+    compression = dict(value.get("compression_route", {}))
+    if compression.get("spark_recommended") and task_card is not None:
+        compression["tool_request"] = spark_tool_request(task_card, output)
+    return {
+        "schema_version": 1,
+        "kind": "aiwf-acceptance-capsule",
+        "task_id": value.get("task_id"),
+        "output_path": str(output.resolve()),
+        "evidence": artifact_ref(output),
+        "task_card": artifact_ref(task_card),
+        "repository_head": repository_head(worktree),
+        "recommended_decision": value.get("recommended_decision"),
+        "completion_state": value.get("completion_state"),
+        "gates": value.get("gates", {}),
+        "changed_path_count": len(value.get("changed_paths", [])),
+        "changed_symbol_count": len(value.get("changed_symbols", [])),
+        "acceptance_item_count": len(acceptance),
+        "expanded_acceptance_ids": bounded_selector(
+            selection.get("expanded_acceptance_ids", [])
+        ),
+        "unresolved_risk_count": len(value.get("unresolved_risks", [])),
+        "deep_codex_review_required": bool(selection.get("deep_codex_review_required")),
+        "checker_skip_reason": bounded_text(value.get("checker_skip_reason")),
+        "compression_route": compression,
+        "transfer_metrics": {
+            "full_evidence_bytes": output.stat().st_size if output.is_file() else None,
+        },
+        "merge_authorized": False,
+    }
+
+
+def atomic_write(path: Path, value: dict[str, Any], *, compact: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(value, handle, indent=2, sort_keys=True)
+            if compact:
+                json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+            else:
+                json.dump(value, handle, indent=2, sort_keys=True)
             handle.write("\n")
         os.replace(temporary, path)
     except BaseException:
@@ -276,10 +326,27 @@ def main() -> int:
     parser.add_argument("--symbol-summary", type=Path)
     parser.add_argument("--task-card", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--capsule-output", type=Path)
+    parser.add_argument(
+        "--stdout-mode",
+        choices=("compact", "full", "off"),
+        default="compact",
+        help="Default compact prints only a bounded tool capsule; full preserves legacy JSON.",
+    )
     args = parser.parse_args()
     value = build(args)
+    provisional_bytes = len(compact_bytes(value))
+    value["compression_route"] = acceptance_compression_route(value, provisional_bytes)
     atomic_write(args.output, value)
-    print(json.dumps(value, sort_keys=True))
+    capsule = finalize_capsule(
+        compact_capsule(value, args.output, args.task_card, args.worktree)
+    )
+    if args.capsule_output:
+        atomic_write(args.capsule_output, capsule, compact=True)
+    if args.stdout_mode == "compact":
+        print(json.dumps(capsule, sort_keys=True, separators=(",", ":")))
+    elif args.stdout_mode == "full":
+        print(json.dumps(value, sort_keys=True))
     return 0
 
 

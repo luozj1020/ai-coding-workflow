@@ -21,6 +21,7 @@ CODEGRAPH_WORKTREE_GUARD = ROOT / "scripts" / "codegraph-worktree-guard.py"
 CLAUDE_API_AVAILABILITY = ROOT / "scripts" / "claude-api-availability.py"
 ARCHIVE_CONTROL_FILES = ROOT / "scripts" / "archive-control-files.py"
 BUILD_ACCEPTANCE_BUNDLE = ROOT / "scripts" / "build-acceptance-bundle.py"
+EVIDENCE_CAPSULE = ROOT / "scripts" / "evidence_capsule.py"
 BUILD_TAKEOVER_RECEIPT = ROOT / "scripts" / "build-takeover-receipt.py"
 CREATE_DIRTY_SNAPSHOT = ROOT / "scripts" / "create-dirty-snapshot.py"
 ENFORCE_CHECKER_CONTRACT = ROOT / "scripts" / "enforce-checker-contract.py"
@@ -96,6 +97,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(CLAUDE_API_AVAILABILITY, self.repo / "scripts" / "claude-api-availability.py")
         shutil.copy2(ARCHIVE_CONTROL_FILES, self.repo / "scripts" / "archive-control-files.py")
         shutil.copy2(BUILD_ACCEPTANCE_BUNDLE, self.repo / "scripts" / "build-acceptance-bundle.py")
+        shutil.copy2(EVIDENCE_CAPSULE, self.repo / "scripts" / "evidence_capsule.py")
         shutil.copy2(BUILD_TAKEOVER_RECEIPT, self.repo / "scripts" / "build-takeover-receipt.py")
         shutil.copy2(CREATE_DIRTY_SNAPSHOT, self.repo / "scripts" / "create-dirty-snapshot.py")
         shutil.copy2(ENFORCE_CHECKER_CONTRACT, self.repo / "scripts" / "enforce-checker-contract.py")
@@ -117,6 +119,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                    "scripts/codegraph-worktree-guard.py",
                    "scripts/claude-api-availability.py",
                    "scripts/archive-control-files.py", "scripts/build-acceptance-bundle.py",
+                   "scripts/evidence_capsule.py",
                    "scripts/build-takeover-receipt.py",
                    "scripts/create-dirty-snapshot.py", "scripts/enforce-checker-contract.py",
                    "scripts/validate-advisor-request.py", "scripts/validate-advisor-response.py",
@@ -2740,6 +2743,19 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertFalse(acceptance["merge_authorized"])
         self.assertEqual(acceptance["authority"], "evidence-summary-only")
+        acceptance_capsule = json.loads(
+            self._artifact_path(result.stdout, "Acceptance Capsule").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(acceptance_capsule["kind"], "aiwf-acceptance-capsule")
+        self.assertFalse(acceptance_capsule["merge_authorized"])
+        self.assertEqual(
+            pathlib.Path(acceptance_capsule["output_path"]).resolve(),
+            self._artifact_path(result.stdout, "Acceptance Bundle").resolve(),
+        )
+        self.assertNotIn("changed_paths", acceptance_capsule)
+        self.assertNotIn("acceptance_index", acceptance_capsule)
 
     def test_checker_validation_start_refreshes_active_window(self):
         self._write_low_risk_checker_card()

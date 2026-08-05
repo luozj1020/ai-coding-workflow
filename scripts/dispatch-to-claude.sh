@@ -1868,6 +1868,7 @@ REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
 REPORT_CONSISTENCY_FILE="${WORKTREE_ROOT}/${TASK_ID}.report-consistency.json"
 OUTCOME_FILE="${WORKTREE_ROOT}/${TASK_ID}.outcome.json"
 ACCEPTANCE_BUNDLE_FILE="${WORKTREE_ROOT}/${TASK_ID}.acceptance-bundle.json"
+ACCEPTANCE_CAPSULE_FILE="${WORKTREE_ROOT}/${TASK_ID}.acceptance-capsule.json"
 RECOVERED_COMPLETION_FILE="${WORKTREE_ROOT}/${TASK_ID}.recovered-completion.json"
 WRITE_SCOPE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.write-scope-enforcement.json"
 PRODUCT_BASELINE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-baseline.json"
@@ -7920,6 +7921,8 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/build-acceptance-bundle.py" ]; th
         --recovered-completion "$RECOVERED_COMPLETION_FILE"
         --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md"
         --output "$ACCEPTANCE_BUNDLE_FILE"
+        --capsule-output "$ACCEPTANCE_CAPSULE_FILE"
+        --stdout-mode off
     )
     if [ -s "${AI_WORKFLOW_ACCEPTANCE_GRAPH_FILE:-}" ]; then
         _ACCEPTANCE_BUNDLE_ARGS+=(--acceptance-graph "$AI_WORKFLOW_ACCEPTANCE_GRAPH_FILE")
@@ -7935,7 +7938,7 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/build-acceptance-bundle.py" ]; th
     fi
     if "$PYTHON_CMD" "${SCRIPT_DIR}/build-acceptance-bundle.py" \
         "${_ACCEPTANCE_BUNDLE_ARGS[@]}" >/dev/null; then
-        progress_log "Acceptance bundle saved: ${ACCEPTANCE_BUNDLE_FILE}"
+        progress_log "Acceptance evidence saved: bundle=${ACCEPTANCE_BUNDLE_FILE}, capsule=${ACCEPTANCE_CAPSULE_FILE}"
     else
         progress_log "Acceptance bundle advisory failed; authoritative outcome remains ${OUTCOME_FILE}"
     fi
@@ -8593,6 +8596,9 @@ echo "Outcome Gates:   $OUTCOME_FILE"
 echo "Product State:   $PRODUCT_STATE_FILE"
 if [ -s "$ACCEPTANCE_BUNDLE_FILE" ]; then
     echo "Acceptance Bundle: $ACCEPTANCE_BUNDLE_FILE"
+fi
+if [ -s "$ACCEPTANCE_CAPSULE_FILE" ]; then
+    echo "Acceptance Capsule: $ACCEPTANCE_CAPSULE_FILE"
 fi
 echo "Task Card Full:  ${WORKTREE_DIR}/TASK_CARD_FULL.md"
 echo "Claude Task:     ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"

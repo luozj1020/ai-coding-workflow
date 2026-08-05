@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import subprocess
 import sys
@@ -60,8 +61,47 @@ class LocateCodeTests(unittest.TestCase):
             self.assertIn("CodeGraph: skipped (off)", result.stdout)
             self.assertIn("src/user_service.py", result.stdout)
             self.assertIn("tests/test_user_service.py", result.stdout)
-            self.assertIn("def authenticate", result.stdout)
             self.assertIn("Suggested Targeted Reads", result.stdout)
+            self.assertNotIn("## Match Snippets", result.stdout)
+            self.assertNotIn("## Search Status", result.stdout)
+            self.assertNotIn("## CodeGraph Excerpt", result.stdout)
+            self.assertLessEqual(len(result.stdout.encode("utf-8")), 4096)
+
+    def test_explicit_full_json_and_details_output_views(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / "service.py").write_text(
+                "class UserService:\n    def authenticate(self): return True\n",
+                encoding="utf-8",
+            )
+            self.init_repo(repo)
+            details = pathlib.Path(tmp) / "locator-full.md"
+
+            compact = self.run_locator(
+                repo, "--codegraph", "off", "--details-output", str(details),
+                "UserService authenticate",
+            )
+            full = self.run_locator(
+                repo, "--codegraph", "off", "--format", "full",
+                "UserService authenticate",
+            )
+            machine = self.run_locator(
+                repo, "--codegraph", "off", "--format", "json",
+                "UserService authenticate",
+            )
+
+            self.assertIn("# Locate Code Capsule", compact.stdout)
+            self.assertIn(str(details.resolve()), compact.stdout)
+            self.assertTrue(details.is_file())
+            self.assertIn("## Search Status", details.read_text(encoding="utf-8"))
+            self.assertIn("## Match Snippets", full.stdout)
+            self.assertIn("def authenticate", full.stdout)
+            payload = json.loads(machine.stdout)
+            self.assertEqual(payload["kind"], "aiwf-locate-code-capsule")
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertTrue(any(row["path"] == "service.py" for row in payload["candidates"]))
+            self.assertNotIn("snippet", payload["candidates"][0])
 
     def test_auto_codegraph_skips_large_repositories_before_cli_lookup(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -81,7 +121,7 @@ class LocateCodeTests(unittest.TestCase):
                 "alpha",
             )
 
-            self.assertIn("CodeGraph: broad skipped (auto skipped broad: tracked files", result.stdout)
+            self.assertIn("CodeGraph: broad skipped (auto skipped CodeGraph: tracked files", result.stdout)
             self.assertIn("one.py", result.stdout)
             self.assertIn("two.py", result.stdout)
 
@@ -246,6 +286,7 @@ class LocateCodeMockTests(unittest.TestCase):
                 "--repo", str(repo),
                 "--backend", "zoekt",
                 "--codegraph", "off",
+                "--format", "full",
                 "alpha",
             ])
             with unittest.mock.patch.object(mod.shutil, "which", return_value=None):
@@ -270,6 +311,7 @@ class LocateCodeMockTests(unittest.TestCase):
             args = mod.parse_args([
                 "--repo", str(repo),
                 "--codegraph", "off",
+                "--format", "full",
                 "MyService",
             ])
             report = mod.build_report(args)
@@ -324,6 +366,7 @@ class LocateCodeMockTests(unittest.TestCase):
             "--repo", str(repo), "--codegraph", codegraph_mode,
             "--codegraph-auto-file-threshold", str(threshold),
             "--codegraph-timeout", "0.1", "--codegraph-narrow-timeout", "0.05",
+            "--format", "full",
             "Worker", "execute",
         ])
         return mod, repo, args
@@ -341,6 +384,7 @@ class LocateCodeMockTests(unittest.TestCase):
 
             with unittest.mock.patch.object(mod.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
                  unittest.mock.patch.object(mod, "search_zoekt", return_value=([], "backend_unavailable", "missing")), \
+                 unittest.mock.patch.object(mod, "codegraph_status_guard", return_value=(True, "ready")), \
                  unittest.mock.patch.object(mod, "run_codegraph", side_effect=fake_graph):
                 report = mod.build_report(args)
             self.assertEqual(len(calls), 2)
@@ -348,7 +392,7 @@ class LocateCodeMockTests(unittest.TestCase):
             self.assertIn("codegraph_broad: timeout", report)
             self.assertIn("codegraph_narrowed: rc=0", report)
 
-    def test_large_auto_skips_broad_and_runs_one_narrowed_query(self):
+    def test_large_auto_skips_all_codegraph_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             mod, _repo, args = self._graph_repo_args(tmp, codegraph_mode="auto", threshold=0)
             calls = []
@@ -359,12 +403,13 @@ class LocateCodeMockTests(unittest.TestCase):
 
             with unittest.mock.patch.object(mod.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
                  unittest.mock.patch.object(mod, "search_zoekt", return_value=([], "backend_unavailable", "missing")), \
+                 unittest.mock.patch.object(mod, "codegraph_status_guard", return_value=(True, "ready")), \
                  unittest.mock.patch.object(mod, "run_codegraph", side_effect=fake_graph):
                 report = mod.build_report(args)
-            self.assertEqual(len(calls), 1)
-            self.assertIn("src/worker.py", calls[0])
+            self.assertEqual(calls, [])
             self.assertIn("codegraph_broad: skipped", report)
-            self.assertIn("codegraph_narrowed: rc=0", report)
+            self.assertIn("codegraph_narrowed: not_attempted", report)
+            self.assertIn("src/worker.py", report)
 
     def test_narrowed_timeout_stops_after_second_graph_call(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -377,6 +422,7 @@ class LocateCodeMockTests(unittest.TestCase):
 
             with unittest.mock.patch.object(mod.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
                  unittest.mock.patch.object(mod, "search_zoekt", return_value=([], "backend_unavailable", "missing")), \
+                 unittest.mock.patch.object(mod, "codegraph_status_guard", return_value=(True, "ready")), \
                  unittest.mock.patch.object(mod, "run_codegraph", side_effect=fake_graph):
                 report = mod.build_report(args)
             self.assertEqual(len(calls), 2)
@@ -389,12 +435,97 @@ class LocateCodeMockTests(unittest.TestCase):
             repo = pathlib.Path(tmp) / "repo"
             repo.mkdir()
             (repo / "main.py").write_text("def process_data(): pass\n", encoding="utf-8")
-            args = mod.parse_args(["--repo", str(repo), "process_data"])
+            args = mod.parse_args(["--repo", str(repo), "--format", "full", "process_data"])
             with unittest.mock.patch.object(mod.shutil, "which", return_value=None):
                 report = mod.build_report(args)
             self.assertIn("backend_unavailable: zoekt,codegraph", report)
             self.assertIn("fallback_backend: python", report)
             self.assertIn("main.py", report)
+
+    def test_codegraph_status_guard_accepts_only_clean_matching_worktree(self):
+        mod = _load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            clean = {
+                "projectPath": str(repo.resolve()),
+                "worktreeMismatch": None,
+                "pendingChanges": {"added": 0, "modified": 0, "removed": 0},
+                "index": {"reindexRecommended": False},
+            }
+
+            def result_for(value):
+                return {
+                    "rc": 0, "stdout": json.dumps(value), "stderr": "",
+                    "elapsed": 0.01, "timed_out": False,
+                }
+
+            with unittest.mock.patch.object(mod.shutil, "which", return_value="/usr/bin/codegraph"), \
+                 unittest.mock.patch.object(mod, "run_command", return_value=result_for(clean)):
+                self.assertEqual(mod.codegraph_status_guard(str(repo)), (True, "ready"))
+
+            dirty = dict(clean)
+            dirty["pendingChanges"] = {"added": 1, "modified": 0, "removed": 0}
+            with unittest.mock.patch.object(mod.shutil, "which", return_value="/usr/bin/codegraph"), \
+                 unittest.mock.patch.object(mod, "run_command", return_value=result_for(dirty)):
+                self.assertEqual(
+                    mod.codegraph_status_guard(str(repo)),
+                    (False, "codegraph pending changes"),
+                )
+
+            mismatched = dict(clean)
+            mismatched["projectPath"] = str(pathlib.Path(tmp) / "other")
+            with unittest.mock.patch.object(mod.shutil, "which", return_value="/usr/bin/codegraph"), \
+                 unittest.mock.patch.object(mod, "run_command", return_value=result_for(mismatched)):
+                self.assertEqual(
+                    mod.codegraph_status_guard(str(repo)),
+                    (False, "codegraph project mismatch"),
+                )
+
+            rejected_states = []
+            worktree_mismatch = json.loads(json.dumps(clean))
+            worktree_mismatch["worktreeMismatch"] = {"expected": str(repo)}
+            rejected_states.append((worktree_mismatch, "codegraph worktree mismatch"))
+            missing_pending = json.loads(json.dumps(clean))
+            missing_pending.pop("pendingChanges")
+            rejected_states.append((missing_pending, "codegraph pending state missing"))
+            reindex = json.loads(json.dumps(clean))
+            reindex["index"]["reindexRecommended"] = True
+            rejected_states.append((reindex, "codegraph reindex recommended"))
+            warning = json.loads(json.dumps(clean))
+            warning["warnings"] = ["stale index"]
+            rejected_states.append((warning, "codegraph status warning"))
+            for value, expected_reason in rejected_states:
+                with self.subTest(expected_reason=expected_reason), \
+                     unittest.mock.patch.object(mod.shutil, "which", return_value="/usr/bin/codegraph"), \
+                     unittest.mock.patch.object(mod, "run_command", return_value=result_for(value)):
+                    self.assertEqual(
+                        mod.codegraph_status_guard(str(repo)),
+                        (False, expected_reason),
+                    )
+
+            malformed = {
+                "rc": 0, "stdout": "not-json", "stderr": "",
+                "elapsed": 0.01, "timed_out": False,
+            }
+            with unittest.mock.patch.object(mod.shutil, "which", return_value="/usr/bin/codegraph"), \
+                 unittest.mock.patch.object(mod, "run_command", return_value=malformed):
+                self.assertEqual(
+                    mod.codegraph_status_guard(str(repo)),
+                    (False, "codegraph status malformed"),
+                )
+
+    def test_codegraph_guard_failure_prevents_explore_but_keeps_lexical_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mod, _repo, args = self._graph_repo_args(tmp)
+            with unittest.mock.patch.object(mod.shutil, "which", side_effect=lambda name: "/usr/bin/" + name), \
+                 unittest.mock.patch.object(mod, "search_zoekt", return_value=([], "backend_unavailable", "missing")), \
+                 unittest.mock.patch.object(mod, "codegraph_status_guard", return_value=(False, "codegraph pending changes")), \
+                 unittest.mock.patch.object(mod, "run_codegraph") as graph:
+                report = mod.build_report(args)
+            graph.assert_not_called()
+            self.assertIn("codegraph pending changes", report)
+            self.assertIn("src/worker.py", report)
 
 
 if __name__ == "__main__":

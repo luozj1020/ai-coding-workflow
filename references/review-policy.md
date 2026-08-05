@@ -277,6 +277,21 @@ Unsupported or uncovered mechanical items use L1 compression; contradictory,
 reopened, or unverified semantic items require compact L2 Codex review. Full
 evidence stays file-backed and is read only for selected IDs.
 
+Keep the terminal handoff tool-backed. `build-acceptance-bundle.py` and
+`build-review-packet.py` print bounded JSON capsules by default while keeping
+full evidence in their output files. For a capsule whose
+`compression_route.spark_recommended` is true, the outer workflow may execute
+its hash-bound `tool_request.argv` once and use Spark's `postflight-bundle`
+response as an advisory compression layer. `review-with-codex.sh` does this in
+`--spark-compression auto` only when deterministic complexity signals
+and at least 8 KiB of estimated transfer savings agree. It stores full Spark
+stdout and sends only the bounded Spark capsule to Codex. Pass artifact paths,
+never pasted bodies. Verify every capsule with
+`verify-evidence-capsule.py`; stale task-card, diff, evidence, or HEAD bindings
+fail closed. Spark cannot accept the change, stop Claude, or replace Codex's
+evidence-bound semantic decision; an unavailable optional result falls back to
+expanding only selected evidence IDs.
+
 Codex output remains bounded by responsibility, not by a hard token limit:
 intent freeze contains goal/invariants/acceptance/forbidden paths, planning
 review contains blocking findings, and final review contains a decision plus

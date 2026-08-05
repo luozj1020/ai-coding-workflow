@@ -1235,6 +1235,15 @@ bash ai/review-with-codex.sh ai/task-cards/PROJ-123.md \
   .worktrees/claude-<id>.untracked.txt
 ```
 
+Final review now uses a hash-bound evidence capsule by default instead of
+feeding the legacy full review prompt to Codex. Full packet/diff/log bodies stay
+file-backed and Codex expands only selected semantic hotspots. Structurally
+complex evidence with at least 8 KiB of estimated input savings receives one
+optional Spark `postflight-bundle` compression pass; its full output stays on
+disk and only a bounded advisory capsule reaches Codex. Configure this with
+`--spark-compression auto|off|required` (default `auto`); the equivalent
+environment variable remains compatibility-only.
+
 If the Builder result matches the plan, run exact deterministic checks first. Dispatch a `checker-test` card only when new tests, long validation, or evidence processing materially reduces Codex work. Otherwise record `checker skipped: deterministic evidence sufficient` and proceed to Codex review.
 
 **Step 5: Loop or Merge**
