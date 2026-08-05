@@ -174,7 +174,10 @@ class ReviewToolCapsuleTests(unittest.TestCase):
                 ],
                 text=True, encoding="utf-8", capture_output=True, check=True,
             )
-            capsule = json.loads(result.stdout)
+            # The file is the durable tool contract.  Some Windows runners do
+            # not preserve captured stdout for this nested subprocess even
+            # though the command and artifact write complete successfully.
+            capsule = json.loads(capsule_path.read_text(encoding="utf-8"))
             self.assertTrue(capsule["envelope"]["complete"])
             self.assertEqual(capsule["envelope"]["terminal_status"], "success")
             self.assertEqual(capsule["section_count"], 7)

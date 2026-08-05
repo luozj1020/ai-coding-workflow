@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -92,7 +93,14 @@ class LocateCodeTests(unittest.TestCase):
             )
 
             self.assertIn("# Locate Code Capsule", compact.stdout)
-            self.assertIn(str(details.resolve()), compact.stdout)
+            details_line = next(
+                line for line in compact.stdout.splitlines() if line.startswith("Details: `")
+            )
+            reported_details = pathlib.Path(details_line.removeprefix("Details: `").removesuffix("`"))
+            self.assertTrue(
+                os.path.samefile(details, reported_details),
+                f"reported details path differs: {reported_details}",
+            )
             self.assertTrue(details.is_file())
             self.assertIn("## Search Status", details.read_text(encoding="utf-8"))
             self.assertIn("## Match Snippets", full.stdout)
