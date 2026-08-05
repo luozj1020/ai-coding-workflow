@@ -1286,7 +1286,7 @@ Windows PowerShell 的控制台代码页, `$OutputEncoding` 和子进程编码�
 - `.worktrees/claude-<id>.progress.log` 记录启动、心跳、超时和完成事件。
 - 最终化后的机器可读状态字段：`overall_running=yes`、`running=no`、`claude=not-running`。只有 dispatcher 设置这些字段；Claude 不自行最终化状态。
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` 控制心跳频率，默认 `30`。
-- `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` 限制读取和定位阶段；所有执行 profile 默认都与活动执行窗口相同（默认 `600` 秒）。execution-only、batch 和负责测试编写的 Checker，其首进展停止门禁默认也使用同一数值，因此除非调用方显式覆盖，否则更短的首进展门禁不会提前终止上下文获取。
+- `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` 限制读取和定位阶段；所有执行 profile 默认都与活动执行窗口相同（默认 `600` 秒）。execution-only、batch 和负责测试编写的 Checker，其首进展停止门禁默认也使用同一数值。刻意窄化的运行可通过稳定 CLI 参数 `--first-progress-timeout-seconds 120` 设置更短期限；任务卡自然语言不会改变调度计时。
 - `CLAUDE_CODE_TIMEOUT_SECONDS` 表示活动执行窗口，默认 `600` 秒；首次符合角色要求的实质执行信号会且只会刷新一次完整窗口。
 - `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` 在活动窗口到期时为近期产品修改提供首次扩展，默认 `300` 秒。`CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` 默认同为 `300` 秒；如果产品内容在上一扩展期内继续变化，则自动续窗。控制文件、报告或终端文本增长不能续窗，硬上限始终生效。
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` 是绝对总上限，默认 `1500` 秒且始终优先；只有确实需要禁用某一边界时才将对应值设为 `0`。
@@ -1297,7 +1297,7 @@ Windows PowerShell 的控制台代码页, `$OutputEncoding` 和子进程编码�
 - `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` 默认拒绝 pending 或来自其他 worktree 的 CodeGraph 证据，不承担重建成本；显式使用 `repair` 才会同步/重建执行 worktree 索引，`off` 则跳过探测。
 - `CLAUDE_CODE_APPROVAL_BLOCKED_CONVERGENCE` 启用保守的审批阻塞早期收敛。默认 `1`（启用）；设为 `0` 可禁用。启用后，如果存在完整报告、变更仅为测试范围、存在精确验证审批阻塞器、且观察到两次稳定心跳，dispatcher 会触发 checker helper。这不是验证成功或验收——这是 checker 的早期证据收集路径。
 
-Claude 会在自然里程碑更新 `CLAUDE_PROGRESS.md`。只有同时包含 `Context Acquisition Complete: yes` 和非空 `Planned First Write` 时，`Execution Phase: implementation` 才表示编辑就绪；它仍不等于持久进展。产品内容变化或有效的责任方报告才是持久进展，纯时间戳重复写入会被语义 digest 忽略。
+Claude 会在自然里程碑更新 `CLAUDE_PROGRESS.md`。只有同时包含 `Context Acquisition Complete: yes` 和非空 `Planned First Write` 时，`Execution Phase: implementation` 才表示编辑就绪；它仍不等于持久进展。Builder 的持久进展来自统一计算的产品内容变化。工作树根部的 dispatcher 控制文件会在 tracked、staged、untracked 三种状态中一致排除，但产品子目录中的同名文件不会被隐藏。终态收据分别记录 `product_changes`、`control_changes` 和总 `worktree_changes`，供人查看的 Markdown 状态不会再作为机器证据解析。
 
 `dispatch-to-claude.sh` 会打印可复制的 `monitor-claude.sh wait` 命令。智能体控制器只使用这一次阻塞等待，不重复运行 status、进程、日志尾部或时钟查询。
 

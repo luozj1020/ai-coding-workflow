@@ -48,6 +48,12 @@ class ClassifyClaudeAttemptTests(unittest.TestCase):
         self.assertEqual(result["failure_class"], "model-no-progress")
         self.assertTrue(result["counts_toward_takeover"])
 
+    def test_runtime_evidence_error_never_counts(self):
+        result = classify(exit_code=0, outcome="runtime_evidence_error")
+        self.assertEqual(result["failure_class"], "control-plane-evidence-error")
+        self.assertFalse(result["counts_toward_takeover"])
+        self.assertEqual(result["recommended_action"], "repair-runtime-before-retry")
+
     def test_acknowledgement_only_counts(self):
         result = classify(exit_code=0, outcome="success", progress="acknowledgement")
         self.assertEqual(result["failure_class"], "acknowledgement-only")

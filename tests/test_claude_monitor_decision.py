@@ -185,6 +185,29 @@ class ClaudeMonitorDecisionTests(unittest.TestCase):
         self.assertFalse(value["artifact_valid"])
         self.assertEqual(value["completion_state"], "needs-review")
 
+    def test_terminal_markdown_status_cannot_invent_product_changes(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event event=terminal execution_state=context-acquisition "
+            "product_changes=0 control_changes=5 worktree_changes=5 "
+            "evidence_state=seeded-report-only running=no terminal=yes"
+        )
+        worktrees = args.repo_root / ".worktrees"
+        (worktrees / f"{args.task_id}.worktree-status.txt").write_text(
+            "# Worktree Status After Execution\n\n"
+            "## Tracked Changes (git diff --stat)\n(none)\n\n"
+            "## Staged Changes (git diff --cached --stat)\n(none)\n\n"
+            "## Untracked Files (excluding dispatch scaffolding)\n(none)\n",
+            encoding="utf-8",
+        )
+        with temporary, mock.patch.object(module, "role_state", return_value="not-running"):
+            value = module.snapshot(args)
+        self.assertEqual(value["product_changes"], 0)
+        self.assertEqual(value["control_changes"], 5)
+        self.assertEqual(value["worktree_changes"], 5)
+        self.assertEqual(value["evidence_state"], "seeded report only")
+        self.assertEqual(value["changed_paths"], [])
+
     def test_cli_json_is_bounded_and_machine_readable(self):
         temporary, args = self.make_case(
             "monitor_event monitor_level=L1 action=wait evidence_state=none "
@@ -201,7 +224,8 @@ class ClaudeMonitorDecisionTests(unittest.TestCase):
         self.assertEqual(value["interrupt_authorized"], "no")
         self.assertTrue(value["collected_at"])
         self.assertTrue(value["observed_at"]["monitor_event"])
-        self.assertEqual(value["product_changes"], value["worktree_changes"])
+        self.assertEqual(value["product_changes"], 0)
+        self.assertEqual(value["control_changes"], 0)
         self.assertLess(len(result.stdout), 4096)
 
 

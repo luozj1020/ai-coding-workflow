@@ -4,6 +4,7 @@
 # Usage: bash ai/dispatch-to-claude.sh <task-card-path>
 #        [--empty-api-config-env NAME] [--execution-env auto|sandbox|host]
 #        [--dirty-source-mode block|snapshot]
+#        [--first-progress-timeout-seconds SECONDS]
 #        [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]
 #        [--preflight-task-id TASK_ID]
 #
@@ -27,7 +28,7 @@ PATH="${PATH}:/usr/bin:/bin:/mingw64/bin"
 export PATH
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL] [--preflight-task-id TASK_ID]" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--first-progress-timeout-seconds SECONDS] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL] [--preflight-task-id TASK_ID]" >&2
     exit 1
 fi
 
@@ -39,6 +40,7 @@ DIRTY_SOURCE_MODE_OPTION=""
 RETRY_IN_PLACE_TASK_ID_OPTION=""
 REVIEWED_CONTINUATION_OPTION=""
 PREFLIGHT_TASK_ID_OPTION=""
+FIRST_PROGRESS_TIMEOUT_OPTION=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --empty-api-config-env)
@@ -109,6 +111,20 @@ while [ $# -gt 0 ]; do
             esac
             shift 2
             ;;
+        --first-progress-timeout-seconds)
+            [ $# -ge 2 ] || {
+                echo "Error: --first-progress-timeout-seconds requires a non-negative integer." >&2
+                exit 1
+            }
+            FIRST_PROGRESS_TIMEOUT_OPTION="$2"
+            case "$FIRST_PROGRESS_TIMEOUT_OPTION" in
+                ''|*[!0-9]*)
+                    echo "Error: --first-progress-timeout-seconds requires a non-negative integer." >&2
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
         *)
             echo "Error: unknown option: $1" >&2
             exit 1
@@ -133,6 +149,10 @@ fi
 if [ -n "$DIRTY_SOURCE_MODE_OPTION" ]; then
     CLAUDE_CODE_DIRTY_SOURCE_MODE="$DIRTY_SOURCE_MODE_OPTION"
     export CLAUDE_CODE_DIRTY_SOURCE_MODE
+fi
+if [ -n "$FIRST_PROGRESS_TIMEOUT_OPTION" ]; then
+    CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS="$FIRST_PROGRESS_TIMEOUT_OPTION"
+    export CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS
 fi
 
 if [ -n "$EMPTY_API_CONFIG_ENV" ]; then
@@ -681,7 +701,9 @@ if [ -z "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
 fi
 # Record first-progress timeout alias source for status evidence.
 _FIRST_PROGRESS_TIMEOUT_SOURCE="default"
-if [ "$_FIRST_PROGRESS_TIMEOUT_EXPLICIT" -eq 0 ] && \
+if [ -n "$FIRST_PROGRESS_TIMEOUT_OPTION" ]; then
+    _FIRST_PROGRESS_TIMEOUT_SOURCE="cli"
+elif [ "$_FIRST_PROGRESS_TIMEOUT_EXPLICIT" -eq 0 ] && \
    [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT+x}" ] && \
    [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" = "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT" ]; then
     _FIRST_PROGRESS_TIMEOUT_SOURCE="alias(CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT)"
@@ -1753,6 +1775,8 @@ ACCEPTANCE_BUNDLE_FILE="${WORKTREE_ROOT}/${TASK_ID}.acceptance-bundle.json"
 RECOVERED_COMPLETION_FILE="${WORKTREE_ROOT}/${TASK_ID}.recovered-completion.json"
 WRITE_SCOPE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.write-scope-enforcement.json"
 PRODUCT_BASELINE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-baseline.json"
+PRODUCT_LIVE_STATE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-state.live.json"
+PRODUCT_STATE_FILE="${WORKTREE_ROOT}/${TASK_ID}.product-state.json"
 CHANGE_SIZE_ADVISORY_FILE="${WORKTREE_ROOT}/${TASK_ID}.change-size-advisory.json"
 VALIDATION_CAPABILITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.validation-capability.json"
 MANAGED_RUNTIME_BUNDLE_FILE="${WORKTREE_ROOT}/${TASK_ID}.managed-runtime-bundle.json"
@@ -1914,12 +1938,17 @@ fi
 # dirty-source checks must remain artifact-free.
 : > "$INTERACTION_HEALTH_FILE"
 : > "$STARTUP_INTERACTION_HEALTH_FILE"
-echo "$$" > "$DISPATCHER_PID_FILE"
-if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/process-identity.py" ]; then
-    "$PYTHON_CMD" "${SCRIPT_DIR}/process-identity.py" capture \
-        --pid "$$" --task-id "$TASK_ID" --role dispatcher \
-        --output "$DISPATCHER_IDENTITY_FILE" >/dev/null 2>&1 || true
+if [ -z "$PYTHON_CMD" ] || [ ! -f "${SCRIPT_DIR}/process-identity.py" ]; then
+    echo "Error: dispatcher process-identity helper is unavailable; refusing PID-only execution." >&2
+    exit 1
 fi
+if ! "$PYTHON_CMD" "${SCRIPT_DIR}/process-identity.py" capture \
+    --pid "$$" --task-id "$TASK_ID" --role dispatcher \
+    --output "$DISPATCHER_IDENTITY_FILE" >/dev/null 2>&1; then
+    echo "Error: dispatcher process identity could not be captured; refusing PID-only execution." >&2
+    exit 1
+fi
+echo "$$" > "$DISPATCHER_PID_FILE"
 
 # Resolve a learned route and test the real interaction boundary before making
 # a full worktree.  This probe intentionally requests no card-specific tool
@@ -2774,6 +2803,8 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "write_scope_enforcement": "%s",\n' "$CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT"
     printf '  "write_scope_receipt": "%s",\n' "$WRITE_SCOPE_RECEIPT_FILE"
     printf '  "product_baseline_receipt": "%s",\n' "$PRODUCT_BASELINE_FILE"
+    printf '  "product_live_state_receipt": "%s",\n' "$PRODUCT_LIVE_STATE_FILE"
+    printf '  "product_state_receipt": "%s",\n' "$PRODUCT_STATE_FILE"
     printf '  "activity_observation_receipt": "%s",\n' "$ACTIVITY_OBSERVATION_FILE"
     printf '  "task_validation_allowlist": %s,\n' "$([ "$CLAUDE_CODE_TASK_VALIDATION_ALLOWLIST" -eq 1 ] && echo true || echo false)"
     printf '  "checker_runtime_enforcement": %s,\n' "$([ "$CLAUDE_CODE_CHECKER_RUNTIME_ENFORCEMENT" -eq 1 ] && echo true || echo false)"
@@ -4108,30 +4139,6 @@ classify_dispatch_evidence() {
     fi
 }
 
-worktree_change_count() {
-    if [ "${CLAUDE_CODE_LARGE_REPO_MODE:-0}" = "1" ]; then
-        git status --porcelain --untracked-files=no 2>/dev/null | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0
-        return
-    fi
-    local tracked_count=0
-    local untracked_count=0
-    tracked_count="$(git status --porcelain --untracked-files=no 2>/dev/null \
-        | grep -v -E '^(.. )?(TASK_CARD|TASK_CARD_FULL|CLAUDE_TASK_CARD|CLAUDE_PROMPT|CLAUDE_REPORT|CLAUDE_PROGRESS|ADVISOR_REQUEST)(\.md|\.json)?$' \
-        | wc -l 2>/dev/null | tr -d '[:space:]' || echo 0)"
-    while IFS= read -r -d '' _untracked_path; do
-        case "${_untracked_path##*/}" in
-            TASK_CARD.md|TASK_CARD_FULL.md|CLAUDE_TASK_CARD.md|CLAUDE_PROMPT.md|CLAUDE_REPORT.md|CLAUDE_PROGRESS.md|ADVISOR_REQUEST.json)
-                continue ;;
-        esac
-        # A zero-byte placeholder contains no implementation evidence.  This
-        # avoids classifying an interrupted Write/Edit initialization as a diff.
-        if [ -s "$_untracked_path" ] || [ -L "$_untracked_path" ]; then
-            untracked_count=$((untracked_count + 1))
-        fi
-    done < <(git ls-files --others --exclude-standard -z 2>/dev/null || true)
-    echo $((tracked_count + untracked_count))
-}
-
 worktree_digest() {
     # First progress and product-idle use the same full content hash. The prior
     # shortstat/status digest missed same-size rewrites and made an existing
@@ -4139,7 +4146,7 @@ worktree_digest() {
     if [ -n "${PYTHON_CMD:-}" ] && [ -f "${SCRIPT_DIR}/worktree_state_hash.py" ]; then
         "$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" \
             --worktree "${WORKTREE_DIR:-.}" --ignore-empty-untracked \
-            2>/dev/null || true
+            2>/dev/null
         return
     fi
     {
@@ -5358,23 +5365,34 @@ fi
 # Freeze the approved product baseline before the child can write. Reviewed
 # continuations therefore start from their accepted dirty state, while a very
 # fast first child write still differs from this pre-launch digest.
-DISPATCH_PRODUCT_BASELINE_DIGEST="$(worktree_digest)"
-if [ -z "$DISPATCH_PRODUCT_BASELINE_DIGEST" ]; then
+if [ -z "$PYTHON_CMD" ] || [ ! -f "${SCRIPT_DIR}/worktree_state_hash.py" ] || \
+   ! "$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" \
+       --worktree "$WORKTREE_DIR" --ignore-empty-untracked --json \
+       --output "$PRODUCT_BASELINE_FILE"; then
     echo "Error: could not compute pre-launch product baseline digest." >&2
     exit 1
 fi
+DISPATCH_PRODUCT_BASELINE_DIGEST="$("$PYTHON_CMD" - "$PRODUCT_BASELINE_FILE" <<'PYEOF'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("product_hash", ""))
+PYEOF
+)"
+if [ -z "$DISPATCH_PRODUCT_BASELINE_DIGEST" ]; then
+    echo "Error: pre-launch canonical product baseline did not contain a hash." >&2
+    exit 1
+fi
 "$PYTHON_CMD" - "$PRODUCT_BASELINE_FILE" "$TASK_ID" "$WORKTREE_DIR" \
-    "$DISPATCH_PRODUCT_BASELINE_DIGEST" "${_REVIEWED_CONTINUATION_APPROVAL_ID:-}" <<'PYEOF'
+    "${_REVIEWED_CONTINUATION_APPROVAL_ID:-}" <<'PYEOF'
 import json, os, sys, tempfile
-output, task_id, worktree, digest, approval_id = sys.argv[1:]
-value = {
-    "schema_version": 1,
+output, task_id, worktree, approval_id = sys.argv[1:]
+value = json.load(open(output, encoding="utf-8"))
+value.update({
     "task_id": task_id,
     "worktree": os.path.abspath(worktree),
-    "content_digest": digest,
+    "content_digest": value["product_hash"],
     "reviewed_continuation_approval_id": approval_id or None,
     "first_progress_requires_relative_content_change": True,
-}
+})
 directory = os.path.dirname(output)
 fd, temporary = tempfile.mkstemp(prefix=".product-baseline-", dir=directory)
 with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -5509,6 +5527,7 @@ SECOND_EXTENSION_START_WORKTREE_DIGEST=""
 SECOND_EXTENSION_START_REPORT_BYTES=0
 SECOND_EXTENSION_START_PROGRESS_BYTES=0
 _LOOP_SLEEP_SECONDS="$CLAUDE_CODE_HEARTBEAT_SECONDS"
+PRODUCT_STATE_SAMPLING_FAILED=0
 if [ -n "$PYTHON_CMD" ]; then
     phase_event "exploring" ""
     _LAST_EMITTED_PHASE="exploring"
@@ -5534,8 +5553,43 @@ while claude_is_running; do
     REPORT_BYTES="$(file_size "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
     CLAUDE_PROGRESS_BYTES="$(file_size "${WORKTREE_DIR}/CLAUDE_PROGRESS.md")"
     CLAUDE_TASK_BYTES="$(file_size "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md")"
-    WORKTREE_CHANGES="$(worktree_change_count)"
-    CURRENT_WORKTREE_DIGEST="$(worktree_digest)"
+    if [ -z "$PYTHON_CMD" ] || [ ! -f "${SCRIPT_DIR}/worktree_state_hash.py" ] || \
+       ! "$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" \
+           --worktree "$WORKTREE_DIR" --ignore-empty-untracked --json \
+           --baseline-state "$PRODUCT_BASELINE_FILE" \
+           --output "$PRODUCT_LIVE_STATE_FILE"; then
+        PRODUCT_STATE_SAMPLING_FAILED=1
+        EXECUTION_ACTIVITY_STATE="runtime-evidence-error"
+        progress_log "Canonical product-state sampling failed; stopping task fail-closed"
+        stop_claude "canonical product-state sampling failed" "$ELAPSED"
+        break
+    fi
+    IFS=$'\t' read -r WORKTREE_CHANGES CURRENT_WORKTREE_DIGEST < <(
+        "$PYTHON_CMD" - "$PRODUCT_LIVE_STATE_FILE" <<'PYEOF'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print("\t".join((
+    str(value.get("incremental_product_change_count", "")),
+    str(value.get("product_hash", "")),
+)))
+PYEOF
+    )
+    case "$WORKTREE_CHANGES" in
+        ''|*[!0-9]*)
+            PRODUCT_STATE_SAMPLING_FAILED=1
+            EXECUTION_ACTIVITY_STATE="runtime-evidence-error"
+            progress_log "Canonical product-state count was invalid; stopping task fail-closed"
+            stop_claude "canonical product-state count invalid" "$ELAPSED"
+            break
+            ;;
+    esac
+    if [ -z "$CURRENT_WORKTREE_DIGEST" ]; then
+        PRODUCT_STATE_SAMPLING_FAILED=1
+        EXECUTION_ACTIVITY_STATE="runtime-evidence-error"
+        progress_log "Canonical product-state digest was missing; stopping task fail-closed"
+        stop_claude "canonical product-state digest missing" "$ELAPSED"
+        break
+    fi
     PRODUCT_DELTA_FROM_BASELINE=0
     if [ "$CURRENT_WORKTREE_DIGEST" != "$DISPATCH_PRODUCT_BASELINE_DIGEST" ]; then
         PRODUCT_DELTA_FROM_BASELINE=1
@@ -5561,10 +5615,11 @@ while claude_is_running; do
         if [ -z "$FIRST_WORKTREE_CHANGE_SECONDS" ]; then
             FIRST_WORKTREE_CHANGE_SECONDS="$ELAPSED"
         fi
-        if [ "$WORKTREE_CHANGES" -gt 0 ]; then
-            LAST_PRODUCT_CHANGE_EPOCH="$NOW_EPOCH"
-            PRODUCT_IDLE_CONFIRMATION_COUNT=0
-        fi
+        # The canonical digest excludes runtime controls, so every digest
+        # transition is real product activity.  A transition back to the
+        # approved baseline is still an edit and must reset the idle clock.
+        LAST_PRODUCT_CHANGE_EPOCH="$NOW_EPOCH"
+        PRODUCT_IDLE_CONFIRMATION_COUNT=0
     fi
     if [ "$RESULT_STATUS_BYTES" -ne "$LAST_RESULT_STATUS_BYTES" ] || \
        [ "$CURRENT_REPORT_HASH" != "$LAST_REPORT_HASH" ] || \
@@ -5748,7 +5803,8 @@ while claude_is_running; do
             FIRST_PROGRESS_DETECTED=1
             FIRST_PROGRESS_SIGNAL="$_FP_SIGNAL"
             FIRST_PROGRESS_ELAPSED_SECONDS="$ELAPSED"
-            if [ "$WORKTREE_CHANGES" -gt 0 ] && [ "$LAST_PRODUCT_CHANGE_EPOCH" -eq 0 ]; then
+            if [ "$PRODUCT_DELTA_FROM_BASELINE" -eq 1 ] && \
+               [ "$LAST_PRODUCT_CHANGE_EPOCH" -eq 0 ]; then
                 # A very fast child may create its first product file before the
                 # first sampling loop, so the initial digest already contains it.
                 LAST_PRODUCT_CHANGE_EPOCH="$NOW_EPOCH"
@@ -5761,7 +5817,7 @@ while claude_is_running; do
             fi
             ACTIVE_WINDOW_REFRESHED=1
             progress_log "First substantive progress detected: signal=${_FP_SIGNAL}, first_progress_detected=1, elapsed_seconds=${ELAPSED}, active_window_refreshed=yes, active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE}, hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE}"
-            monitor_event "event=active-window-refreshed running=yes terminal=no elapsed_seconds=${ELAPSED} signal=${_FP_SIGNAL} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} worktree_changes=${WORKTREE_CHANGES} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS} active_window_remaining_seconds=$((ACTIVE_EXECUTION_DEADLINE > 0 ? ACTIVE_EXECUTION_DEADLINE - NOW_EPOCH : -1)) active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} activity_receipt=${ACTIVITY_OBSERVATION_FILE}"
+            monitor_event "event=active-window-refreshed running=yes terminal=no elapsed_seconds=${ELAPSED} signal=${_FP_SIGNAL} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} worktree_changes=${WORKTREE_CHANGES} product_changes=${WORKTREE_CHANGES} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_seconds=${CLAUDE_CODE_TIMEOUT_SECONDS} active_window_remaining_seconds=$((ACTIVE_EXECUTION_DEADLINE > 0 ? ACTIVE_EXECUTION_DEADLINE - NOW_EPOCH : -1)) active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} activity_receipt=${ACTIVITY_OBSERVATION_FILE}"
         elif [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
              [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ]; then
             if [ "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" = "observe" ]; then
@@ -5882,7 +5938,7 @@ while claude_is_running; do
     # this file instead of running ps/tail or starting a second polling watcher.
     _MONITOR_MATERIAL_DIGEST="${RESULT_BYTES}|${STATUS_BYTES}|${CURRENT_REPORT_HASH}|${CURRENT_PROGRESS_SEMANTIC_HASH}|${WORKTREE_CHANGES}|${CURRENT_WORKTREE_DIGEST}|${FIRST_PROGRESS_DETECTED}|${FIRST_PROGRESS_SIGNAL}|${EDIT_READY_DETECTED}|${EXECUTION_ACTIVITY_STATE}|${PRODUCT_IDLE_CONFIRMATION_COUNT}|${BLOCKER_RECORDED}|${IMPLEMENTATION_COMPLETE_DETECTED}|${COMPLETION_READY_DETECTED}|${VALIDATION_STARTED_ELAPSED_SECONDS}"
     if [ "$_MONITOR_MATERIAL_DIGEST" != "$_LAST_MONITOR_MATERIAL_DIGEST" ]; then
-        monitor_event "event=material-change running=yes terminal=no elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET_SECONDS} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_remaining_seconds=${ACTIVE_WINDOW_REMAINING_SECONDS} hard_timeout_remaining_seconds=${HARD_TIMEOUT_REMAINING_SECONDS} activity_receipt=${ACTIVITY_OBSERVATION_FILE} result_bytes=${RESULT_BYTES} status_bytes=${STATUS_BYTES} report_bytes=${REPORT_BYTES} progress_bytes=${CLAUDE_PROGRESS_BYTES} worktree_changes=${WORKTREE_CHANGES} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} first_progress=${FIRST_PROGRESS_DETECTED} first_progress_signal=${FIRST_PROGRESS_SIGNAL:-none} active_window_refreshed=${ACTIVE_WINDOW_REFRESHED} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} blocker=${BLOCKER_RECORDED} implementation_complete=${IMPLEMENTATION_COMPLETE_DETECTED} completion_ready=${COMPLETION_READY_DETECTED}"
+        monitor_event "event=material-change running=yes terminal=no elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET_SECONDS} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_remaining_seconds=${ACTIVE_WINDOW_REMAINING_SECONDS} hard_timeout_remaining_seconds=${HARD_TIMEOUT_REMAINING_SECONDS} activity_receipt=${ACTIVITY_OBSERVATION_FILE} result_bytes=${RESULT_BYTES} status_bytes=${STATUS_BYTES} report_bytes=${REPORT_BYTES} progress_bytes=${CLAUDE_PROGRESS_BYTES} worktree_changes=${WORKTREE_CHANGES} product_changes=${WORKTREE_CHANGES} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} first_progress=${FIRST_PROGRESS_DETECTED} first_progress_signal=${FIRST_PROGRESS_SIGNAL:-none} active_window_refreshed=${ACTIVE_WINDOW_REFRESHED} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} blocker=${BLOCKER_RECORDED} implementation_complete=${IMPLEMENTATION_COMPLETE_DETECTED} completion_ready=${COMPLETION_READY_DETECTED}"
         _LAST_MONITOR_MATERIAL_DIGEST="$_MONITOR_MATERIAL_DIGEST"
     fi
 
@@ -6768,7 +6824,34 @@ fi
 
 echo "Claude progress saved to: $CLAUDE_PROGRESS_FILE"
 
-IMPLEMENTATION_CHANGES="$(worktree_change_count)"
+IMPLEMENTATION_CHANGES=0
+TOTAL_PRODUCT_CHANGES=0
+CONTROL_CHANGES=0
+FINAL_PRODUCT_DIGEST=""
+FINAL_PRODUCT_DELTA=0
+PRODUCT_STATE_FINALIZATION_FAILED=0
+if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/worktree_state_hash.py" ] && \
+   "$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" \
+       --worktree "$WORKTREE_DIR" --ignore-empty-untracked --json \
+       --baseline-state "$PRODUCT_BASELINE_FILE" \
+       --output "$PRODUCT_STATE_FILE"; then
+    IFS=$'\t' read -r IMPLEMENTATION_CHANGES TOTAL_PRODUCT_CHANGES CONTROL_CHANGES FINAL_PRODUCT_DIGEST FINAL_PRODUCT_DELTA < <(
+        "$PYTHON_CMD" - "$PRODUCT_STATE_FILE" <<'PYEOF'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print("\t".join((
+    str(value.get("incremental_product_change_count", 0)),
+    str(value.get("product_change_count", 0)),
+    str(value.get("control_change_count", 0)),
+    str(value.get("product_hash", "")),
+    "1" if value.get("product_delta_from_baseline") else "0",
+)))
+PYEOF
+    )
+else
+    PRODUCT_STATE_FINALIZATION_FAILED=1
+    progress_log "Canonical final product-state snapshot failed; terminal evidence will fail closed"
+fi
 VALID_CLAUDE_REPORT=0
 if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
     VALID_CLAUDE_REPORT=1
@@ -6900,6 +6983,14 @@ if [ "$_CHECKER_WRITES_TESTS" -eq 1 ] && \
 fi
 
 DISPATCH_EVIDENCE_STATE="$(classify_dispatch_evidence "$IMPLEMENTATION_CHANGES" "$VALID_CLAUDE_REPORT" "${WORKTREE_DIR}/CLAUDE_PROGRESS.md" "${WORKTREE_DIR}/CLAUDE_REPORT.md")"
+case "$DISPATCH_EVIDENCE_STATE" in
+    "diff + valid report") DISPATCH_EVIDENCE_CODE="diff-plus-valid-report" ;;
+    "diff without report") DISPATCH_EVIDENCE_CODE="diff-without-report" ;;
+    "acknowledgement only") DISPATCH_EVIDENCE_CODE="acknowledgement-only" ;;
+    "seeded report only") DISPATCH_EVIDENCE_CODE="seeded-report-only" ;;
+    "valid report without diff") DISPATCH_EVIDENCE_CODE="valid-report-without-diff" ;;
+    *) DISPATCH_EVIDENCE_CODE="no-valid-report" ;;
+esac
 if [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && [ "$VALID_CLAUDE_REPORT" -eq 0 ] && \
    [ "${FIRST_PROGRESS_DETECTED:-0}" -eq 0 ] && \
    [ "$DISPATCH_EVIDENCE_STATE" != "acknowledgement only" ]; then
@@ -6923,7 +7014,10 @@ if [ "$IMPLEMENTATION_CHANGES" -eq 0 ] && \
     WRITE_RUNTIME_BLOCKED=1
 fi
 DISPATCH_OUTCOME="success"
-if [ "${PLANNER_OUTPUT_SCOPE_VIOLATION:-0}" -eq 1 ]; then
+if [ "${PRODUCT_STATE_SAMPLING_FAILED:-0}" -eq 1 ] || \
+   [ "${PRODUCT_STATE_FINALIZATION_FAILED:-0}" -eq 1 ]; then
+    DISPATCH_OUTCOME="runtime_evidence_error"
+elif [ "${PLANNER_OUTPUT_SCOPE_VIOLATION:-0}" -eq 1 ]; then
     DISPATCH_OUTCOME="scope_violation"
 elif [ "${PLANNER_CONTRACT_MISSING:-0}" -eq 1 ]; then
     DISPATCH_OUTCOME="missing_required_artifact"
@@ -6978,7 +7072,7 @@ if [ "$DISPATCH_OUTCOME" = "success" ]; then
     fi
 else
     case "$DISPATCH_OUTCOME" in
-        approval_blocked|network_error|preflight_error) COMPLETION_STATE="external-blocked" ;;
+        approval_blocked|network_error|preflight_error|runtime_evidence_error) COMPLETION_STATE="external-blocked" ;;
         scope_violation|checker_contract_violation) COMPLETION_STATE="needs-revision" ;;
         *) COMPLETION_STATE="incomplete" ;;
     esac
@@ -6997,13 +7091,17 @@ if [ -n "$PYTHON_CMD" ]; then
         "$SEMANTIC_ACCEPTANCE" "$COMPLETION_STATE" "$CLAUDE_LAUNCHED" \
         "$CLAUDE_FIRST_SATISFIED" "$WORKFLOW_EXECUTION_STATUS" \
         "$DISPATCH_EXECUTION_ENV" "$CLAUDE_CODE_HOST_AUTHORITY" \
-        "${_STARTUP_PROBE_CONCLUSION:-not-run}" "$WRITE_RUNTIME_BLOCKED" <<'PYEOF'
+        "${_STARTUP_PROBE_CONCLUSION:-not-run}" "$WRITE_RUNTIME_BLOCKED" \
+        "$DISPATCH_EVIDENCE_CODE" "$IMPLEMENTATION_CHANGES" "$TOTAL_PRODUCT_CHANGES" "$CONTROL_CHANGES" \
+        "$FINAL_PRODUCT_DIGEST" "$FINAL_PRODUCT_DELTA" "$PRODUCT_STATE_FILE" <<'PYEOF'
 import json, os, sys, tempfile
 (
     output, task_id, dispatch_outcome, dispatch_success, report_consistency,
     artifact_valid, validation_success, semantic_acceptance, completion_state,
     builder_launched, claude_first_satisfied, workflow_status,
     requested_env, host_authority, startup_probe, write_runtime_blocked,
+    evidence_state, product_changes, total_product_changes, control_changes, product_hash,
+    product_delta, product_state_receipt,
 ) = sys.argv[1:]
 value = {
     "schema_version": 1,
@@ -7022,6 +7120,13 @@ value = {
     "host_authorized": host_authority == "1",
     "host_effective": requested_env == "host" and startup_probe == "available",
     "write_runtime_blocked": write_runtime_blocked == "1",
+    "evidence_state": evidence_state,
+    "product_changes": int(product_changes),
+    "total_product_changes": int(total_product_changes),
+    "control_changes": int(control_changes),
+    "product_hash": product_hash or None,
+    "product_delta_from_baseline": product_delta == "1",
+    "product_state_receipt": product_state_receipt,
 }
 directory = os.path.dirname(output) or "."
 fd, temporary = tempfile.mkstemp(prefix=".outcome-", dir=directory)
@@ -7738,6 +7843,7 @@ else
         echo "- Checker report: $CHECKER_REPORT_FILE"
         echo "- Source status: $SOURCE_STATUS_FILE"
         echo "- Worktree status: $WORKTREE_STATUS_FILE"
+        echo "- Canonical product state: $PRODUCT_STATE_FILE"
         echo "- Untracked files: $UNTRACKED_FILE"
         echo "- Usage summary: $USAGE_FILE"
         echo "- Claude progress: $CLAUDE_PROGRESS_FILE"
@@ -7757,7 +7863,8 @@ SESSION_ACTIVITY_SECONDS_AGO=-1
 [ "$LAST_SESSION_ACTIVITY_EPOCH" -le 0 ] || SESSION_ACTIVITY_SECONDS_AGO=$((_FINAL_OBSERVATION_EPOCH - LAST_SESSION_ACTIVITY_EPOCH))
 PRODUCT_ACTIVITY_SECONDS_AGO=-1
 [ "$LAST_PRODUCT_CHANGE_EPOCH" -le 0 ] || PRODUCT_ACTIVITY_SECONDS_AGO=$((_FINAL_OBSERVATION_EPOCH - LAST_PRODUCT_CHANGE_EPOCH))
-monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} dispatch_success=${DISPATCH_SUCCESS} artifact_valid=${ARTIFACT_VALID} validation_success=${VALIDATION_STATUS} semantic_acceptance=${SEMANTIC_ACCEPTANCE} completion_state=${COMPLETION_STATE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} activity_receipt=${ACTIVITY_OBSERVATION_FILE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED}"
+ALL_WORKTREE_CHANGES=$((TOTAL_PRODUCT_CHANGES + CONTROL_CHANGES))
+monitor_event "event=terminal running=no terminal=yes exit_status=${CLAUDE_STATUS} dispatch_outcome=${DISPATCH_OUTCOME} dispatch_success=${DISPATCH_SUCCESS} artifact_valid=${ARTIFACT_VALID} validation_success=${VALIDATION_STATUS} semantic_acceptance=${SEMANTIC_ACCEPTANCE} completion_state=${COMPLETION_STATE} evidence_state=${DISPATCH_EVIDENCE_CODE} worktree_changes=${ALL_WORKTREE_CHANGES} product_changes=${IMPLEMENTATION_CHANGES} total_product_changes=${TOTAL_PRODUCT_CHANGES} control_changes=${CONTROL_CHANGES} product_delta_from_baseline=${FINAL_PRODUCT_DELTA} product_hash=${FINAL_PRODUCT_DIGEST:-unavailable} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} activity_receipt=${ACTIVITY_OBSERVATION_FILE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} product_idle_stopped=${PRODUCT_IDLE_STOPPED}"
 DISPATCH_FINALIZED=1
 
 echo "Report saved to: $REPORT_FILE"
@@ -7787,7 +7894,7 @@ echo "Prompt Profile:  $CLAUDE_CODE_PROMPT_PROFILE"
 echo "Evidence Mode:   $CLAUDE_CODE_EVIDENCE_MODE"
 echo "Builder Mode:    $CLAUDE_CODE_BUILDER_MODE"
 echo "Tool Profile:    $CLAUDE_CODE_TOOL_PROFILE (${_TOOL_PROFILE_DERIVATION})"
-echo "First Progress:  ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s observation"
+echo "First Progress:  ${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}s ${CLAUDE_CODE_FIRST_PROGRESS_ACTION}"
 echo "Context Window:  ${CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS}s"
 echo "Active Window:   ${CLAUDE_CODE_TIMEOUT_SECONDS}s (one refresh)"
 echo "Growth Ext:      ${CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS}s initial, ${CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS}s renewable (hard-cap bounded)"
@@ -7795,6 +7902,7 @@ echo "Hard Cap:        ${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}s"
 echo "Dispatch Outcome:${DISPATCH_OUTCOME}"
 echo "Completion State:${COMPLETION_STATE}"
 echo "Outcome Gates:   $OUTCOME_FILE"
+echo "Product State:   $PRODUCT_STATE_FILE"
 if [ -s "$ACCEPTANCE_BUNDLE_FILE" ]; then
     echo "Acceptance Bundle: $ACCEPTANCE_BUNDLE_FILE"
 fi

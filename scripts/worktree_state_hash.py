@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 # Known workflow control artifacts to exclude from state hash.
 # These are dispatch/runtime metadata, not source state.
@@ -59,6 +61,13 @@ _CONTROL_ARTIFACTS: FrozenSet[str] = frozenset({
 })
 
 
+def _normalize_relative(path: str) -> str:
+    normalized = path.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
 def _posix_relpath(path: str, base: str) -> str:
     """Convert an OS path to a POSIX-relative path from base."""
     # On Windows, Path produces backslashes; normalize to forward slash.
@@ -72,10 +81,14 @@ def _posix_relpath(path: str, base: str) -> str:
 
 
 def _is_control_artifact(posix_path: str) -> bool:
-    """Check if a POSIX path (relative) is a known control artifact."""
-    # Check the full path and also just the filename
-    name = PurePosixPath(posix_path).name
-    return name in _CONTROL_ARTIFACTS or posix_path in _CONTROL_ARTIFACTS
+    """Return true only for dispatcher-owned controls at worktree root.
+
+    A product is allowed to contain a same-named file in a subdirectory.  The
+    dispatcher controls are always created at the execution worktree root, so
+    basename-wide exclusion would hide real product changes.
+    """
+    normalized = _normalize_relative(posix_path)
+    return "/" not in normalized and normalized in _CONTROL_ARTIFACTS
 
 
 def _git_output(args: List[str], cwd: str) -> str:
@@ -87,6 +100,11 @@ def _git_output(args: List[str], cwd: str) -> str:
         text=True,
         timeout=30,
     )
+    if result.returncode:
+        raise RuntimeError(
+            f"git {' '.join(args)} failed with exit {result.returncode}: "
+            f"{(result.stderr or '').strip()}"
+        )
     return result.stdout or ""
 
 
@@ -98,7 +116,137 @@ def _git_binary(args: List[str], cwd: str) -> bytes:
         capture_output=True,
         timeout=30,
     )
+    if result.returncode:
+        raise RuntimeError(
+            f"git {' '.join(args)} failed with exit {result.returncode}: "
+            f"{result.stderr.decode('utf-8', errors='replace').strip()}"
+        )
     return result.stdout or b""
+
+
+def _nul_paths(raw: bytes) -> List[str]:
+    return [
+        item.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+        for item in raw.split(b"\0")
+        if item
+    ]
+
+
+def _is_extra_excluded(posix_path: str, excludes: Set[str]) -> bool:
+    normalized = _normalize_relative(posix_path)
+    return normalized in excludes or (
+        "/" not in normalized and PurePosixPath(normalized).name in excludes
+    )
+
+
+def collect_worktree_state(
+    worktree: Path,
+    *,
+    extra_excludes: Optional[List[str]] = None,
+    ignore_empty_untracked: bool = False,
+) -> Dict[str, Any]:
+    """Return one canonical product/control snapshot for runtime decisions."""
+    cwd = str(worktree.resolve())
+    excludes = {_normalize_relative(item) for item in (extra_excludes or [])}
+
+    unstaged_paths = _nul_paths(_git_binary(["diff", "--name-only", "-z"], cwd))
+    staged_paths = _nul_paths(
+        _git_binary(["diff", "--cached", "--name-only", "-z"], cwd)
+    )
+    untracked_paths = _nul_paths(
+        _git_binary(["ls-files", "--others", "--exclude-standard", "-z"], cwd)
+    )
+
+    product_paths: Set[str] = set()
+    control_paths: Set[str] = set()
+    usable_untracked: Set[str] = set()
+    for path in sorted(set(unstaged_paths + staged_paths + untracked_paths)):
+        normalized = _normalize_relative(path)
+        if not normalized or normalized == ".worktrees" or normalized.startswith(".worktrees/"):
+            continue
+        if _is_control_artifact(normalized) or _is_extra_excluded(normalized, excludes):
+            control_paths.add(normalized)
+            continue
+        full_path = worktree / normalized
+        if normalized in untracked_paths and ignore_empty_untracked:
+            try:
+                if full_path.is_file() and not full_path.is_symlink() and full_path.stat().st_size == 0:
+                    continue
+            except OSError:
+                pass
+        product_paths.add(normalized)
+        if normalized in untracked_paths:
+            usable_untracked.add(normalized)
+
+    ordered_product = sorted(product_paths)
+    ordered_control = sorted(control_paths)
+    # Hash the diff with a fixed-size exclusion pathspec.  Passing every
+    # changed product path would exceed the OS argument limit in large edits.
+    # Top/literal exclusions affect only the exact dispatcher-owned root files.
+    diff_excludes = sorted(set(_CONTROL_ARTIFACTS) | excludes)
+    product_pathspec = ["."] + [
+        f":(top,exclude,literal){path}" for path in diff_excludes
+    ]
+    unstaged_diff = _git_binary(
+        ["diff", "--binary", "--", *product_pathspec], cwd
+    )
+    staged_diff = _git_binary(
+        ["diff", "--cached", "--binary", "--", *product_pathspec], cwd
+    )
+
+    head = _git_output(["rev-parse", "HEAD"], cwd).strip()
+    hasher = hashlib.sha256()
+    hasher.update(f"head:{head}\n".encode("utf-8"))
+    hasher.update(f"unstaged-diff:{len(unstaged_diff)}\n".encode("utf-8"))
+    hasher.update(unstaged_diff)
+    hasher.update(f"staged-diff:{len(staged_diff)}\n".encode("utf-8"))
+    hasher.update(staged_diff)
+    product_path_hashes: Dict[str, str] = {}
+    for path in sorted(usable_untracked):
+        hasher.update(f"untracked:{path}\n".encode("utf-8", errors="surrogateescape"))
+        full_path = worktree / path
+        if full_path.is_file():
+            try:
+                content = full_path.read_bytes()
+                hasher.update(f"bytes:{len(content)}\n".encode("utf-8"))
+                hasher.update(content)
+            except OSError:
+                hasher.update(b"unreadable\n")
+        else:
+            hasher.update(b"missing\n")
+
+    for path in ordered_product:
+        path_hasher = hashlib.sha256()
+        path_hasher.update(f"path:{path}\n".encode("utf-8", errors="surrogateescape"))
+        path_hasher.update(f"unstaged:{path in unstaged_paths}\n".encode("ascii"))
+        path_hasher.update(f"staged:{path in staged_paths}\n".encode("ascii"))
+        path_hasher.update(f"untracked:{path in usable_untracked}\n".encode("ascii"))
+        full_path = worktree / path
+        try:
+            stat_result = full_path.lstat()
+            path_hasher.update(f"mode:{stat_result.st_mode:o}\n".encode("ascii"))
+            if full_path.is_symlink():
+                path_hasher.update(os.readlink(full_path).encode("utf-8", errors="surrogateescape"))
+            elif full_path.is_file():
+                path_hasher.update(full_path.read_bytes())
+            else:
+                path_hasher.update(b"non-file")
+        except OSError:
+            path_hasher.update(b"missing")
+        product_path_hashes[path] = path_hasher.hexdigest()
+
+    return {
+        "schema_version": 1,
+        "status": "ready",
+        "head": head,
+        "product_hash": hasher.hexdigest(),
+        "product_change_count": len(ordered_product),
+        "product_changed_paths": ordered_product,
+        "product_path_hashes": product_path_hashes,
+        "control_change_count": len(ordered_control),
+        "control_changed_paths": ordered_control,
+        "ignore_empty_untracked": ignore_empty_untracked,
+    }
 
 
 def compute_worktree_state_hash(
@@ -119,77 +267,27 @@ def compute_worktree_state_hash(
 
     Returns a SHA-256 hex digest string.
     """
-    cwd = str(worktree.resolve())
-    hasher = hashlib.sha256()
+    return str(collect_worktree_state(
+        worktree,
+        extra_excludes=extra_excludes,
+        ignore_empty_untracked=ignore_empty_untracked,
+    )["product_hash"])
 
-    # 1. HEAD identity
-    head = _git_output(["rev-parse", "HEAD"], cwd).strip()
-    hasher.update(f"head:{head}\n".encode("utf-8"))
 
-    # 2. Unstaged tracked diff (full content, includes binary diffs)
-    unstaged_diff = _git_binary(["diff", "--binary"], cwd)
-    hasher.update(f"unstaged-diff:{len(unstaged_diff)}\n".encode("utf-8"))
-    hasher.update(unstaged_diff)
-
-    # 3. Staged diff (full content, includes binary diffs)
-    staged_diff = _git_binary(["diff", "--cached", "--binary"], cwd)
-    hasher.update(f"staged-diff:{len(staged_diff)}\n".encode("utf-8"))
-    hasher.update(staged_diff)
-
-    # 4. Untracked files: paths and bytes
-    # Exclude .worktrees/ directory and known control artifacts.
-    untracked_raw = _git_output(
-        ["ls-files", "--others", "--exclude-standard"], cwd
-    )
-    untracked_paths: List[str] = []
-    excludes = set(_CONTROL_ARTIFACTS)
-    if extra_excludes:
-        excludes.update(extra_excludes)
-
-    for line in untracked_raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        # Skip .worktrees directory
-        if line.startswith(".worktrees/") or line.startswith(".worktrees\\"):
-            continue
-        # Normalize to POSIX path
-        posix = line.replace("\\", "/")
-        # Skip control artifacts
-        name = PurePosixPath(posix).name
-        if name in excludes:
-            continue
-        full_path = worktree / posix
-        if (
-            ignore_empty_untracked
-            and full_path.is_file()
-            and not full_path.is_symlink()
-        ):
-            try:
-                if full_path.stat().st_size == 0:
-                    continue
-            except OSError:
-                pass
-        untracked_paths.append(posix)
-
-    # Sort for deterministic ordering
-    untracked_paths.sort()
-
-    for upath in untracked_paths:
-        hasher.update(f"untracked:{upath}\n".encode("utf-8"))
-        # Read actual file bytes (binary-safe)
-        full_path = worktree / upath
-        if full_path.is_file():
-            try:
-                content = full_path.read_bytes()
-                hasher.update(f"bytes:{len(content)}\n".encode("utf-8"))
-                hasher.update(content)
-            except OSError:
-                hasher.update(b"unreadable\n")
-        else:
-            hasher.update(b"missing\n")
-
-    return hasher.hexdigest()
+def _atomic_json(path: Path, value: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -210,19 +308,55 @@ def main(argv: Optional[List[str]] = None) -> int:
             "the default strict behavior."
         ),
     )
+    output_mode = parser.add_mutually_exclusive_group()
+    output_mode.add_argument("--json", action="store_true", help="Emit the canonical snapshot as JSON")
+    output_mode.add_argument("--count", action="store_true", help="Emit only the product change count")
+    parser.add_argument("--baseline-hash", help="Record whether the product hash differs from this baseline")
+    parser.add_argument("--baseline-state", type=Path, help="Compare product paths with a prior canonical snapshot")
+    parser.add_argument("--output", type=Path, help="Atomically write JSON output to this path")
     args = parser.parse_args(argv)
 
     if not args.worktree.is_dir():
         print("Error: worktree not found", file=sys.stderr)
         return 1
 
-    h = compute_worktree_state_hash(
-        args.worktree,
-        extra_excludes=args.exclude_extra if args.exclude_extra else None,
-        ignore_empty_untracked=args.ignore_empty_untracked,
-    )
-    print(h)
-    return 0
+    try:
+        value = collect_worktree_state(
+            args.worktree,
+            extra_excludes=args.exclude_extra if args.exclude_extra else None,
+            ignore_empty_untracked=args.ignore_empty_untracked,
+        )
+        if args.baseline_hash is not None:
+            value["baseline_hash"] = args.baseline_hash
+            value["product_delta_from_baseline"] = value["product_hash"] != args.baseline_hash
+        if args.baseline_state is not None:
+            baseline = json.loads(args.baseline_state.read_text(encoding="utf-8"))
+            baseline_hash = str(baseline.get("product_hash") or baseline.get("content_digest") or "")
+            baseline_paths = baseline.get("product_path_hashes", {})
+            if not isinstance(baseline_paths, dict) or not baseline_hash:
+                raise RuntimeError("baseline state is missing canonical product hashes")
+            current_paths = value.get("product_path_hashes", {})
+            incremental_paths = sorted(
+                path for path in set(baseline_paths) | set(current_paths)
+                if baseline_paths.get(path) != current_paths.get(path)
+            )
+            value["baseline_hash"] = baseline_hash
+            value["product_delta_from_baseline"] = value["product_hash"] != baseline_hash
+            value["incremental_product_change_count"] = len(incremental_paths)
+            value["incremental_product_changed_paths"] = incremental_paths
+        if args.output:
+            _atomic_json(args.output, value)
+        if args.count:
+            print(value.get("incremental_product_change_count", value["product_change_count"]))
+        elif args.json or args.output:
+            if not args.output:
+                print(json.dumps(value, ensure_ascii=False, sort_keys=True))
+        else:
+            print(value["product_hash"])
+        return 0
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

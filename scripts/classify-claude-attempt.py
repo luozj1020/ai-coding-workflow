@@ -37,7 +37,9 @@ def classify(
     })
     approval = bool(APPROVAL_RE.search(error_text)) or outcome == "approval_blocked"
 
-    if direction == "off-plan":
+    if outcome == "runtime_evidence_error":
+        failure, action, counts = "control-plane-evidence-error", "repair-runtime-before-retry", False
+    elif direction == "off-plan":
         failure, action, counts = "direction-deviation", "interrupt-and-narrow", True
     elif report_mismatch and diff_changes == 0:
         failure, action, counts = "report-evidence-mismatch", "narrow-and-redispatch-once", True

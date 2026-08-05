@@ -35,6 +35,16 @@ class ClaudeProcessStateTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"CODEX_SANDBOX_NETWORK_DISABLED": "1"}, clear=True):
             self.assertTrue(state.restricted_environment("auto"))
 
+    def test_requested_missing_identity_never_falls_back_to_pid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pid = Path(tmp) / "run.pid"; pid.write_text(str(os.getpid()))
+            progress = Path(tmp) / "run.log"; progress.write_text("running\n")
+            missing_identity = Path(tmp) / "missing.process.json"
+            self.assertEqual(
+                state.classify(pid, progress, "normal", missing_identity),
+                "visibility-unknown",
+            )
+
     def test_installer_and_doctor_register_helper(self):
         self.assertIn('("claude-process-state.py", "ai/claude-process-state.py")',
                       (ROOT / "scripts" / "install_workflow.py").read_text())

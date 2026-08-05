@@ -2187,7 +2187,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("First Progress:  600s observation", result.stdout)
+        self.assertIn("First Progress:  600s stop", result.stdout)
         self.assertIn("Builder Mode:    execution-only", result.stdout)
         runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
         self.assertEqual(runtime["first_progress_timeout_seconds"], 600)
@@ -2207,6 +2207,20 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("execution-only Builder mode", prompt)
         self.assertIn("Do NOT restate or redesign the plan", prompt)
         self.assertIn("--- CLAUDE EXECUTION CARD ---", prompt)
+
+    def test_first_progress_cli_override_is_structured_and_receipted(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"CLAUDE_CODE_BUILDER_MODE": "execution-only"},
+            ["--first-progress-timeout-seconds", "120"],
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
+        self.assertEqual(runtime["first_progress_timeout_seconds"], 120)
+        self.assertEqual(runtime["first_progress_timeout_source"], "cli")
+        self.assertEqual(runtime["context_acquisition_timeout_seconds"], 30)
+        self.assertIn("First Progress:  120s stop", result.stdout)
 
     def test_exploratory_card_auto_selects_exploratory_prompt_and_locator_tools(self):
         task = self._write_builder_task_card()
@@ -2362,7 +2376,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("First Progress:  2s observation", result.stdout)
+        self.assertIn("First Progress:  2s stop", result.stdout)
         runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
         self.assertEqual(runtime["first_progress_timeout_seconds"], 2)
         self.assertEqual(runtime["first_progress_timeout_source"], "alias(CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT)")
@@ -2380,7 +2394,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         result = self._dispatch("task-cards/BUILDER.md")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Builder Mode:    execution-only", result.stdout)
-        self.assertIn("First Progress:  30s observation", result.stdout)
+        self.assertIn("First Progress:  30s stop", result.stdout)
         runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
         self.assertEqual(
             runtime["first_progress_timeout_seconds"],
@@ -3885,6 +3899,19 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         status = self._artifact_path(result.stdout, "Status").read_text(encoding="utf-8")
         self.assertIn("first_progress_timeout", progress.lower())
         self.assertIn("First-progress timed out: yes", status)
+        runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
+        product_state = json.loads(pathlib.Path(runtime["product_state_receipt"]).read_text())
+        self.assertEqual(product_state["product_change_count"], 0)
+        self.assertGreaterEqual(product_state["control_change_count"], 1)
+        outcome = json.loads(self._artifact_path(result.stdout, "Outcome Gates").read_text())
+        self.assertEqual(outcome["product_changes"], 0)
+        self.assertGreaterEqual(outcome["control_changes"], 1)
+        self.assertEqual(outcome["evidence_state"], "seeded-report-only")
+        terminal = pathlib.Path(runtime["worktree_root"]) / f"{runtime['task_id']}.monitor-events.log"
+        terminal_text = terminal.read_text(encoding="utf-8")
+        self.assertIn("event=terminal", terminal_text)
+        self.assertIn("product_changes=0", terminal_text)
+        self.assertIn("evidence_state=seeded-report-only", terminal_text)
 
     # --- Renewable product-growth extension tests ---
 

@@ -7,6 +7,7 @@ deterministic ordering.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import tempfile
 import unittest
@@ -228,6 +229,33 @@ class TestControlArtifactIgnored(unittest.TestCase):
             h_after = mod.compute_worktree_state_hash(wt)
             self.assertEqual(h_before, h_after)
 
+    def test_tracked_root_control_is_ignored(self):
+        with tempfile.TemporaryDirectory(prefix="hash_test_") as td:
+            wt = Path(td) / "repo"
+            wt.mkdir()
+            _init_repo(wt)
+            (wt / "CLAUDE_PROGRESS.md").write_text("seed\n")
+            _git(["add", "CLAUDE_PROGRESS.md"], wt)
+            _git(["commit", "-m", "tracked control"], wt)
+            h_before = mod.compute_worktree_state_hash(wt)
+            (wt / "CLAUDE_PROGRESS.md").write_text("runtime update\n")
+            state = mod.collect_worktree_state(wt)
+            self.assertEqual(h_before, state["product_hash"])
+            self.assertEqual(state["product_change_count"], 0)
+            self.assertEqual(state["control_changed_paths"], ["CLAUDE_PROGRESS.md"])
+
+    def test_nested_same_named_file_is_product_content(self):
+        with tempfile.TemporaryDirectory(prefix="hash_test_") as td:
+            wt = Path(td) / "repo"
+            wt.mkdir()
+            _init_repo(wt)
+            h_before = mod.compute_worktree_state_hash(wt)
+            (wt / "docs").mkdir()
+            (wt / "docs" / "CLAUDE_REPORT.md").write_text("product documentation\n")
+            state = mod.collect_worktree_state(wt)
+            self.assertNotEqual(h_before, state["product_hash"])
+            self.assertEqual(state["product_changed_paths"], ["docs/CLAUDE_REPORT.md"])
+
 
 class TestOrderingDeterministic(unittest.TestCase):
     """Hash is stable regardless of filesystem ordering."""
@@ -243,6 +271,37 @@ class TestOrderingDeterministic(unittest.TestCase):
             hashes = [mod.compute_worktree_state_hash(wt) for _ in range(5)]
             # All should be identical
             self.assertEqual(len(set(hashes)), 1)
+
+
+class TestIncrementalBaseline(unittest.TestCase):
+    def test_existing_dirty_state_is_not_fresh_progress(self):
+        with tempfile.TemporaryDirectory(prefix="hash_test_") as td:
+            wt = Path(td) / "repo"
+            wt.mkdir()
+            _init_repo(wt)
+            (wt / "README.md").write_text("accepted dirty baseline\n")
+            baseline = mod.collect_worktree_state(wt, ignore_empty_untracked=True)
+            stable_path = Path(td) / "baseline.json"
+            stable_path.write_text(json.dumps(baseline), encoding="utf-8")
+            stable = subprocess.run(
+                [sys.executable, str(SCRIPTS / "worktree_state_hash.py"),
+                 "--worktree", str(wt), "--json", "--baseline-state", str(stable_path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(stable.returncode, 0, stable.stderr)
+            stable_value = json.loads(stable.stdout)
+            self.assertEqual(stable_value["incremental_product_change_count"], 0)
+            self.assertFalse(stable_value["product_delta_from_baseline"])
+
+            (wt / "README.md").write_text("new continuation edit\n")
+            changed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "worktree_state_hash.py"),
+                 "--worktree", str(wt), "--json", "--baseline-state", str(stable_path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            changed_value = json.loads(changed.stdout)
+            self.assertEqual(changed_value["incremental_product_changed_paths"], ["README.md"])
+            self.assertTrue(changed_value["product_delta_from_baseline"])
 
 
 class TestCLI(unittest.TestCase):
@@ -261,6 +320,23 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             h = result.stdout.strip()
             self.assertEqual(len(h), 64)
+
+    def test_json_snapshot_separates_product_and_control_changes(self):
+        with tempfile.TemporaryDirectory(prefix="hash_test_") as td:
+            wt = Path(td) / "repo"
+            wt.mkdir()
+            _init_repo(wt)
+            (wt / "new_product.py").write_text("value = 1\n")
+            (wt / "CLAUDE_REPORT.md").write_text("runtime report\n")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPTS / "worktree_state_hash.py"),
+                 "--worktree", str(wt), "--json"],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            value = json.loads(result.stdout)
+            self.assertEqual(value["product_changed_paths"], ["new_product.py"])
+            self.assertEqual(value["control_changed_paths"], ["CLAUDE_REPORT.md"])
 
 
 if __name__ == "__main__":

@@ -11,14 +11,9 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-CONTROL = {
-    "TASK_CARD.md", "TASK_CARD_FULL.md", "CLAUDE_TASK_CARD.md",
-    "CLAUDE_PROMPT.md", "CLAUDE_PROGRESS.md", "CLAUDE_REPORT.md",
-    "ADVISOR_REQUEST.json",
-}
 TERMINAL_RE = re.compile(
     r"Claude (?:child exited|subprocess ended|finished|completed)|Final dispatch outcome:|Dispatch Complete",
     re.I,
@@ -162,6 +157,9 @@ def role_state(helper: Path, pid_file: Path, progress: Path, identity_file: Opti
         state = result.stdout.strip()
         if state in {"running", "not-running", "missing", "visibility-unknown"}:
             return state
+    if identity_file is not None:
+        # A requested identity check must never degrade to PID-only liveness.
+        return "visibility-unknown"
     try:
         pid = int(pid_file.read_text(encoding="utf-8").strip())
         os.kill(pid, 0)
@@ -224,32 +222,50 @@ def progress_fields(worktree: Path, worktrees: Path, task_id: str, limit: int) -
     return result
 
 
+def canonical_product_state(worktree: Path, baseline_state: Optional[Path] = None) -> Dict[str, Any]:
+    """Read product state from the same helper used by the dispatcher."""
+    helper = Path(__file__).resolve().with_name("worktree_state_hash.py")
+    if not helper.is_file():
+        return {}
+    command = [sys.executable, str(helper), "--worktree", str(worktree),
+               "--ignore-empty-untracked", "--json"]
+    if baseline_state is not None and baseline_state.is_file():
+        command.extend(("--baseline-state", str(baseline_state)))
+    result = subprocess.run(
+        command,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=30,
+    )
+    if result.returncode:
+        return {}
+    try:
+        value = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) and value.get("status") == "ready" else {}
+
+
 def changed_state(
-    worktree: Path, maximum: int, known_count: Optional[int], cached_status: Path,
+    worktree: Path, maximum: int, known_count: Optional[int],
+    canonical: Optional[Dict[str, Any]] = None,
 ) -> Tuple[int, List[str], str]:
-    cached = bounded_tail(cached_status, 32768)
-    if cached:
-        lines = cached.splitlines()
-    else:
-        # Avoid a full untracked-file walk in large repositories. The persistent
-        # watcher already records the authoritative aggregate count.
-        result = git(worktree, "status", "--porcelain", "--untracked-files=no")
-        lines = result.stdout.splitlines() if result.returncode == 0 else []
-    paths: List[str] = []
-    for line in lines:
-        raw = line[3:].strip().strip('"').replace("\\", "/")
-        if " -> " in raw:
-            raw = raw.split(" -> ", 1)[1]
-        if not raw or PurePosixPath(raw).name in CONTROL:
-            continue
-        paths.append(clean(raw, 160))
+    """Return product-only changes; human Markdown is never machine input."""
+    state = canonical or canonical_product_state(worktree)
+    raw_paths = state.get(
+        "incremental_product_changed_paths",
+        state.get("product_changed_paths", []),
+    ) if state else []
+    paths = [clean(path, 160) for path in raw_paths if isinstance(path, str)]
     paths = sorted(set(paths))
-    diff = git(worktree, "diff", "--shortstat")
-    diffstat = clean(diff.stdout, 180) if diff.returncode == 0 else "git-diff-unavailable"
-    count = known_count if known_count is not None else len(paths)
-    if not diffstat and count:
-        diffstat = f"{count} changed paths"
-    return count, paths[:maximum], diffstat or "no implementation changes"
+    state_count = state.get(
+        "incremental_product_change_count",
+        state.get("product_change_count"),
+    ) if state else None
+    count = integer(state_count, -1)
+    if count < 0:
+        count = known_count if known_count is not None else len(paths)
+    diffstat = f"{count} product changed paths" if count else "no product changes"
+    return count, paths[:maximum], diffstat
 
 
 def error_categories(progress: str, status: str) -> List[str]:
@@ -284,6 +300,18 @@ def evidence_state(changes: int, result_size: int, report_text: str) -> str:
     if result_size:
         return "result without valid report"
     return "no valid report"
+
+
+def evidence_label(value: str) -> str:
+    labels = {
+        "diff-plus-valid-report": "diff + valid report",
+        "diff-without-report": "diff without report",
+        "acknowledgement-only": "acknowledgement only",
+        "seeded-report-only": "seeded report only",
+        "valid-report-without-diff": "valid report without diff",
+        "no-valid-report": "no valid report",
+    }
+    return labels.get(value, value)
 
 
 def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
@@ -338,11 +366,30 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     edit_ready = event.get("edit_ready", "0") in {"1", "yes", "true"}
     product_idle_seconds = integer(event.get("product_idle_seconds"))
     idle_confirmations = integer(event.get("idle_confirmations"))
-    known_changes = integer(event["worktree_changes"]) if "worktree_changes" in event else None
+    known_product_changes = integer(event["product_changes"]) if "product_changes" in event else (
+        integer(event["worktree_changes"]) if "worktree_changes" in event else None
+    )
+    known_control_changes = integer(event.get("control_changes"), 0)
+    known_total_product_changes = integer(
+        event.get("total_product_changes"), known_product_changes or 0,
+    )
+    known_all_changes = integer(event.get("worktree_changes"), -1)
+    canonical_path = worktrees / f"{task_id}.product-state.json"
+    canonical = read_json_object(canonical_path)
+    if not canonical or canonical.get("status") != "ready":
+        canonical = canonical_product_state(
+            worktree, worktrees / f"{task_id}.product-baseline.json",
+        ) if worktree.is_dir() else {}
     changes, paths, diffstat = changed_state(
-        worktree, args.max_changed_paths, known_changes,
-        worktrees / f"{task_id}.worktree-status.txt",
-    ) if worktree.is_dir() else (known_changes or 0, [], "worktree unavailable")
+        worktree, args.max_changed_paths, known_product_changes, canonical,
+    ) if worktree.is_dir() else (known_product_changes or 0, [], "worktree unavailable")
+    if known_product_changes is not None and canonical and changes != known_product_changes:
+        conflicts.append("terminal-product-count-mismatch")
+    control_changes = integer(canonical.get("control_change_count"), known_control_changes) if canonical else known_control_changes
+    total_product_changes = integer(
+        canonical.get("product_change_count"), known_total_product_changes,
+    ) if canonical else known_total_product_changes
+    all_changes = known_all_changes if known_all_changes >= 0 else total_product_changes + control_changes
     progress = progress_fields(worktree, worktrees, task_id, args.max_summary_chars)
     errors = error_categories(progress_tail, status_tail)
     report_path = worktree / "CLAUDE_REPORT.md"
@@ -350,7 +397,9 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         report_path = worktrees / f"{task_id}.report.md"
     report_text = bounded_tail(report_path, 32768)
     result_size = result_file.stat().st_size if result_file.is_file() else 0
-    evidence = event.get("evidence_state") or evidence_state(changes, result_size, report_text)
+    evidence = evidence_label(event.get("evidence_state") or str(outcome.get("evidence_state") or ""))
+    if not evidence:
+        evidence = evidence_state(changes, result_size, report_text)
     if terminal and overall_running:
         conflicts.append("terminal-marker-with-live-role")
     if event.get("running") == "yes" and not running and not visibility and not terminal:
@@ -401,7 +450,7 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     codex_review = decision in {"inspect", "interrupt-candidate"} or direction_deviation or bool(conflicts)
     summary = clean(
         f"{decision}: {reason}; level={level}; running={'yes' if effective_running else 'no'}; "
-        f"elapsed={elapsed}s quiet={quiet}s changes={changes}; state={execution_state}; "
+        f"elapsed={elapsed}s quiet={quiet}s product_changes={changes} control_changes={control_changes}; state={execution_state}; "
         f"product_idle={product_idle_seconds}s confirmations={idle_confirmations}; evidence={evidence}",
         args.max_summary_chars,
     )
@@ -440,7 +489,9 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         "validation_success": outcome.get("validation_success", "unknown"),
         "semantic_acceptance": outcome.get("semantic_acceptance", "pending-codex-review"),
         "completion_state": outcome.get("completion_state", "unknown"),
-        "worktree_changes": changes, "product_changes": changes,
+        "worktree_changes": all_changes, "product_changes": changes,
+        "total_product_changes": total_product_changes,
+        "control_changes": control_changes,
         "changed_paths": paths, "diffstat": diffstat,
         "phase": progress["phase"], "execution_phase": progress["execution_phase"],
         "implementation_complete": progress["implementation_complete"],
@@ -461,7 +512,8 @@ def render_text(value: Dict[str, Any]) -> str:
             "execution_activity_state", "edit_ready", "product_idle_seconds", "idle_confirmations",
             "dispatch_success", "artifact_valid", "validation_success", "semantic_acceptance", "completion_state",
             "monitor_level", "running", "collected_at", "elapsed_seconds",
-            "quiet_seconds", "suspect_count", "artifact_growth", "worktree_changes", "summary")
+            "quiet_seconds", "suspect_count", "artifact_growth", "worktree_changes",
+            "product_changes", "total_product_changes", "control_changes", "summary")
     return "\n".join(f"{key}={clean(value.get(key), 240)}" for key in keys) + "\n"
 
 

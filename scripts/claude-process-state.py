@@ -28,8 +28,10 @@ def restricted_environment(mode: str) -> bool:
 
 
 def _identity_state(identity_file: Optional[Path]) -> Optional[str]:
-    if identity_file is None or not identity_file.is_file():
+    if identity_file is None:
         return None
+    if not identity_file.is_file():
+        return "visibility-unknown"
     helper = Path(__file__).resolve().with_name("process-identity.py")
     if not helper.is_file():
         return "visibility-unknown"

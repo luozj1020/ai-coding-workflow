@@ -97,13 +97,21 @@ WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 DECISION_HELPER="${SCRIPT_DIR}/claude-monitor-decision.py"
 EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.monitor-events.log"
 DISPATCHER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.pid"
+DISPATCHER_IDENTITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.process.json"
+PROCESS_STATE_HELPER="${SCRIPT_DIR}/claude-process-state.py"
 
-dispatcher_running() {
-    local pid=""
-    if [ -f "$DISPATCHER_PID_FILE" ]; then
-        pid="$(tr -d '[:space:]' < "$DISPATCHER_PID_FILE")"
+dispatcher_state() {
+    if [ ! -f "$PROCESS_STATE_HELPER" ]; then
+        echo "visibility-unknown"
+        return
     fi
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+    if [ ! -f "$DISPATCHER_IDENTITY_FILE" ]; then
+        echo "visibility-unknown"
+        return
+    fi
+    "$PYTHON_CMD" "$PROCESS_STATE_HELPER" \
+        --pid-file "$DISPATCHER_PID_FILE" --progress-file "${WORKTREE_ROOT}/${TASK_ID}.progress.log" \
+        --identity-file "$DISPATCHER_IDENTITY_FILE" 2>/dev/null || echo "visibility-unknown"
 }
 
 event_count() {
@@ -189,13 +197,14 @@ case "$ACTION" in
                 echo "monitor_wait status=timeout task_id=${TASK_ID} until=${WAIT_UNTIL} timeout_seconds=${WAIT_TIMEOUT}"
                 exit 124
             fi
-            if ! dispatcher_running; then
+            _dispatcher_state="$(dispatcher_state)"
+            if [ "$_dispatcher_state" != "running" ]; then
                 _last="$(last_event)"
                 if printf '%s\n' "$_last" | grep -q ' terminal=yes\([[:space:]]\|$\)'; then
                     emit_boundary_summary "$_last"
                     exit 0
                 fi
-                echo "monitor_wait status=visibility-unknown task_id=${TASK_ID} reason=dispatcher-not-running-without-terminal-event"
+                echo "monitor_wait status=visibility-unknown task_id=${TASK_ID} reason=dispatcher-${_dispatcher_state}-without-terminal-event"
                 exit 2
             fi
         done
