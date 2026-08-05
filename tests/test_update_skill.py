@@ -176,7 +176,8 @@ class ProjectRefreshDiscoveryTests(unittest.TestCase):
             )
 
             self.assertIn("--bootstrap-repo", command)
-            self.assertEqual(command[command.index("--bootstrap-repo") + 1], str(repo))
+            selected = command[command.index("--bootstrap-repo") + 1]
+            self.assertTrue(os.path.samefile(selected, repo))
 
     def test_skill_only_does_not_discover_project(self):
         args = self.module.parse_args(["--skill-only"])
