@@ -138,6 +138,50 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertTrue(marker.exists())
             self.assertEqual(marker.read_text(encoding="utf-8"), "ok\n")
 
+    def test_copy_skill_skips_unchanged_package_activation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = pathlib.Path(tmp) / "src"
+            dest = pathlib.Path(tmp) / "dest"
+            (src / "assets").mkdir(parents=True)
+            (src / "scripts").mkdir()
+            (src / "SKILL.md").write_text("skill\n", encoding="utf-8")
+            (src / "assets" / "AGENTS.md").write_text("agents\n", encoding="utf-8")
+            (src / "assets" / "CLAUDE.md").write_text("claude\n", encoding="utf-8")
+            (src / "scripts" / "install_workflow.py").write_text("install\n", encoding="utf-8")
+            (src / "scripts" / "update_skill.py").write_text("update\n", encoding="utf-8")
+
+            self.assertEqual(self.module.copy_skill(str(src), str(dest)), "installed")
+            marker_inode = (dest / "SKILL.md").stat().st_ino
+            with patch.object(
+                self.module, "_copy_skill_contents",
+                side_effect=AssertionError("unchanged update must not stage a package"),
+            ):
+                status = self.module.copy_skill(str(src), str(dest))
+
+            self.assertEqual(status, "unchanged")
+            self.assertEqual((dest / "SKILL.md").stat().st_ino, marker_inode)
+
+            (src / "SKILL.md").write_text("changed\n", encoding="utf-8")
+            self.assertEqual(self.module.copy_skill(str(src), str(dest)), "updated")
+            self.assertEqual(
+                list(dest.parent.glob(".ai-coding-workflow-backup-*")), []
+            )
+            self.assertEqual(
+                list(dest.parent.glob(".ai-coding-workflow-staging-*")), []
+            )
+
+    def test_summary_only_bootstrap_uses_compact_project_installer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = pathlib.Path(tmp) / "skill"
+            repo = pathlib.Path(tmp) / "repo"
+            (skill / "scripts").mkdir(parents=True)
+            (skill / "scripts" / "install_workflow.py").write_text("ok\n", encoding="utf-8")
+            repo.mkdir()
+            with patch.object(self.module.subprocess, "run") as run:
+                self.module.run_bootstrap(str(skill), str(repo), summary_only=True)
+
+            self.assertIn("--summary-only", run.call_args.args[0])
+
     def test_copy_skill_records_source_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = pathlib.Path(tmp) / "src"
@@ -208,8 +252,8 @@ class InstallForCodexTests(unittest.TestCase):
 
     def test_skill_entrypoint_stays_within_default_context_budget(self):
         content = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertLessEqual(len(content.encode("utf-8")), 18_000)
-        self.assertLessEqual(len(content.split()), 2_500)
+        self.assertLess(len(content.encode("utf-8")), 4_500)
+        self.assertLess(len(content.split()), 650)
 
     def test_skill_entrypoint_references_exist_and_are_first_level(self):
         content = (ROOT / "SKILL.md").read_text(encoding="utf-8")
@@ -225,7 +269,7 @@ class InstallForCodexTests(unittest.TestCase):
             self.module.copy_skill(str(ROOT), str(destination))
 
             installed_entrypoint = destination / "SKILL.md"
-            self.assertLessEqual(installed_entrypoint.stat().st_size, 18_000)
+            self.assertLess(installed_entrypoint.stat().st_size, 4_500)
             self.assertTrue((destination / "references" / "routing-and-spark.md").is_file())
             self.assertTrue((destination / "references" / "claude-runtime.md").is_file())
 
@@ -286,6 +330,10 @@ class InstallForCodexTests(unittest.TestCase):
         args = self.module.parse_args(["--code-search-services", "skip"])
         self.assertEqual(args.code_search_services, "skip")
 
+    def test_parse_args_accepts_summary_only(self):
+        args = self.module.parse_args(["--summary-only"])
+        self.assertTrue(args.summary_only)
+
     def test_detect_context_tools_reports_codegraph_initialization(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
@@ -322,6 +370,10 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn(str(installer), cmd)
             self.assertIn("--bootstrap-repo", cmd)
             self.assertIn("/tmp/repo", cmd)
+            self.assertIn("--summary-only", cmd)
+            self.assertEqual(
+                cmd[cmd.index("--code-search-services") + 1], "skip"
+            )
 
     def test_update_skill_refreshes_bootstrapped_current_repo_by_default(self):
         helper = ROOT / "scripts" / "update_skill.py"

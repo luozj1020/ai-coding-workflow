@@ -72,7 +72,12 @@ structured Spark routing/monitoring is used only when it replaces Codex work.
 
 ## What it does
 
-The installed skill uses progressive disclosure: its small `SKILL.md` contains only the core loop and non-negotiable rules, while setup, Spark, Claude runtime, worktree/parallel, and task-card details live in first-level `references/` files loaded only for matching operations. A size-budget test prevents the default skill context from silently growing beyond 18 KB.
+The installed workflow uses progressive disclosure: `SKILL.md` contains only
+the core loop and reference router, while the managed `AGENTS.md` keeps the
+repository-wide safety kernel. Setup, Spark, Claude runtime, worktree, review,
+and task-card details live in first-level `references/` files loaded only for
+the matching operation. Budget tests cap `SKILL.md` below 4.5 KB,
+`AGENTS.md` below 8 KB, and their combined fixed context below 12 KB.
 
 ai-coding-workflow bootstraps repositories with:
 - `AGENTS.md` - shared rules for all agents
@@ -472,7 +477,7 @@ python scripts/update_skill.py --bootstrap-current
 python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
-`python scripts/update_skill.py` updates the user-level Codex Skill and automatically refreshes the containing Git repository when it is already bootstrapped, even when invoked from a subdirectory. `--bootstrap-current` makes that intent explicit, `--bootstrap-repo` targets another repository, and `--skill-only` intentionally leaves project-local workflow files unchanged. The command reports whether project refresh happened and reminds you to restart Codex.
+`python scripts/update_skill.py` updates the user-level Codex Skill and automatically refreshes the containing Git repository when it is already bootstrapped, even when invoked from a subdirectory. `--bootstrap-current` makes that intent explicit, `--bootstrap-repo` targets another repository, and `--skill-only` intentionally leaves project-local workflow files unchanged. Normal updates use compact summaries, skip optional service prompts, and avoid staging or replacing an unchanged Skill package. Project refresh still verifies managed content and validates every changed shell launcher. The command reports whether project refresh happened and reminds you to restart Codex.
 
 The installed updater records and reuses the real source checkout rather than
 silently using the installed Skill as its own update source. Missing or invalid

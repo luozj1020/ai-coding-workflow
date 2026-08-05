@@ -219,8 +219,15 @@ class BuildGuidedPhasesTests(unittest.TestCase):
             _, _, phases = self.module.build_guided_phases(str(source), "/tmp/repo")
         # skill-update uses install_for_codex.py
         self.assertIn("install_for_codex.py", phases[0]["argv"][1])
+        self.assertIn("--summary-only", phases[0]["argv"])
+        self.assertEqual(
+            phases[0]["argv"][phases[0]["argv"].index("--code-search-services") + 1],
+            "skip",
+        )
         # workflow-bootstrap uses install_workflow.py
         self.assertIn("install_workflow.py", phases[1]["argv"][1])
+        self.assertIn("--update-workflow-files", phases[1]["argv"])
+        self.assertIn("--summary-only", phases[1]["argv"])
         # auto-setup uses install_for_codex.py --auto-setup
         self.assertIn("--auto-setup", phases[2]["argv"])
         self.assertIn("--apply", phases[2]["argv"])

@@ -846,14 +846,28 @@ def parse_args(argv=None):
         action="store_true",
         help="Install workflow control-plane files for local use only by updating .git/info/exclude instead of .gitignore.",
     )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Print one compact result line instead of per-file status and expanded summaries.",
+    )
     args = parser.parse_args(argv)
-    return os.path.abspath(args.repo), args.update_workflow_files, args.local_only
+    return (
+        os.path.abspath(args.repo),
+        args.update_workflow_files,
+        args.local_only,
+        args.summary_only,
+    )
 
 
 def main(argv=None):
-    repo_path, update_workflow_files, local_only = parse_args(argv)
+    repo_path, update_workflow_files, local_only, summary_only = parse_args(argv)
     assets_dir = get_assets_dir()
     scripts_dir = get_script_dir()
+
+    def detail(message):
+        if not summary_only:
+            print(message)
 
     if not os.path.isdir(assets_dir):
         print(f"Error: Assets directory not found: {assets_dir}")
@@ -879,7 +893,7 @@ def main(argv=None):
     }
 
     if local_only:
-        print("  mode: local-only control plane (.git/info/exclude, no .gitignore edits)")
+        detail("  mode: local-only control plane (.git/info/exclude, no .gitignore edits)")
 
     # Remove retired generated helpers only when the caller explicitly opts in
     # to refreshing managed workflow files.
@@ -890,24 +904,24 @@ def main(argv=None):
         if update_workflow_files:
             os.unlink(dest)
             results["removed"].append(dest_rel)
-            print(f"  removed: {dest_rel} (retired workflow helper)")
+            detail(f"  removed: {dest_rel} (retired workflow helper)")
         else:
             results["outdated"].append(f"{dest_rel} (retired; use --update-workflow-files)")
-            print(f"  outdated: {dest_rel} (retired; use --update-workflow-files)")
+            detail(f"  outdated: {dest_rel} (retired; use --update-workflow-files)")
 
     # --- Install AGENTS.md (managed) ---
     src = os.path.join(assets_dir, "AGENTS.md")
     dest = os.path.join(repo_path, "AGENTS.md")
     status = install_or_update_agents(read_file(src), dest)
     results[status].append("AGENTS.md")
-    print(f"  {status}: AGENTS.md")
+    detail(f"  {status}: AGENTS.md")
 
     # --- Install CLAUDE.md (managed + @AGENTS.md) ---
     src = os.path.join(assets_dir, "CLAUDE.md")
     dest = os.path.join(repo_path, "CLAUDE.md")
     status = install_or_update_claude(read_file(src), dest)
     results[status].append("CLAUDE.md")
-    print(f"  {status}: CLAUDE.md")
+    detail(f"  {status}: CLAUDE.md")
 
     # --- Install direct-copy assets ---
     for src_name, dest_rel in DIRECT_COPY:
@@ -915,7 +929,7 @@ def main(argv=None):
         dest = os.path.join(repo_path, dest_rel)
         status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
-        print(f"  {status}: {dest_rel}")
+        detail(f"  {status}: {dest_rel}")
 
     # --- Install scripts ---
     for src_name, dest_rel in SCRIPTS:
@@ -923,18 +937,19 @@ def main(argv=None):
         dest = os.path.join(repo_path, dest_rel)
         status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
-        print(f"  {status}: {dest_rel}")
+        detail(f"  {status}: {dest_rel}")
 
         make_executable(dest)
 
-        validation = validate_shell_script(dest)
-        if validation == "PASS":
-            results["validated"].append(dest_rel)
-            print(f"  validated: {dest_rel}")
-        elif validation == "WARN_SKIPPED":
-            results["warned"].append(dest_rel)
-        else:
-            results["failed"].append(dest_rel)
+        if not summary_only or status != "skipped":
+            validation = validate_shell_script(dest)
+            if validation == "PASS":
+                results["validated"].append(dest_rel)
+                detail(f"  validated: {dest_rel}")
+            elif validation == "WARN_SKIPPED":
+                results["warned"].append(dest_rel)
+            else:
+                results["failed"].append(dest_rel)
 
     # --- Install PowerShell helpers ---
     for src_name, dest_rel in POWERSHELL_SCRIPTS:
@@ -942,7 +957,7 @@ def main(argv=None):
         dest = os.path.join(repo_path, dest_rel)
         status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
-        print(f"  {status}: {dest_rel}")
+        detail(f"  {status}: {dest_rel}")
 
     # --- Install Python helpers ---
     for src_name, dest_rel in PYTHON_SCRIPTS:
@@ -950,7 +965,7 @@ def main(argv=None):
         dest = os.path.join(repo_path, dest_rel)
         status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
-        print(f"  {status}: {dest_rel}")
+        detail(f"  {status}: {dest_rel}")
 
     # --- Install structured assets (schemas, profiles, examples) ---
     repo_root = os.path.dirname(assets_dir)
@@ -959,7 +974,7 @@ def main(argv=None):
         dest = os.path.join(repo_path, dest_rel)
         status = install_or_update_plain(read_file(src), dest, update_workflow_files)
         results[status].append(dest_rel)
-        print(f"  {status}: {dest_rel}")
+        detail(f"  {status}: {dest_rel}")
 
     # --- Create .worktrees/.gitkeep ---
     worktrees_gitkeep = os.path.join(repo_path, ".worktrees", ".gitkeep")
@@ -967,54 +982,80 @@ def main(argv=None):
         os.makedirs(os.path.dirname(worktrees_gitkeep), exist_ok=True)
         write_file(worktrees_gitkeep, "")
         results["created"].append(".worktrees/.gitkeep")
-        print(f"  created: .worktrees/.gitkeep")
+        detail("  created: .worktrees/.gitkeep")
     else:
         results["skipped"].append(".worktrees/.gitkeep")
-        print(f"  skipped: .worktrees/.gitkeep (already exists)")
+        detail("  skipped: .worktrees/.gitkeep (already exists)")
 
     # --- Ensure runtime/control-plane artifacts are ignored ---
     if local_only:
         status, label = ensure_local_only_exclude(repo_path)
         results[status].append(label)
-        print(f"  {status}: {label} (local-only control-plane ignore)")
+        detail(f"  {status}: {label} (local-only control-plane ignore)")
     else:
         status = ensure_worktrees_gitignore(repo_path)
         results[status].append(".gitignore")
-        print(f"  {status}: .gitignore (.worktrees runtime ignore)")
+        detail(f"  {status}: .gitignore (.worktrees runtime ignore)")
 
-    # --- Print summary ---
-    print("\n=== Installation Summary ===")
-    for label, key in [("Created", "created"), ("Updated", "updated"), ("Removed", "removed"), ("Outdated", "outdated"), ("Skipped", "skipped")]:
-        print(f"  {label}:   {len(results[key])} files")
-        for f in results[key]:
-            print(f"    + {f}")
-    if results["outdated"]:
-        print("  Note: outdated workflow files were not overwritten.")
-        print("        Re-run with --update-workflow-files to refresh local ai/* workflow copies.")
-    print(f"  Validated: {len(results['validated'])} scripts")
-    for f in results["validated"]:
-        print(f"    OK {f}")
-    if results["warned"]:
-        print(f"  Warned:    {len(results['warned'])} item(s)")
-        for f in results["warned"]:
-            print(f"    ! {f}")
-    if results["failed"]:
-        print(f"  Failed:    {len(results['failed'])} scripts")
-        for f in results["failed"]:
-            print(f"    X {f}")
     postcondition_mismatches = []
     if update_workflow_files:
         postcondition_mismatches = verify_refresh_postcondition(
             repo_path, assets_dir, scripts_dir
         )
-        if postcondition_mismatches:
-            print("  Refresh verification failed:")
-            for item in postcondition_mismatches:
+
+    failed = bool(results["failed"] or postcondition_mismatches)
+    if summary_only:
+        print(
+            "workflow_refresh status={} created={} updated={} removed={} "
+            "unchanged={} outdated={} validated={} warned={} failed={} target={}".format(
+                "failed" if failed else "ok",
+                len(results["created"]),
+                len(results["updated"]),
+                len(results["removed"]),
+                len(results["skipped"]),
+                len(results["outdated"]),
+                len(results["validated"]),
+                len(results["warned"]),
+                len(results["failed"]) + len(postcondition_mismatches),
+                repo_path,
+            )
+        )
+        issues = (
+            results["outdated"] + results["failed"] + postcondition_mismatches
+        )
+        if issues:
+            visible = issues[:20]
+            suffix = ",...(+{})".format(len(issues) - 20) if len(issues) > 20 else ""
+            print("workflow_refresh issues={}{}".format(",".join(visible), suffix))
+    else:
+        print("\n=== Installation Summary ===")
+        for label, key in [("Created", "created"), ("Updated", "updated"), ("Removed", "removed"), ("Outdated", "outdated"), ("Skipped", "skipped")]:
+            print(f"  {label}:   {len(results[key])} files")
+            for item in results[key]:
+                print(f"    + {item}")
+        if results["outdated"]:
+            print("  Note: outdated workflow files were not overwritten.")
+            print("        Re-run with --update-workflow-files to refresh local ai/* workflow copies.")
+        print(f"  Validated: {len(results['validated'])} scripts")
+        for item in results["validated"]:
+            print(f"    OK {item}")
+        if results["warned"]:
+            print(f"  Warned:    {len(results['warned'])} item(s)")
+            for item in results["warned"]:
+                print(f"    ! {item}")
+        if results["failed"]:
+            print(f"  Failed:    {len(results['failed'])} scripts")
+            for item in results["failed"]:
                 print(f"    X {item}")
-        else:
-            print("  Refresh verification: PASS")
-    print("\nDone.")
-    if results["failed"] or postcondition_mismatches:
+        if update_workflow_files:
+            if postcondition_mismatches:
+                print("  Refresh verification failed:")
+                for item in postcondition_mismatches:
+                    print(f"    X {item}")
+            else:
+                print("  Refresh verification: PASS")
+        print("\nDone.")
+    if failed:
         return 1
     return 0
 

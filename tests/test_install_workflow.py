@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -35,6 +36,18 @@ class InstallWorkflowTests(unittest.TestCase):
             capture_output=True,
             check=True,
         )
+
+    def test_summary_only_emits_counts_without_per_file_noise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            result = self.run_installer(
+                repo, "--update-workflow-files", "--summary-only"
+            )
+
+            self.assertIn("workflow_refresh status=ok", result.stdout)
+            self.assertIn("created=", result.stdout)
+            self.assertNotIn("created: ai/dispatch-to-claude.sh", result.stdout)
+            self.assertNotIn("=== Installation Summary ===", result.stdout)
 
     def test_write_file_is_atomic_and_preserves_existing_mode(self):
         module = load_module()
@@ -127,14 +140,19 @@ class InstallWorkflowTests(unittest.TestCase):
     def test_update_mode_returns_nonzero_when_postcondition_fails(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
+            stdout = io.StringIO()
             with mock.patch.object(
                 module,
                 "verify_refresh_postcondition",
                 return_value=["ai/example.py (content mismatch)"],
-            ):
-                result = module.main([tmp, "--update-workflow-files"])
+            ), mock.patch("sys.stdout", stdout):
+                result = module.main([
+                    tmp, "--update-workflow-files", "--summary-only"
+                ])
 
             self.assertEqual(result, 1)
+            self.assertIn("workflow_refresh status=failed", stdout.getvalue())
+            self.assertIn("ai/example.py (content mismatch)", stdout.getvalue())
 
     def test_install_is_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -520,7 +538,7 @@ class InstallWorkflowTests(unittest.TestCase):
 
             agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
             claude = (repo / "CLAUDE.md").read_text(encoding="utf-8")
-            self.assertLess(len(agents.encode("utf-8")), 12_000)
+            self.assertLess(len(agents.encode("utf-8")), 8_000)
             self.assertIn("## Claude-First Ownership", agents)
             self.assertIn("Minimize scarce Codex work", agents)
             self.assertIn("Codex owns the short core plan", agents)
@@ -944,7 +962,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Reviewer Should Check", evidence_template)
             self.assertIn("Deviations From Plan", evidence_template)
             self.assertIn("Locator used?", evidence_template)
-            self.assertLess(len(agents.encode("utf-8")), 12_000)
+            self.assertLess(len(agents.encode("utf-8")), 8_000)
             self.assertIn("Do not browse the web", agents)
             self.assertIn("ai/locate-code.py", agents)
             self.assertIn("task-card-components/catalog.md", agents)

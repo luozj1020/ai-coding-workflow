@@ -16,6 +16,15 @@ Update the skill and refresh the current repository's managed workflow files:
 python scripts/update_skill.py
 ```
 
+The normal updater uses compact summaries and disables optional service prompts.
+It hashes the filtered Skill package before activation: identical content only
+refreshes provenance and does not create staging/backup trees or replace the
+installed directory. Project refresh still verifies every managed destination,
+but unchanged shell launchers skip repeated `bash -n`; created or changed
+launchers are always validated. Failures and bounded mismatch paths remain
+visible even in compact mode. Direct installer diagnostics can opt out by
+omitting `--summary-only`.
+
 An updater run from the installed Skill never treats that installed directory
 as its own source. Installation records the real source-checkout path, HEAD,
 dirty state, and package content hash. The installed updater reuses that

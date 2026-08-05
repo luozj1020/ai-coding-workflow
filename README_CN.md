@@ -65,7 +65,11 @@ fast-path 不需要 `--task-card`。`preflight-bundle` 仅作诊断，结构化 
 
 ## 功能说明
 
-安装后的 skill 使用渐进式加载：精简的 `SKILL.md` 只保留核心循环和不可绕过规则；安装、Spark、Claude 运行时、worktree/并行和任务卡细节放在一级 `references/` 中，仅在对应操作时加载。体积预算测试会阻止默认 skill 上下文再次静默增长到 18 KB 以上。
+安装后的工作流使用渐进式加载：`SKILL.md` 只保留核心循环和 reference
+路由，托管的 `AGENTS.md` 只保留仓库级安全内核；安装、Spark、Claude
+运行时、worktree、审查和任务卡细节放在一级 `references/` 中，仅在对应
+操作时加载。预算测试将 `SKILL.md` 限制在 4.5 KB 以下、`AGENTS.md`
+限制在 8 KB 以下，并将两者的固定上下文合计限制在 12 KB 以下。
 
 ai-coding-workflow 可以为仓库自动配置：
 - `AGENTS.md` - 所有智能体的共享规则
@@ -442,7 +446,7 @@ python scripts/update_skill.py --bootstrap-current
 python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
-`python scripts/update_skill.py` 更新用户级 Codex Skill，并在所在 Git 仓库已经引导时自动刷新项目内 workflow 文件，即使命令从项目子目录执行也能找到仓库根。`--bootstrap-current` 可显式指定当前仓库，`--bootstrap-repo` 用于其他仓库，`--skill-only` 才会有意保留项目内旧文件。命令会明确报告项目是否刷新，并提醒重启 Codex。
+`python scripts/update_skill.py` 更新用户级 Codex Skill，并在所在 Git 仓库已经引导时自动刷新项目内 workflow 文件，即使命令从项目子目录执行也能找到仓库根。`--bootstrap-current` 可显式指定当前仓库，`--bootstrap-repo` 用于其他仓库，`--skill-only` 才会有意保留项目内旧文件。普通更新使用紧凑摘要、跳过可选服务提示；Skill 内容哈希未变化时不再创建 staging/backup 或替换安装目录。项目刷新仍会核验全部托管内容，并校验每个发生变化的 shell launcher。命令会明确报告项目是否刷新，并提醒重启 Codex。
 
 已安装的更新器会记录并复用真实源码 checkout，不会再静默地把已安装 Skill
 目录当成自己的更新源。来源记录缺失、过期、自引用或不再指向 Git checkout

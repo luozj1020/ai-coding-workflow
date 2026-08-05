@@ -139,9 +139,17 @@ def write_install_provenance(destination, source):
     path = os.path.join(destination, INSTALL_PROVENANCE_FILE)
     value = install_provenance(source)
     value["package_sha256"] = package_tree_hash(destination)
-    with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(value, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+    fd, temporary = tempfile.mkstemp(
+        prefix=".aiwf-provenance-", dir=destination
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def git_dirty(path):
@@ -633,24 +641,49 @@ def should_exclude(name, full_path):
     return False
 
 
+def _iter_skill_files(source):
+    """Yield normalized package-relative paths and source files."""
+    source = os.path.abspath(source)
+    for root, dirs, files in os.walk(source):
+        dirs[:] = [
+            name for name in dirs
+            if not should_exclude(name, os.path.join(root, name))
+        ]
+        dirs.sort()
+        rel_root = os.path.relpath(root, source)
+        for name in sorted(files):
+            source_file = os.path.join(root, name)
+            if rel_root == "." and name in EXCLUDE_ROOT_FILES:
+                continue
+            if should_exclude(name, source_file):
+                continue
+            relative = (
+                name if rel_root == "." else os.path.join(rel_root, name)
+            ).replace(os.sep, "/")
+            if relative == INSTALL_PROVENANCE_FILE:
+                continue
+            yield relative, source_file
+
+
+def source_package_hash(source):
+    """Hash exactly the source files that would enter an installed Skill."""
+    digest = hashlib.sha256()
+    for relative, source_file in _iter_skill_files(source):
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        with open(source_file, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return "sha256:" + digest.hexdigest()
+
+
 def _copy_skill_contents(src, dest):
     """Populate an empty staging directory from the skill source."""
-    for root, dirs, files in os.walk(src):
-        # Filter excluded directories (in-place modification)
-        dirs[:] = [d for d in dirs if not should_exclude(d, os.path.join(root, d))]
-
-        rel_root = os.path.relpath(root, src)
-        dest_root = os.path.join(dest, rel_root) if rel_root != "." else dest
-
-        for f in files:
-            src_file = os.path.join(root, f)
-            if rel_root == "." and f in EXCLUDE_ROOT_FILES:
-                continue
-            if should_exclude(f, src_file):
-                continue
-            dest_file = os.path.join(dest_root, f)
-            os.makedirs(os.path.dirname(dest_file), exist_ok=True)
-            shutil.copy2(src_file, dest_file)
+    for relative, source_file in _iter_skill_files(src):
+        dest_file = os.path.join(dest, *relative.split("/"))
+        os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+        shutil.copy2(source_file, dest_file)
 
 
 def validate_skill_tree(path):
@@ -672,10 +705,15 @@ def validate_skill_tree(path):
 def copy_skill(src, dest):
     """Transactionally replace the installed skill from a validated staging tree."""
     if paths_equal(src, dest):
-        return
+        return "source"
 
     src = os.path.abspath(src)
     dest = os.path.abspath(dest)
+    if os.path.isdir(dest) and source_package_hash(src) == package_tree_hash(dest):
+        write_install_provenance(dest, src)
+        return "unchanged"
+
+    destination_existed = os.path.exists(dest)
     parent = os.path.dirname(dest)
     os.makedirs(parent, exist_ok=True)
     staging = tempfile.mkdtemp(prefix=".{}-staging-".format(SKILL_NAME), dir=parent)
@@ -702,9 +740,10 @@ def copy_skill(src, dest):
     finally:
         if not activated and os.path.exists(staging):
             shutil.rmtree(staging)
-        backup_consumed = not backup or not os.path.exists(backup)
+        backup_consumed = activated or not backup or not os.path.exists(backup)
         if backup_root and backup_consumed and os.path.exists(backup_root):
             shutil.rmtree(backup_root)
+    return "updated" if destination_existed else "installed"
 
 
 def parse_args(argv=None):
@@ -737,6 +776,11 @@ def parse_args(argv=None):
         default="ask",
         help="Ask about optional Zoekt/Sourcegraph services after install, skip, or run a read-only check.",
     )
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Emit compact machine-readable update summaries and suppress guidance/no-op detail.",
+    )
     args = parser.parse_args(argv)
     if args.bootstrap_current and args.bootstrap_repo:
         parser.error("--bootstrap-current and --bootstrap-repo are mutually exclusive")
@@ -745,16 +789,22 @@ def parse_args(argv=None):
     return args
 
 
-def run_bootstrap(installed_skill_dir, repo_path):
+def run_bootstrap(installed_skill_dir, repo_path, summary_only=False):
     """Run install_workflow.py from the installed skill against *repo_path*."""
     installer = os.path.join(installed_skill_dir, "scripts", "install_workflow.py")
     if not os.path.isfile(installer):
         raise FileNotFoundError("Workflow installer not found: {}".format(installer))
     repo_abs = os.path.abspath(repo_path)
-    print("\nBootstrapping repository workflow:")
-    print("  Repository: {}".format(repo_abs))
-    print("  Command:    {}".format(build_bootstrap_command(installed_skill_dir, repo_abs, update_workflow_files=True)))
-    subprocess.run([sys.executable, installer, repo_abs, "--update-workflow-files"], check=True)
+    command = [sys.executable, installer, repo_abs, "--update-workflow-files"]
+    if summary_only:
+        command.append("--summary-only")
+    else:
+        print("\nBootstrapping repository workflow:")
+        print("  Repository: {}".format(repo_abs))
+        print("  Command:    {}".format(
+            " ".join(quote_cmd_arg(part) for part in command)
+        ))
+    subprocess.run(command, check=True)
 
 
 def print_next_steps(installed_skill_dir, source_dir=None):
@@ -812,8 +862,9 @@ def main(argv=None):
     codex_skills_dir = get_codex_skills_dir()
     dest = os.path.join(codex_skills_dir, SKILL_NAME)
 
-    print(f"Skill source:  {skill_dir}")
-    print(f"Install to:    {dest}")
+    if not args.summary_only:
+        print(f"Skill source:  {skill_dir}")
+        print(f"Install to:    {dest}")
 
     if not os.path.isdir(os.path.join(skill_dir, "assets")):
         print(f"Error: Skill assets not found in {skill_dir}")
@@ -821,19 +872,26 @@ def main(argv=None):
 
     os.makedirs(codex_skills_dir, exist_ok=True)
     if paths_equal(skill_dir, dest):
-        print("\nSkill source is already the Codex install directory; skipping copy.")
+        install_status = "source"
+        if not args.summary_only:
+            print("\nSkill source is already the Codex install directory; skipping copy.")
     else:
-        copy_skill(skill_dir, dest)
+        install_status = copy_skill(skill_dir, dest)
 
     # Count installed files
     file_count = 0
     for _, _, files in os.walk(dest):
         file_count += len(files)
 
-    print(f"\nInstalled {file_count} files to {dest}")
-    print("\nTo update, run this script again.")
-    print("To verify, check that SKILL.md exists in the target directory.")
-    print_next_steps(dest, source_dir=skill_dir)
+    if args.summary_only:
+        print("skill_update status={} files={} target={}".format(
+            install_status, file_count, dest
+        ))
+    else:
+        print(f"\nInstalled {file_count} files to {dest}")
+        print("\nTo update, run this script again.")
+        print("To verify, check that SKILL.md exists in the target directory.")
+        print_next_steps(dest, source_dir=skill_dir)
 
     bootstrap_repo = None
     if args.bootstrap_current:
@@ -841,11 +899,13 @@ def main(argv=None):
     elif args.bootstrap_repo:
         bootstrap_repo = args.bootstrap_repo
     if bootstrap_repo:
-        run_bootstrap(dest, bootstrap_repo)
-        print_context_tool_guidance(dest, bootstrap_repo)
-    else:
+        run_bootstrap(dest, bootstrap_repo, summary_only=args.summary_only)
+        if not args.summary_only:
+            print_context_tool_guidance(dest, bootstrap_repo)
+    elif not args.summary_only:
         print_context_tool_guidance(dest)
-    maybe_offer_code_search_services(dest, args.code_search_services)
+    if not args.summary_only:
+        maybe_offer_code_search_services(dest, args.code_search_services)
 
 if __name__ == "__main__":
     sys.exit(main())

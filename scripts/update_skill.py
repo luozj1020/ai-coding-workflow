@@ -232,7 +232,13 @@ def maybe_pull(source, enabled):
 
 
 def build_install_command(installer, args, current_dir=None):
-    cmd = [sys.executable or "python", installer]
+    cmd = [
+        sys.executable or "python",
+        installer,
+        "--summary-only",
+        "--code-search-services",
+        "skip",
+    ]
     if args.bootstrap_current:
         cmd.extend(["--bootstrap-repo", git_toplevel(current_dir or os.getcwd())])
     elif args.bootstrap_repo:
@@ -262,13 +268,19 @@ def build_guided_phases(source, repo_path, python_cmd=None):
         {
             "label": "skill-update",
             "description": "Install/update skill from source",
-            "argv": [python_cmd, installer],
+            "argv": [
+                python_cmd, installer, "--summary-only",
+                "--code-search-services", "skip",
+            ],
             "cwd": None,
         },
         {
             "label": "workflow-bootstrap",
             "description": "Bootstrap/refresh workflow in {}".format(repo_abs),
-            "argv": [python_cmd, workflow_installer, repo_abs, "--update-workflow-files"],
+            "argv": [
+                python_cmd, workflow_installer, repo_abs,
+                "--update-workflow-files", "--summary-only",
+            ],
             "cwd": None,
         },
         {
