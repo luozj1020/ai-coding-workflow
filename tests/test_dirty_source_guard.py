@@ -2167,7 +2167,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self._write_builder_task_card()
         result = self._dispatch("task-cards/BUILDER.md")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        self.assertIn("First Progress:  0s observation", result.stdout)
+        self.assertIn("First Progress:  0s observe", result.stdout)
         worktree = self._artifact_path(result.stdout, "Worktree")
         claude_card = (worktree / "CLAUDE_TASK_CARD.md").read_text(encoding="utf-8")
         self.assertIn("## Task Mode", claude_card)

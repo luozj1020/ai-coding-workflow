@@ -646,7 +646,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn('claude_task_bytes=${CLAUDE_TASK_BYTES}', dispatch)
             self.assertIn('worktree_changes=${WORKTREE_CHANGES}', dispatch)
             self.assertIn('worktree_changed=${WORKTREE_CHANGED}', dispatch)
-            self.assertIn('DISPATCH_PRODUCT_BASELINE_DIGEST="$(worktree_digest)"', dispatch)
+            self.assertIn('--output "$PRODUCT_BASELINE_FILE"', dispatch)
+            self.assertIn('value["product_hash"]', dispatch)
             self.assertIn('LAST_WORKTREE_DIGEST="$DISPATCH_PRODUCT_BASELINE_DIGEST"', dispatch)
             self.assertIn("product_delta_from_baseline=", dispatch)
             self.assertIn('Claude process started: pid=${CLAUDE_PID}', dispatch)
@@ -1101,6 +1102,26 @@ class InstallWorkflowTests(unittest.TestCase):
         )
         return worktrees
 
+    def _capture_role_identity(self, repo, worktrees, task_id, role, pid):
+        """Capture the same PID/start/cmd/task receipt produced by dispatch."""
+        subprocess.run(
+            [
+                sys.executable,
+                str(repo / "ai" / "process-identity.py"),
+                "capture",
+                "--pid", str(pid),
+                "--task-id", task_id,
+                "--role", role,
+                "--output", str(worktrees / f"{task_id}.{role}.process.json"),
+            ],
+            cwd=str(repo),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=True,
+        )
+
     def test_status_claude_machine_line_has_required_fields(self):
         """Status machine line must contain monitor_level/action/evidence_state/
         quiet_seconds/suspect_count plus dispatcher/claude/checker/overall_running."""
@@ -1148,10 +1169,24 @@ class InstallWorkflowTests(unittest.TestCase):
                 text=True, encoding="utf-8",
             )
             my_pid = sleeper.stdout.readline().strip()
+            sleeper.stdout.close()
             (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
             (worktrees / f"{task_id}.dispatcher.pid").write_text(my_pid, encoding="utf-8")
-            (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
-            (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
+            self._capture_role_identity(repo, worktrees, task_id, "dispatcher", my_pid)
+
+            stopped = subprocess.Popen(
+                [bash_exe, "-c", "echo $$; exec sleep 60"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8",
+            )
+            stopped_pid = stopped.stdout.readline().strip()
+            stopped.stdout.close()
+            (worktrees / f"{task_id}.claude.pid").write_text(stopped_pid, encoding="utf-8")
+            (worktrees / f"{task_id}.checker.pid").write_text(stopped_pid, encoding="utf-8")
+            self._capture_role_identity(repo, worktrees, task_id, "claude", stopped_pid)
+            self._capture_role_identity(repo, worktrees, task_id, "checker", stopped_pid)
+            stopped.terminate()
+            stopped.wait(timeout=10)
 
             try:
                 result = subprocess.run(
@@ -1179,12 +1214,20 @@ class InstallWorkflowTests(unittest.TestCase):
             self.run_installer(repo)
             task_id = "claude-20990101-000000"
             worktrees = self._setup_worktree(repo, task_id)
-            (worktrees / f"{task_id}.pid").write_text("99999", encoding="utf-8")
-            (worktrees / f"{task_id}.dispatcher.pid").write_text("99998", encoding="utf-8")
-            (worktrees / f"{task_id}.claude.pid").write_text("99999", encoding="utf-8")
-            (worktrees / f"{task_id}.checker.pid").write_text("99997", encoding="utf-8")
-
             bash_exe = load_module()._find_bash()
+            stopped = subprocess.Popen(
+                [bash_exe, "-c", "echo $$; exec sleep 60"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8",
+            )
+            stopped_pid = stopped.stdout.readline().strip()
+            stopped.stdout.close()
+            (worktrees / f"{task_id}.pid").write_text(stopped_pid, encoding="utf-8")
+            for role in ("dispatcher", "claude", "checker"):
+                (worktrees / f"{task_id}.{role}.pid").write_text(stopped_pid, encoding="utf-8")
+                self._capture_role_identity(repo, worktrees, task_id, role, stopped_pid)
+            stopped.terminate()
+            stopped.wait(timeout=10)
             result = subprocess.run(
                 [bash_exe, str(repo / "ai" / "status-claude.sh"), task_id, "--details"],
                 cwd=str(repo),
@@ -1196,9 +1239,8 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Claude: not-running", result.stdout)
             self.assertIn("Checker: not-running", result.stdout)
 
-    def test_status_claude_legacy_pid_fallback(self):
-        """When new .claude.pid is missing but legacy .pid exists, Claude state
-        falls back to the legacy PID file."""
+    def test_status_claude_legacy_pid_without_identity_is_unknown(self):
+        """A legacy PID without an identity receipt cannot prove liveness."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
             self.run_installer(repo)
@@ -1217,8 +1259,8 @@ class InstallWorkflowTests(unittest.TestCase):
                 text=True, encoding="utf-8", errors="replace",
                 capture_output=True, check=True,
             )
-            # Claude state should fall back to legacy .pid (which has 99999 = not-running)
-            self.assertIn("Claude: not-running", result.stdout)
+            self.assertIn("Claude: visibility-unknown", result.stdout)
+            self.assertIn("Overall running: unknown", result.stdout)
             # Legacy PID display
             self.assertIn("PID: 99999", result.stdout)
 
@@ -1447,6 +1489,7 @@ class InstallWorkflowTests(unittest.TestCase):
                 pid = sleeper.stdout.readline().strip()
                 sleeper.stdout.close()
                 (worktrees / f"{task_id}.dispatcher.pid").write_text(pid, encoding="utf-8")
+                self._capture_role_identity(repo, worktrees, task_id, "dispatcher", pid)
                 waiter = subprocess.Popen(
                     [bash_exe, str(repo / "ai" / "monitor-claude.sh"), "wait", task_id,
                      "--until", "material", "--interval", "1", "--timeout", "15",
@@ -1530,6 +1573,7 @@ class InstallWorkflowTests(unittest.TestCase):
                 pid = sleeper.stdout.readline().strip()
                 sleeper.stdout.close()
                 (worktrees / f"{task_id}.dispatcher.pid").write_text(pid, encoding="utf-8")
+                self._capture_role_identity(repo, worktrees, task_id, "dispatcher", pid)
                 waiter = subprocess.Popen(
                     [bash_exe, str(repo / "ai" / "monitor-claude.sh"), "wait", task_id,
                      "--until", "terminal", "--interval", "1", "--timeout", "8",
