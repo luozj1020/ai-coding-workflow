@@ -2208,19 +2208,26 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Do NOT restate or redesign the plan", prompt)
         self.assertIn("--- CLAUDE EXECUTION CARD ---", prompt)
 
-    def test_first_progress_cli_override_is_structured_and_receipted(self):
-        self._write_builder_task_card()
+    def test_narrow_card_deadline_prose_does_not_shorten_response_window(self):
+        task = self._write_builder_task_card()
+        task.write_text(
+            task.read_text(encoding="utf-8")
+            + "\n## Narrow Revision Instructions\n"
+              "Must create the first focused edit within 120 seconds.\n",
+            encoding="utf-8",
+        )
         result = self._dispatch(
             "task-cards/BUILDER.md",
-            {"CLAUDE_CODE_BUILDER_MODE": "execution-only"},
-            ["--first-progress-timeout-seconds", "120"],
+            {
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "600",
+            },
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         runtime = json.loads(self._artifact_path(result.stdout, "Runtime Identity").read_text())
-        self.assertEqual(runtime["first_progress_timeout_seconds"], 120)
-        self.assertEqual(runtime["first_progress_timeout_source"], "cli")
-        self.assertEqual(runtime["context_acquisition_timeout_seconds"], 30)
-        self.assertIn("First Progress:  120s stop", result.stdout)
+        self.assertEqual(runtime["first_progress_timeout_seconds"], 600)
+        self.assertEqual(runtime["context_acquisition_timeout_seconds"], 600)
+        self.assertIn("First Progress:  600s stop", result.stdout)
 
     def test_exploratory_card_auto_selects_exploratory_prompt_and_locator_tools(self):
         task = self._write_builder_task_card()

@@ -1286,7 +1286,7 @@ Windows PowerShell 的控制台代码页, `$OutputEncoding` 和子进程编码�
 - `.worktrees/claude-<id>.progress.log` 记录启动、心跳、超时和完成事件。
 - 最终化后的机器可读状态字段：`overall_running=yes`、`running=no`、`claude=not-running`。只有 dispatcher 设置这些字段；Claude 不自行最终化状态。
 - `CLAUDE_CODE_HEARTBEAT_SECONDS` 控制心跳频率，默认 `30`。
-- `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` 限制读取和定位阶段；所有执行 profile 默认都与活动执行窗口相同（默认 `600` 秒）。execution-only、batch 和负责测试编写的 Checker，其首进展停止门禁默认也使用同一数值。刻意窄化的运行可通过稳定 CLI 参数 `--first-progress-timeout-seconds 120` 设置更短期限；任务卡自然语言不会改变调度计时。
+- `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS` 限制读取和定位阶段；所有执行 profile 默认都与活动执行窗口相同（默认 `600` 秒）。execution-only、batch 和负责测试编写的 Checker，其首进展停止门禁使用同一数值。narrow、retry、revision 和 split-child 只缩小任务范围，绝不缩短响应窗口；任务卡自然语言不会改变调度计时。
 - `CLAUDE_CODE_TIMEOUT_SECONDS` 表示活动执行窗口，默认 `600` 秒；首次符合角色要求的实质执行信号会且只会刷新一次完整窗口。
 - `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` 在活动窗口到期时为近期产品修改提供首次扩展，默认 `300` 秒。`CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS` 默认同为 `300` 秒；如果产品内容在上一扩展期内继续变化，则自动续窗。控制文件、报告或终端文本增长不能续窗，硬上限始终生效。
 - `CLAUDE_CODE_HARD_TIMEOUT_SECONDS` 是绝对总上限，默认 `1500` 秒且始终优先；只有确实需要禁用某一边界时才将对应值设为 `0`。

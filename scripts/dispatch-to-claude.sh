@@ -4,7 +4,6 @@
 # Usage: bash ai/dispatch-to-claude.sh <task-card-path>
 #        [--empty-api-config-env NAME] [--execution-env auto|sandbox|host]
 #        [--dirty-source-mode block|snapshot]
-#        [--first-progress-timeout-seconds SECONDS]
 #        [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]
 #        [--preflight-task-id TASK_ID]
 #
@@ -28,7 +27,7 @@ PATH="${PATH}:/usr/bin:/bin:/mingw64/bin"
 export PATH
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--first-progress-timeout-seconds SECONDS] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL] [--preflight-task-id TASK_ID]" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL] [--preflight-task-id TASK_ID]" >&2
     exit 1
 fi
 
@@ -40,7 +39,6 @@ DIRTY_SOURCE_MODE_OPTION=""
 RETRY_IN_PLACE_TASK_ID_OPTION=""
 REVIEWED_CONTINUATION_OPTION=""
 PREFLIGHT_TASK_ID_OPTION=""
-FIRST_PROGRESS_TIMEOUT_OPTION=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --empty-api-config-env)
@@ -111,20 +109,6 @@ while [ $# -gt 0 ]; do
             esac
             shift 2
             ;;
-        --first-progress-timeout-seconds)
-            [ $# -ge 2 ] || {
-                echo "Error: --first-progress-timeout-seconds requires a non-negative integer." >&2
-                exit 1
-            }
-            FIRST_PROGRESS_TIMEOUT_OPTION="$2"
-            case "$FIRST_PROGRESS_TIMEOUT_OPTION" in
-                ''|*[!0-9]*)
-                    echo "Error: --first-progress-timeout-seconds requires a non-negative integer." >&2
-                    exit 1
-                    ;;
-            esac
-            shift 2
-            ;;
         *)
             echo "Error: unknown option: $1" >&2
             exit 1
@@ -150,11 +134,6 @@ if [ -n "$DIRTY_SOURCE_MODE_OPTION" ]; then
     CLAUDE_CODE_DIRTY_SOURCE_MODE="$DIRTY_SOURCE_MODE_OPTION"
     export CLAUDE_CODE_DIRTY_SOURCE_MODE
 fi
-if [ -n "$FIRST_PROGRESS_TIMEOUT_OPTION" ]; then
-    CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS="$FIRST_PROGRESS_TIMEOUT_OPTION"
-    export CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS
-fi
-
 if [ -n "$EMPTY_API_CONFIG_ENV" ]; then
     case "$EMPTY_API_CONFIG_ENV" in
         *[!A-Z0-9_]*|[0-9]*|"")
@@ -701,9 +680,7 @@ if [ -z "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS+x}" ]; then
 fi
 # Record first-progress timeout alias source for status evidence.
 _FIRST_PROGRESS_TIMEOUT_SOURCE="default"
-if [ -n "$FIRST_PROGRESS_TIMEOUT_OPTION" ]; then
-    _FIRST_PROGRESS_TIMEOUT_SOURCE="cli"
-elif [ "$_FIRST_PROGRESS_TIMEOUT_EXPLICIT" -eq 0 ] && \
+if [ "$_FIRST_PROGRESS_TIMEOUT_EXPLICIT" -eq 0 ] && \
    [ -n "${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT+x}" ] && \
    [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" = "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT" ]; then
     _FIRST_PROGRESS_TIMEOUT_SOURCE="alias(CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT)"
