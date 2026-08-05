@@ -108,6 +108,23 @@ def git_commit(path):
     return value or None
 
 
+def git_toplevel(path):
+    """Return the containing Git worktree root, or the absolute input path."""
+    path = os.path.abspath(path)
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError):
+        return path
+    return os.path.abspath(result.stdout.strip() or path)
+
+
 def install_provenance(source):
     """Build stable provenance that lets an installed updater find its checkout."""
     return {
@@ -778,6 +795,7 @@ def print_next_steps(installed_skill_dir, source_dir=None):
     print("  {} --bootstrap-repo <path-to-repository>".format(installed_installer_cmd))
     print("")
     print("If dispatch reports that ai/dispatch-to-claude.sh is missing, run the bootstrap command above first.")
+    print("Restart Codex after updating: active conversations do not hot-reload Skill or AGENTS.md instructions.")
 
 
 def main(argv=None):
@@ -819,7 +837,7 @@ def main(argv=None):
 
     bootstrap_repo = None
     if args.bootstrap_current:
-        bootstrap_repo = os.getcwd()
+        bootstrap_repo = git_toplevel(os.getcwd())
     elif args.bootstrap_repo:
         bootstrap_repo = args.bootstrap_repo
     if bootstrap_repo:

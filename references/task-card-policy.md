@@ -10,6 +10,13 @@ Write a task card only after pre-card routing selects delegation/spec-first. Cod
 python ai/compose_task_card.py --preset builder --gate root-cause --output ai/task-cards/TASK.md
 ```
 
+The composed Task Card is Codex's only normal handwritten workflow artifact.
+Put the core plan, frozen intent, review delta, and dispatch scope there. Do not
+use an editor or `apply_patch` to create or change route JSON, adversarial review
+JSON, solution-contract JSON, receipts, hashes, or continuation approvals.
+Keep ephemeral routing on stdout when possible. When a file is required, use
+the deterministic helper's `--output`; Claude alone writes a Planner draft.
+
 When routing facts already exist, let the deterministic selector choose the
 minimal preset and gates:
 
@@ -67,6 +74,9 @@ contract named by the card. Codex reviews that artifact once and classifies ever
 finding as `blocking`, `recommended`, `backlog`, or `spec-change`. Resolve
 blocking findings; defer recommendations/backlog; reject or explicitly
 incorporate spec changes. Then freeze with `aiwf solution-contract freeze`.
+Serialize the review with `ai/solution-contract.py review --finding
+SEVERITY:DISPOSITION:SUMMARY --output adversarial-review.json`; do not hand-edit
+that JSON. The helper also supports an empty review by omitting `--finding`.
 Implementation cards bind the frozen contract hash and include only their slice;
 they must not invite Claude to repeat repository-wide planning. Codex performs
 one adversarial freeze review, not full task-card authorship plus replanning.

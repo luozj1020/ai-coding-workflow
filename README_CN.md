@@ -442,7 +442,7 @@ python scripts/update_skill.py --bootstrap-current
 python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
-`python scripts/update_skill.py` 更新用户级 Codex Skill，并在当前仓库已经引导时自动刷新项目内 workflow 文件。`--bootstrap-current` 可显式指定当前仓库，`--bootstrap-repo` 用于其他仓库，`--skill-only` 才会有意保留项目内旧文件。
+`python scripts/update_skill.py` 更新用户级 Codex Skill，并在所在 Git 仓库已经引导时自动刷新项目内 workflow 文件，即使命令从项目子目录执行也能找到仓库根。`--bootstrap-current` 可显式指定当前仓库，`--bootstrap-repo` 用于其他仓库，`--skill-only` 才会有意保留项目内旧文件。命令会明确报告项目是否刷新，并提醒重启 Codex。
 
 已安装的更新器会记录并复用真实源码 checkout，不会再静默地把已安装 Skill
 目录当成自己的更新源。来源记录缺失、过期、自引用或不再指向 Git checkout
@@ -627,8 +627,9 @@ python scripts/update_skill.py --bootstrap-current
 
 工作流是一个显式循环：**观察  ->  计划  ->  调度  ->  执行  ->  验证  ->  审查  ->  学习  ->  重复。**
 
-**核心原则：** Codex负责核心规划和冻结规划文件；Claude默认负责实现与
-修订。确定性工具生成路由、任务卡、哈希、收据和冻结产物；Spark只提供建议。
+**核心原则：** Codex 把核心规划和冻结意图写在 Task Card 中；Task Card 是
+Codex 常规情况下唯一手写的 workflow 产物。Claude 默认负责实现与修订；
+route、review、freeze、receipt 等控制产物由确定性工具生成，Spark 只提供建议。
 
 大型或多阶段功能默认由 Codex完成短核心规划，再交给 helper 生成执行卡并由 Claude Builder 实施。只有用户明确接受额外串行延迟并设置 `solution_planner_opt_in=true` 时，才让 Claude 先生成结构化终局方案；该方案仍只接受一轮 Codex 对抗性审查和确定性冻结。
 
@@ -688,6 +689,9 @@ Codex 接受 Builder 主体方向后，每个修订仍必须在编写下一张�
 权限或审批拦截包括 sandbox 写入被拒、禁止修改的文件、CLI 未认证、网络受限命令、需要人工批准的命令，以及任务卡明确写出的“不要读取或修改”路径。这类情况应写入 progress/report 产物，并按环境或编排 blocker 处理；只有在 Claude 忽略了可用的合规路径时，才应归因为 Claude 执行问题。
 
 dirty source 或 stale HEAD 也应按同类逻辑处理：它会阻止可靠委托，但本身不是 Codex 接管实现的理由。应先恢复委托路径，例如提交已接受阶段、stash/patch 未提交改动、刷新 workflow 文件、从更新后的 HEAD 重新派发、请求明确的 dirty-source 派发批准，或停止等待人工处理。如果明确批准当前未提交状态作为基线，应使用 `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot`；环境变量形式仅用于兼容，因为前置变量赋值无法匹配受托管规则保护的稳定 launcher 前缀。
+
+更新已安装 Skill 或托管 `AGENTS.md` 后必须新建 Codex 会话。已经运行的
+会话会继续使用启动时载入的旧指令，无法热更新新的所有权和路由政策。
 
 对于原地重试和 reviewed continuation，若 Claude 返回 conversation/session not found，dispatcher 会先将其记录为不计模型失败的恢复故障，再以同一 owner、任务、worktree 和写入范围自动尝试一次新会话；其他恢复错误仍然终止。精确路径写入约束使用工作树外的可写 staging，并在模型交互前通过最终挂载布局真实运行收据约束 writer，分别探测控制文件和一个已声明产品文件，因此错误挂载会在启动模型前作为环境阻断退出。沙箱还会提供任务级 `.aiwf-write-staging/` 输入目录，其父目录可写，内置 Edit 可以在其中原子替换固定的完整内容或 old/new 片段文件；base64 参数作为 Edit 和 Write 都缺失时的后备。writer 在进程内部读取不可变收据，不需要读取工作树外路径、展开 `$TMPDIR`/收据变量或等待人工批准；零匹配、多匹配和未声明路径均失败关闭。Windows 上写入描述符保持二进制模式，因此 staging 字节及混合 LF/CRLF 内容不会经过文本换行转换。dispatcher 还会从自身所在的同版本托管包快照精确 writer 与验证 runner，记录协议和文件哈希，并只读挂载到固定的 `.aiwf-runtime/`。历史 worktree 中的旧版 `ai/`/`scripts/` helper 不再参与执行，因此 reviewed continuation 不会出现“新版启动器 + 旧版 writer”的组合；缺失或协议不匹配会在 Builder 启动前按 `workflow-runtime-mismatch` 失败关闭，且不消耗模型轮次。writer 会先构造完整候选内容，再检查 Python 语法/编译、dataclass 字段顺序、新增的顶层重复定义或 import，以及 JSON/TOML 解析；失败时保留上一个检查点。对于至少 4 KiB 的现有文件，覆盖超过 75% 的片段替换还必须得到该路径的完整文件替换授权。
 
@@ -772,7 +776,8 @@ Claude 现在使用相同的外层边界协议。受限沙箱中的启动交互�
 已有 worktree 的后续传输重试仍使用 `--retry-in-place-task-id TASK_ID`；reviewed continuation 改用
 `--reviewed-continuation APPROVAL`。snapshot 交接还必须携带
 `--dirty-source-mode snapshot`；首次 dirty-source 派发也应使用该选项，使两次命令
-都保留可信 launcher 前缀。旧环境变量形式仍兼容，但 CLI 形式不会改变
+都保留可信 launcher 前缀。固定工具集使用 `--tool-profile minimal-builder`，不要在
+命令前添加 `CLAUDE_CODE_TOOL_PROFILE=...`；host retry 会保留该参数。旧环境变量形式仍兼容，但 CLI 形式不会改变
 命令前缀，并会保留任务卡、worktree 和 session lineage。交接收据将
 `host_retry_args` 标记为权威参数，环境变量映射仅为兼容证据。exit 75 是编排请求，不是放弃模型调用的
 许可；只有宿主重试也失败后，才能判定当前路由不可用。

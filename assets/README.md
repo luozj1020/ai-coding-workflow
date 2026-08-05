@@ -68,14 +68,16 @@ After host authority is granted, keep that stable launcher prefix:
 ```bash
 bash ai/dispatch-to-claude.sh CARD --execution-env host \
   --dirty-source-mode snapshot \
+  --tool-profile minimal-builder \
   --retry-in-place-task-id TASK_ID
 ```
 
 Include `--dirty-source-mode snapshot` only for a snapshot handoff. Use
 `--reviewed-continuation APPROVAL` for a reviewed continuation. Legacy
-environment selectors remain compatible, but environment-prefixed commands do
-not match the narrow project rule and can trigger another approval. Handoff
-receipts mark CLI retry args authoritative and the environment map legacy.
+environment selectors remain compatible, but use `--tool-profile` for a fixed
+capability set. Environment-prefixed commands do not match the narrow project
+rule and can trigger another approval. Handoff receipts mark CLI retry args
+authoritative and the environment map legacy.
 
 If running from the installed Skill while using a separate clone as the update source:
 
@@ -96,9 +98,10 @@ This repository has been set up with a multi-agent AI coding workflow. The workf
 - **Claude-compatible auxiliary model**  -  optional cost-efficient execution or exhaustive review helper
 - **LSP / Locator / CodeGraph / MCP**  -  low-token code intelligence with bounded large-repo lookup before broad reads
 
-**Core principle:** Codex owns the short core plan and frozen planning files;
-Claude edits by default. Deterministic tools generate control artifacts and
-Spark remains advisory.
+**Core principle:** Codex writes the short core plan in the Task Card; this is
+its only normal handwritten workflow artifact. Claude edits product files by
+default. Deterministic tools generate route, review, freeze, receipt, and other
+control artifacts; Spark remains advisory.
 
 For non-trivial changes, split Claude work into two roles:
 
@@ -124,7 +127,7 @@ Phase ownership is explicit:
 
 | Phase | Codex owns | Claude owns |
 |-------|------------|-------------|
-| Observe / Plan | Goal/risk boundary and one adversarial contract review | Default structured solution contract and bounded exploration |
+| Observe / Plan | Goal/risk boundary in the Task Card and one adversarial contract review | Explicit-opt-in structured solution contract and bounded exploration |
 | Builder Execute | Compact direction review only | Default exploratory, batch, or frozen-solution implementation |
 | Direction Review | Wait, revise, split, dispatch checker-test, or threshold-based takeover decision | Report blockers and avoid repeated confirmation loops |
 | Checker/Test | Validation task dispatch and evidence review | Assigned tests, assigned validation, failure evidence |

@@ -57,6 +57,9 @@ After host authority is granted, keep the approved launcher shape and use
 `--retry-in-place-task-id <task-id>` or
 `--reviewed-continuation <approval-path>`. A dirty snapshot adds
 `--dirty-source-mode snapshot` to initial dispatch and normalized host retry.
+An explicit Claude tool set adds `--tool-profile minimal-builder` (or another
+supported profile) instead of a leading `CLAUDE_CODE_TOOL_PROFILE=...`
+assignment. Normalized host retries preserve this CLI option.
 The handoff receipt's CLI args are authoritative; its environment map is legacy
 compatibility evidence. Do not put environment assignments in front of the launcher.
 Spark remains advisory and Codex still performs routing and bounded semantic
@@ -122,6 +125,12 @@ run automatically refreshes an already-bootstrapped current repository; use
 `--skill-only` only as an explicit opt-out. If doctor reports workflow-version
 drift or a stale launcher error, run the printed refresh command before any
 model call. Never compensate with an environment-prefixed launcher.
+
+Skill and managed `AGENTS.md` changes do not replace instructions already loaded
+into a running Codex conversation. After an update reports success, start a new
+Codex session before judging routing behavior. Automatic `solution-planner`
+routing or Codex-authored route/freeze artifacts after the new policy was
+installed indicate that the current session still carries old instructions.
 
 ## Search Services
 

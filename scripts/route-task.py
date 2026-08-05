@@ -19,8 +19,10 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any, Dict, Set
 
 # Risk categories that block Express when "yes" or "unknown"
@@ -522,6 +524,7 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
             "core_plan_owner": "codex",
             "generated_artifact_owner": "deterministic-tools",
             "adversarial_review_owner": "codex",
+            "adversarial_review_artifact_owner": "deterministic-tools",
             "max_adversarial_review_rounds": 1,
             "solution_contract_required": claude_role == "solution-planner",
             "solution_planner_opt_in": solution_planner_opt_in,
@@ -576,12 +579,37 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def main() -> None:
+def _write_atomic(path: Path, value: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, ensure_ascii=False, sort_keys=True, indent=2)
+            stream.write("\n")
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def main(argv=None) -> None:
     p = argparse.ArgumentParser(description="Route a task by risk and scope.")
     p.add_argument("input", help="Path to collected-facts or hints JSON.")
-    a = p.parse_args()
-    data = json.loads(open(a.input, encoding="utf-8").read())
-    print(json.dumps(route(data), ensure_ascii=False, sort_keys=True, indent=2))
+    p.add_argument(
+        "--output", "-o", type=Path,
+        help="Write the deterministic route atomically. Default: stdout only.",
+    )
+    a = p.parse_args(argv)
+    data = json.loads(Path(a.input).read_text(encoding="utf-8"))
+    decision = route(data)
+    if a.output:
+        _write_atomic(a.output, decision)
+        print(json.dumps({"status": "written", "output": str(a.output)}, sort_keys=True))
+    else:
+        print(json.dumps(decision, ensure_ascii=False, sort_keys=True, indent=2))
 
 
 if __name__ == "__main__":

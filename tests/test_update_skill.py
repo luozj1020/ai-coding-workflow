@@ -157,6 +157,35 @@ class ResolveSourceTests(unittest.TestCase):
                 self.module.resolve_source(running_root=str(installed))
 
 
+class ProjectRefreshDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def test_default_update_finds_bootstrapped_git_root_from_subdirectory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            nested = repo / "src" / "nested"
+            (repo / "ai").mkdir(parents=True)
+            nested.mkdir(parents=True)
+            (repo / "ai" / "dispatch-to-claude.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+            args = self.module.parse_args([])
+
+            command = self.module.build_install_command(
+                "/source/install_for_codex.py", args, current_dir=str(nested)
+            )
+
+            self.assertIn("--bootstrap-repo", command)
+            self.assertEqual(command[command.index("--bootstrap-repo") + 1], str(repo))
+
+    def test_skill_only_does_not_discover_project(self):
+        args = self.module.parse_args(["--skill-only"])
+        command = self.module.build_install_command(
+            "/source/install_for_codex.py", args, current_dir="/tmp"
+        )
+        self.assertNotIn("--bootstrap-repo", command)
+
+
 class BuildGuidedPhasesTests(unittest.TestCase):
     def setUp(self):
         self.module = load_module()

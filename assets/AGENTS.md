@@ -33,8 +33,11 @@ ROUTE from a short current brief. `ownership_profile=claude-first` is the
 default. Claude owns source-writing unless the human explicitly chooses Codex,
 the task is confirmed high-risk core semantics, or Codex is applying a reviewed
 deterministic correction. `economy-first` is an explicit alternative profile.
-Codex owns the short core plan; deterministic helpers render routing, task-card,
-hash, receipt, freeze, and revision artifacts. Claude `solution-planner` is
+Codex owns the short core plan inside the Task Card. The Task Card is Codex's
+only normal handwritten workflow artifact. Deterministic helpers render route,
+review, hash, receipt, freeze, and continuation artifacts; Codex must not
+hand-edit `*.route.json`, `adversarial-review.json`,
+`solution-contract*.json`, or runtime receipts. Claude `solution-planner` is
 never inferred and requires explicit `solution_planner_opt_in=true`.
 Spark may replace Codex estimation when ownership or task shape is uncertain.
 When Spark quota is available, every non-Express Claude delegation should use
@@ -56,9 +59,8 @@ worktree, and session lineage with the receipt's stable CLI retry:
 `bash ai/dispatch-to-claude.sh <card> --execution-env host
 --retry-in-place-task-id <task-id>` (or `--reviewed-continuation <approval>`).
 When the handoff receipt names a dirty snapshot, add
-`--dirty-source-mode snapshot`; do not prepend its legacy environment selector.
-Legacy environment selectors remain compatible but are not the preferred
-approval shape.
+`--dirty-source-mode snapshot`; when a fixed tool set is required, add
+`--tool-profile <profile>`. Do not prepend legacy environment selectors.
 If either local launcher lacks these stable CLI options or Spark's exit-75 host
 handoff, refresh the bootstrapped project workflow before any model call. Never
 work around a stale launcher by prepending environment assignments. The Skill

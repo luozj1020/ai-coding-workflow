@@ -140,6 +140,32 @@ class DoctorWorkflowTests(unittest.TestCase):
             self.assertIn("repeat approval", text)
             self.assertIn("--update-workflow-files", text)
 
+    def test_doctor_errors_when_local_dispatcher_lacks_tool_profile_cli(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo)
+            subprocess.run(["git", "init", str(repo)], capture_output=True, check=True)
+            dispatch = repo / "ai" / "dispatch-to-claude.sh"
+            dispatch.write_text(
+                dispatch.read_text(encoding="utf-8").replace(
+                    "--tool-profile", "--legacy-tool-profile"
+                ),
+                encoding="utf-8",
+            )
+
+            old_roots = module._candidate_skill_roots
+            try:
+                module._candidate_skill_roots = lambda: [str(ROOT)]
+                findings, has_error = module.run_doctor(str(repo))
+            finally:
+                module._candidate_skill_roots = old_roots
+
+            self.assertTrue(has_error)
+            text = "\n".join("{} [{}] {}".format(*f) for f in findings)
+            self.assertIn("--tool-profile", text)
+            self.assertIn("repeat approval", text)
+
     def test_doctor_detects_outdated_monitor_helper(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

@@ -1178,6 +1178,26 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--dirty-source-mode must be block or snapshot", result.stderr)
 
+    def test_tool_profile_cli_overrides_legacy_environment_selector(self):
+        self._write_task_card()
+        result = self._dispatch(
+            extra_env={"CLAUDE_CODE_TOOL_PROFILE": "locator-builder"},
+            extra_args=["--tool-profile", "minimal-builder"],
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(runtime["tool_profile"], "minimal-builder")
+
+    def test_tool_profile_cli_rejects_invalid_value(self):
+        self._write_task_card()
+        result = self._dispatch(extra_args=["--tool-profile", "unbounded"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--tool-profile must be", result.stderr)
+
     def test_dirty_snapshot_host_handoff_uses_stable_cli_retry_shape(self):
         card = self._write_task_card()
         card.write_text(card.read_text(encoding="utf-8") + "\nTarget: `src/headless/`\n", encoding="utf-8")
@@ -1191,7 +1211,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CODEX_SANDBOX_NETWORK_DISABLED": "1",
                 "FAKE_CLAUDE_HEALTHCHECK_FAIL": "1",
             },
-            extra_args=["--dirty-source-mode", "snapshot"],
+            extra_args=[
+                "--dirty-source-mode", "snapshot",
+                "--tool-profile", "minimal-builder",
+            ],
         )
 
         self.assertEqual(result.returncode, 75, result.stderr + result.stdout)
@@ -1207,6 +1230,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "task-cards/PROJ.md",
                 "--execution-env", "host",
                 "--dirty-source-mode", "snapshot",
+                "--tool-profile", "minimal-builder",
                 "--preflight-task-id", payload["task_id"],
             ],
         )

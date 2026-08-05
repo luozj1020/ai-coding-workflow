@@ -1109,12 +1109,18 @@ def run_doctor(repo_path=None, hash_paths=None):
                 dispatch_text = handle.read()
         except (OSError, UnicodeError):
             dispatch_text = ""
-        if "--dirty-source-mode" not in dispatch_text:
+        missing_dispatch_options = [
+            option for option in ("--dirty-source-mode", "--tool-profile", "--execution-env")
+            if option not in dispatch_text
+        ]
+        if missing_dispatch_options:
             findings.append((
                 ERROR,
                 "workflow-cli",
-                "Local dispatcher lacks stable `--dirty-source-mode`; dirty snapshot "
-                "dispatch would require an environment-wrapped host command and repeat approval.",
+                "Local dispatcher lacks stable CLI option(s) {}; dispatch would require "
+                "an environment-wrapped host command and repeat approval.".format(
+                    ", ".join("`{}`".format(item) for item in missing_dispatch_options)
+                ),
             ))
             has_error = True
             findings.append((
@@ -1128,7 +1134,7 @@ def run_doctor(repo_path=None, hash_paths=None):
             findings.append((
                 INFO,
                 "workflow-cli",
-                "Local dispatcher supports stable dirty-source and host CLI options",
+                "Local dispatcher supports stable dirty-source, tool-profile, and host CLI options",
             ))
         spark_path = os.path.join(root, "ai", "run-codex-spark.sh")
         try:

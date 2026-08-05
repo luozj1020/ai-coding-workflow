@@ -26,7 +26,7 @@ Spark overhead.
 ## Claude-first routing for scarce Codex quota
 
 The default `claude-first` profile minimizes Codex editing and rereview work.
-Codex owns the short core plan and planning files; Claude owns implementation,
+Codex owns the short core plan in the Task Card; Claude owns implementation,
 revision, assigned tests, and long validation. `solution-planner` is never
 selected automatically and requires explicit `solution_planner_opt_in=true`.
 Single-task latency is advisory because users can run different repositories in
@@ -472,7 +472,7 @@ python scripts/update_skill.py --bootstrap-current
 python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
 ```
 
-`python scripts/update_skill.py` updates the user-level Codex Skill and automatically refreshes the current repository when it is already bootstrapped. `--bootstrap-current` makes that intent explicit, `--bootstrap-repo` targets another repository, and `--skill-only` intentionally leaves project-local workflow files unchanged.
+`python scripts/update_skill.py` updates the user-level Codex Skill and automatically refreshes the containing Git repository when it is already bootstrapped, even when invoked from a subdirectory. `--bootstrap-current` makes that intent explicit, `--bootstrap-repo` targets another repository, and `--skill-only` intentionally leaves project-local workflow files unchanged. The command reports whether project refresh happened and reminds you to restart Codex.
 
 The installed updater records and reuses the real source checkout rather than
 silently using the installed Skill as its own update source. Missing or invalid
@@ -678,9 +678,10 @@ python scripts/update_skill.py --bootstrap-current
 
 The workflow is an explicit loop: **OBSERVE  ->  PLAN  ->  DISPATCH  ->  EXECUTE  ->  VERIFY  ->  REVIEW  ->  LEARN  ->  repeat.**
 
-**Core principle:** Codex owns core planning and frozen plan files; Claude
-implements and revises by default. Deterministic tools generate routing, cards,
-hashes, receipts, and freeze artifacts; Spark remains advisory.
+**Core principle:** Codex keeps core planning and frozen intent in the Task
+Card, its only normal handwritten workflow artifact. Claude implements and
+revises by default. Deterministic tools generate route, review, freeze, receipt,
+and other control artifacts; Spark remains advisory.
 
 For non-trivial changes, split the work into two Claude roles:
 
@@ -824,7 +825,9 @@ creation. A later handoff from an existing worktree uses
 `--retry-in-place-task-id TASK_ID`. Reviewed continuation uses
 `--reviewed-continuation APPROVAL` instead. A snapshot handoff also carries
 `--dirty-source-mode snapshot`; use that option on the initial dirty-source
-dispatch so both attempts retain the trusted launcher prefix. Legacy environment selectors remain
+dispatch. A fixed capability set uses `--tool-profile minimal-builder`, never a
+leading `CLAUDE_CODE_TOOL_PROFILE=...` assignment, and is preserved by host
+retry. These forms retain the trusted launcher prefix. Legacy environment selectors remain
 compatible, but the CLI form avoids changing the command prefix and preserves
 the task card, worktree, and session lineage. The handoff receipt marks
 `host_retry_args` authoritative and the environment map legacy. Exit 75 is a request for
@@ -1453,6 +1456,10 @@ On timeout or non-zero Claude exit, the dispatcher still collects diffstat, diff
 For complex or repeatedly revised work, add an `## Execution Phases` table to the task card. Claude must use it as the outer execution contract, update progress at phase boundaries, and write `CLAUDE_REPORT.md` before long-running validation or before crossing a stop gate.
 
 Dirty-source guard: dispatch blocks when the source worktree has tracked changes, staged changes, or unrelated untracked files because Claude would run from stale `HEAD`. The current task card may be untracked. When the dirty state is the explicitly approved baseline, use `bash ai/dispatch-to-claude.sh CARD --dirty-source-mode snapshot`; the environment selector remains compatibility-only. Use `CLAUDE_CODE_ALLOW_DIRTY_SOURCE=1` only for intentional legacy advanced dispatch.
+
+After updating the installed Skill or managed `AGENTS.md`, start a new Codex
+session. An active conversation retains the instructions loaded when it started
+and cannot hot-reload a new ownership policy.
 
 For retry-in-place and reviewed continuation, a missing Claude conversation is
 recorded as a non-model resume failure and triggers one automatic fresh-session

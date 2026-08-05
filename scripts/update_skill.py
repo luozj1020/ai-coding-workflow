@@ -141,6 +141,30 @@ def git_commit(source):
     return value or None
 
 
+def git_toplevel(path):
+    """Return the containing Git worktree root, or the absolute input path."""
+    path = os.path.abspath(path)
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError):
+        return path
+    return os.path.abspath(result.stdout.strip() or path)
+
+
+def bootstrapped_repository(path):
+    """Return the containing bootstrapped repository root, if present."""
+    root = git_toplevel(path)
+    launcher = os.path.join(root, "ai", "dispatch-to-claude.sh")
+    return root if os.path.isfile(launcher) else None
+
+
 def read_install_provenance(installed_root):
     path = os.path.join(installed_root, INSTALL_PROVENANCE_FILE)
     try:
@@ -210,13 +234,14 @@ def maybe_pull(source, enabled):
 def build_install_command(installer, args, current_dir=None):
     cmd = [sys.executable or "python", installer]
     if args.bootstrap_current:
-        cmd.append("--bootstrap-current")
+        cmd.extend(["--bootstrap-repo", git_toplevel(current_dir or os.getcwd())])
     elif args.bootstrap_repo:
         cmd.extend(["--bootstrap-repo", args.bootstrap_repo])
     elif not args.skill_only:
         current_dir = os.path.abspath(current_dir or os.getcwd())
-        if os.path.isfile(os.path.join(current_dir, "ai", "dispatch-to-claude.sh")):
-            cmd.append("--bootstrap-current")
+        repository = bootstrapped_repository(current_dir)
+        if repository:
+            cmd.extend(["--bootstrap-repo", repository])
     return cmd
 
 
@@ -351,6 +376,17 @@ def main(argv=None):
     print("  Source: {}".format(source))
     print("  Command: {}".format(" ".join(cmd)))
     subprocess.run(cmd, check=True)
+    if "--bootstrap-repo" in cmd:
+        repo_index = cmd.index("--bootstrap-repo") + 1
+        print("Project workflow refreshed: {}".format(cmd[repo_index]))
+    elif args.skill_only:
+        print("Project workflow refresh: intentionally skipped (--skill-only).")
+    else:
+        print(
+            "Project workflow refresh: skipped because the containing Git repository "
+            "is not bootstrapped. Use --bootstrap-current or --bootstrap-repo PATH."
+        )
+    print("Restart Codex before using the updated Skill or managed AGENTS.md policy.")
     return 0
 
 

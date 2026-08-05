@@ -112,6 +112,12 @@ the accepted end state, invariants, acceptance IDs, and slices. After freeze,
 implementation routing runs separately for each slice; neither model may reopen
 the whole plan unless new evidence invalidates a blocking invariant.
 
+Keep the route in direct stdout unless a downstream command requires a file.
+When persistence is required, run `ai/route-task.py FACTS.json --output
+ROUTE.json`; Codex must not hand-author or patch route JSON. Codex owns the
+semantic adversarial decision, while `ai/solution-contract.py review` owns its
+JSON serialization.
+
 ## Codex Quota Hotspots
 
 The scarce-cost path is duplicated Codex semantic context, not downstream-model volume:

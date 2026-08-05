@@ -4,6 +4,7 @@
 # Usage: bash ai/dispatch-to-claude.sh <task-card-path>
 #        [--empty-api-config-env NAME] [--execution-env auto|sandbox|host]
 #        [--dirty-source-mode block|snapshot]
+#        [--tool-profile auto|default|editor-only|minimal-builder|locator-builder|checker|diagnostic]
 #        [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]
 #        [--preflight-task-id TASK_ID]
 #
@@ -27,7 +28,7 @@ PATH="${PATH}:/usr/bin:/bin:/mingw64/bin"
 export PATH
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL] [--preflight-task-id TASK_ID]" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--tool-profile PROFILE] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL] [--preflight-task-id TASK_ID]" >&2
     exit 1
 fi
 
@@ -36,6 +37,7 @@ shift
 EMPTY_API_CONFIG_ENV=""
 DISPATCH_EXECUTION_ENV="auto"
 DIRTY_SOURCE_MODE_OPTION=""
+TOOL_PROFILE_OPTION=""
 RETRY_IN_PLACE_TASK_ID_OPTION=""
 REVIEWED_CONTINUATION_OPTION=""
 PREFLIGHT_TASK_ID_OPTION=""
@@ -74,6 +76,21 @@ while [ $# -gt 0 ]; do
                 block|snapshot) ;;
                 *)
                     echo "Error: --dirty-source-mode must be block or snapshot." >&2
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
+        --tool-profile)
+            [ $# -ge 2 ] || {
+                echo "Error: --tool-profile requires a value." >&2
+                exit 1
+            }
+            TOOL_PROFILE_OPTION="$2"
+            case "$TOOL_PROFILE_OPTION" in
+                auto|default|editor-only|minimal-builder|locator-builder|checker|diagnostic) ;;
+                *)
+                    echo "Error: --tool-profile must be auto, default, editor-only, minimal-builder, locator-builder, checker, or diagnostic." >&2
                     exit 1
                     ;;
             esac
@@ -133,6 +150,10 @@ fi
 if [ -n "$DIRTY_SOURCE_MODE_OPTION" ]; then
     CLAUDE_CODE_DIRTY_SOURCE_MODE="$DIRTY_SOURCE_MODE_OPTION"
     export CLAUDE_CODE_DIRTY_SOURCE_MODE
+fi
+if [ -n "$TOOL_PROFILE_OPTION" ]; then
+    CLAUDE_CODE_TOOL_PROFILE="$TOOL_PROFILE_OPTION"
+    export CLAUDE_CODE_TOOL_PROFILE
 fi
 if [ -n "$EMPTY_API_CONFIG_ENV" ]; then
     case "$EMPTY_API_CONFIG_ENV" in
@@ -2194,9 +2215,9 @@ PYEOF
             "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" \
             "$TASK_CARD" "$CLAUDE_CODE_DIRTY_SOURCE_MODE" \
             "${_REVIEWED_CONTINUATION_APPROVAL:-}" \
-            "${_EARLY_TOOL_INVENTORY_MISSING:-}" <<'PYEOF'
+            "${_EARLY_TOOL_INVENTORY_MISSING:-}" "${TOOL_PROFILE_OPTION:-}" <<'PYEOF'
 import json, os, sys
-result, outcome, task_id, category, needs_host, requested_env, authority, health, classification, task_card, dirty_mode, reviewed, missing_tools = sys.argv[1:]
+result, outcome, task_id, category, needs_host, requested_env, authority, health, classification, task_card, dirty_mode, reviewed, missing_tools, tool_profile = sys.argv[1:]
 needs_host_execution = needs_host == "1"
 host_retry_args = None
 host_retry_environment = None
@@ -2206,6 +2227,9 @@ if needs_host_execution:
     if dirty_mode == "snapshot":
         host_retry_environment["CLAUDE_CODE_DIRTY_SOURCE_MODE"] = "snapshot"
         host_retry_args += ["--dirty-source-mode", "snapshot"]
+    if tool_profile:
+        host_retry_environment["CLAUDE_CODE_TOOL_PROFILE"] = tool_profile
+        host_retry_args += ["--tool-profile", tool_profile]
     if reviewed:
         host_retry_environment["CLAUDE_CODE_REVIEWED_CONTINUATION"] = reviewed
         host_retry_args += ["--reviewed-continuation", reviewed]
@@ -2246,6 +2270,7 @@ PYEOF
             echo "needs_host_execution=true" >&2
             printf 'host_retry_command=bash %q %q --execution-env host' "$0" "$TASK_CARD" >&2
             [ "$CLAUDE_CODE_DIRTY_SOURCE_MODE" != snapshot ] || printf ' --dirty-source-mode snapshot' >&2
+            [ -z "${TOOL_PROFILE_OPTION:-}" ] || printf ' --tool-profile %q' "$TOOL_PROFILE_OPTION" >&2
             if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
                 printf ' --reviewed-continuation %q\n' "$_REVIEWED_CONTINUATION_APPROVAL" >&2
             else
@@ -5400,9 +5425,9 @@ PYEOF
         "$_STARTUP_NEEDS_HOST_EXECUTION" \
         "${_REVIEWED_CONTINUATION_APPROVAL:-}" "$TASK_CARD" \
         "$CLAUDE_CODE_DIRTY_SOURCE_MODE" "$DISPATCH_EXECUTION_ENV" \
-        "$CLAUDE_CODE_HOST_AUTHORITY" <<'PYEOF'
+        "$CLAUDE_CODE_HOST_AUTHORITY" "${TOOL_PROFILE_OPTION:-}" <<'PYEOF'
 import json, os, sys
-output, outcome, task_id, category, health, classification, needs_host, reviewed_approval, task_card, dirty_source_mode, requested_env, host_authority = sys.argv[1:]
+output, outcome, task_id, category, health, classification, needs_host, reviewed_approval, task_card, dirty_source_mode, requested_env, host_authority, tool_profile = sys.argv[1:]
 needs_host_execution = needs_host == "1"
 host_requested = requested_env == "host"
 host_authorized = host_authority == "1"
@@ -5418,6 +5443,9 @@ if needs_host_execution:
     if dirty_source_mode == "snapshot":
         host_retry_environment["CLAUDE_CODE_DIRTY_SOURCE_MODE"] = "snapshot"
         host_retry_args.extend(["--dirty-source-mode", "snapshot"])
+    if tool_profile:
+        host_retry_environment["CLAUDE_CODE_TOOL_PROFILE"] = tool_profile
+        host_retry_args.extend(["--tool-profile", tool_profile])
     if reviewed_approval:
         host_retry_environment["CLAUDE_CODE_REVIEWED_CONTINUATION"] = reviewed_approval
         host_retry_args.extend(["--reviewed-continuation", reviewed_approval])
@@ -5479,6 +5507,7 @@ PYEOF
         if [ "$CLAUDE_CODE_DIRTY_SOURCE_MODE" = "snapshot" ]; then
             printf ' --dirty-source-mode snapshot' >&2
         fi
+        [ -z "${TOOL_PROFILE_OPTION:-}" ] || printf ' --tool-profile %q' "$TOOL_PROFILE_OPTION" >&2
         if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
             printf ' --reviewed-continuation %q\n' "$_REVIEWED_CONTINUATION_APPROVAL" >&2
         else

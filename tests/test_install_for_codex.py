@@ -256,6 +256,7 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertIn("Optional code-search services", output)
             self.assertIn("code-search-service.py", output)
             self.assertIn("Non-interactive install; skipping service prompt", output)
+            self.assertIn("Restart Codex after updating", output)
             self.assertTrue((skills_dir / "ai-coding-workflow" / "SKILL.md").exists())
 
     def test_main_bootstrap_repo_installs_workflow_directory(self):
@@ -336,7 +337,8 @@ class InstallForCodexTests(unittest.TestCase):
             )
             args = module.parse_args([])
             cmd = module.build_install_command("/skill/install_for_codex.py", args, str(repo))
-            self.assertIn("--bootstrap-current", cmd)
+            self.assertIn("--bootstrap-repo", cmd)
+            self.assertEqual(cmd[cmd.index("--bootstrap-repo") + 1], str(repo))
 
             skill_only = module.parse_args(["--skill-only"])
             cmd = module.build_install_command(

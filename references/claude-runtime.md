@@ -56,6 +56,7 @@ host-execution permission surface (for example,
 bash ai/dispatch-to-claude.sh <task-card> \
   --execution-env host \
   --dirty-source-mode snapshot \
+  --tool-profile minimal-builder \
   --preflight-task-id <task-id>
 ```
 
@@ -63,7 +64,9 @@ Include `--dirty-source-mode snapshot` only when the handoff receipt names
 snapshot mode. `--preflight-task-id` preserves identity when the early probe
 stops before any worktree or session exists. A later transport handoff from an
 existing worktree continues to use `--retry-in-place-task-id`; reviewed
-continuation uses `--reviewed-continuation <approval-path>`. Legacy
+continuation uses `--reviewed-continuation <approval-path>`. A selected fixed
+capability set is preserved with `--tool-profile`; do not prepend
+`CLAUDE_CODE_TOOL_PROFILE`. Legacy
 `CLAUDE_CODE_HOST_AUTHORITY=1` and
 continuation/dirty-source selector environment variables remain compatible, but the CLI
 shape is preferred because it matches the narrow persistent launcher approval.

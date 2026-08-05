@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -42,6 +44,30 @@ def draft_v2():
 
 
 class SolutionContractTests(unittest.TestCase):
+    def test_review_cli_materializes_findings_without_handwritten_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "adversarial-review.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = MODULE.main([
+                    "review",
+                    "--finding", "recommended:defer:Add a benchmark later.",
+                    "--output", str(output),
+                ])
+            self.assertEqual(rc, 0)
+            value = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(value["findings"][0]["severity"], "recommended")
+            self.assertEqual(value["findings"][0]["summary"], "Add a benchmark later.")
+
+    def test_review_cli_rejects_invalid_finding_shape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "adversarial-review.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = MODULE.main([
+                    "review", "--finding", "invalid", "--output", str(output),
+                ])
+            self.assertEqual(rc, 2)
+            self.assertFalse(output.exists())
+
     def test_valid_contract_freezes_after_nonblocking_review(self):
         value = draft()
         self.assertEqual(MODULE.validate_contract(value), [])

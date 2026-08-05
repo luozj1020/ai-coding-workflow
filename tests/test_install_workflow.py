@@ -2212,6 +2212,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID", dispatch)
             self.assertIn("--execution-env", dispatch)
             self.assertIn("--dirty-source-mode", dispatch)
+            self.assertIn("--tool-profile", dispatch)
             self.assertIn("--retry-in-place-task-id", dispatch)
             self.assertIn("--reviewed-continuation", dispatch)
             self.assertIn("host_retry_args", dispatch)

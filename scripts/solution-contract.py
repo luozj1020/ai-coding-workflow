@@ -214,12 +214,44 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("contract", type=Path)
+    review_parser = sub.add_parser(
+        "review",
+        help="Materialize Codex review findings without hand-editing control JSON.",
+    )
+    review_parser.add_argument(
+        "--finding",
+        action="append",
+        default=[],
+        metavar="SEVERITY:DISPOSITION:SUMMARY",
+        help="Repeat for each finding; an empty review is valid.",
+    )
+    review_parser.add_argument("--output", type=Path, required=True)
     freeze_parser = sub.add_parser("freeze")
     freeze_parser.add_argument("contract", type=Path)
     freeze_parser.add_argument("--findings", type=Path, required=True)
     freeze_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == "review":
+            findings = {"findings": []}
+            for raw in args.finding:
+                parts = raw.split(":", 2)
+                if len(parts) != 3:
+                    raise ValueError(
+                        "--finding must be SEVERITY:DISPOSITION:SUMMARY"
+                    )
+                findings["findings"].append({
+                    "severity": parts[0],
+                    "disposition": parts[1],
+                    "summary": parts[2],
+                })
+            errors = validate_findings(findings)
+            if errors:
+                print(json.dumps({"status": "invalid", "errors": errors}, ensure_ascii=False, sort_keys=True))
+                return 1
+            _write_atomic(args.output, findings)
+            print(json.dumps({"status": "written", "output": str(args.output)}, sort_keys=True))
+            return 0
         contract = json.loads(args.contract.read_text(encoding="utf-8"))
         errors = validate_contract(contract)
         if args.command == "freeze":
