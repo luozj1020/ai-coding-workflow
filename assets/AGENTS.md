@@ -13,7 +13,7 @@ humans own merge and destructive or high-impact approval.
 Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 Use one bounded CodeGraph query first for concrete indexed-code symbols/relationships.
 Use `ai/locate-code.py` for behavior/files; use lexical search for Shell/config/text
-or unsupported languages. Record result/skip before broad reads. Do not browse unless
+or unsupported languages. Record result/skip before broad reads. Do not browse the web unless
 the user requests current external information. Ordinary-risk work proceeds
 after deterministic checks without a second business confirmation.
 
