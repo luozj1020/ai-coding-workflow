@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ai-coding-workflow/context-lease-v1.schema.json",
+  "title": "AI Coding Workflow Context Lease",
+  "type": "object",
+  "required": [
+    "schema",
+    "lease_id",
+    "status",
+    "continuation_kind",
+    "lineage_root_task_id",
+    "session_id",
+    "solution_contract",
+    "worktree_state_hash",
+    "tool_profile",
+    "role",
+    "calls_used",
+    "max_warm_calls"
+  ],
+  "properties": {
+    "schema": {"const": "aiwf-context-lease-v1"},
+    "lease_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+    "status": {"const": "active"},
+    "continuation_kind": {
+      "enum": ["next-slice", "revision", "checker-followup"]
+    },
+    "lineage_root_task_id": {"type": "string", "minLength": 1},
+    "session_id": {"type": ["string", "null"]},
+    "solution_contract": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": ["string", "null"]},
+        "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "worktree_state_hash": {"type": "string", "minLength": 1},
+    "model": {"type": ["string", "null"]},
+    "provider_route_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "tool_profile": {"type": "string", "minLength": 1},
+    "role": {"enum": ["builder", "checker-test"]},
+    "calls_used": {"type": "integer", "minimum": 1},
+    "max_warm_calls": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": true
+}

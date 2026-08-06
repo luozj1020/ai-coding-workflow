@@ -153,6 +153,16 @@ Claude continuation. `Mode = revision` is normalized as Builder and can
 transition directly to a reviewed `checker-test` continuation. A deterministic correction may route to Codex only when it
 already holds the exact context and no new decision is needed.
 
+For sequential slices under one frozen contract, create a one-use Context Lease
+with `python ai/context-lease.py create ...`, then dispatch with
+`--context-lease LEASE --continuation-kind next-slice`. The lease reuses the
+recorded session/worktree but rebinds the sandbox and exact write scope. Create
+a new hash-bound lease after every accepted slice. After the default three warm
+calls, provide a bounded checkpoint with `--rehydrate-from` so a fresh session
+receives only a delta execution capsule. Dispatcher calls use `claude --bare`;
+`CLAUDE.md` is not model context for this path, and `TASK_CARD_FULL.md` remains
+audit-only.
+
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 
 Permission or approval blockers include sandbox write denial, forbidden files, missing CLI authentication, network-restricted commands, commands that need human approval, and configured "do not read or modify" paths. These should be recorded in progress/report artifacts and handled as environment or orchestration blockers unless Claude ignored an available allowed path.

@@ -840,11 +840,44 @@ python ai/aiwf.py reviewed-continuation prepare \
   --allow-new-write-path tests/continuation_test.cc \
   --output .worktrees/continuation-approval.json
 
-CLAUDE_CODE_REVIEWED_CONTINUATION=.worktrees/continuation-approval.json \
-  bash ai/dispatch-to-claude.sh /absolute/next-card.md
+bash ai/dispatch-to-claude.sh /absolute/next-card.md \
+  --reviewed-continuation .worktrees/continuation-approval.json
 ```
 
 审批文件会绑定精确 dirty 状态、文件内容与 mode、source/base/worktree HEAD 及下一张任务卡 hash。调度器只消费一次审批，并复用原 worktree，不执行 reset、clean、checkout，也不再产生新 worktree 的准备窗口。Checker 可以看到已接受的实现，但新增修改仍被限制在声明的测试/验证路径内。状态漂移、旧进程仍存活、重复消费、范围扩张、managed/advisor/retry/parallel 来源以及 Checker→Builder 都会 fail closed。
+
+同一个冻结方案合同下的连续实现切片，在 Codex 接受每个切片后可签发一次性
+Context Lease：
+
+```bash
+python ai/context-lease.py create \
+  --prior-task-id claude-... \
+  --next-task-card /absolute/slice-2.md \
+  --next-role builder --continuation-kind next-slice \
+  --solution-contract ai/plans/PROJ/solution-contract.json \
+  --accepted-existing-path src/slice_one.py \
+  --allow-new-write-path src/slice_two.py \
+  --tool-profile minimal-builder \
+  --output .worktrees/slice-2.context-lease.json
+
+bash ai/dispatch-to-claude.sh /absolute/slice-2.md \
+  --context-lease .worktrees/slice-2.context-lease.json \
+  --continuation-kind next-slice \
+  --tool-profile minimal-builder
+```
+
+该路径复用已记录的 Claude session 和精确 worktree，但每轮仍重新建立 sandbox
+和写入收据。Lease 会绑定方案合同、worktree 状态、session、角色、工具配置、
+可见时的模型/provider route 以及下一张任务卡 hash，并且只消费一次。下一轮应
+从新验收状态重新签发，并通过 `--parent-lease` 保持 lineage。默认最多连续三次
+warm 调用；超过上限时传入有界确定性 checkpoint 的 `--rehydrate-from`，启动新
+session 并只注入 delta execution capsule，避免无限重放历史对话。
+
+dispatcher 固定使用 Claude 的 `--bare`，因此仓库 `CLAUDE.md` 及其中的
+`@AGENTS.md` 不会进入这条调度调用的模型上下文。真正的冷启动载荷是
+`CLAUDE_PROMPT.md`；execution-only 和 Context Lease 调用现在只渲染有界的
+`CLAUDE_TASK_CARD.md`，完整 `TASK_CARD_FULL.md` 仅作为审计产物保留。安全政策
+继续由确定性门禁执行，Claude 只接收当前可执行合同。
 
 运行证据检查：
 

@@ -93,6 +93,26 @@ When useful on-plan work has exactly one semantic blocker, `aiwf advisor-continu
 
 Worktree continuity and model memory are separate. Initial dispatch assigns an explicit Claude session UUID. Retry-in-place, reviewed continuation, and advisor continuation resume that UUID from the prior runtime receipt when valid. If Claude rejects that UUID with a conversation/session-not-found result, the dispatcher writes a hash-bound `session-resume-failure.json` receipt with `counts_as_model_failure=false`, then makes exactly one fresh-session attempt with the same owner, task, worktree, and write scope. Other resume failures remain terminal. When no resumable UUID exists, runtime records `unavailable-file-backed-fallback` and starts a new named session. `--bare` disables auto-memory/customization, not explicit conversation persistence. Never describe file-only continuation as restored model memory.
 
+Sequential slices under one frozen solution contract may use a one-use Context
+Lease. Create it with `ai/context-lease.py create` only after Codex accepts the
+current dirty state. Dispatch with `--context-lease PATH --continuation-kind
+next-slice|revision|checker-followup`. The lease extends reviewed continuation:
+it binds the exact worktree/card plus solution-contract, session, role,
+tool-profile, and visible model/provider identities. Every accepted slice gets
+a newly hash-bound lease; pass `--parent-lease` when continuing an existing
+lineage. Do not treat a lease as persistent write authority.
+
+The default warm-call limit is three. A later compatible call must use a
+bounded checkpoint via `--rehydrate-from` and starts a fresh Claude session, or
+explicitly use `--force-fresh-session`. Each call still starts a fresh
+restricted process so sandbox mounts and exact write paths are rebound.
+Long-lived stream-json daemons are not part of this contract.
+
+Because dispatch uses `claude --bare`, project `CLAUDE.md`/`AGENTS.md` are not
+the model-facing startup cost. Execution-only and Context Lease calls use
+`build-execution-capsule.py` to render a bounded bootstrap or delta card;
+`TASK_CARD_FULL.md` remains the audit source and is not appended to the prompt.
+
 Required exact-path write enforcement uses writable staging sources outside the
 worktree and binds only those sources over their declared destinations inside
 the read-only sandbox. Before starting Claude, the dispatcher runs the actual

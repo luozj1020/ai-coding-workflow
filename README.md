@@ -911,11 +911,47 @@ python ai/aiwf.py reviewed-continuation prepare \
   --allow-new-write-path tests/continuation_test.cc \
   --output .worktrees/continuation-approval.json
 
-CLAUDE_CODE_REVIEWED_CONTINUATION=.worktrees/continuation-approval.json \
-  bash ai/dispatch-to-claude.sh /absolute/next-card.md
+bash ai/dispatch-to-claude.sh /absolute/next-card.md \
+  --reviewed-continuation .worktrees/continuation-approval.json
 ```
 
 The approval binds the exact dirty state, file content/mode, source/base/worktree HEAD, and next-card hash. Dispatch consumes it once and reuses the same worktree without reset, clean, checkout, or a new worktree setup window. Accepted implementation paths remain visible to Checker, while its new writes stay inside the declared test/validation paths. State drift, live prior processes, replay, scope expansion, managed/advisor/retry/parallel origins, and Checker→Builder transitions fail closed.
+
+For sequential implementation slices under one frozen solution contract, issue
+a one-use Context Lease after Codex accepts each slice:
+
+```bash
+python ai/context-lease.py create \
+  --prior-task-id claude-... \
+  --next-task-card /absolute/slice-2.md \
+  --next-role builder --continuation-kind next-slice \
+  --solution-contract ai/plans/PROJ/solution-contract.json \
+  --accepted-existing-path src/slice_one.py \
+  --allow-new-write-path src/slice_two.py \
+  --tool-profile minimal-builder \
+  --output .worktrees/slice-2.context-lease.json
+
+bash ai/dispatch-to-claude.sh /absolute/slice-2.md \
+  --context-lease .worktrees/slice-2.context-lease.json \
+  --continuation-kind next-slice \
+  --tool-profile minimal-builder
+```
+
+This reuses the recorded Claude session and exact worktree while rebuilding the
+per-call sandbox and write receipt. The lease binds the solution contract,
+worktree state, session, role, tool profile, model/provider route when visible,
+and next-card hash. It is consumed once; create the next lease from the newly
+accepted state and pass `--parent-lease` to preserve the lineage. The default
+warm limit is three calls. Beyond it, pass a bounded deterministic checkpoint
+with `--rehydrate-from`; the dispatcher starts a fresh session with a delta
+execution capsule instead of replaying an unbounded transcript.
+
+The dispatcher always invokes Claude with `--bare`, so repository `CLAUDE.md`
+and its `@AGENTS.md` import are not part of dispatched model context. The actual
+cold-start payload is `CLAUDE_PROMPT.md`; execution-only and Context Lease calls
+now render a bounded `CLAUDE_TASK_CARD.md`, while `TASK_CARD_FULL.md` remains an
+audit artifact. This keeps safety policy in deterministic enforcement and sends
+Claude only the current executable contract.
 
 Run an evidence check:
 

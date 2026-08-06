@@ -119,6 +119,8 @@ PYTHON_SCRIPTS = [
     ("repository-scale.py", "ai/repository-scale.py"),
     ("prepare-advisor-continuation.py", "ai/prepare-advisor-continuation.py"),
     ("prepare-worktree-continuation.py", "ai/prepare-worktree-continuation.py"),
+    ("context-lease.py", "ai/context-lease.py"),
+    ("build-execution-capsule.py", "ai/build-execution-capsule.py"),
     ("validate-claude-context.py", "ai/validate-claude-context.py"),
     ("code-search-service.py", "ai/code-search-service.py"),
     ("clean_runtime.py", "ai/clean_runtime.py"),
@@ -241,6 +243,7 @@ SCHEMA_ASSETS = [
     ("schemas/routing-facts-v1.schema.json", "ai/schemas/routing-facts-v1.schema.json"),
     ("schemas/solution-contract-v1.schema.json", "ai/schemas/solution-contract-v1.schema.json"),
     ("schemas/solution-contract-v2.schema.json", "ai/schemas/solution-contract-v2.schema.json"),
+    ("schemas/context-lease-v1.schema.json", "ai/schemas/context-lease-v1.schema.json"),
 ]
 
 # Structured assets: profiles (source relative to repo root, dest relative to repo root)

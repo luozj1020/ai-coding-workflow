@@ -6,6 +6,8 @@
 #        [--dirty-source-mode block|snapshot]
 #        [--tool-profile auto|default|editor-only|minimal-builder|locator-builder|checker|diagnostic]
 #        [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]
+#        [--context-lease LEASE --continuation-kind KIND]
+#        [--force-fresh-session] [--rehydrate-from CAPSULE]
 #        [--preflight-task-id TASK_ID]
 #
 # This script:
@@ -34,7 +36,7 @@ PYTHONDONTWRITEBYTECODE=1
 export PYTHONDONTWRITEBYTECODE
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--tool-profile PROFILE] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL] [--preflight-task-id TASK_ID]" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--tool-profile PROFILE] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL | --context-lease LEASE --continuation-kind KIND] [--force-fresh-session] [--rehydrate-from CAPSULE] [--preflight-task-id TASK_ID]" >&2
     exit 1
 fi
 
@@ -46,6 +48,10 @@ DIRTY_SOURCE_MODE_OPTION=""
 TOOL_PROFILE_OPTION=""
 RETRY_IN_PLACE_TASK_ID_OPTION=""
 REVIEWED_CONTINUATION_OPTION=""
+CONTEXT_LEASE_OPTION=""
+CONTINUATION_KIND_OPTION=""
+FORCE_FRESH_SESSION_OPTION=0
+REHYDRATE_FROM_OPTION=""
 PREFLIGHT_TASK_ID_OPTION=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -118,6 +124,41 @@ while [ $# -gt 0 ]; do
             REVIEWED_CONTINUATION_OPTION="$2"
             shift 2
             ;;
+        --context-lease)
+            [ $# -ge 2 ] || {
+                echo "Error: --context-lease requires a lease path." >&2
+                exit 1
+            }
+            CONTEXT_LEASE_OPTION="$2"
+            shift 2
+            ;;
+        --continuation-kind)
+            [ $# -ge 2 ] || {
+                echo "Error: --continuation-kind requires next-slice, revision, or checker-followup." >&2
+                exit 1
+            }
+            CONTINUATION_KIND_OPTION="$2"
+            case "$CONTINUATION_KIND_OPTION" in
+                next-slice|revision|checker-followup) ;;
+                *)
+                    echo "Error: --continuation-kind must be next-slice, revision, or checker-followup." >&2
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
+        --force-fresh-session)
+            FORCE_FRESH_SESSION_OPTION=1
+            shift
+            ;;
+        --rehydrate-from)
+            [ $# -ge 2 ] || {
+                echo "Error: --rehydrate-from requires a capsule path." >&2
+                exit 1
+            }
+            REHYDRATE_FROM_OPTION="$2"
+            shift 2
+            ;;
         --preflight-task-id)
             [ $# -ge 2 ] || {
                 echo "Error: --preflight-task-id requires a task id." >&2
@@ -138,6 +179,21 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+    if [ -n "$REVIEWED_CONTINUATION_OPTION" ] || [ -n "${CLAUDE_CODE_REVIEWED_CONTINUATION:-}" ]; then
+        echo "Error: --context-lease and --reviewed-continuation are mutually exclusive." >&2
+        exit 1
+    fi
+    if [ -z "$CONTINUATION_KIND_OPTION" ]; then
+        echo "Error: --context-lease requires --continuation-kind." >&2
+        exit 1
+    fi
+    REVIEWED_CONTINUATION_OPTION="$CONTEXT_LEASE_OPTION"
+elif [ -n "$CONTINUATION_KIND_OPTION" ] || [ "$FORCE_FRESH_SESSION_OPTION" -eq 1 ] || [ -n "$REHYDRATE_FROM_OPTION" ]; then
+    echo "Error: --continuation-kind, --force-fresh-session, and --rehydrate-from require --context-lease." >&2
+    exit 1
+fi
 
 if [ -n "$RETRY_IN_PLACE_TASK_ID_OPTION" ]; then
     case "$RETRY_IN_PLACE_TASK_ID_OPTION" in
@@ -202,6 +258,38 @@ if command -v python3 >/dev/null 2>&1; then
 elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
+
+# Context Lease identity is derived before worktree selection. Empty values
+# remain explicitly unbound for legacy providers; non-empty values are checked
+# on every warm continuation so a model/provider switch cannot silently reuse
+# the prior conversation.
+_CONTEXT_MODEL_HINT="${ANTHROPIC_MODEL:-}"
+case "$_CONTEXT_MODEL_HINT" in
+    ""|*[!A-Za-z0-9._:/@+-]*)
+        if [ -n "$_CONTEXT_MODEL_HINT" ]; then
+            echo "Error: ANTHROPIC_MODEL contains unsupported identity characters." >&2
+            exit 1
+        fi
+        ;;
+esac
+_CONTEXT_PROVIDER_ROUTE_SHA256=""
+if [ -n "$PYTHON_CMD" ] && [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+    _CONTEXT_PROVIDER_ROUTE_SHA256="$("$PYTHON_CMD" - "${ANTHROPIC_BASE_URL}" <<'PYEOF' 2>/dev/null || true
+import hashlib, sys
+from urllib.parse import urlsplit
+
+value = sys.argv[1]
+parsed = urlsplit(value)
+origin = "{}://{}".format(parsed.scheme.lower(), parsed.netloc.lower()) if parsed.netloc else value
+print("sha256:" + hashlib.sha256(origin.encode("utf-8")).hexdigest())
+PYEOF
+)"
+fi
+_CONTEXT_LEASE_ROUTE=""
+_CONTEXT_LEASE_ID=""
+_CONTEXT_LEASE_CALLS_USED=0
+_CONTEXT_LEASE_MAX_WARM_CALLS=0
+_CONTEXT_FORCE_FRESH_SESSION=0
 
 # --- Route preference learning ---
 # Precedence: explicit caller env > learned preference > direct fallback.
@@ -1764,7 +1852,42 @@ if [ -n "${CLAUDE_CODE_REVIEWED_CONTINUATION:-}" ]; then
         echo "Error: reviewed-continuation: Python helper is unavailable." >&2
         exit 1
     fi
-    if ! "$PYTHON_CMD" "$_reviewed_helper" validate \
+    if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+        _context_helper="${SCRIPT_DIR}/context-lease.py"
+        if [ ! -f "$_context_helper" ]; then
+            echo "Error: context-lease helper is unavailable; refresh the bootstrapped workflow." >&2
+            exit 1
+        fi
+        _context_args=(
+            validate
+            --context-lease "$CONTEXT_LEASE_OPTION"
+            --next-task-card "$TASK_CARD"
+            --continuation-kind "$CONTINUATION_KIND_OPTION"
+            --tool-profile "$CLAUDE_CODE_TOOL_PROFILE"
+        )
+        [ -z "$_CONTEXT_MODEL_HINT" ] || _context_args+=(--model "$_CONTEXT_MODEL_HINT")
+        [ -z "$_CONTEXT_PROVIDER_ROUTE_SHA256" ] || \
+            _context_args+=(--provider-route-sha256 "$_CONTEXT_PROVIDER_ROUTE_SHA256")
+        [ "$FORCE_FRESH_SESSION_OPTION" -eq 0 ] || _context_args+=(--force-fresh-session)
+        [ -z "$REHYDRATE_FROM_OPTION" ] || _context_args+=(--rehydrate-from "$REHYDRATE_FROM_OPTION")
+        if ! _context_validation="$("$PYTHON_CMD" "$_context_helper" "${_context_args[@]}")"; then
+            echo "Error: Context Lease validation failed." >&2
+            exit 1
+        fi
+        IFS=$'\t' read -r _CONTEXT_LEASE_ID _CONTEXT_LEASE_ROUTE \
+            _CONTEXT_LEASE_CALLS_USED _CONTEXT_LEASE_MAX_WARM_CALLS < <(
+            printf '%s' "$_context_validation" | "$PYTHON_CMD" -c \
+                'import json,sys; v=json.load(sys.stdin); print("\t".join(str(v.get(k, "")) for k in ("lease_id","route","calls_used","max_warm_calls")))'
+        )
+        case "$_CONTEXT_LEASE_ROUTE" in
+            warm-resume) ;;
+            capsule-rehydrate|cold-fresh) _CONTEXT_FORCE_FRESH_SESSION=1 ;;
+            *)
+                echo "Error: Context Lease returned an unsupported session route." >&2
+                exit 1
+                ;;
+        esac
+    elif ! "$PYTHON_CMD" "$_reviewed_helper" validate \
         --approval "$CLAUDE_CODE_REVIEWED_CONTINUATION" \
         --next-task-card "$TASK_CARD" >/dev/null; then
         echo "Error: reviewed-continuation approval validation failed." >&2
@@ -1888,6 +2011,15 @@ EXTENSION_ADVISOR_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.extension-advisor.js
 VALIDATION_CAPABILITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.validation-capability.json"
 MANAGED_RUNTIME_BUNDLE_FILE="${WORKTREE_ROOT}/${TASK_ID}.managed-runtime-bundle.json"
 REVISION_CARD_VALIDATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.revision-card-validation.json"
+EXECUTION_CAPSULE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.execution-capsule.json"
+_EXECUTION_CAPSULE_MODE="legacy"
+_EXECUTION_CAPSULE_KIND="initial"
+if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+    _EXECUTION_CAPSULE_MODE="delta"
+    _EXECUTION_CAPSULE_KIND="$CONTINUATION_KIND_OPTION"
+elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
+    _EXECUTION_CAPSULE_MODE="bootstrap"
+fi
 CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
 PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.pid"
 DISPATCHER_PID_FILE="${WORKTREE_ROOT}/${TASK_ID}.dispatcher.pid"
@@ -2222,9 +2354,11 @@ PYEOF
             "$STARTUP_INTERACTION_HEALTH_FILE" "$ATTEMPT_CLASSIFICATION_FILE" \
             "$TASK_CARD" "$CLAUDE_CODE_DIRTY_SOURCE_MODE" \
             "${_REVIEWED_CONTINUATION_APPROVAL:-}" \
-            "${_EARLY_TOOL_INVENTORY_MISSING:-}" "${TOOL_PROFILE_OPTION:-}" <<'PYEOF'
+            "${_EARLY_TOOL_INVENTORY_MISSING:-}" "${TOOL_PROFILE_OPTION:-}" \
+            "$CONTEXT_LEASE_OPTION" "$CONTINUATION_KIND_OPTION" \
+            "$FORCE_FRESH_SESSION_OPTION" "$REHYDRATE_FROM_OPTION" <<'PYEOF'
 import json, os, sys
-result, outcome, task_id, category, needs_host, requested_env, authority, health, classification, task_card, dirty_mode, reviewed, missing_tools, tool_profile = sys.argv[1:]
+result, outcome, task_id, category, needs_host, requested_env, authority, health, classification, task_card, dirty_mode, reviewed, missing_tools, tool_profile, context_lease, continuation_kind, force_fresh, rehydrate_from = sys.argv[1:]
 needs_host_execution = needs_host == "1"
 host_retry_args = None
 host_retry_environment = None
@@ -2237,7 +2371,16 @@ if needs_host_execution:
     if tool_profile:
         host_retry_environment["CLAUDE_CODE_TOOL_PROFILE"] = tool_profile
         host_retry_args += ["--tool-profile", tool_profile]
-    if reviewed:
+    if context_lease:
+        host_retry_args += [
+            "--context-lease", context_lease,
+            "--continuation-kind", continuation_kind,
+        ]
+        if force_fresh == "1":
+            host_retry_args += ["--force-fresh-session"]
+        if rehydrate_from:
+            host_retry_args += ["--rehydrate-from", rehydrate_from]
+    elif reviewed:
         host_retry_environment["CLAUDE_CODE_REVIEWED_CONTINUATION"] = reviewed
         host_retry_args += ["--reviewed-continuation", reviewed]
     else:
@@ -2278,7 +2421,13 @@ PYEOF
             printf 'host_retry_command=bash %q %q --execution-env host' "$0" "$TASK_CARD" >&2
             [ "$CLAUDE_CODE_DIRTY_SOURCE_MODE" != snapshot ] || printf ' --dirty-source-mode snapshot' >&2
             [ -z "${TOOL_PROFILE_OPTION:-}" ] || printf ' --tool-profile %q' "$TOOL_PROFILE_OPTION" >&2
-            if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
+            if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+                printf ' --context-lease %q --continuation-kind %q' \
+                    "$CONTEXT_LEASE_OPTION" "$CONTINUATION_KIND_OPTION" >&2
+                [ "$FORCE_FRESH_SESSION_OPTION" -eq 0 ] || printf ' --force-fresh-session' >&2
+                [ -z "$REHYDRATE_FROM_OPTION" ] || printf ' --rehydrate-from %q' "$REHYDRATE_FROM_OPTION" >&2
+                printf '\n' >&2
+            elif [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
                 printf ' --reviewed-continuation %q\n' "$_REVIEWED_CONTINUATION_APPROVAL" >&2
             else
                 printf ' --preflight-task-id %q\n' "$TASK_ID" >&2
@@ -2628,7 +2777,11 @@ CLAUDE_SESSION_RESUME_STATUS="not-requested"
 CLAUDE_SESSION_PRIOR_TASK_ID=""
 _CLAUDE_RESUME_FALLBACK_USED=0
 CLAUDE_SESSION_ID="${CLAUDE_CODE_RESUME_SESSION_ID:-}"
-if [ -z "$PYTHON_CMD" ]; then
+if [ "$_CONTEXT_FORCE_FRESH_SESSION" -eq 1 ]; then
+    CLAUDE_SESSION_ID=""
+    CLAUDE_SESSION_MODE_EFFECTIVE="new"
+    CLAUDE_SESSION_RESUME_STATUS="context-lease-${_CONTEXT_LEASE_ROUTE}"
+elif [ -z "$PYTHON_CMD" ]; then
     CLAUDE_SESSION_ID=""
     CLAUDE_SESSION_MODE_EFFECTIVE="implicit"
     CLAUDE_SESSION_RESUME_STATUS="python-unavailable-file-backed-only"
@@ -2655,7 +2808,13 @@ PYEOF
         fi
     fi
 fi
-if [ -z "$PYTHON_CMD" ]; then
+if [ "$_CONTEXT_FORCE_FRESH_SESSION" -eq 1 ]; then
+    CLAUDE_SESSION_ID="$("$PYTHON_CMD" - "$TASK_ID" "$_CONTEXT_LEASE_ROUTE" <<'PYEOF'
+import sys, uuid
+print(uuid.uuid5(uuid.NAMESPACE_URL, "ai-coding-workflow:{}:{}".format(sys.argv[1], sys.argv[2])))
+PYEOF
+)"
+elif [ -z "$PYTHON_CMD" ]; then
     :
 elif [ -n "$CLAUDE_SESSION_ID" ]; then
     if ! "$PYTHON_CMD" - "$CLAUDE_SESSION_ID" <<'PYEOF' >/dev/null 2>&1
@@ -2880,6 +3039,8 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "claude_session_mode": "%s",\n' "$CLAUDE_SESSION_MODE_EFFECTIVE"
     printf '  "claude_session_resume_status": "%s",\n' "$CLAUDE_SESSION_RESUME_STATUS"
     printf '  "claude_session_prior_task_id": "%s",\n' "$CLAUDE_SESSION_PRIOR_TASK_ID"
+    printf '  "model_hint": "%s",\n' "$_CONTEXT_MODEL_HINT"
+    printf '  "provider_route_sha256": "%s",\n' "$_CONTEXT_PROVIDER_ROUTE_SHA256"
     if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
         printf '  "retry_of": "%s",\n' "$CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID"
     fi
@@ -2889,6 +3050,13 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
         printf '  "reviewed_continuation_baseline_hash": "%s",\n' "$_REVIEWED_CONTINUATION_BASELINE_HASH"
         printf '  "provenance_root_strategy": "fresh",\n'
         printf '  "reuse_count": %s,\n' "$_REUSE_COUNT"
+    fi
+    if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+        printf '  "context_lease_id": "%s",\n' "$_CONTEXT_LEASE_ID"
+        printf '  "context_lease_continuation_kind": "%s",\n' "$CONTINUATION_KIND_OPTION"
+        printf '  "context_lease_route": "%s",\n' "$_CONTEXT_LEASE_ROUTE"
+        printf '  "context_lease_calls_used": %s,\n' "$_CONTEXT_LEASE_CALLS_USED"
+        printf '  "context_lease_max_warm_calls": %s,\n' "$_CONTEXT_LEASE_MAX_WARM_CALLS"
     fi
     printf '  "pid_files": {\n'
     printf '    "dispatcher": "%s",\n' "$DISPATCHER_PID_FILE"
@@ -2910,6 +3078,8 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "task_mode_normalization_reason": "%s",\n' "$_TASK_MODE_NORMALIZATION_REASON"
     printf '  "task_mode_role_alias": "%s",\n' "$_TASK_MODE_ROLE_ALIAS"
     printf '  "task_card_builder_mode": "%s",\n' "${_TASK_CARD_BUILDER_MODE:-auto}"
+    printf '  "execution_capsule_mode": "%s",\n' "$_EXECUTION_CAPSULE_MODE"
+    printf '  "execution_capsule_receipt": "%s",\n' "$EXECUTION_CAPSULE_RECEIPT_FILE"
     printf '  "tool_profile": "%s",\n' "$CLAUDE_CODE_TOOL_PROFILE"
     printf '  "tool_profile_derivation": "%s",\n' "$_TOOL_PROFILE_DERIVATION"
     printf '  "tool_profile_supported": %s,\n' "$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo true || echo false)"
@@ -3109,12 +3279,31 @@ render_claude_task_card() {
     ' "$1"
 }
 
-render_claude_task_card "${WORKTREE_DIR}/TASK_CARD_FULL.md" > "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+_EXECUTION_CAPSULE_HELPER="${SCRIPT_DIR}/build-execution-capsule.py"
+if [ -n "$PYTHON_CMD" ] && [ -f "$_EXECUTION_CAPSULE_HELPER" ] && \
+   { [ -n "$CONTEXT_LEASE_OPTION" ] || [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; }; then
+    _execution_capsule_args=(
+        --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md"
+        --output "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+        --mode "$_EXECUTION_CAPSULE_MODE"
+        --continuation-kind "$_EXECUTION_CAPSULE_KIND"
+        --receipt "$EXECUTION_CAPSULE_RECEIPT_FILE"
+    )
+    [ -z "$REHYDRATE_FROM_OPTION" ] || \
+        _execution_capsule_args+=(--rehydrate-from "$REHYDRATE_FROM_OPTION")
+    if ! "$PYTHON_CMD" "$_EXECUTION_CAPSULE_HELPER" "${_execution_capsule_args[@]}" >/dev/null; then
+        echo "Error: failed to render the bounded Claude execution capsule." >&2
+        exit 1
+    fi
+else
+    render_claude_task_card "${WORKTREE_DIR}/TASK_CARD_FULL.md" > "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+fi
 
 # --- ADVISOR_REQUEST contract ---
 # Append to the generated task card so Claude receives the exact task ID
 # and the structured request contract.  This is a control-plane artifact;
 # it must not count as implementation progress.
+if grep -Eq '^##[[:space:]]+Advisor Gate([[:space:]]|$)' "${WORKTREE_DIR}/TASK_CARD_FULL.md"; then
 {
     echo ""
     echo "## ADVISOR_REQUEST Contract"
@@ -3147,6 +3336,7 @@ render_claude_task_card "${WORKTREE_DIR}/TASK_CARD_FULL.md" > "${WORKTREE_DIR}/C
     echo ""
     echo "Ordinary completion must not create this file. It is neither acceptance nor continuation authorization."
 } >> "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+fi
 
 # --- Advisor continuation card generation ---
 # When in advisor continuation mode, replace the task card with a minimal
@@ -3343,7 +3533,29 @@ fi
     echo "Claude has not yet reported implementation progress."
 } > "${WORKTREE_DIR}/CLAUDE_REPORT.md"
 
-if [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ]; then
+if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
+You are continuing a hash-bound execution lineage in a Codex/Claude Code workflow.
+
+Execute only the current delta in `CLAUDE_TASK_CARD.md`. Continue from the resumed
+conversation or the accepted context checkpoint embedded in that card. Do not
+rebuild a repository model that the lineage already established.
+
+Rules:
+- `TASK_CARD_FULL.md` is a Codex-owned audit artifact; do not open or summarize it.
+- Read only named targets needed for this delta. If an accepted fact is stale, stop
+  and report the exact mismatch instead of broad discovery.
+- Modify only receipt-authorized paths and preserve accepted prior work.
+- Obey the current testing boundary; run only assigned narrow checks.
+- Update `CLAUDE_PROGRESS.md` at material phase changes and remove seeded markers.
+- Update `CLAUDE_REPORT.md` with changed paths, acceptance mapping, checks,
+  deviations, blockers, and remaining risks.
+- When assigned work and reporting are complete, set `Completion Ready: yes` and
+  `Next Check: exit`, then exit normally without waiting for acknowledgement.
+
+--- CLAUDE DELTA EXECUTION CARD ---
+EOF
+elif [ "$CLAUDE_CODE_BUILDER_MODE" = "solution-planning" ]; then
 cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
 You are the solution planner in a Codex/Claude Code workflow.
 
@@ -5411,7 +5623,10 @@ PYEOF
             echo "host_handoff_action=rerun-identical-dispatch-on-authorized-host-once"
             echo "host_retry_command_form=stable-cli"
             echo "host_retry_dirty_source_mode=${CLAUDE_CODE_DIRTY_SOURCE_MODE}"
-            if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
+            if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+                echo "host_retry_context_lease=$CONTEXT_LEASE_OPTION"
+                echo "host_retry_continuation_kind=$CONTINUATION_KIND_OPTION"
+            elif [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
                 echo "host_retry_reviewed_continuation=${_REVIEWED_CONTINUATION_APPROVAL}"
             else
                 echo "host_retry_task_id=${TASK_ID}"
@@ -5432,9 +5647,11 @@ PYEOF
         "$_STARTUP_NEEDS_HOST_EXECUTION" \
         "${_REVIEWED_CONTINUATION_APPROVAL:-}" "$TASK_CARD" \
         "$CLAUDE_CODE_DIRTY_SOURCE_MODE" "$DISPATCH_EXECUTION_ENV" \
-        "$CLAUDE_CODE_HOST_AUTHORITY" "${TOOL_PROFILE_OPTION:-}" <<'PYEOF'
+        "$CLAUDE_CODE_HOST_AUTHORITY" "${TOOL_PROFILE_OPTION:-}" \
+        "$CONTEXT_LEASE_OPTION" "$CONTINUATION_KIND_OPTION" \
+        "$FORCE_FRESH_SESSION_OPTION" "$REHYDRATE_FROM_OPTION" <<'PYEOF'
 import json, os, sys
-output, outcome, task_id, category, health, classification, needs_host, reviewed_approval, task_card, dirty_source_mode, requested_env, host_authority, tool_profile = sys.argv[1:]
+output, outcome, task_id, category, health, classification, needs_host, reviewed_approval, task_card, dirty_source_mode, requested_env, host_authority, tool_profile, context_lease, continuation_kind, force_fresh, rehydrate_from = sys.argv[1:]
 needs_host_execution = needs_host == "1"
 host_requested = requested_env == "host"
 host_authorized = host_authority == "1"
@@ -5453,7 +5670,16 @@ if needs_host_execution:
     if tool_profile:
         host_retry_environment["CLAUDE_CODE_TOOL_PROFILE"] = tool_profile
         host_retry_args.extend(["--tool-profile", tool_profile])
-    if reviewed_approval:
+    if context_lease:
+        host_retry_args.extend([
+            "--context-lease", context_lease,
+            "--continuation-kind", continuation_kind,
+        ])
+        if force_fresh == "1":
+            host_retry_args.append("--force-fresh-session")
+        if rehydrate_from:
+            host_retry_args.extend(["--rehydrate-from", rehydrate_from])
+    elif reviewed_approval:
         host_retry_environment["CLAUDE_CODE_REVIEWED_CONTINUATION"] = reviewed_approval
         host_retry_args.extend(["--reviewed-continuation", reviewed_approval])
     else:
@@ -5515,7 +5741,13 @@ PYEOF
             printf ' --dirty-source-mode snapshot' >&2
         fi
         [ -z "${TOOL_PROFILE_OPTION:-}" ] || printf ' --tool-profile %q' "$TOOL_PROFILE_OPTION" >&2
-        if [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
+        if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+            printf ' --context-lease %q --continuation-kind %q' \
+                "$CONTEXT_LEASE_OPTION" "$CONTINUATION_KIND_OPTION" >&2
+            [ "$FORCE_FRESH_SESSION_OPTION" -eq 0 ] || printf ' --force-fresh-session' >&2
+            [ -z "$REHYDRATE_FROM_OPTION" ] || printf ' --rehydrate-from %q' "$REHYDRATE_FROM_OPTION" >&2
+            printf '\n' >&2
+        elif [ -n "${_REVIEWED_CONTINUATION_APPROVAL:-}" ]; then
             printf ' --reviewed-continuation %q\n' "$_REVIEWED_CONTINUATION_APPROVAL" >&2
         else
             printf ' --retry-in-place-task-id %q\n' "$TASK_ID" >&2

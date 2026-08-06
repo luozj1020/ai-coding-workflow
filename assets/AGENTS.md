@@ -47,10 +47,10 @@ work around stale launchers. Treat routing event `implementation` as
 routing reference for exact retry/result rules.
 
 Use `execution-builder` for frozen solutions, `batch-builder` for mechanical
-work, and `exploratory-builder` for bounded new features. Large work normally
-uses a short Codex plan and independent Claude implementation slices; the
-latency-heavy solution planner remains explicit opt-in.
-Route every frozen implementation slice to Claude independently.
+work, and `exploratory-builder` for bounded new features. Large work uses a
+short Codex plan; the solution planner remains explicit opt-in.
+Route every frozen implementation slice independently. Compatible sequential
+slices may reuse one hash-bound Context Lease.
 
 For delegation, read only `ai/task-card-components/catalog.md`, select one
 preset plus material gates, and run `python ai/compose_task_card.py ...`.

@@ -36,6 +36,8 @@ OWNER_LEASE = ROOT / "scripts" / "owner_lease.py"
 MODEL_USAGE = ROOT / "scripts" / "model-usage.py"
 RUN_APPROVED_VALIDATION = ROOT / "scripts" / "run-approved-validation.py"
 CLAUDE_EXTENSION_CAPSULE = ROOT / "scripts" / "claude-extension-capsule.py"
+CONTEXT_LEASE = ROOT / "scripts" / "context-lease.py"
+BUILD_EXECUTION_CAPSULE = ROOT / "scripts" / "build-execution-capsule.py"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -112,6 +114,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(MODEL_USAGE, self.repo / "scripts" / "model-usage.py")
         shutil.copy2(RUN_APPROVED_VALIDATION, self.repo / "scripts" / "run-approved-validation.py")
         shutil.copy2(CLAUDE_EXTENSION_CAPSULE, self.repo / "scripts" / "claude-extension-capsule.py")
+        shutil.copy2(CONTEXT_LEASE, self.repo / "scripts" / "context-lease.py")
+        shutil.copy2(BUILD_EXECUTION_CAPSULE, self.repo / "scripts" / "build-execution-capsule.py")
         self._write_fake_spark()
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
@@ -130,6 +134,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self._run(["git", "add", "scripts/model-usage.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/run-approved-validation.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/claude-extension-capsule.py",
+                   "scripts/context-lease.py", "scripts/build-execution-capsule.py",
                    "scripts/run-codex-spark.sh"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
@@ -1812,6 +1817,69 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         self.assertNotEqual(third.returncode, 0)
         self.assertIn("retry budget exhausted", third.stderr)
+
+    def test_context_lease_reuses_session_and_renders_delta_capsule(self):
+        self._write_builder_task_card()
+        self._run(["git", "add", "task-cards/BUILDER.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+        first = self._dispatch(
+            "task-cards/BUILDER.md", {"FAKE_CLAUDE_MODE": "stage-change"}
+        )
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        first_runtime = json.loads(
+            self._artifact_path(first.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        first_worktree = self._artifact_path(first.stdout, "Worktree")
+
+        next_card = self.repo / "next-slice.md"
+        next_card.write_text(
+            "# Next Slice\n\n## Task Mode\n\n| Field | Value |\n|---|---|\n"
+            "| Mode | builder |\n\n## Goal\n\nFinish the adjacent slice.\n\n"
+            "## Handoff Contract\n\nUpdate README.md only.\n\n"
+            "## Acceptance Criteria\n\n- README remains valid.\n\n"
+            "## Validation Contract\n\n```validation\ntrue\n```\n",
+            encoding="utf-8",
+        )
+        lease = self.repo / ".worktrees" / "next-slice.context-lease.json"
+        prepared = subprocess.run(
+            [
+                sys.executable, "scripts/context-lease.py", "create",
+                "--prior-task-id", first_runtime["task_id"],
+                "--next-task-card", str(next_card), "--next-role", "builder",
+                "--continuation-kind", "next-slice",
+                "--contract-hash", "sha256:" + "a" * 64,
+                "--accepted-existing-path", "README.md",
+                "--allow-new-write-path", "README.md",
+                "--tool-profile", first_runtime["tool_profile"],
+                "--output", str(lease),
+            ],
+            cwd=self.repo, text=True, capture_output=True,
+        )
+        self.assertEqual(prepared.returncode, 0, prepared.stderr)
+        second = self._dispatch(
+            next_card,
+            {},
+            [
+                "--context-lease", str(lease),
+                "--continuation-kind", "next-slice",
+                "--tool-profile", first_runtime["tool_profile"],
+            ],
+        )
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        second_runtime = json.loads(
+            self._artifact_path(second.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        self.assertEqual(self._artifact_path(second.stdout, "Worktree"), first_worktree)
+        self.assertEqual(second_runtime["claude_session_id"], first_runtime["claude_session_id"])
+        self.assertEqual(second_runtime["claude_session_mode"], "resume")
+        self.assertEqual(second_runtime["context_lease_route"], "warm-resume")
+        self.assertEqual(second_runtime["execution_capsule_mode"], "delta")
+        prompt = (first_worktree / "CLAUDE_PROMPT.md").read_text(encoding="utf-8")
+        self.assertIn("mode=delta", prompt)
+        self.assertIn("Finish the adjacent slice", prompt)
+        self.assertNotIn("Routing Economics", prompt)
+        self.assertIn("do not open or summarize", prompt)
+        self.assertNotIn("may be consulted", prompt)
 
     def test_missing_resume_session_records_failure_and_retries_fresh_same_owner(self):
         _, _, first_runtime = self._do_fresh_dispatch()
