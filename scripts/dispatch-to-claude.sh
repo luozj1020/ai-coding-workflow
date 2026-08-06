@@ -3303,7 +3303,6 @@ fi
 # Append to the generated task card so Claude receives the exact task ID
 # and the structured request contract.  This is a control-plane artifact;
 # it must not count as implementation progress.
-if grep -Eq '^##[[:space:]]+Advisor Gate([[:space:]]|$)' "${WORKTREE_DIR}/TASK_CARD_FULL.md"; then
 {
     echo ""
     echo "## ADVISOR_REQUEST Contract"
@@ -3336,7 +3335,6 @@ if grep -Eq '^##[[:space:]]+Advisor Gate([[:space:]]|$)' "${WORKTREE_DIR}/TASK_C
     echo ""
     echo "Ordinary completion must not create this file. It is neither acceptance nor continuation authorization."
 } >> "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
-fi
 
 # --- Advisor continuation card generation ---
 # When in advisor continuation mode, replace the task card with a minimal
