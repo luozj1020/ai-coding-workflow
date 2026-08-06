@@ -2,7 +2,27 @@
 
 When gathering information about a codebase, follow this order from cheapest to most expensive. Always start at the top and only move down when the current level is insufficient. In very large repositories, "cheapest" is measured by bounded wall time as well as token volume; a 300 second graph query is not cheap.
 
-## 1. LSP Definitions, References, Diagnostics
+## 1. Bounded CodeGraph for Indexed Code
+
+When a repository has a healthy current-worktree `.codegraph/` index and the
+question concerns a concrete indexed-code symbol, caller, callee, dependency,
+or impact radius, run one bounded CodeGraph query first. This is the default
+for both small and large repositories: file count alone must not suppress a
+healthy index. Bound it with a short timeout and one result-size cap; after one
+timeout or unusable result, record the reason and continue with the fallback.
+
+For behavior or file discovery, use:
+
+```bash
+python ai/locate-code.py "symbol or behavior" --path <area> --max-files 12
+```
+
+Its default `--codegraph auto` makes the same bounded attempt whenever the
+current index is healthy, then retains lexical candidates as fallback evidence.
+Use lexical search directly for Shell, configuration, prose, log/error text,
+or a language that CodeGraph does not index.
+
+## 2. LSP Definitions, References, Diagnostics
 
 Use the Language Server Protocol to find:
 
@@ -10,19 +30,14 @@ Use the Language Server Protocol to find:
 - Where a symbol is referenced
 - Current diagnostics (errors, warnings, hints)
 
-This is the cheapest and most precise form of code intelligence. Use it first for any question about "where is X defined" or "what uses X."
+This is often the cheapest and most precise form of code intelligence. Use it
+when CodeGraph is unavailable, the language is unsupported, or the question is
+about editor diagnostics rather than repository relationships.
 
-## 2. Bounded Locator / Codegraph Intelligence
+## 3. Locator and Fallback Evidence
 
-In large repositories, first run the bounded lexical locator:
-
-```bash
-python ai/locate-code.py "symbol or behavior" --path <area> --max-files 12
-```
-
-Use its candidate files, snippets, and suggested line reads to seed the task card's Claude Context Packet. It uses `git ls-files` plus `rg`/`git grep`, which is often cheaper and more predictable than a broad graph query.
-
-Use CodeGraph for concrete files, symbols, callers, callees, dependencies, and impact radius when the query is narrow and bounded by a short timeout. Do not run repeated broad CodeGraph queries in large repositories.
+Use locator candidates, LSP results, and CodeGraph output to seed the task
+card's Claude Context Packet. Do not run repeated broad graph queries.
 
 CodeGraph evidence is worktree-bound. Before using it, compare the current Git top level with `codegraph status . -j` fields `projectPath` and `worktreeMismatch`. A different worktree fails closed: do not quote, summarize, or place those results in a Context Packet. Fall back to LSP, `ai/locate-code.py`, targeted search, and targeted reads. In delegated execution, the dispatcher records `<task-id>.codegraph-worktree.json`; only `status=ready` permits graph use. Default `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` avoids rebuilding ephemeral indexes. Explicit `repair` may sync a current index or reindex the execution worktree when its expected value justifies the wall time.
 
@@ -33,9 +48,10 @@ Use codegraph tools to find:
 - Module-level dependency graphs
 - Impact radius of a change  -  what would break if this module changes
 
-Use this when LSP references or locator output are not enough  -  for example, when you need to understand the blast radius of a concrete change across modules. If CodeGraph times out once, record the timeout and fall back to targeted search plus line reads.
+If CodeGraph times out once, record the timeout and fall back to targeted
+search plus line reads.
 
-## 3. Targeted Search
+## 4. Targeted Search
 
 Use grep, ripgrep, or similar tools to search for:
 
@@ -46,13 +62,13 @@ Use grep, ripgrep, or similar tools to search for:
 
 Use this when LSP, locator output, and bounded CodeGraph cannot answer the question  -  for example, searching for a string that appears in comments, configs, or logs.
 
-## 4. Targeted Snippet Reads
+## 5. Targeted Snippet Reads
 
 Read specific lines or small regions of files. Use line numbers from LSP, codegraph, or search results to read only what is needed.
 
 Use this when you need to see the actual code, not just metadata about it.
 
-## 5. Whole-File Reads
+## 6. Whole-File Reads
 
 Read an entire file when:
 
@@ -62,7 +78,7 @@ Read an entire file when:
 
 Use this sparingly. If you find yourself reading many whole files, reconsider whether `ai/locate-code.py`, a narrower CodeGraph query, or a more focused search would be more efficient.
 
-## 6. Full Repository Scan
+## 7. Full Repository Scan
 
 Scan the entire repository only when:
 

@@ -175,7 +175,7 @@ ai/
   plan-progress-template.md   # Persistent progress template
   dispatch-to-claude.sh       # Dispatches task cards to Claude Code
   check-worktree.sh           # Runs checker-only validation and writes a report
-  locate-code.py              # Low-token code locator with bounded CodeGraph fallback
+  locate-code.py              # Low-token locator; healthy CodeGraph is queried by default
   review-with-codex.sh        # Sends evidence to Codex/GPT for review
   run-codex-spark.sh          # Optional gpt-5.3-codex-spark auxiliary runner
   run-parallel-loop.sh        # Experimental parallel dispatch helper
@@ -680,7 +680,7 @@ Fill `Worktree / Large Repo Strategy Gate` before dispatch when `git worktree ad
 
 Tracked-file count is only a signal to review this gate. Use `fast-large-repo` or managed reuse only when risk is low, targets are exact, dispatch is serial, and reduced untracked/patch evidence is explicitly accepted; otherwise keep a fresh worktree with full evidence. Exact mechanical Builder tasks may use `CLAUDE_CODE_BUILDER_MODE=execution-only`. A completed no-diff run may be retried in the same clean fresh worktree with `CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID=<prior-task-id>` after the dispatcher proves the recorded identity and safety conditions.
 
-Use `python ai/locate-code.py "symbol or behavior" --path src --max-files 12` before dispatch to build the `Claude Context Packet` cheaply. It ranks candidate files from path hints and lexical matches, prints short snippets, and suggests exact line reads. If Zoekt is installed and indexed, `--backend auto` uses it before lexical fallback. Sourcegraph can be used when `SOURCEGRAPH_URL` is configured. CodeGraph is bounded: `auto` skips graph search in large tracked-file repos, while `--codegraph try --codegraph-timeout 12` is reserved for specific file/symbol/call-path questions. If CodeGraph times out, record it once and continue with locator output plus targeted line reads instead of repeating broad graph queries.
+Use `python ai/locate-code.py "symbol or behavior" --path src --max-files 12` before dispatch to build the `Claude Context Packet` cheaply. It ranks candidate files from path hints and lexical matches, prints short snippets, and suggests exact line reads. If Zoekt is installed and indexed, `--backend auto` uses it before lexical fallback. Sourcegraph can be used when `SOURCEGRAPH_URL` is configured. CodeGraph is bounded: `auto` makes one graph query whenever the current index is healthy, regardless of repository file count; `--codegraph off` disables it. If CodeGraph times out, record it once and continue with locator output plus targeted line reads instead of repeating broad graph queries.
 
 For optional indexed search setup:
 

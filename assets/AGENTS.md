@@ -11,8 +11,11 @@ revision, assigned tests, and long validation; Spark gives bounded advice;
 humans own merge and destructive or high-impact approval.
 
 Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
-Prefer LSP, `ai/locate-code.py`, targeted reads, worktree-valid CodeGraph, and
-deterministic tools over broad reads. Do not browse the web for local failures unless
+For concrete indexed-code symbols or relationships, first run one bounded,
+worktree-valid CodeGraph query. Use `ai/locate-code.py` for behavior/file
+discovery (healthy indexes are attempted by default); use lexical search for
+Shell, configuration, text, or unsupported languages. Record its result or
+skip reason before broad reads. Do not browse the web for local failures unless
 the user requests current external information. Ordinary-risk work proceeds
 after deterministic checks without a second business confirmation.
 
@@ -110,8 +113,9 @@ unapproved write paths fail closed; `editor-only` removes Bash.
 
 ## Context and Safety
 
-- Accept CodeGraph only when `codegraph status . -j` matches the current clean
-  worktree; delegated graph use additionally requires a ready worktree receipt.
+- For indexed-code questions, use CodeGraph once when `codegraph status . -j`
+  matches the clean worktree; record `used`, `unsupported-language`, or the
+  skip reason. Delegated graph use additionally requires a ready receipt.
 - Keep artifacts under `.worktrees/` or `ai/plans/<task-id>/`; return compact summaries and paths,
   not logs, full diffs, or repeated file bodies.
 - Skill feedback is user-triggered and read-only: use the conversation and

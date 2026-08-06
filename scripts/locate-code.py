@@ -444,13 +444,18 @@ def codegraph_status_guard(repo_root, timeout=5.0):
 
 
 def should_try_codegraph(mode, repo_root, tracked_count, threshold):
-    """Return broad permission, narrowed permission, and routing reason."""
+    """Return graph-query permission and a durable skip/use reason.
+
+    ``auto`` means one bounded query whenever the current worktree has a
+    healthy CodeGraph index.  Repository size alone is not evidence that the
+    graph is stale or irrelevant; the timeout and output caps provide the
+    budget bound.  ``threshold`` remains an accepted compatibility argument
+    for callers from earlier workflow versions.
+    """
     if mode == "off":
         return False, False, "off"
     if not os.path.isdir(os.path.join(repo_root, ".codegraph")):
         return False, False, "no .codegraph index"
-    if mode == "auto" and tracked_count > threshold:
-        return False, False, "auto skipped CodeGraph: tracked files {} > threshold {}".format(tracked_count, threshold)
     if not shutil.which("codegraph"):
         return False, False, "codegraph CLI missing"
     status_ready, status_reason = codegraph_status_guard(repo_root)
@@ -458,7 +463,7 @@ def should_try_codegraph(mode, repo_root, tracked_count, threshold):
         return False, False, status_reason
     if mode == "try":
         return True, True, "explicit try"
-    return True, True, "auto small-enough repo"
+    return True, True, "auto healthy current index"
 
 
 def run_codegraph(repo_root, query, timeout, max_bytes):
@@ -823,7 +828,7 @@ def parse_args(argv=None):
         "--codegraph",
         choices=["auto", "off", "try"],
         default="auto",
-        help="CodeGraph mode. auto uses a short attempt only for smaller indexed repos.",
+        help="CodeGraph mode. auto makes one bounded attempt for every healthy current index.",
     )
     parser.add_argument("--codegraph-timeout", type=float, default=12.0, help="CodeGraph timeout in seconds.")
     parser.add_argument(
@@ -836,7 +841,7 @@ def parse_args(argv=None):
         "--codegraph-auto-file-threshold",
         type=int,
         default=5000,
-        help="Tracked-file threshold above which auto mode skips CodeGraph.",
+        help="Deprecated compatibility option; healthy indexes are no longer skipped by file count.",
     )
     parser.add_argument("--codegraph-max-bytes", type=int, default=6000, help="Maximum CodeGraph excerpt bytes.")
     parser.add_argument(

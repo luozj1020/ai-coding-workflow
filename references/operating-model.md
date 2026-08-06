@@ -152,10 +152,10 @@ Human or Codex/GPT
 
 Before reading files or scanning repositories, agents must follow this order:
 
-1. LSP definitions/references/diagnostics
-2. Bounded locator search with `ai/locate-code.py` for large-repository code location
-3. CodeGraph callers/callees/dependencies/impact radius for concrete files or symbols
-4. Targeted search (grep, ripgrep)
+1. One bounded CodeGraph query for concrete indexed-code symbols or relationships when the current worktree index is healthy
+2. LSP definitions/references/diagnostics, when available
+3. `ai/locate-code.py` for behavior/file discovery (its default also attempts healthy CodeGraph)
+4. Targeted search for Shell, configuration, text, logs, unsupported languages, or a recorded graph fallback
 5. Targeted snippet reads
 6. Whole-file reads only when necessary
 7. Full repository scan only with explicit human approval

@@ -111,27 +111,44 @@ class LocateCodeTests(unittest.TestCase):
             self.assertTrue(any(row["path"] == "service.py" for row in payload["candidates"]))
             self.assertNotIn("snippet", payload["candidates"][0])
 
-    def test_auto_codegraph_skips_large_repositories_before_cli_lookup(self):
+    def test_auto_codegraph_uses_healthy_index_regardless_of_file_threshold(self):
+        mod = _load_module()
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"
             repo.mkdir()
             (repo / ".codegraph").mkdir()
-            (repo / "one.py").write_text("alpha = 1\n", encoding="utf-8")
-            (repo / "two.py").write_text("alpha = 2\n", encoding="utf-8")
+            with unittest.mock.patch.object(mod.shutil, "which", return_value="codegraph"), \
+                 unittest.mock.patch.object(mod, "codegraph_status_guard", return_value=(True, "ready")):
+                broad, narrowed, reason = mod.should_try_codegraph(
+                    "auto", str(repo), tracked_count=100_000, threshold=1,
+                )
+        self.assertTrue(broad)
+        self.assertTrue(narrowed)
+        self.assertEqual(reason, "auto healthy current index")
+
+    def test_auto_codegraph_runs_bounded_query_for_healthy_large_repository(self):
+        mod = _load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            repo.mkdir()
+            (repo / ".codegraph").mkdir()
+            (repo / "service.py").write_text("def alpha(): pass\n", encoding="utf-8")
             self.init_repo(repo)
-
-            result = self.run_locator(
-                repo,
-                "--codegraph",
-                "auto",
-                "--codegraph-auto-file-threshold",
-                "1",
-                "alpha",
-            )
-
-            self.assertIn("CodeGraph: broad skipped (auto skipped CodeGraph: tracked files", result.stdout)
-            self.assertIn("one.py", result.stdout)
-            self.assertIn("two.py", result.stdout)
+            args = mod.parse_args([
+                "--repo", str(repo), "--codegraph", "auto", "--format", "full",
+                "--codegraph-auto-file-threshold", "1", "alpha",
+            ])
+            original_which = mod.shutil.which
+            def tool_path(name):
+                return "codegraph" if name == "codegraph" else original_which(name)
+            result = {"rc": 0, "timed_out": False, "elapsed": 0.01, "stdout": "graph", "stderr": ""}
+            with unittest.mock.patch.object(mod.shutil, "which", side_effect=tool_path), \
+                 unittest.mock.patch.object(mod, "codegraph_status_guard", return_value=(True, "ready")), \
+                 unittest.mock.patch.object(mod, "run_codegraph", return_value=(result, "Graph result")) as graph:
+                report = mod.build_report(args)
+        graph.assert_called_once()
+        self.assertIn("CodeGraph: broad rc=0", report)
+        self.assertIn("## CodeGraph Excerpt", report)
 
 
 class LocateCodeMockTests(unittest.TestCase):
@@ -400,7 +417,7 @@ class LocateCodeMockTests(unittest.TestCase):
             self.assertIn("codegraph_broad: timeout", report)
             self.assertIn("codegraph_narrowed: rc=0", report)
 
-    def test_large_auto_skips_all_codegraph_calls(self):
+    def test_large_auto_runs_one_bounded_codegraph_call(self):
         with tempfile.TemporaryDirectory() as tmp:
             mod, _repo, args = self._graph_repo_args(tmp, codegraph_mode="auto", threshold=0)
             calls = []
@@ -414,8 +431,8 @@ class LocateCodeMockTests(unittest.TestCase):
                  unittest.mock.patch.object(mod, "codegraph_status_guard", return_value=(True, "ready")), \
                  unittest.mock.patch.object(mod, "run_codegraph", side_effect=fake_graph):
                 report = mod.build_report(args)
-            self.assertEqual(calls, [])
-            self.assertIn("codegraph_broad: skipped", report)
+            self.assertEqual(calls, ["Worker execute"])
+            self.assertIn("codegraph_broad: rc=0", report)
             self.assertIn("codegraph_narrowed: not_attempted", report)
             self.assertIn("src/worker.py", report)
 
