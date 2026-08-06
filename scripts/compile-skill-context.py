@@ -414,8 +414,8 @@ def _match_reason(rule: Dict[str, Any], facts: Dict[str, Any]) -> List[str]:
     return reasons or ["unconditional"]
 
 
-def _source_span(path: Path, anchor: str) -> Dict[str, Any]:
-    """Bind provenance to an exact Markdown heading when the source has one."""
+def _source_span(source: bytes, anchor: str) -> Dict[str, Any]:
+    """Bind provenance to an exact Markdown heading from already-read source bytes."""
     unavailable = {
         "status": "unavailable",
         "start_line": None,
@@ -424,10 +424,7 @@ def _source_span(path: Path, anchor: str) -> Dict[str, Any]:
     }
     if not anchor:
         return {**unavailable, "status": "unanchored"}
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return unavailable
+    lines = source.decode("utf-8", errors="replace").splitlines()
     heading = re.compile(r"^(#{{1,6}})[ \t]+{}[ \t]*$".format(re.escape(anchor)))
     start = None
     level = None
@@ -466,12 +463,14 @@ def _source_provenance(rule: Dict[str, Any], source_root: Path) -> Dict[str, Any
         "status": "unavailable",
         "sha256": None,
     }
-    if candidate.is_file():
-        value["status"] = "bound"
-        value["sha256"] = _sha256_file(candidate)
-        value["span"] = _source_span(candidate, value["anchor"])
+    try:
+        raw = candidate.read_bytes()
+    except OSError:
+        value["span"] = _source_span(b"", value["anchor"])
     else:
-        value["span"] = _source_span(candidate, value["anchor"])
+        value["status"] = "bound"
+        value["sha256"] = _sha256_bytes(raw)
+        value["span"] = _source_span(raw, value["anchor"])
     return value
 
 

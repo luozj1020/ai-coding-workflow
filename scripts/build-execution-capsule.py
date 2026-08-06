@@ -260,12 +260,6 @@ def _recovery_delta(
     raw = path.read_bytes()
     if len(raw) > MAX_RECOVERY_DELTA_BYTES:
         raise CapsuleError("recovery delta exceeds {} bytes".format(MAX_RECOVERY_DELTA_BYTES))
-    text = raw.decode("utf-8", errors="replace").strip()
-    marker = "<!-- {} -->\n## Bounded Recovery Delta".format(RECOVERY_DELTA_SCHEMA)
-    if not text.startswith(marker):
-        raise CapsuleError("recovery delta has an unsupported schema marker")
-    if "Current task-card digest: `{}`".format(task_card_sha256) not in text:
-        raise CapsuleError("recovery delta is not bound to this task card")
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -281,6 +275,12 @@ def _recovery_delta(
         or receipt.get("model_generated") is not False
     ):
         raise CapsuleError("recovery-delta receipt is invalid or does not match its bytes")
+    text = raw.decode("utf-8", errors="replace").strip()
+    marker = "<!-- {} -->\n## Bounded Recovery Delta".format(RECOVERY_DELTA_SCHEMA)
+    if not text.startswith(marker):
+        raise CapsuleError("recovery delta has an unsupported schema marker")
+    if "Current task-card digest: `{}`".format(task_card_sha256) not in text:
+        raise CapsuleError("recovery delta is not bound to this task card")
     failure_class = receipt.get("failure_class")
     if failure_class not in {"model-no-progress", "acknowledgement-only", "report-evidence-mismatch"}:
         raise CapsuleError("recovery-delta receipt has an unsupported failure class")

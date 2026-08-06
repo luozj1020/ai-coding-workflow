@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,18 @@ def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=check,
     )
+
+
+def dispatch_shell() -> str:
+    """Return a real POSIX Bash instead of Windows' WSL compatibility shim."""
+    if os.name != "nt":
+        return "bash"
+    git = shutil.which("git")
+    if git:
+        candidate = Path(git).resolve().parents[1] / "bin" / "bash.exe"
+        if candidate.is_file():
+            return str(candidate)
+    raise unittest.SkipTest("Git for Windows Bash is unavailable")
 
 
 class ContextCompilerTests(unittest.TestCase):
@@ -427,7 +440,7 @@ class ContextCompilerTests(unittest.TestCase):
             })
             completed = subprocess.run(
                 [
-                    "bash", str(ROOT / "scripts" / "dispatch-to-claude.sh"), "task.md",
+                    dispatch_shell(), str(ROOT / "scripts" / "dispatch-to-claude.sh"), "task.md",
                     "--context-compile-strategy", "anchors-only",
                 ],
                 cwd=repo,
