@@ -11,7 +11,7 @@
       "priority": 90,
       "review_version": 1,
       "selection": "anchor",
-      "source": {"anchor": "Builder Contract", "path": "ai/task-card-components/builder.md"},
+      "source": {"anchor": "Builder Contract", "path": "assets/task-card-components/builder.md"},
       "text": "Implement only the assigned production change; do not add acceptance tests or broad validation unless the card explicitly assigns them."
     },
     {
@@ -23,7 +23,7 @@
       "priority": 94,
       "review_version": 1,
       "selection": "anchor",
-      "source": {"anchor": "Required Report", "path": "ai/task-card-components/builder.md"},
+      "source": {"anchor": "Required Report", "path": "assets/task-card-components/builder.md"},
       "text": "Use only the exact report contract frozen in the Task Card; report declared checks and results, and never treat seeded progress or control files as completion evidence."
     },
     {
@@ -35,7 +35,7 @@
       "priority": 92,
       "review_version": 1,
       "selection": "anchor",
-      "source": {"anchor": "Checker Contract", "path": "ai/task-card-components/checker.md"},
+      "source": {"anchor": "Checker Contract", "path": "assets/task-card-components/checker.md"},
       "text": "After each assigned test file, run its syntax/import check and exact narrow single-file test before writing the next file."
     },
     {
@@ -59,7 +59,7 @@
       "priority": 88,
       "review_version": 1,
       "selection": "anchor",
-      "source": {"anchor": "Worktree / Large Repo Strategy Gate", "path": "ai/task-card-components/large-repo.md"},
+      "source": {"anchor": "Worktree / Large Repo Strategy Gate", "path": "assets/task-card-components/large-repo.md"},
       "text": "Start from supplied targets and source-of-truth evidence; if discovery is still necessary, use one bounded locator query instead of broad repository scanning."
     },
     {
@@ -71,7 +71,7 @@
       "priority": 89,
       "review_version": 1,
       "selection": "anchor",
-      "source": {"anchor": "Root Cause Gate", "path": "ai/task-card-components/root-cause.md"},
+      "source": {"anchor": "Root Cause Gate", "path": "assets/task-card-components/root-cause.md"},
       "text": "Keep the symptom, hypothesis, checked comparison, fix mechanism, and disproof stop rule tied to the current evidence before changing the mechanism."
     },
     {
@@ -83,7 +83,7 @@
       "priority": 90,
       "review_version": 1,
       "selection": "anchor",
-      "source": {"anchor": "Test-First / TDD Contract", "path": "ai/task-card-components/tdd.md"},
+      "source": {"anchor": "Test-First / TDD Contract", "path": "assets/task-card-components/tdd.md"},
       "text": "Preserve the frozen red/green evidence order; do not expand from the assigned acceptance behavior into unrelated test coverage."
     },
     {
@@ -119,7 +119,7 @@
       "priority": 80,
       "review_version": 1,
       "selection": "rescue",
-      "source": {"anchor": "Validation Contract", "path": "ai/task-card-components/core.md"},
+      "source": {"anchor": "Validation Contract", "path": "assets/task-card-components/core.md"},
       "text": "Run the exact narrow failing or assigned validation first; do not substitute a broad suite for the frozen validation contract."
     },
     {

@@ -125,6 +125,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(COMPILE_SKILL_CONTEXT, self.repo / "scripts" / "compile-skill-context.py")
         (self.repo / "assets" / "skill-context").mkdir(parents=True)
         shutil.copy2(SKILL_CONTEXT_RULES, self.repo / "assets" / "skill-context" / "rules-v1.json")
+        (self.repo / "assets" / "task-card-components").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "assets" / "task-card-components" / "builder.md",
+            self.repo / "assets" / "task-card-components" / "builder.md",
+        )
         self._write_fake_spark()
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
@@ -146,6 +151,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                    "scripts/context-lease.py", "scripts/build-execution-capsule.py",
                    "scripts/build-context-checkpoint.py", "scripts/build-recovery-delta.py",
                    "scripts/compile-skill-context.py", "assets/skill-context/rules-v1.json",
+                   "assets/task-card-components/builder.md",
                    "scripts/run-codex-spark.sh"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
@@ -2547,7 +2553,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("## Validation Contract", claude_card)
         self.assertNotIn("## Implementation Notes", claude_card)
         self.assertNotIn("## Review Checklist", claude_card)
-        self.assertIn("execution-only view", claude_card.lower())
+        self.assertIn("bounded execution view", claude_card.lower())
         prompt = capture.read_text(encoding="utf-8")
         self.assertIn("execution-only Builder mode", prompt)
         self.assertIn("Do NOT restate or redesign the plan", prompt)
