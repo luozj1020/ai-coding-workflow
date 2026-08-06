@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,15 +26,10 @@ def run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 
 def dispatch_shell() -> str:
-    """Return a real POSIX Bash instead of Windows' WSL compatibility shim."""
-    if os.name != "nt":
-        return "bash"
-    git = shutil.which("git")
-    if git:
-        candidate = Path(git).resolve().parents[1] / "bin" / "bash.exe"
-        if candidate.is_file():
-            return str(candidate)
-    raise unittest.SkipTest("Git for Windows Bash is unavailable")
+    """The dispatcher needs authoritative POSIX process identity evidence."""
+    if os.name == "nt":
+        raise unittest.SkipTest("dispatcher integration requires POSIX process identity support")
+    return "bash"
 
 
 class ContextCompilerTests(unittest.TestCase):

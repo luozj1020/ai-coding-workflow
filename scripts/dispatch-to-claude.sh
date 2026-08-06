@@ -358,6 +358,12 @@ CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS="${CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTE
 CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS="${CLAUDE_CODE_TIMEOUT_ADVISOR_RETRY_SECONDS:-30}"
 CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS="${CLAUDE_CODE_ZERO_OUTPUT_PROBE_TIMEOUT_SECONDS:-60}"
 CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS="${CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS:-120}"
+case "$CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS" in
+    ''|*[!0-9]*)
+        echo "Error: CLAUDE_CODE_RECENT_ACTIVITY_WINDOW_SECONDS must be a non-negative integer." >&2
+        exit 1
+        ;;
+esac
 CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS="${CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS:-2}"
 case "$CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS" in ''|*[!0-9]*|0) echo "Error: CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS must be a positive integer." >&2; exit 1 ;; esac
 CLAUDE_CODE_TERMINAL_DRAIN_SECONDS="${CLAUDE_CODE_TERMINAL_DRAIN_SECONDS:-1}"
@@ -7443,18 +7449,6 @@ if [ -n "${AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE:-}" ]; then
     fi
 fi
 progress_log "Claude phase metrics saved: context_seconds=${_PHASE_CONTEXT_SECONDS}, implementation_seconds=${_PHASE_IMPLEMENTATION_SECONDS}, tail_seconds=${_PHASE_TAIL_SECONDS}, validation_seconds_observed=${_PHASE_VALIDATION_SECONDS}, completion_ready=${COMPLETION_READY_DETECTED}, artifact=${PHASE_METRICS_FILE}"
-# Git Bash can lose visibility of a background wrapper PID while its script
-# descendant is still running.  If that makes the monitor leave its loop, use
-# the completed run's elapsed time to preserve the first-progress contract.
-# In observe mode, do not mark as first-progress timeout (no kill occurred).
-if [ "$CLAUDE_FIRST_PROGRESS_TIMED_OUT" -eq 0 ] && \
-   [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && \
-   [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
-   [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ] && \
-   [ "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" != "observe" ]; then
-    CLAUDE_FIRST_PROGRESS_TIMED_OUT=1
-    progress_log "First-progress timeout reconciled after child exit: elapsed_seconds=${ELAPSED}, timeout_seconds=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}"
-fi
 progress_log "Claude subprocess ended; dispatcher finalizing artifacts: pid=${CLAUDE_PID}, wait_status=${CLAUDE_STATUS}, elapsed_seconds=${ELAPSED}"
 FINAL_NETWORK_SUMMARY="$(capture_network_snapshot "$CLAUDE_PID" "$ELAPSED" 0)"
 progress_log "Final network snapshot: ${FINAL_NETWORK_SUMMARY}"
@@ -8113,6 +8107,33 @@ PYEOF
 else
     PRODUCT_STATE_FINALIZATION_FAILED=1
     progress_log "Canonical final product-state snapshot failed; terminal evidence will fail closed"
+fi
+# A child can write immediately before it exits while a bounded Spark judgment
+# is in flight, leaving no subsequent live sampling iteration. Reconcile the
+# canonical final snapshot before applying a first-progress timeout so a real
+# product delta is never misclassified as no progress.
+if [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && [ "$FINAL_PRODUCT_DELTA" = "1" ]; then
+    FIRST_PROGRESS_DETECTED=1
+    if [ "$_PARSED_TASK_MODE" = "checker-test" ]; then
+        FIRST_PROGRESS_SIGNAL="checker_worktree_change_terminal_reconcile"
+    else
+        FIRST_PROGRESS_SIGNAL="builder_worktree_change_terminal_reconcile"
+    fi
+    FIRST_PROGRESS_ELAPSED_SECONDS="$ELAPSED"
+    [ "$LAST_PRODUCT_CHANGE_EPOCH" -gt 0 ] || LAST_PRODUCT_CHANGE_EPOCH="$END_EPOCH"
+    CLAUDE_FIRST_PROGRESS_TIMED_OUT=0
+    progress_log "First substantive progress detected: signal=${FIRST_PROGRESS_SIGNAL}, first_progress_detected=1, elapsed_seconds=${ELAPSED}, source=terminal_product_state_reconciliation"
+    monitor_event "event=first-progress-reconciled running=no terminal=no elapsed_seconds=${ELAPSED} signal=${FIRST_PROGRESS_SIGNAL} product_delta_from_baseline=1 source=terminal_product_state_reconciliation"
+elif [ "$CLAUDE_FIRST_PROGRESS_TIMED_OUT" -eq 0 ] && \
+     [ "$FIRST_PROGRESS_DETECTED" -eq 0 ] && \
+     [ "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" -gt 0 ] && \
+     [ "$ELAPSED" -ge "$CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS" ] && \
+     [ "$CLAUDE_CODE_FIRST_PROGRESS_ACTION" != "observe" ]; then
+    # Git Bash can lose visibility of a background wrapper PID while its script
+    # descendant is still running. Preserve the first-progress contract only
+    # after the final canonical product snapshot confirms no real delta.
+    CLAUDE_FIRST_PROGRESS_TIMED_OUT=1
+    progress_log "First-progress timeout reconciled after child exit: elapsed_seconds=${ELAPSED}, timeout_seconds=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}"
 fi
 VALID_CLAUDE_REPORT=0
 if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
