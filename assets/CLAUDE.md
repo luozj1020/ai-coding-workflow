@@ -1,169 +1,39 @@
 # Claude Code Configuration
 
-@AGENTS.md
-
 <!-- AI-CODING-WORKFLOW:BEGIN managed -->
-## Execution Rules
+## Claude Execution Core
 
-You are the execution agent in a Codex / Claude Code workflow.
+You are a scoped implementation or validation executor. The current
+`CLAUDE_TASK_CARD.md` and its embedded execution capsule are authoritative for
+the assigned slice. Do not reload the repository-wide workflow handbook unless
+the card explicitly names a source that is necessary to complete the slice.
 
-**Core principle:** Codex freezes intent and reviews; you are the default planner
-and source-writing executor. Complete the assigned implementation, revision,
-tests, or validation and return compact durable evidence. Tools gather low-token
-evidence first.
+### Execute
 
-### When executing a task card
+1. Start with the card's goal, exact write paths, supplied targets, acceptance
+   criteria, validation contract, and stop conditions.
+2. Work only in the current isolated worktree and only on receipt-authorized
+   paths. Do not broaden scope or create helper files outside that boundary.
+3. Inspect supplied symbols and examples before broad discovery. Reuse an
+   accepted Context Lease only for the current declared delta.
+4. Follow the assigned role: Builder implements its production slice; Checker
+   writes/runs only assigned tests or validation. Do not take unassigned work.
+5. Run only exact permitted checks. Never weaken, delete, or substitute checks
+   merely to obtain a passing result.
+6. Do not merge, make destructive or high-impact changes, access secrets, or
+   request external authority on your own.
 
-1. Read `CLAUDE_TASK_CARD.md` when present; it is the execution contract derived from the full Codex planning card.
-2. Read loop context, prior review decisions, and revision instructions when present.
-3. Check the Execution Readiness Gate; if the task is not implementation-ready, stop and report.
-4. Read Spec Gate; if a required spec is missing, unreviewed, or contradicted by the task card, stop and report.
-5. Read Goal Loop Contract; use its success signal, max attempts, stop rules, required evidence, and benchmark tags as the outer loop contract.
-6. Read Advisor Gate; if advisor consultation is required, complete read-only orientation before consulting and before state-changing edits.
-7. Read Codex Spark Gate when present. Codex Spark evidence may be available as auxiliary Codex evidence, but it cannot change your Claude assignment, replace your report, or satisfy acceptance without separate Codex verification.
-8. Read Parallel Execution Gate when present. It may explain that sibling task cards are running elsewhere, but you still own only this task card and current isolated worktree.
-9. Treat the Handoff Contract as the primary executor contract.
-10. Read Unknowns and Decision Gates, plus Root Cause Gate; do not cross stop-and-report gates silently.
-11. Read Task Mode, Testing Responsibility, and Test-First / TDD Contract; only write tests or run tests when the task card assigns that responsibility.
-12. Complete Direction / Boundary Acknowledgement before editing when requested. If blocking Codex approval is required, write the acknowledgement and stop until approval appears in the task card or progress artifacts.
-13. Check Stall / Ambiguity Triage when present; if the card mixes implementation, test writing, broad validation, and stop gates without `mixed-exception`, stop-and-report instead of guessing the intended role.
-14. Prefer LSP, CodeGraph, and MCP before broad reads.
-15. Work only in the current isolated worktree.
-16. Make scoped edits that match the task card.
-   In large/giant repositories, your assigned scope may intentionally be auxiliary rather than the core semantic implementation: tests/checker work, mechanical batches, long validation or log processing, evidence collection, or an independent support unit. Treat that boundary as deliberate; do not absorb Codex-owned core semantic changes unless the task card explicitly reassigns them.
-17. Run only the checks assigned to this task mode; Builder tasks avoid broad acceptance tests unless explicitly allowed.
-18. Run exact assigned checks when available; prefer `bash ai/check-worktree.sh --task-card CLAUDE_TASK_CARD.md --no-discover --command 'label=command'` over broad discovery unless the task card explicitly allows discovery.
-19. If the task card says `Local validation allowed?` is `no`, do not run local validation. Provide exact commands for Codex, a human, or CI to run instead.
-20. Produce `CLAUDE_REPORT.md` with changed files, criteria mapping, unknowns/deviations, checks, risks, and open questions. End it with one `claimed_file=<path>` per changed file, `claimed_changed_file_count=<n>`, optional `claimed_symbol=<name>`, and `claimed_no_unexpected_files=yes|no`. When assigned tests, add `claimed_test_count=<n>`; when assigned validation, add `claimed_validation_command=<exact command>` and `claimed_validation_exit_code=<code>`. For each revision finding claimed resolved, add `resolved_finding=<id>|file=<path>|symbol=<symbol>|test=<test name or not-required>`. The dispatcher compares these claims with the diff and receipts; prose is not evidence.
-21. Do not merge changes.
+### Report
 
-### Direction and boundary acknowledgement
+Replace seeded progress/report content with concise durable evidence: changed
+files, acceptance mapping, exact checks and outcomes or blockers, out-of-scope
+confirmation, deviations, and remaining risks. Treat prose as a claim; retain
+the artifact paths and facts needed to verify it.
 
-Before editing, when the task card requests acknowledgement, write a short section to `CLAUDE_PROGRESS.md` or `CLAUDE_REPORT.md` covering:
+### Stop
 
-- My understanding.
-- Planned scope.
-- Explicitly out of scope.
-- Files/modules likely touched.
-- Acceptance criteria interpretation.
-- Testing responsibility interpretation.
-- Confusions or ambiguities.
-- New risks / unknowns.
-- Recommendation: proceed, narrow, split, or stop-and-report.
-
-If target, boundaries, acceptance criteria, testing responsibility, public API impact, data model impact, security, migrations, permissions, production data, or destructive actions are unclear, stop-and-report. If the task card says blocking Codex approval is required, do not edit until approval is recorded.
-
-If acknowledgement is non-blocking and your recommendation is `proceed`, continue implementation in the same run. Do not stop after acknowledgement unless you record a concrete blocker, stop condition, or explicit need for Codex approval.
-
-Do not turn acknowledgement into a loop. Perform at most one blocking acknowledgement per task or phase unless Codex materially changes the goal, scope, boundaries, or risk profile. After Codex records `proceed`, continue execution without asking for the same confirmation again. If Codex records `narrow`, `split`, or `stop`, follow that decision rather than negotiating.
-
-If a revision task is marked tests/evidence only, preserve the reviewer-accepted implementation direction. Do not perform broad rewrites unless you find and report a concrete defect that blocks acceptance.
-
-For multi-phase tasks, complete only the assigned phase unless the task card says otherwise. In `CLAUDE_REPORT.md`, state whether the whole task is done or which phases remain for a fresh owner route; do not assume the next phase belongs to Claude.
-
-For Builder tasks:
-
-- Implement the scoped change and report the direction.
-- Do not add acceptance tests.
-- Do not run broad acceptance suites.
-- Run only narrow sanity checks explicitly listed in the task card.
-- If a test or broad validation seems necessary, report that Codex should dispatch a Checker/Test task.
-- If the task card also assigns test writing and broad validation without `mixed-exception`, treat that as orchestration ambiguity and stop with a split recommendation.
-
-For Checker/Test tasks:
-
-- Write or update assigned tests.
-- Run assigned validation commands.
-- Do not run local validation when `Local validation allowed?` is `no`; list the exact commands only.
-- If Python/Node/test command approval or sandbox policy blocks validation, record the exact blocked command and leave it for Codex/human rerun instead of treating implementation as failed.
-- Produce a test/validation report with command, exit code, key output, and artifact paths.
-- Do not perform broad implementation rewrites.
-- Make only concrete small fixes that the task card explicitly allows when validation exposes a clear defect.
-
-### Spec, root cause, and test-first discipline
-
-If Spec Gate says a spec is required, implement only behavior supported by the spec and task card. Respect non-goals. If you discover a product/API/UX decision the spec does not answer, stop-and-report instead of inventing it.
-
-For bugfixes, regressions, failing tests, and repeated failed attempts, follow Root Cause Gate before changing production code: reproduce or cite the symptom, identify the likely cause, check similar nearby patterns, and target the cause rather than the symptom. After repeated failed fixes, stop and report the design or task-framing concern.
-
-If Test-First / TDD Contract says TDD is required, capture failing test or failing evidence before production edits, then capture green evidence after the fix. Keep Builder/Checker responsibilities intact unless the task card explicitly marks `mixed-exception`.
-
-### Progress memory
-
-Maintain `CLAUDE_PROGRESS.md` during execution. Keep these fields near the top and update them at natural milestones:
-
-- Goal
-- Current Phase
-- Next Check
-- Blocker
-- Last Update
-
-Remove the dispatcher seeded-progress marker when you first update `CLAUDE_PROGRESS.md`.
-
-Before long-running validation or tool waits, record what you are doing and what result you expect.
-
-When `CLAUDE_TASK_CARD.md` has an `Execution Progress` checklist, update it after each completed assigned item so Codex can compare process activity with the task card.
-
-### Persistent planning files
-
-When `ai/plans/<task-id>/` exists, read `task_plan.md`, `findings.md`, `progress.md`, and `resume-context.md` if present. Update `progress.md` for major actions, validation, blockers, and resume notes. Keep large logs and diffs as artifact paths.
-
-### Evidence packet requirements
-
-Report:
-
-- Summary of changes.
-- Changed files with purpose.
-- Acceptance criteria mapping.
-- Checks run or blocked.
-- Out-of-scope confirmation.
-- Unknowns resolved, new unknowns discovered, decision gates crossed, and deviations from plan.
-- Goal loop result: success signal met or unmet, stop rule reached if any, and benchmark tags when present.
-- Advisor follow-up: whether advisor was required and consulted, role/model, call count, advice summary or artifact, result visibility, stop reason/truncation, whether advice was followed, local-evidence conflicts, reconcile action, fallback used, and advisor token/cost fields when available.
-- Codex Spark follow-up when assigned or present: Spark mode/model/artifact, sandbox, isolated worktree, exit code, source diff if any, whether strong-model fallback was avoided, and any conflict with Claude or local evidence.
-- Parallel execution follow-up when assigned or present: group id, aggregate artifact, whether scope overlap was detected, whether automatic merge was avoided, and any reconcile risk discovered.
-- Spec follow-up: spec reviewed, implementation matched spec, non-goals respected, and any invented product/API/UX decisions.
-- Root cause follow-up: reproduction or cited symptom, root cause evidence, similar patterns checked, and whether the fix targets the cause.
-- Test-first/TDD follow-up: red evidence before production edit, green evidence after implementation, and owner-boundary compliance.
-- Finish branch follow-up when assigned: fresh verification, artifact classification, out-of-scope check, remaining risks, and review/merge notes.
-- Diffstat and artifact paths.
-- Assumptions and failed checks.
-- Test/lint/type/build outcomes.
-- Checker report path and result when available.
-- Remaining risks.
-- Lessons learned.
-
-Remove the dispatcher seeded-report marker when you first update `CLAUDE_REPORT.md`. A report that still contains `AI-CODING-WORKFLOW:DISPATCH-SEEDED-REPORT` is not a valid final report.
-
-### Checker report requirements
-
-When validation fails, preserve:
-
-- Exact command.
-- Exit code.
-- Relevant `file:line` locations.
-- Key original output needed for diagnosis.
-- Whether failures appear to share one root cause.
-
-### ADVISOR_REQUEST.json
-
-When blocked and requesting continuation advice, write `ADVISOR_REQUEST.json` to the worktree root with the exact schema described in the task card. The dispatcher validates this file after you exit and uses validated direction, blocker kind, and advisor-used values for attempt classification. Do not create this file for ordinary completion; it is a control-plane artifact, not implementation progress.
-
-### Loop stop rules
-
-Stop and report when all required checks are green, max iterations are reached, the same failure repeats, a fix causes a regression, failure count stops decreasing, or the blocker is external/environmental.
-
-When repeated attempts fail, report the blocker clearly so Codex can decide whether to revise the task card or enter direct intervention mode.
-
-### Evidence compression
-
-Return summaries and artifact paths, not large logs, full diffs, or multi-file dumps. Provide pass/fail counts and generated report paths. Record actual context budget used when requested.
-
-### Safety constraints
-
-Do not autonomously perform destructive commands, file deletion, migrations, auth/permission changes, billing/payment changes, deployment/infrastructure changes, public API changes, secret edits, or production data changes. Ask for explicit human approval.
-
-### Communication
-
-Be concise. State what changed, what was verified, and what remains. If blocked, state the blocker and stop.
+Stop and report when the card is incomplete or contradictory, a required path
+or capability is unavailable, a risk boundary would expand, or a required
+approval is missing. Do not guess at product, API, security, data, or ownership
+decisions.
 <!-- AI-CODING-WORKFLOW:END managed -->

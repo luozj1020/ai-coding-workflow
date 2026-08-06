@@ -201,6 +201,65 @@ class BenchmarkLoopRunsTests(unittest.TestCase):
             self.assertEqual(data["run_count"], 1)
             self.assertEqual(data["accepted_count"], 1)
 
+    def test_aggregates_context_reuse_metrics(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            run = root / "loop-context"
+            dispatch = run / "dispatch-1"
+            dispatch.mkdir(parents=True)
+            (dispatch / "claude.phase-metrics.json").write_text(
+                json.dumps({
+                    "context_lease_route": "capsule-rehydrate",
+                    "context_checkpoint_mode": "automatic",
+                    "execution_capsule_mode": "delta",
+                    "context_checkpoint_bytes": 512,
+                    "execution_capsule_bytes": 2048,
+                    "skill_context_packet_bytes": 256,
+                    "cache_prompt_layout": "static-core-v1",
+                    "cache_stable_prefix_bytes": 1024,
+                    "cache_task_suffix_bytes": 2048,
+                    "recovery_delta_mode": "classification-bound",
+                    "context_compilation_strategy": "coverage",
+                    "context_coverage_required_count": 7,
+                    "context_coverage_uncovered_count": 0,
+                    "context_candidate_topdown_count": 4,
+                    "context_candidate_bottomup_count": 5,
+                    "context_zero_marginal_omitted_count": 1,
+                    "context_rescue_marginal_coverage_count": 3,
+                    "context_minimum_sufficient": True,
+                }),
+                encoding="utf-8",
+            )
+            (run / "review-1.txt").write_text(
+                "Decision: ACCEPT\n", encoding="utf-8"
+            )
+
+            report = module.benchmark([run], root)
+
+            self.assertEqual(report["context_reuse_samples_total"], 1)
+            self.assertEqual(report["context_capsule_rehydrate_total"], 1)
+            self.assertEqual(report["context_auto_checkpoint_total"], 1)
+            self.assertEqual(report["context_checkpoint_bytes_total"], 512)
+            self.assertEqual(report["execution_capsule_bytes_total"], 2048)
+            self.assertEqual(report["skill_context_packet_bytes_total"], 256)
+            self.assertEqual(report["cache_stable_prefix_bytes_total"], 1024)
+            self.assertEqual(report["cache_task_suffix_bytes_total"], 2048)
+            self.assertEqual(report["recovery_delta_total"], 1)
+            self.assertEqual(report["context_compilation_coverage_total"], 1)
+            self.assertEqual(report["context_compilation_anchors_only_total"], 0)
+            self.assertEqual(report["context_minimum_sufficient_total"], 1)
+            self.assertEqual(report["context_coverage_required_total"], 7)
+            self.assertEqual(report["context_coverage_uncovered_total"], 0)
+            self.assertEqual(report["context_candidate_topdown_total"], 4)
+            self.assertEqual(report["context_candidate_bottomup_total"], 5)
+            self.assertEqual(report["context_zero_marginal_omitted_total"], 1)
+            self.assertEqual(report["context_rescue_marginal_coverage_total"], 3)
+            markdown = module.render_markdown(report)
+            self.assertIn("| Automatic checkpoints | 1 |", markdown)
+            self.assertIn("| Classification-bound recovery deltas | 1 |", markdown)
+            self.assertIn("| Minimum-sufficient contexts | 1 |", markdown)
+
     def test_installer_copies_benchmark_helper(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = pathlib.Path(tmp) / "repo"

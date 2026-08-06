@@ -7,6 +7,8 @@
 #        [--tool-profile auto|default|editor-only|minimal-builder|locator-builder|checker|diagnostic]
 #        [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL]
 #        [--context-lease LEASE --continuation-kind KIND]
+#        [--recovery-classification ATTEMPT_CLASSIFICATION]
+#        [--context-compile-strategy coverage|anchors-only]
 #        [--force-fresh-session] [--rehydrate-from CAPSULE]
 #        [--preflight-task-id TASK_ID]
 #
@@ -36,7 +38,7 @@ PYTHONDONTWRITEBYTECODE=1
 export PYTHONDONTWRITEBYTECODE
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--tool-profile PROFILE] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL | --context-lease LEASE --continuation-kind KIND] [--force-fresh-session] [--rehydrate-from CAPSULE] [--preflight-task-id TASK_ID]" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--tool-profile PROFILE] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL | --context-lease LEASE --continuation-kind KIND] [--recovery-classification ATTEMPT_CLASSIFICATION] [--context-compile-strategy coverage|anchors-only] [--force-fresh-session] [--rehydrate-from CAPSULE] [--preflight-task-id TASK_ID]" >&2
     exit 1
 fi
 
@@ -52,6 +54,8 @@ CONTEXT_LEASE_OPTION=""
 CONTINUATION_KIND_OPTION=""
 FORCE_FRESH_SESSION_OPTION=0
 REHYDRATE_FROM_OPTION=""
+RECOVERY_CLASSIFICATION_OPTION=""
+CONTEXT_COMPILE_STRATEGY_OPTION=""
 PREFLIGHT_TASK_ID_OPTION=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -159,6 +163,29 @@ while [ $# -gt 0 ]; do
             REHYDRATE_FROM_OPTION="$2"
             shift 2
             ;;
+        --recovery-classification)
+            [ $# -ge 2 ] || {
+                echo "Error: --recovery-classification requires an attempt-classification path." >&2
+                exit 1
+            }
+            RECOVERY_CLASSIFICATION_OPTION="$2"
+            shift 2
+            ;;
+        --context-compile-strategy)
+            [ $# -ge 2 ] || {
+                echo "Error: --context-compile-strategy requires coverage or anchors-only." >&2
+                exit 1
+            }
+            CONTEXT_COMPILE_STRATEGY_OPTION="$2"
+            case "$CONTEXT_COMPILE_STRATEGY_OPTION" in
+                coverage|anchors-only) ;;
+                *)
+                    echo "Error: --context-compile-strategy must be coverage or anchors-only." >&2
+                    exit 1
+                    ;;
+            esac
+            shift 2
+            ;;
         --preflight-task-id)
             [ $# -ge 2 ] || {
                 echo "Error: --preflight-task-id requires a task id." >&2
@@ -195,6 +222,17 @@ elif [ -n "$CONTINUATION_KIND_OPTION" ] || [ "$FORCE_FRESH_SESSION_OPTION" -eq 1
     exit 1
 fi
 
+if [ -n "$RECOVERY_CLASSIFICATION_OPTION" ]; then
+    if [ -n "$RETRY_IN_PLACE_TASK_ID_OPTION" ]; then
+        echo "Error: --recovery-classification cannot be combined with --retry-in-place-task-id; transport retry must preserve the exact prior task." >&2
+        exit 1
+    fi
+    if [ ! -f "$RECOVERY_CLASSIFICATION_OPTION" ]; then
+        echo "Error: --recovery-classification file does not exist: ${RECOVERY_CLASSIFICATION_OPTION}" >&2
+        exit 1
+    fi
+fi
+
 if [ -n "$RETRY_IN_PLACE_TASK_ID_OPTION" ]; then
     case "$RETRY_IN_PLACE_TASK_ID_OPTION" in
         *[!A-Za-z0-9._-]*)
@@ -216,6 +254,10 @@ fi
 if [ -n "$TOOL_PROFILE_OPTION" ]; then
     CLAUDE_CODE_TOOL_PROFILE="$TOOL_PROFILE_OPTION"
     export CLAUDE_CODE_TOOL_PROFILE
+fi
+if [ -n "$CONTEXT_COMPILE_STRATEGY_OPTION" ]; then
+    CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY="$CONTEXT_COMPILE_STRATEGY_OPTION"
+    export CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY
 fi
 if [ -n "$EMPTY_API_CONFIG_ENV" ]; then
     case "$EMPTY_API_CONFIG_ENV" in
@@ -289,6 +331,7 @@ _CONTEXT_LEASE_ROUTE=""
 _CONTEXT_LEASE_ID=""
 _CONTEXT_LEASE_CALLS_USED=0
 _CONTEXT_LEASE_MAX_WARM_CALLS=0
+_CONTEXT_CHECKPOINT_REQUIRED=0
 _CONTEXT_FORCE_FRESH_SESSION=0
 
 # --- Route preference learning ---
@@ -648,6 +691,8 @@ CLAUDE_CODE_PROMPT_PROFILE="${CLAUDE_CODE_PROMPT_PROFILE:-$DEFAULT_PROMPT_PROFIL
 CLAUDE_CODE_EVIDENCE_MODE="${CLAUDE_CODE_EVIDENCE_MODE:-$DEFAULT_EVIDENCE_MODE}"
 CLAUDE_CODE_CHECKER_DISCOVER="${CLAUDE_CODE_CHECKER_DISCOVER:-$DEFAULT_CHECKER_DISCOVER}"
 CLAUDE_CODE_CHECKER_COMMANDS="${CLAUDE_CODE_CHECKER_COMMANDS:-}"
+CLAUDE_CODE_AUTO_BOOTSTRAP_CAPSULE="${CLAUDE_CODE_AUTO_BOOTSTRAP_CAPSULE:-1}"
+CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY="${CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY:-coverage}"
 case "$CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS" in
     ''|*[!0-9]*)
         echo "Error: CLAUDE_CODE_NETWORK_HEALTHCHECK_TIMEOUT_SECONDS must be a non-negative integer." >&2
@@ -721,6 +766,20 @@ case "$CLAUDE_CODE_CHECKER_DISCOVER" in
     0|1) ;;
     *)
         echo "Error: CLAUDE_CODE_CHECKER_DISCOVER must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_AUTO_BOOTSTRAP_CAPSULE" in
+    0|1) ;;
+    *)
+        echo "Error: CLAUDE_CODE_AUTO_BOOTSTRAP_CAPSULE must be 0 or 1." >&2
+        exit 1
+        ;;
+esac
+case "$CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY" in
+    coverage|anchors-only) ;;
+    *)
+        echo "Error: CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY must be coverage or anchors-only." >&2
         exit 1
         ;;
 esac
@@ -804,7 +863,7 @@ if [ "$CLAUDE_CODE_BUILDER_MODE" = "auto" ]; then
        grep -Eiq '^\|[[:space:]]*Builder mode[[:space:]]*\|[[:space:]]*exploratory([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
         CLAUDE_CODE_BUILDER_MODE="exploratory"
     elif [ "$_PARSED_TASK_MODE" = "builder" ] && \
-       grep -Eiq '^\|[[:space:]]*Execution-only eligible\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD" && \
+       grep -Eiq '^\|[[:space:]]*Execution-only (eligible|safe)\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD" && \
        grep -Eiq '^\|[[:space:]]*Context (is )?sufficient for execution\?[[:space:]]*\|[[:space:]]*yes([[:space:]]*\||[[:space:]]*$)' "$TASK_CARD"; then
         CLAUDE_CODE_BUILDER_MODE="execution-only"
     else
@@ -1870,14 +1929,16 @@ if [ -n "${CLAUDE_CODE_REVIEWED_CONTINUATION:-}" ]; then
             _context_args+=(--provider-route-sha256 "$_CONTEXT_PROVIDER_ROUTE_SHA256")
         [ "$FORCE_FRESH_SESSION_OPTION" -eq 0 ] || _context_args+=(--force-fresh-session)
         [ -z "$REHYDRATE_FROM_OPTION" ] || _context_args+=(--rehydrate-from "$REHYDRATE_FROM_OPTION")
+        _context_args+=(--allow-auto-rehydrate)
         if ! _context_validation="$("$PYTHON_CMD" "$_context_helper" "${_context_args[@]}")"; then
             echo "Error: Context Lease validation failed." >&2
             exit 1
         fi
         IFS=$'\t' read -r _CONTEXT_LEASE_ID _CONTEXT_LEASE_ROUTE \
-            _CONTEXT_LEASE_CALLS_USED _CONTEXT_LEASE_MAX_WARM_CALLS < <(
+            _CONTEXT_LEASE_CALLS_USED _CONTEXT_LEASE_MAX_WARM_CALLS \
+            _CONTEXT_CHECKPOINT_REQUIRED < <(
             printf '%s' "$_context_validation" | "$PYTHON_CMD" -c \
-                'import json,sys; v=json.load(sys.stdin); print("\t".join(str(v.get(k, "")) for k in ("lease_id","route","calls_used","max_warm_calls")))'
+                'import json,sys; v=json.load(sys.stdin); print("\t".join(str(v.get(k, "")) for k in ("lease_id","route","calls_used","max_warm_calls")) + "\t" + ("1" if v.get("checkpoint_required") else "0"))'
         )
         case "$_CONTEXT_LEASE_ROUTE" in
             warm-resume) ;;
@@ -2012,12 +2073,48 @@ VALIDATION_CAPABILITY_FILE="${WORKTREE_ROOT}/${TASK_ID}.validation-capability.js
 MANAGED_RUNTIME_BUNDLE_FILE="${WORKTREE_ROOT}/${TASK_ID}.managed-runtime-bundle.json"
 REVISION_CARD_VALIDATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.revision-card-validation.json"
 EXECUTION_CAPSULE_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.execution-capsule.json"
+SKILL_CONTEXT_PACKET_FILE="${WORKTREE_ROOT}/${TASK_ID}.skill-context.md"
+SKILL_CONTEXT_COMPILATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.skill-context.json"
+CONTEXT_CHECKPOINT_FILE="${WORKTREE_ROOT}/${TASK_ID}.context-checkpoint.md"
+CONTEXT_CHECKPOINT_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.context-checkpoint.json"
+RECOVERY_DELTA_FILE="${WORKTREE_ROOT}/${TASK_ID}.recovery-delta.md"
+RECOVERY_DELTA_RECEIPT_FILE="${WORKTREE_ROOT}/${TASK_ID}.recovery-delta.json"
+_CONTEXT_CHECKPOINT_MODE="none"
+_CONTEXT_CHECKPOINT_RECEIPT_BOUND=0
+_RECOVERY_DELTA_MODE="none"
+_AUTO_BOOTSTRAP_CAPSULE=0
+_REQUIRE_COMPLETE_EXECUTION_CONTRACT=0
+if [ -n "$CONTEXT_LEASE_OPTION" ] && [ -n "$REHYDRATE_FROM_OPTION" ]; then
+    _CONTEXT_CHECKPOINT_MODE="caller-supplied"
+fi
+if [ "$_CONTEXT_CHECKPOINT_REQUIRED" -eq 1 ]; then
+    if [ -n "$REHYDRATE_FROM_OPTION" ]; then
+        echo "Error: Context Lease requested automatic checkpoint while caller supplied one." >&2
+        exit 1
+    fi
+    _CONTEXT_CHECKPOINT_HELPER="${SCRIPT_DIR}/build-context-checkpoint.py"
+    if [ -z "$PYTHON_CMD" ] || [ ! -f "$_CONTEXT_CHECKPOINT_HELPER" ]; then
+        echo "Error: Context Lease rehydrate checkpoint helper is unavailable; refresh the bootstrapped workflow." >&2
+        exit 1
+    fi
+    if ! "$PYTHON_CMD" "$_CONTEXT_CHECKPOINT_HELPER" \
+        --context-lease "$CONTEXT_LEASE_OPTION" \
+        --next-task-card "$TASK_CARD" \
+        --output "$CONTEXT_CHECKPOINT_FILE" \
+        --receipt "$CONTEXT_CHECKPOINT_RECEIPT_FILE" >/dev/null; then
+        echo "Error: deterministic Context Lease checkpoint generation failed." >&2
+        exit 1
+    fi
+    REHYDRATE_FROM_OPTION="$CONTEXT_CHECKPOINT_FILE"
+    _CONTEXT_CHECKPOINT_MODE="automatic"
+    _CONTEXT_CHECKPOINT_RECEIPT_BOUND=1
+fi
 _EXECUTION_CAPSULE_MODE="legacy"
 _EXECUTION_CAPSULE_KIND="initial"
 if [ -n "$CONTEXT_LEASE_OPTION" ]; then
     _EXECUTION_CAPSULE_MODE="delta"
     _EXECUTION_CAPSULE_KIND="$CONTINUATION_KIND_OPTION"
-elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; then
+elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || [ -n "$RECOVERY_CLASSIFICATION_OPTION" ]; then
     _EXECUTION_CAPSULE_MODE="bootstrap"
 fi
 CLAUDE_PROGRESS_FILE="${WORKTREE_ROOT}/${TASK_ID}.claude-progress.md"
@@ -2931,6 +3028,7 @@ echo "CodeGraph execution guard: status=${CODEGRAPH_EXECUTION_STATUS}, action=${
     echo "- Worktree: ${WORKTREE_DIR}"
     echo "- Base commit: ${BASE_COMMIT}"
     echo "- Runtime identity: ${RUNTIME_JSON}"
+    echo "- Context compilation strategy: ${CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY}"
     if [ -n "${_RETRY_TASK_ID:-}" ]; then
         echo "- Retry provenance: prior task ${_RETRY_TASK_ID} from ${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID}"
     fi
@@ -2938,6 +3036,7 @@ echo "CodeGraph execution guard: status=${CODEGRAPH_EXECUTION_STATUS}, action=${
     echo "- Large repo mode: ${CLAUDE_CODE_LARGE_REPO_MODE}"
     echo "- Claude task card view: ${CLAUDE_CODE_TASK_CARD_VIEW}"
     echo "- Claude prompt profile: ${CLAUDE_CODE_PROMPT_PROFILE}"
+    echo "- Auto bootstrap capsule: ${CLAUDE_CODE_AUTO_BOOTSTRAP_CAPSULE}"
     echo "- Evidence mode: ${CLAUDE_CODE_EVIDENCE_MODE}"
     echo "- Checker broad discovery: ${CLAUDE_CODE_CHECKER_DISCOVER}"
     echo "- Builder mode: ${CLAUDE_CODE_BUILDER_MODE}"
@@ -3057,6 +3156,13 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
         printf '  "context_lease_route": "%s",\n' "$_CONTEXT_LEASE_ROUTE"
         printf '  "context_lease_calls_used": %s,\n' "$_CONTEXT_LEASE_CALLS_USED"
         printf '  "context_lease_max_warm_calls": %s,\n' "$_CONTEXT_LEASE_MAX_WARM_CALLS"
+        printf '  "context_checkpoint_mode": "%s",\n' "$_CONTEXT_CHECKPOINT_MODE"
+        if [ -n "$REHYDRATE_FROM_OPTION" ]; then
+            printf '  "context_checkpoint": "%s",\n' "$REHYDRATE_FROM_OPTION"
+        fi
+        if [ "$_CONTEXT_CHECKPOINT_RECEIPT_BOUND" -eq 1 ]; then
+            printf '  "context_checkpoint_receipt": "%s",\n' "$CONTEXT_CHECKPOINT_RECEIPT_FILE"
+        fi
     fi
     printf '  "pid_files": {\n'
     printf '    "dispatcher": "%s",\n' "$DISPATCHER_PID_FILE"
@@ -3072,6 +3178,7 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "process_termination_receipt": "%s",\n' "$PROCESS_TERMINATION_FILE"
     printf '  "dispatcher_abnormal_exit_receipt": "%s",\n' "$ABNORMAL_EXIT_FILE"
     printf '  "builder_mode": "%s",\n' "$CLAUDE_CODE_BUILDER_MODE"
+    printf '  "context_compile_strategy": "%s",\n' "$CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY"
     printf '  "task_mode": "%s",\n' "${_PARSED_TASK_MODE:-unknown}"
     printf '  "declared_task_mode": "%s",\n' "${_DECLARED_TASK_MODE:-unknown}"
     printf '  "task_mode_normalized": %s,\n' "$([ "$_TASK_MODE_NORMALIZED" -eq 1 ] && echo true || echo false)"
@@ -3080,6 +3187,12 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "task_card_builder_mode": "%s",\n' "${_TASK_CARD_BUILDER_MODE:-auto}"
     printf '  "execution_capsule_mode": "%s",\n' "$_EXECUTION_CAPSULE_MODE"
     printf '  "execution_capsule_receipt": "%s",\n' "$EXECUTION_CAPSULE_RECEIPT_FILE"
+    printf '  "auto_bootstrap_capsule": %s,\n' "$([ "$_AUTO_BOOTSTRAP_CAPSULE" -eq 1 ] && echo true || echo false)"
+    printf '  "recovery_delta_mode": "%s",\n' "$_RECOVERY_DELTA_MODE"
+    printf '  "recovery_delta": "%s",\n' "$RECOVERY_DELTA_FILE"
+    printf '  "recovery_delta_receipt": "%s",\n' "$RECOVERY_DELTA_RECEIPT_FILE"
+    printf '  "skill_context_packet": "%s",\n' "$SKILL_CONTEXT_PACKET_FILE"
+    printf '  "skill_context_compilation": "%s",\n' "$SKILL_CONTEXT_COMPILATION_FILE"
     printf '  "tool_profile": "%s",\n' "$CLAUDE_CODE_TOOL_PROFILE"
     printf '  "tool_profile_derivation": "%s",\n' "$_TOOL_PROFILE_DERIVATION"
     printf '  "tool_profile_supported": %s,\n' "$([ "$_TOOL_PROFILE_SUPPORTED" -eq 1 ] && echo true || echo false)"
@@ -3279,9 +3392,77 @@ render_claude_task_card() {
     ' "$1"
 }
 
+# Compile small task-specific procedure cues before rendering the model-facing
+# card. The compiler never changes the frozen task contract; it only emits a
+# hash-bound packet that the capsule can embed. Missing on older installations
+# is a compatibility fallback, not a safety downgrade.
+_SKILL_CONTEXT_COMPILER="${SCRIPT_DIR}/compile-skill-context.py"
+_SKILL_CONTEXT_AVAILABLE=0
+_SKILL_CONTEXT_EMBEDDABLE=0
+_SKILL_CONTEXT_EMBEDDED=0
+_SKILL_CONTEXT_PHASE="bootstrap"
+[ "$_EXECUTION_CAPSULE_MODE" != "delta" ] || _SKILL_CONTEXT_PHASE="delta"
+if [ -n "$PYTHON_CMD" ] && [ -f "$_SKILL_CONTEXT_COMPILER" ]; then
+    _skill_context_args=(
+        --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md"
+        --output "$SKILL_CONTEXT_PACKET_FILE"
+        --receipt "$SKILL_CONTEXT_COMPILATION_FILE"
+        --phase "$_SKILL_CONTEXT_PHASE"
+        --continuation-kind "$_EXECUTION_CAPSULE_KIND"
+        --strategy "$CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY"
+    )
+    if ! "$PYTHON_CMD" "$_SKILL_CONTEXT_COMPILER" "${_skill_context_args[@]}" >/dev/null; then
+        echo "Error: deterministic skill-context compilation failed." >&2
+        exit 1
+    fi
+    _SKILL_CONTEXT_AVAILABLE=1
+    [ ! -s "$SKILL_CONTEXT_PACKET_FILE" ] || _SKILL_CONTEXT_EMBEDDABLE=1
+    # A complete, standard Builder card is already an execution-ready frozen
+    # contract. Use the same bounded bootstrap projection without changing its
+    # role/tool profile. Incomplete or exploratory cards retain the legacy
+    # execution view rather than silently guessing missing constraints.
+    if [ "$_EXECUTION_CAPSULE_MODE" = "legacy" ] && \
+       [ "$CLAUDE_CODE_AUTO_BOOTSTRAP_CAPSULE" = "1" ] && \
+       [ "${_PARSED_TASK_MODE:-unknown}" = "builder" ] && \
+       [ "$CLAUDE_CODE_BUILDER_MODE" = "standard" ]; then
+        _AUTO_BOOTSTRAP_CAPSULE="$("$PYTHON_CMD" - "$SKILL_CONTEXT_COMPILATION_FILE" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        receipt = json.load(handle)
+    print("1" if receipt.get("contract_anchors", {}).get("complete") is True else "0")
+except (OSError, ValueError, TypeError):
+    print("0")
+PYEOF
+)"
+        if [ "$_AUTO_BOOTSTRAP_CAPSULE" = "1" ]; then
+            _EXECUTION_CAPSULE_MODE="bootstrap"
+            _REQUIRE_COMPLETE_EXECUTION_CONTRACT=1
+        fi
+    fi
+fi
+
+if [ -n "$RECOVERY_CLASSIFICATION_OPTION" ]; then
+    _RECOVERY_DELTA_HELPER="${SCRIPT_DIR}/build-recovery-delta.py"
+    if [ -z "$PYTHON_CMD" ] || [ ! -f "$_RECOVERY_DELTA_HELPER" ]; then
+        echo "Error: recovery-delta helper is unavailable; refresh the bootstrapped workflow." >&2
+        exit 1
+    fi
+    if ! "$PYTHON_CMD" "$_RECOVERY_DELTA_HELPER" \
+        --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
+        --attempt-classification "$RECOVERY_CLASSIFICATION_OPTION" \
+        --output "$RECOVERY_DELTA_FILE" \
+        --receipt "$RECOVERY_DELTA_RECEIPT_FILE" >/dev/null; then
+        echo "Error: deterministic recovery-delta generation failed." >&2
+        exit 1
+    fi
+    _RECOVERY_DELTA_MODE="classification-bound"
+    _REQUIRE_COMPLETE_EXECUTION_CONTRACT=1
+fi
+
 _EXECUTION_CAPSULE_HELPER="${SCRIPT_DIR}/build-execution-capsule.py"
 if [ -n "$PYTHON_CMD" ] && [ -f "$_EXECUTION_CAPSULE_HELPER" ] && \
-   { [ -n "$CONTEXT_LEASE_OPTION" ] || [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ]; }; then
+   [ "$_EXECUTION_CAPSULE_MODE" != "legacy" ]; then
     _execution_capsule_args=(
         --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md"
         --output "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
@@ -3289,14 +3470,77 @@ if [ -n "$PYTHON_CMD" ] && [ -f "$_EXECUTION_CAPSULE_HELPER" ] && \
         --continuation-kind "$_EXECUTION_CAPSULE_KIND"
         --receipt "$EXECUTION_CAPSULE_RECEIPT_FILE"
     )
+    [ "$_REQUIRE_COMPLETE_EXECUTION_CONTRACT" -eq 0 ] || \
+        _execution_capsule_args+=(--require-complete-contract)
     [ -z "$REHYDRATE_FROM_OPTION" ] || \
         _execution_capsule_args+=(--rehydrate-from "$REHYDRATE_FROM_OPTION")
+    [ "$_CONTEXT_CHECKPOINT_RECEIPT_BOUND" -eq 0 ] || \
+        _execution_capsule_args+=(--rehydrate-receipt "$CONTEXT_CHECKPOINT_RECEIPT_FILE")
+    [ "$_SKILL_CONTEXT_EMBEDDABLE" -eq 0 ] || \
+        _execution_capsule_args+=(
+            --compiled-context "$SKILL_CONTEXT_PACKET_FILE"
+            --compiled-context-receipt "$SKILL_CONTEXT_COMPILATION_FILE"
+        )
+    [ "$_RECOVERY_DELTA_MODE" = "none" ] || \
+        _execution_capsule_args+=(
+            --recovery-delta "$RECOVERY_DELTA_FILE"
+            --recovery-delta-receipt "$RECOVERY_DELTA_RECEIPT_FILE"
+        )
     if ! "$PYTHON_CMD" "$_EXECUTION_CAPSULE_HELPER" "${_execution_capsule_args[@]}" >/dev/null; then
         echo "Error: failed to render the bounded Claude execution capsule." >&2
         exit 1
     fi
+    [ "$_SKILL_CONTEXT_EMBEDDABLE" -eq 0 ] || _SKILL_CONTEXT_EMBEDDED=1
 else
     render_claude_task_card "${WORKTREE_DIR}/TASK_CARD_FULL.md" > "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+fi
+
+# The runtime identity is created before the worktree-local card can be
+# compiled. Refresh only the deterministic context-routing fields now that the
+# actual capsule/recovery artifacts exist; without this refresh, a complete
+# standard Builder would be recorded as legacy even when it used a bootstrap
+# capsule.
+if [ -n "$PYTHON_CMD" ] && [ -s "$RUNTIME_JSON" ]; then
+    "$PYTHON_CMD" - "$RUNTIME_JSON" \
+        "$_EXECUTION_CAPSULE_MODE" "$_AUTO_BOOTSTRAP_CAPSULE" \
+        "$_RECOVERY_DELTA_MODE" "$RECOVERY_DELTA_FILE" "$RECOVERY_DELTA_RECEIPT_FILE" \
+        "$SKILL_CONTEXT_PACKET_FILE" "$SKILL_CONTEXT_COMPILATION_FILE" \
+        "$EXECUTION_CAPSULE_RECEIPT_FILE" "$CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY" <<'PYEOF'
+import json, os, sys, tempfile
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as handle:
+        value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError("runtime identity must be an object")
+    value.update({
+        "execution_capsule_mode": sys.argv[2],
+        "auto_bootstrap_capsule": sys.argv[3] == "1",
+        "recovery_delta_mode": sys.argv[4],
+        "recovery_delta": sys.argv[5],
+        "recovery_delta_receipt": sys.argv[6],
+        "skill_context_packet": sys.argv[7],
+        "skill_context_compilation": sys.argv[8],
+        "execution_capsule_receipt": sys.argv[9],
+        "context_compile_strategy": sys.argv[10],
+    })
+    directory = os.path.dirname(path) or "."
+    descriptor, temporary = tempfile.mkstemp(prefix=".runtime-context-", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    print("Error: unable to refresh runtime context identity: {}".format(exc), file=sys.stderr)
+    raise SystemExit(1)
+PYEOF
 fi
 
 # --- ADVISOR_REQUEST contract ---
@@ -3341,6 +3585,9 @@ fi
 # continuation execution card that says continue from current progress,
 # do not re-plan, and includes only validated answer/scope/new validation.
 if [ -n "${_ADVISOR_CONTINUE_RESPONSE:-}" ] && [ -f "${_ADVISOR_CONTINUE_RESPONSE:-/dev/null}" ]; then
+    # The advisor continuation replaces the rendered execution card below, so
+    # append the immutable compiled guidance again after replacement.
+    _SKILL_CONTEXT_EMBEDDED=0
     _build_advisor_continuation_card() {
         local response_file="$1"
         local task_id="$2"
@@ -3467,6 +3714,14 @@ PYEOF
     if [ "$CLAUDE_CODE_VERBOSE" = "1" ]; then
         echo "Advisor continuation card rendered to: ${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
     fi
+fi
+
+if [ "$_SKILL_CONTEXT_EMBEDDABLE" -eq 1 ] && [ "$_SKILL_CONTEXT_EMBEDDED" -eq 0 ]; then
+    {
+        echo ""
+        cat "$SKILL_CONTEXT_PACKET_FILE"
+    } >> "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md"
+    _SKILL_CONTEXT_EMBEDDED=1
 fi
 
 # Revision receivers must get exact findings inline. An external review path is
@@ -3773,8 +4028,11 @@ fi
 # telemetry.
 _CACHE_STABLE_PREFIX_SHA256=""
 _CACHE_TASK_SUFFIX_SHA256=""
+_CACHE_STABLE_PREFIX_BYTES=0
+_CACHE_TASK_SUFFIX_BYTES=0
+_CACHE_PROMPT_LAYOUT="static-core-v1"
 if [ -n "$PYTHON_CMD" ]; then
-    IFS=$'\t' read -r _CACHE_STABLE_PREFIX_SHA256 _CACHE_TASK_SUFFIX_SHA256 < <(
+    IFS=$'\t' read -r _CACHE_STABLE_PREFIX_SHA256 _CACHE_STABLE_PREFIX_BYTES _CACHE_TASK_SUFFIX_SHA256 _CACHE_TASK_SUFFIX_BYTES < <(
         "$PYTHON_CMD" - "${WORKTREE_DIR}/CLAUDE_PROMPT.md" "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md" <<'PYEOF'
 import hashlib, sys
 
@@ -3782,10 +4040,19 @@ def digest(path):
     with open(path, "rb") as handle:
         return "sha256:" + hashlib.sha256(handle.read()).hexdigest()
 
-print(digest(sys.argv[1]) + "\t" + digest(sys.argv[2]))
+def byte_count(path):
+    with open(path, "rb") as handle:
+        return len(handle.read())
+
+print("\t".join((
+    digest(sys.argv[1]), str(byte_count(sys.argv[1])),
+    digest(sys.argv[2]), str(byte_count(sys.argv[2])),
+)))
 PYEOF
     )
 fi
+case "$_CACHE_STABLE_PREFIX_BYTES" in ''|*[!0-9]*) _CACHE_STABLE_PREFIX_BYTES=0 ;; esac
+case "$_CACHE_TASK_SUFFIX_BYTES" in ''|*[!0-9]*) _CACHE_TASK_SUFFIX_BYTES=0 ;; esac
 cat >> "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<EOF
 
 CodeGraph worktree identity:
@@ -7051,6 +7318,67 @@ else
     _PHASE_VALIDATION_SECONDS=0
     _PHASE_VALIDATION_OBSERVED=false
 fi
+_CONTEXT_CHECKPOINT_BYTES=0
+if [ -f "$CONTEXT_CHECKPOINT_FILE" ]; then
+    _CONTEXT_CHECKPOINT_BYTES="$(wc -c < "$CONTEXT_CHECKPOINT_FILE" | tr -d '[:space:]')"
+fi
+_EXECUTION_CAPSULE_BYTES=0
+if [ -f "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md" ]; then
+    _EXECUTION_CAPSULE_BYTES="$(wc -c < "${WORKTREE_DIR}/CLAUDE_TASK_CARD.md" | tr -d '[:space:]')"
+fi
+_SKILL_CONTEXT_PACKET_BYTES=0
+if [ -f "$SKILL_CONTEXT_PACKET_FILE" ]; then
+    _SKILL_CONTEXT_PACKET_BYTES="$(wc -c < "$SKILL_CONTEXT_PACKET_FILE" | tr -d '[:space:]')"
+fi
+_CONTEXT_COMPILATION_STRATEGY="$CLAUDE_CODE_CONTEXT_COMPILE_STRATEGY"
+_CONTEXT_COVERAGE_REQUIRED_COUNT=0
+_CONTEXT_COVERAGE_UNCOVERED_COUNT=0
+_CONTEXT_CANDIDATE_TOPDOWN_COUNT=0
+_CONTEXT_CANDIDATE_BOTTOMUP_COUNT=0
+_CONTEXT_ZERO_MARGINAL_OMITTED_COUNT=0
+_CONTEXT_RESCUE_MARGINAL_COVERAGE_COUNT=0
+_CONTEXT_MINIMUM_SUFFICIENT=false
+if [ -n "$PYTHON_CMD" ] && [ -s "$SKILL_CONTEXT_COMPILATION_FILE" ]; then
+    readarray -t _CONTEXT_COMPILATION_FIELDS < <("$PYTHON_CMD" - "$SKILL_CONTEXT_COMPILATION_FILE" <<'PYEOF' 2>/dev/null || true
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    coverage = value.get("coverage", {})
+    routes = value.get("candidate_routes", {})
+    candidates = value.get("candidates", [])
+    rescued = value.get("rescued", [])
+    print(value.get("strategy", "coverage"))
+    print(len(coverage.get("required", [])))
+    print(len(coverage.get("uncovered", [])))
+    print(len(routes.get("top_down", [])))
+    print(len(routes.get("bottom_up", [])))
+    print(sum(1 for item in candidates if item.get("reason") == "zero-marginal-coverage"))
+    print(sum(len(item.get("marginal_coverage", [])) for item in rescued))
+    print("true" if coverage.get("minimum_sufficient") is True else "false")
+except (OSError, ValueError, TypeError):
+    pass
+PYEOF
+)
+    _CONTEXT_COMPILATION_STRATEGY="${_CONTEXT_COMPILATION_FIELDS[0]:-$_CONTEXT_COMPILATION_STRATEGY}"
+    _CONTEXT_COVERAGE_REQUIRED_COUNT="${_CONTEXT_COMPILATION_FIELDS[1]:-0}"
+    _CONTEXT_COVERAGE_UNCOVERED_COUNT="${_CONTEXT_COMPILATION_FIELDS[2]:-0}"
+    _CONTEXT_CANDIDATE_TOPDOWN_COUNT="${_CONTEXT_COMPILATION_FIELDS[3]:-0}"
+    _CONTEXT_CANDIDATE_BOTTOMUP_COUNT="${_CONTEXT_COMPILATION_FIELDS[4]:-0}"
+    _CONTEXT_ZERO_MARGINAL_OMITTED_COUNT="${_CONTEXT_COMPILATION_FIELDS[5]:-0}"
+    _CONTEXT_RESCUE_MARGINAL_COVERAGE_COUNT="${_CONTEXT_COMPILATION_FIELDS[6]:-0}"
+    _CONTEXT_MINIMUM_SUFFICIENT="${_CONTEXT_COMPILATION_FIELDS[7]:-false}"
+fi
+case "$_CONTEXT_CHECKPOINT_BYTES" in ''|*[!0-9]*) _CONTEXT_CHECKPOINT_BYTES=0 ;; esac
+case "$_EXECUTION_CAPSULE_BYTES" in ''|*[!0-9]*) _EXECUTION_CAPSULE_BYTES=0 ;; esac
+case "$_SKILL_CONTEXT_PACKET_BYTES" in ''|*[!0-9]*) _SKILL_CONTEXT_PACKET_BYTES=0 ;; esac
+case "$_CONTEXT_COVERAGE_REQUIRED_COUNT" in ''|*[!0-9]*) _CONTEXT_COVERAGE_REQUIRED_COUNT=0 ;; esac
+case "$_CONTEXT_COVERAGE_UNCOVERED_COUNT" in ''|*[!0-9]*) _CONTEXT_COVERAGE_UNCOVERED_COUNT=0 ;; esac
+case "$_CONTEXT_CANDIDATE_TOPDOWN_COUNT" in ''|*[!0-9]*) _CONTEXT_CANDIDATE_TOPDOWN_COUNT=0 ;; esac
+case "$_CONTEXT_CANDIDATE_BOTTOMUP_COUNT" in ''|*[!0-9]*) _CONTEXT_CANDIDATE_BOTTOMUP_COUNT=0 ;; esac
+case "$_CONTEXT_ZERO_MARGINAL_OMITTED_COUNT" in ''|*[!0-9]*) _CONTEXT_ZERO_MARGINAL_OMITTED_COUNT=0 ;; esac
+case "$_CONTEXT_RESCUE_MARGINAL_COVERAGE_COUNT" in ''|*[!0-9]*) _CONTEXT_RESCUE_MARGINAL_COVERAGE_COUNT=0 ;; esac
+case "$_CONTEXT_COMPILATION_STRATEGY" in coverage|anchors-only) ;; *) _CONTEXT_COMPILATION_STRATEGY=coverage ;; esac
+case "$_CONTEXT_MINIMUM_SUFFICIENT" in true|false) ;; *) _CONTEXT_MINIMUM_SUFFICIENT=false ;; esac
 {
     echo '{'
     echo '  "schema_version": 1,'
@@ -7077,6 +7405,31 @@ fi
     printf '  "completion_ready_timeout_seconds": %s,\n' "$CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS"
     printf '  "completion_ready_converged": %s,\n' "$([ "$CLAUDE_COMPLETION_CONVERGED" -eq 1 ] && echo true || echo false)"
     printf '  "write_blocker_converged": %s,\n' "$([ "$CLAUDE_WRITE_BLOCKED_CONVERGED" -eq 1 ] && echo true || echo false)"
+    printf '  "context_lease_route": "%s",\n' "${_CONTEXT_LEASE_ROUTE:-none}"
+    if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+        printf '  "context_lease_calls_used": %s,\n' "$_CONTEXT_LEASE_CALLS_USED"
+        printf '  "context_lease_max_warm_calls": %s,\n' "$_CONTEXT_LEASE_MAX_WARM_CALLS"
+    else
+        echo '  "context_lease_calls_used": null,'
+        echo '  "context_lease_max_warm_calls": null,'
+    fi
+    printf '  "context_checkpoint_mode": "%s",\n' "$_CONTEXT_CHECKPOINT_MODE"
+    printf '  "context_checkpoint_bytes": %s,\n' "$_CONTEXT_CHECKPOINT_BYTES"
+    printf '  "execution_capsule_mode": "%s",\n' "$_EXECUTION_CAPSULE_MODE"
+    printf '  "execution_capsule_bytes": %s,\n' "$_EXECUTION_CAPSULE_BYTES"
+    printf '  "skill_context_packet_bytes": %s,\n' "$_SKILL_CONTEXT_PACKET_BYTES"
+    printf '  "context_compilation_strategy": "%s",\n' "$_CONTEXT_COMPILATION_STRATEGY"
+    printf '  "context_coverage_required_count": %s,\n' "$_CONTEXT_COVERAGE_REQUIRED_COUNT"
+    printf '  "context_coverage_uncovered_count": %s,\n' "$_CONTEXT_COVERAGE_UNCOVERED_COUNT"
+    printf '  "context_candidate_topdown_count": %s,\n' "$_CONTEXT_CANDIDATE_TOPDOWN_COUNT"
+    printf '  "context_candidate_bottomup_count": %s,\n' "$_CONTEXT_CANDIDATE_BOTTOMUP_COUNT"
+    printf '  "context_zero_marginal_omitted_count": %s,\n' "$_CONTEXT_ZERO_MARGINAL_OMITTED_COUNT"
+    printf '  "context_rescue_marginal_coverage_count": %s,\n' "$_CONTEXT_RESCUE_MARGINAL_COVERAGE_COUNT"
+    printf '  "context_minimum_sufficient": %s,\n' "$_CONTEXT_MINIMUM_SUFFICIENT"
+    printf '  "cache_prompt_layout": "%s",\n' "$_CACHE_PROMPT_LAYOUT"
+    printf '  "cache_stable_prefix_bytes": %s,\n' "$_CACHE_STABLE_PREFIX_BYTES"
+    printf '  "cache_task_suffix_bytes": %s,\n' "$_CACHE_TASK_SUFFIX_BYTES"
+    printf '  "recovery_delta_mode": "%s",\n' "$_RECOVERY_DELTA_MODE"
     echo '  "measurement": "dispatcher heartbeat observation; phase boundaries are approximate"'
     echo '}'
 } > "$PHASE_METRICS_FILE"
@@ -8811,6 +9164,9 @@ else
 fi
 echo "Runtime Identity: $RUNTIME_JSON"
 echo "Phase Metrics:    $PHASE_METRICS_FILE"
+if [ "$_CONTEXT_CHECKPOINT_MODE" != "none" ]; then
+    echo "Context Checkpoint: ${REHYDRATE_FROM_OPTION} (${_CONTEXT_CHECKPOINT_MODE})"
+fi
 echo "Large Repo Mode: $CLAUDE_CODE_LARGE_REPO_MODE"
 echo "Prompt Profile:  $CLAUDE_CODE_PROMPT_PROFILE"
 echo "Evidence Mode:   $CLAUDE_CODE_EVIDENCE_MODE"
@@ -8844,6 +9200,9 @@ echo "Status:          $STATUS_FILE"
 echo "Network Log:     $NETWORK_FILE"
 echo "Attempt Class:   $ATTEMPT_CLASSIFICATION_FILE"
 echo "Runtime Bundle:  $MANAGED_RUNTIME_BUNDLE_FILE"
+if [ -s "$SKILL_CONTEXT_COMPILATION_FILE" ]; then
+    echo "Skill Context:   $SKILL_CONTEXT_COMPILATION_FILE"
+fi
 if [ -s "$DIRTY_SNAPSHOT_RECEIPT_FILE" ]; then
     echo "Dirty Snapshot:  $DIRTY_SNAPSHOT_RECEIPT_FILE"
 fi

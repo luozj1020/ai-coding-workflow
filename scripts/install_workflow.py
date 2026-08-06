@@ -10,7 +10,7 @@ Usage:
 This script:
     1. Copies assets into the target repo.
     2. If AGENTS.md or CLAUDE.md exist, preserves user content and replaces only managed blocks.
-    3. Ensures CLAUDE.md contains @AGENTS.md import.
+    3. Keeps CLAUDE.md as a compact standalone execution core.
     4. Makes shell scripts executable.
     5. Runs bash -n on installed shell scripts (if bash is available).
     6. Optionally keeps control-plane ignores local through .git/info/exclude.
@@ -38,12 +38,13 @@ def _to_bash_path(path):
 BEGIN_MARKER = "<!-- AI-CODING-WORKFLOW:BEGIN managed -->"
 END_MARKER = "<!-- AI-CODING-WORKFLOW:END managed -->"
 
-AGENTS_IMPORT = "@AGENTS.md"
+LEGACY_AGENTS_IMPORT = "@AGENTS.md"
 
 # Files to copy directly (source relative to assets/, dest relative to repo root)
 DIRECT_COPY = [
     ("codex/ai-coding-workflow.rules", ".codex/rules/ai-coding-workflow.rules"),
     ("task-card-template.md", "ai/task-card-template.md"),
+    ("skill-context/rules-v1.json", "ai/skill-context/rules-v1.json"),
     ("task-card-components/catalog.json", "ai/task-card-components/catalog.json"),
     ("task-card-components/catalog.md", "ai/task-card-components/catalog.md"),
     ("task-card-components/core.md", "ai/task-card-components/core.md"),
@@ -121,6 +122,9 @@ PYTHON_SCRIPTS = [
     ("prepare-worktree-continuation.py", "ai/prepare-worktree-continuation.py"),
     ("context-lease.py", "ai/context-lease.py"),
     ("build-execution-capsule.py", "ai/build-execution-capsule.py"),
+    ("build-context-checkpoint.py", "ai/build-context-checkpoint.py"),
+    ("build-recovery-delta.py", "ai/build-recovery-delta.py"),
+    ("compile-skill-context.py", "ai/compile-skill-context.py"),
     ("validate-claude-context.py", "ai/validate-claude-context.py"),
     ("code-search-service.py", "ai/code-search-service.py"),
     ("clean_runtime.py", "ai/clean_runtime.py"),
@@ -244,6 +248,9 @@ SCHEMA_ASSETS = [
     ("schemas/solution-contract-v1.schema.json", "ai/schemas/solution-contract-v1.schema.json"),
     ("schemas/solution-contract-v2.schema.json", "ai/schemas/solution-contract-v2.schema.json"),
     ("schemas/context-lease-v1.schema.json", "ai/schemas/context-lease-v1.schema.json"),
+    ("schemas/context-checkpoint-v1.schema.json", "ai/schemas/context-checkpoint-v1.schema.json"),
+    ("schemas/context-compilation-v1.schema.json", "ai/schemas/context-compilation-v1.schema.json"),
+    ("schemas/recovery-delta-v1.schema.json", "ai/schemas/recovery-delta-v1.schema.json"),
 ]
 
 # Structured assets: profiles (source relative to repo root, dest relative to repo root)
@@ -508,49 +515,29 @@ def get_managed_block_from_asset(asset_content):
     return block
 
 
-def ensure_agents_import(content):
-    """Ensure @AGENTS.md is present near the top of content.
-    Returns (new_content, was_inserted).
+def remove_legacy_default_agents_import(content):
+    """Remove only the old installer-owned bare ``@AGENTS.md`` header.
 
-    Inserts after the first heading but before any managed block markers,
-    using at most one blank line above and below.
+    Earlier releases injected the import between the default title and managed
+    block.  It made every non-bare Claude session load the full repository
+    handbook.  A user-owned import is preserved unless the header is exactly
+    the old title-plus-import shape.
     """
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Check if @AGENTS.md already exists (as a standalone line)
-    for line in normalized.split("\n"):
-        if line.strip() == AGENTS_IMPORT:
-            return normalized, False
-
-    # Find insertion point: after the first heading, but before BEGIN marker
-    lines = normalized.split("\n")
-    insert_idx = 0
-    for i, line in enumerate(lines):
-        if line.startswith("#"):
-            insert_idx = i + 1
-        else:
-            break
-
-    # Clamp: don't insert past the BEGIN marker
-    for i in range(insert_idx, len(lines)):
-        if BEGIN_MARKER in lines[i]:
-            insert_idx = i
-            break
-
-    # Determine what's before and after the insertion point to avoid double blanks
-    before_blank = insert_idx > 0 and lines[insert_idx - 1].strip() == ""
-    after_blank = insert_idx < len(lines) and lines[insert_idx].strip() == ""
-
-    insert_lines = []
-    if not before_blank:
-        insert_lines.append("")
-    insert_lines.append(AGENTS_IMPORT)
-    if not after_blank:
-        insert_lines.append("")
-
-    for j, line in enumerate(insert_lines):
-        lines.insert(insert_idx + j, line)
-    return "\n".join(lines), True
+    begin = normalized.find(BEGIN_MARKER)
+    header = normalized[:begin] if begin >= 0 else normalized
+    lines = header.split("\n")
+    nonblank = [line.strip() for line in lines if line.strip()]
+    imports = [line for line in nonblank if line == LEGACY_AGENTS_IMPORT]
+    remaining = [line for line in nonblank if line != LEGACY_AGENTS_IMPORT]
+    if len(imports) != 1 or len(remaining) != 1 or not remaining[0].startswith("#"):
+        return normalized
+    compact_header = "\n".join(
+        line for line in lines if line.strip() != LEGACY_AGENTS_IMPORT
+    ).rstrip()
+    if begin < 0:
+        return compact_header + "\n"
+    return compact_header + "\n\n" + normalized[begin:]
 
 
 def install_or_update_agents(src_content, dest_path):
@@ -573,13 +560,16 @@ def install_or_update_agents(src_content, dest_path):
 
 
 def install_or_update_claude(src_content, dest_path):
-    """Install or update CLAUDE.md. Ensures @AGENTS.md is present.
-    Returns status string."""
+    """Install or update the compact CLAUDE.md managed block.
+
+    CLAUDE.md intentionally does not import AGENTS.md.  The narrow execution
+    capsule supplies task-specific instructions, while user-owned headers and
+    footers remain intact.
+    """
     new_block = get_managed_block_from_asset(src_content)
 
     if not os.path.exists(dest_path):
-        # Extract header from source: everything before BEGIN marker,
-        # preserving @AGENTS.md if present in the template.
+        # Extract the small source header before the managed block.
         src_norm = src_content.replace("\r\n", "\n").replace("\r", "\n")
         begin_idx = src_norm.find(BEGIN_MARKER)
         if begin_idx >= 0:
@@ -588,29 +578,17 @@ def install_or_update_claude(src_content, dest_path):
             header = ""
 
         content = build_managed_file(header, new_block, "")
-        # Ensure @AGENTS.md (handles templates that lack it)
-        content, _ = ensure_agents_import(content)
         write_file(dest_path, content)
         return "created"
 
     existing = read_file(dest_path)
     existing_norm = existing.replace("\r\n", "\n").replace("\r", "\n")
 
-    # If no managed block exists, @AGENTS.md may end up in the footer.
-    # Remove it from existing content before merge so it gets placed correctly.
-    had_agents = False
-    if BEGIN_MARKER not in existing_norm:
-        lines = existing_norm.split("\n")
-        filtered = []
-        for line in lines:
-            if line.strip() == AGENTS_IMPORT:
-                had_agents = True
-            else:
-                filtered.append(line)
-        existing = "\n".join(filtered)
-
+    # Remove the exact legacy default shape before a no-managed-block merge
+    # would otherwise preserve the old import as a footer.
+    existing = remove_legacy_default_agents_import(existing)
     merged = merge_with_managed_block(existing, new_block)
-    merged, agents_inserted = ensure_agents_import(merged)
+    merged = remove_legacy_default_agents_import(merged)
 
     if normalize_for_compare(merged) == normalize_for_compare(existing_norm):
         return "skipped"
@@ -660,10 +638,6 @@ def verify_refresh_postcondition(repo_path, assets_dir, scripts_dir):
             ):
                 mismatches.append(dest_rel + " (managed block mismatch)")
                 continue
-            if dest_rel == "CLAUDE.md" and not any(
-                line.strip() == AGENTS_IMPORT for line in actual.splitlines()
-            ):
-                mismatches.append(dest_rel + " (missing @AGENTS.md)")
         elif normalize_for_compare(actual) != normalize_for_compare(expected):
             mismatches.append(dest_rel + " (content mismatch)")
     for dest_rel in RETIRED_WORKFLOW_FILES:
@@ -922,7 +896,7 @@ def main(argv=None):
     results[status].append("AGENTS.md")
     detail(f"  {status}: AGENTS.md")
 
-    # --- Install CLAUDE.md (managed + @AGENTS.md) ---
+    # --- Install compact managed CLAUDE.md ---
     src = os.path.join(assets_dir, "CLAUDE.md")
     dest = os.path.join(repo_path, "CLAUDE.md")
     status = install_or_update_claude(read_file(src), dest)

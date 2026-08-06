@@ -67,6 +67,11 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
         claude_attempts = summary.get("claude_attempts", {})
         economics = summary.get("economics", {})
         model_usage = summary.get("model_usage", {})
+        context_reuse = summary.get("context_reuse", {})
+        context_routes = context_reuse.get("routes", {})
+        checkpoint_modes = context_reuse.get("checkpoint_modes", {})
+        recovery_delta_modes = context_reuse.get("recovery_delta_modes", {})
+        compilation_strategies = context_reuse.get("context_compilation_strategies", {})
         runs.append(
             {
                 "run_path": summary["run_path"],
@@ -159,6 +164,57 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
                 "claude_reuse_ratio": economics.get("claude_reuse_ratio"),
                 "model_usage_complete": model_usage.get("totals", {}).get("usage_complete"),
                 "model_usage_by_role": model_usage.get("by_role", {}),
+                "context_reuse_samples": context_reuse.get("samples", 0),
+                "context_warm_resume_count": context_routes.get("warm-resume", 0),
+                "context_capsule_rehydrate_count": context_routes.get(
+                    "capsule-rehydrate", 0,
+                ),
+                "context_auto_checkpoint_count": checkpoint_modes.get("automatic", 0),
+                "context_checkpoint_bytes": context_reuse.get(
+                    "context_checkpoint_bytes", 0,
+                ),
+                "execution_capsule_bytes": context_reuse.get(
+                    "execution_capsule_bytes", 0,
+                ),
+                "skill_context_packet_bytes": context_reuse.get(
+                    "skill_context_packet_bytes", 0,
+                ),
+                "cache_stable_prefix_bytes": context_reuse.get(
+                    "cache_stable_prefix_bytes", 0,
+                ),
+                "cache_task_suffix_bytes": context_reuse.get(
+                    "cache_task_suffix_bytes", 0,
+                ),
+                "recovery_delta_count": recovery_delta_modes.get(
+                    "classification-bound", 0,
+                ),
+                "context_compilation_coverage_count": compilation_strategies.get(
+                    "coverage", 0,
+                ),
+                "context_compilation_anchors_only_count": compilation_strategies.get(
+                    "anchors-only", 0,
+                ),
+                "context_minimum_sufficient_count": context_reuse.get(
+                    "context_minimum_sufficient_count", 0,
+                ),
+                "context_coverage_required_count": context_reuse.get(
+                    "context_coverage_required_count", 0,
+                ),
+                "context_coverage_uncovered_count": context_reuse.get(
+                    "context_coverage_uncovered_count", 0,
+                ),
+                "context_candidate_topdown_count": context_reuse.get(
+                    "context_candidate_topdown_count", 0,
+                ),
+                "context_candidate_bottomup_count": context_reuse.get(
+                    "context_candidate_bottomup_count", 0,
+                ),
+                "context_zero_marginal_omitted_count": context_reuse.get(
+                    "context_zero_marginal_omitted_count", 0,
+                ),
+                "context_rescue_marginal_coverage_count": context_reuse.get(
+                    "context_rescue_marginal_coverage_count", 0,
+                ),
             }
         )
 
@@ -225,6 +281,63 @@ def benchmark(paths: list[Path], repo_root: Path) -> dict:
             sum(run["claude_useful_interactions"] for run in runs)
             / sum(run["claude_attempt_count"] for run in runs), 3
         ) if sum(run["claude_attempt_count"] for run in runs) else 0.0,
+        "context_reuse_samples_total": sum(
+            run["context_reuse_samples"] for run in runs
+        ),
+        "context_warm_resume_total": sum(
+            run["context_warm_resume_count"] for run in runs
+        ),
+        "context_capsule_rehydrate_total": sum(
+            run["context_capsule_rehydrate_count"] for run in runs
+        ),
+        "context_auto_checkpoint_total": sum(
+            run["context_auto_checkpoint_count"] for run in runs
+        ),
+        "context_checkpoint_bytes_total": sum(
+            run["context_checkpoint_bytes"] for run in runs
+        ),
+        "execution_capsule_bytes_total": sum(
+            run["execution_capsule_bytes"] for run in runs
+        ),
+        "skill_context_packet_bytes_total": sum(
+            run["skill_context_packet_bytes"] for run in runs
+        ),
+        "cache_stable_prefix_bytes_total": sum(
+            run["cache_stable_prefix_bytes"] for run in runs
+        ),
+        "cache_task_suffix_bytes_total": sum(
+            run["cache_task_suffix_bytes"] for run in runs
+        ),
+        "recovery_delta_total": sum(
+            run["recovery_delta_count"] for run in runs
+        ),
+        "context_compilation_coverage_total": sum(
+            run["context_compilation_coverage_count"] for run in runs
+        ),
+        "context_compilation_anchors_only_total": sum(
+            run["context_compilation_anchors_only_count"] for run in runs
+        ),
+        "context_minimum_sufficient_total": sum(
+            run["context_minimum_sufficient_count"] for run in runs
+        ),
+        "context_coverage_required_total": sum(
+            run["context_coverage_required_count"] for run in runs
+        ),
+        "context_coverage_uncovered_total": sum(
+            run["context_coverage_uncovered_count"] for run in runs
+        ),
+        "context_candidate_topdown_total": sum(
+            run["context_candidate_topdown_count"] for run in runs
+        ),
+        "context_candidate_bottomup_total": sum(
+            run["context_candidate_bottomup_count"] for run in runs
+        ),
+        "context_zero_marginal_omitted_total": sum(
+            run["context_zero_marginal_omitted_count"] for run in runs
+        ),
+        "context_rescue_marginal_coverage_total": sum(
+            run["context_rescue_marginal_coverage_count"] for run in runs
+        ),
         # Advisor continuation aggregates
         "advisor_continuation_requested_total": sum(run["continuation_requested"] for run in runs),
         "advisor_continuation_accepted_total": sum(run["continuation_accepted"] for run in runs),
@@ -288,6 +401,25 @@ def render_markdown(report: dict) -> str:
         f"| Advisor input tokens | {format_value(report['advisor_input_tokens_total'])} |",
         f"| Advisor output tokens | {format_value(report['advisor_output_tokens_total'])} |",
         f"| Advisor cost USD | {format_value(report['advisor_cost_usd_total'])} |",
+        f"| Context reuse samples | {format_value(report['context_reuse_samples_total'])} |",
+        f"| Warm resumes | {format_value(report['context_warm_resume_total'])} |",
+        f"| Capsule rehydrates | {format_value(report['context_capsule_rehydrate_total'])} |",
+        f"| Automatic checkpoints | {format_value(report['context_auto_checkpoint_total'])} |",
+        f"| Checkpoint bytes | {format_value(report['context_checkpoint_bytes_total'])} |",
+        f"| Execution capsule bytes | {format_value(report['execution_capsule_bytes_total'])} |",
+        f"| Compiled guidance bytes | {format_value(report['skill_context_packet_bytes_total'])} |",
+        f"| Stable prompt-prefix bytes | {format_value(report['cache_stable_prefix_bytes_total'])} |",
+        f"| Task suffix bytes | {format_value(report['cache_task_suffix_bytes_total'])} |",
+        f"| Classification-bound recovery deltas | {format_value(report['recovery_delta_total'])} |",
+        f"| Coverage-compiled contexts | {format_value(report['context_compilation_coverage_total'])} |",
+        f"| Anchors-only ablations | {format_value(report['context_compilation_anchors_only_total'])} |",
+        f"| Minimum-sufficient contexts | {format_value(report['context_minimum_sufficient_total'])} |",
+        f"| Required cue coverage | {format_value(report['context_coverage_required_total'])} |",
+        f"| Uncovered cue requirements | {format_value(report['context_coverage_uncovered_total'])} |",
+        f"| Top-down candidates | {format_value(report['context_candidate_topdown_total'])} |",
+        f"| Bottom-up candidates | {format_value(report['context_candidate_bottomup_total'])} |",
+        f"| Zero-marginal cues omitted | {format_value(report['context_zero_marginal_omitted_total'])} |",
+        f"| Rescue marginal coverage | {format_value(report['context_rescue_marginal_coverage_total'])} |",
         f"| Spark-enabled runs | {format_value(report['spark_enabled_count'])} |",
         f"| Spark-invoked runs | {format_value(report['spark_invoked_count'])} |",
         f"| Spark auto-disabled runs | {format_value(report['spark_auto_disabled_count'])} |",

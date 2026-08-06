@@ -870,14 +870,29 @@ bash ai/dispatch-to-claude.sh /absolute/slice-2.md \
 和写入收据。Lease 会绑定方案合同、worktree 状态、session、角色、工具配置、
 可见时的模型/provider route 以及下一张任务卡 hash，并且只消费一次。下一轮应
 从新验收状态重新签发，并通过 `--parent-lease` 保持 lineage。默认最多连续三次
-warm 调用；超过上限时传入有界确定性 checkpoint 的 `--rehydrate-from`，启动新
-session 并只注入 delta execution capsule，避免无限重放历史对话。
+warm 调用；下一次兼容调用会自动生成有界确定性 checkpoint，并启动新 session，
+只注入 delta execution capsule，避免无限重放历史对话。checkpoint 仅包含已接受
+的状态 hash、路径和有界 review finding，不复制源码、diff 或对话。仍可通过
+`--rehydrate-from` 显式提供 checkpoint，但该兼容路径会记录为 legacy-unbound。
 
-dispatcher 固定使用 Claude 的 `--bare`，因此仓库 `CLAUDE.md` 及其中的
-`@AGENTS.md` 不会进入这条调度调用的模型上下文。真正的冷启动载荷是
-`CLAUDE_PROMPT.md`；execution-only 和 Context Lease 调用现在只渲染有界的
-`CLAUDE_TASK_CARD.md`，完整 `TASK_CARD_FULL.md` 仅作为审计产物保留。安全政策
-继续由确定性门禁执行，Claude 只接收当前可执行合同。
+dispatcher 固定使用 Claude 的 `--bare`，因此仓库 `CLAUDE.md` 不会进入这条
+调度调用的模型上下文。`CLAUDE.md` 仍保留为手工非 bare 会话使用的极简独立
+执行核心，且不再导入 `AGENTS.md`。真正的冷启动载荷是 `CLAUDE_PROMPT.md`；
+execution-only 和 Context Lease 调用只渲染有界的 `CLAUDE_TASK_CARD.md`，完整
+`TASK_CARD_FULL.md` 仅作为审计产物保留。安全政策继续由确定性门禁执行，Claude
+只接收当前可执行合同。
+
+支持该运行时的 dispatcher 会在渲染执行卡之前运行本地、无模型的
+`ai/compile-skill-context.py`。它只从已选组件中选择少量带 provenance 的
+过程、检索和验证提示，并在 `.worktrees/` 下写入 `*.skill-context.md` 与收据，
+再绑定到完整卡片的精确 hash。它不能选择权限，也不能替换冻结的写入范围、验收、
+验证或停止条件。
+
+默认 `coverage` 策略会合并 top-down 的 preset/gate 候选与 bottom-up 的任务事实
+候选，只救回能覆盖缺失过程性需求的 cue。收据会解释每项纳入或排除，包括来源标题
+片段、边际覆盖和零边际淘汰。仅用于成对实验时可传
+`--context-compile-strategy anchors-only`，保留锚点并有意关闭 rescue；它不是普通
+生产路径的低上下文默认值。
 
 运行证据检查：
 
@@ -1125,7 +1140,7 @@ CLAUDE_CODE_NETWORK_MONITOR=1 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-1
 | `*.report.md` | Claude 修改报告，供人工和 Codex 审查 |
 | `*.claude-progress.md` | Claude 自报的里程碑进度，用于状态展示和审查证据 |
 | `*.monitor-events.log` | 供阻塞式监控消费的实质变化与终态边界 |
-| `*.phase-metrics.json` | context、implementation、validation、tail、编辑就绪和产品停滞计时 |
+| `*.phase-metrics.json` | context、implementation、validation、tail、编辑就绪、产品停滞、Context Lease 路由及 checkpoint/capsule 字节指标 |
 | `*.activity-observation.json` | 只基于元数据的会话/控制/产品活动年龄和剩余窗口；不读取 transcript 内容 |
 | `*.extension-capsule.json` / `*.extension-advisor.json` | 隐私受限的近期 assistant/tool 活动，以及绑定产品哈希的 Spark 超时判断 |
 | `*.recovered-completion.json` | Claude 缺少报告时保留的可恢复 diff/收据证据；不能直接验收 |
@@ -1250,7 +1265,7 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
   --json-output .worktrees/workflow-benchmark.json
 ```
 
-benchmark 还会聚合执行 owner、任务卡/审查包字节数、控制面耗时、是否派发 Checker 模型，以及 Claude diff 的近似复用率。primary run、efficient final-candidate review 和接受的 legacy loop 会自动写入经济性记录，并按 run/task 身份幂等追加历史；`calibrate` 只有在同类任务积累足够样本后才产生保守 owner bias。只有同时绑定 Claude diff 和最终接受 diff 时才计算复用率，否则明确记录 unavailable。原有 decision、quality、时延、token/cost、稳定性、Advisor、Spark 和并行元数据仍会保留。
+benchmark 还会聚合执行 owner、任务卡/审查包字节数、Context Lease/checkpoint/capsule 指标、控制面耗时、是否派发 Checker 模型，以及 Claude diff 的近似复用率。primary run、efficient final-candidate review 和接受的 legacy loop 会自动写入经济性记录，并按 run/task 身份幂等追加历史；`calibrate` 只有在同类任务积累足够样本后才产生保守 owner bias。只有同时绑定 Claude diff 和最终接受 diff 时才计算复用率，否则明确记录 unavailable。原有 decision、quality、时延、token/cost、稳定性、Advisor、Spark 和并行元数据仍会保留。
 
 **经济性实验准备：** Codex、Spark 和 Claude 包装器会把终止调用归一化到同一个追加式账本。提供方没有返回的字段保持 `null`，并标记 `usage_complete=false`；工作流不会估算 Token。消耗模型额度前先生成平衡的三臂实验清单：
 
@@ -1576,7 +1591,8 @@ python ai/install_context_tools.py --apply python --manager npm --yes
 python scripts/run-tests.py quick
 ```
 
-测试只使用 Python 标准库，覆盖安装器幂等性、managed block 用户内容保留、`CLAUDE.md` import 位置，以及 Codex skill 复制时的运行时产物排除规则。
+测试只使用 Python 标准库，覆盖安装器幂等性、managed block 用户内容保留、
+极简 `CLAUDE.md` 的迁移，以及 Codex skill 复制时的运行时产物排除规则。
 
 ## 许可证
 

@@ -126,6 +126,24 @@ class SummarizeLoopRunTests(unittest.TestCase):
                 "implementation_seconds": 2,
                 "validation_seconds_observed": 1,
                 "tail_seconds": 1,
+                "context_lease_route": "capsule-rehydrate",
+                "context_checkpoint_mode": "automatic",
+                "execution_capsule_mode": "delta",
+                "context_checkpoint_bytes": 384,
+                "execution_capsule_bytes": 1024,
+                "skill_context_packet_bytes": 256,
+                "cache_prompt_layout": "static-core-v1",
+                "cache_stable_prefix_bytes": 768,
+                "cache_task_suffix_bytes": 1024,
+                "recovery_delta_mode": "classification-bound",
+                "context_compilation_strategy": "coverage",
+                "context_coverage_required_count": 7,
+                "context_coverage_uncovered_count": 0,
+                "context_candidate_topdown_count": 4,
+                "context_candidate_bottomup_count": 5,
+                "context_zero_marginal_omitted_count": 1,
+                "context_rescue_marginal_coverage_count": 3,
+                "context_minimum_sufficient": True,
             }), encoding="utf-8")
             (dispatch / "claude.checker-report.md").write_text(
                 "# Checker Report\n\nALL GREEN\n",
@@ -261,6 +279,32 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertEqual(summary["speed"]["claude_context_acquisition_seconds"], 1)
             self.assertEqual(summary["speed"]["claude_implementation_seconds"], 2)
             self.assertEqual(summary["speed"]["claude_tail_seconds"], 1)
+            self.assertEqual(summary["context_reuse"]["samples"], 1)
+            self.assertEqual(
+                summary["context_reuse"]["routes"]["capsule-rehydrate"], 1
+            )
+            self.assertEqual(
+                summary["context_reuse"]["checkpoint_modes"]["automatic"], 1
+            )
+            self.assertEqual(summary["context_reuse"]["context_checkpoint_bytes"], 384)
+            self.assertEqual(summary["context_reuse"]["cache_stable_prefix_bytes"], 768)
+            self.assertEqual(summary["context_reuse"]["cache_task_suffix_bytes"], 1024)
+            self.assertEqual(
+                summary["context_reuse"]["cache_prompt_layouts"], {"static-core-v1": 1},
+            )
+            self.assertEqual(
+                summary["context_reuse"]["recovery_delta_modes"], {"classification-bound": 1},
+            )
+            self.assertEqual(
+                summary["context_reuse"]["context_compilation_strategies"], {"coverage": 1},
+            )
+            self.assertEqual(summary["context_reuse"]["context_minimum_sufficient_count"], 1)
+            self.assertEqual(summary["context_reuse"]["context_coverage_required_count"], 7)
+            self.assertEqual(summary["context_reuse"]["context_coverage_uncovered_count"], 0)
+            self.assertEqual(summary["context_reuse"]["context_candidate_topdown_count"], 4)
+            self.assertEqual(summary["context_reuse"]["context_candidate_bottomup_count"], 5)
+            self.assertEqual(summary["context_reuse"]["context_zero_marginal_omitted_count"], 1)
+            self.assertEqual(summary["context_reuse"]["context_rescue_marginal_coverage_count"], 3)
             self.assertEqual(summary["cost"]["input_tokens"], 100)
             self.assertEqual(summary["cost"]["output_tokens"], 50)
             self.assertEqual(summary["cost"]["total_cost_usd"], 0.25)
@@ -316,6 +360,8 @@ class SummarizeLoopRunTests(unittest.TestCase):
             self.assertIn("| acceptance_satisfied_by_spark | no |", markdown)
             self.assertIn("## Claude Evidence Classification", markdown)
             self.assertIn("| evidence_state | valid report without diff |", markdown)
+            self.assertIn("## Context Reuse", markdown)
+            self.assertIn("| context_checkpoint_bytes | 384 |", markdown)
 
     def test_continuation_and_diagnostic_metrics_use_only_explicit_numbers(self):
         module = load_module()

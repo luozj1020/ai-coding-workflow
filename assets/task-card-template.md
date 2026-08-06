@@ -350,7 +350,7 @@ Execution cost rules:
 | Dispatch env override | none / `CLAUDE_CODE_EXECUTION_PROFILE=safe` / `CLAUDE_CODE_EXECUTION_PROFILE=fast-large-repo` |
 | Full audit card retained? | yes, `TASK_CARD_FULL.md` |
 | Builder mode | standard (default) / execution-only |
-| Execution-only safe? | no / yes: exact target files, mechanical implementation, no acknowledgement or architecture discovery needed |
+| Execution-only eligible? | no / yes: exact target files, mechanical implementation, no acknowledgement or architecture discovery needed |
 | First-progress timeout seconds | 0 (standard default, disabled) / 120 (execution-only default) / custom non-negative integer |
 
 Execution-only Builder mode renders a minimal `CLAUDE_TASK_CARD.md` with only execution-relevant sections (ID, Task Mode, Claude Context Packet, Goal, Handoff Contract, Acceptance Criteria, Testing Responsibility, Validation Contract, Required Report). The full card is preserved as `TASK_CARD_FULL.md`. Use execution-only only when target files are exact, the change is mechanical, and no acknowledgement or architecture discovery is needed. Otherwise use standard mode.
@@ -651,6 +651,15 @@ Root cause rule: for bugfix/debugging tasks, do not guess-and-patch. Reproduce o
 | Must report | |
 | Stop condition | |
 
+## Stop Conditions
+
+<!-- List concrete conditions that require the assigned executor to stop instead
+of expanding scope, guessing, or continuing with unsafe assumptions. -->
+
+- [ ] Stop and report if the declared write scope is insufficient.
+- [ ] Stop and report if an acceptance criterion or required validation command is unavailable.
+- [ ] Stop and report if a required approval, credential, or environment capability is missing.
+
 ## Acceptance Criteria
 
 <!-- How to verify the work is complete. Be specific and testable. -->
@@ -724,6 +733,16 @@ Checker expectations:
 - If Claude cannot run Python/Node/test commands because of approval or sandbox policy, record the exact blocked command and leave it for Codex/human rerun instead of treating the implementation itself as failed.
 - Preserve failed command, exit code, key original output, and `file:line` locations.
 - Do not weaken, delete, skip, or rewrite checks just to get a green result.
+
+## Required Report
+
+<!-- A Claude-owned completion report is valid only when it distinguishes work
+actually performed from planned work and covers the required evidence below. -->
+
+- Changed files and the purpose of each change.
+- Acceptance-criteria mapping and exact validation commands/results, or blockers.
+- Confirmation that no out-of-scope paths were modified.
+- Remaining risks, deviations, and follow-up work.
 
 ## Execution Progress
 

@@ -46,6 +46,17 @@ Signals:
 - Legacy Claude/Codex usage summaries only when no canonical ledger is present.
 - Number of turns when available.
 - Task-card and review-packet bytes.
+- Context Lease route (`warm-resume`, `capsule-rehydrate`, or fresh), automatic
+  checkpoint count, and execution-capsule / compiled-guidance byte counts. These
+  are payload diagnostics, not token estimates: compare them only across the
+  same frozen contract, model/provider route, and tool profile.
+- Compiled-context safety evidence: all hard-contract sections retained,
+  conflict-free rule selection, selected negative boundary cues, and whether a
+  classification-bound recovery delta was used. A compact packet with a missing
+  hard contract is an invalid run, not a lower-cost success.
+- Stable prompt-prefix and task-suffix bytes. These are useful for detecting
+  accidental prompt churn and estimating cacheability, but do not prove a
+  provider cache hit or cache-cost saving.
 - Control-plane seconds before implementation.
 - Model calls by role and whether Checker was actually dispatched.
 - Codex input/output usage grouped by repository discovery, intent freeze,
@@ -200,6 +211,21 @@ compare `context_acquisition_seconds`, `implementation_seconds`,
 `validation_seconds_observed`, and `tail_seconds`. These observer-derived phase
 boundaries are approximate and explain latency; the arm-level active clock
 remains the efficiency denominator.
+`phase-metrics.json` also records the Context Lease route, checkpoint mode,
+and bounded checkpoint/capsule/compiled-guidance bytes. Use these fields to
+separate cold starts, warm resumes, and checkpoint rehydration; never infer
+provider cache hits from them.
+For context-compilation experiments it additionally records the strategy
+(`coverage` or benchmark-only `anchors-only`), required/uncovered cue counts,
+top-down and bottom-up candidate counts, zero-marginal exclusions, and rescue
+marginal coverage. Compare paired runs only within the same frozen contract,
+model/provider route, tool profile, and task-suffix lane. An anchors-only arm
+that loses coverage is an ablation observation, not a cheaper successful run.
+It additionally records the stable prompt layout ID plus static-prefix and
+task-suffix bytes, and any classification-bound recovery-delta mode. Compare
+these only within an identical model/provider/tool-contract lane; a changed
+prefix hash is a cacheability regression candidate, not evidence of a failed
+model call.
 `experiment prepare` exports `AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE` in each
 run context. When that environment is used for dispatch, the dispatcher copies
 the canonical phase artifact into the run directory and `experiment summarize`

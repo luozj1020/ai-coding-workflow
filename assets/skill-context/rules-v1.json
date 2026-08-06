@@ -1,0 +1,138 @@
+{
+  "schema": "aiwf-skill-context-rules-v1",
+  "schema_version": 1,
+  "rules": [
+    {
+      "conditions": {"phases": ["bootstrap", "delta"], "presets": ["builder", "batch-builder"]},
+      "coverage": ["implementation-scope"],
+      "id": "builder.assigned-production-only",
+      "kind": "procedure",
+      "polarity": "positive",
+      "priority": 90,
+      "review_version": 1,
+      "selection": "anchor",
+      "source": {"anchor": "Builder Contract", "path": "ai/task-card-components/builder.md"},
+      "text": "Implement only the assigned production change; do not add acceptance tests or broad validation unless the card explicitly assigns them."
+    },
+    {
+      "conditions": {"requires_sections": ["Required Report"], "task_types": ["bugfix", "regression", "feature", "mechanical", "refactor"]},
+      "coverage": ["output-contract"],
+      "id": "report.bind-frozen-evidence",
+      "kind": "output-contract",
+      "polarity": "positive",
+      "priority": 94,
+      "review_version": 1,
+      "selection": "anchor",
+      "source": {"anchor": "Required Report", "path": "ai/task-card-components/builder.md"},
+      "text": "Use only the exact report contract frozen in the Task Card; report declared checks and results, and never treat seeded progress or control files as completion evidence."
+    },
+    {
+      "conditions": {"phases": ["bootstrap", "delta"], "presets": ["checker"]},
+      "coverage": ["file-validation"],
+      "id": "checker.validate-each-file",
+      "kind": "validation",
+      "polarity": "positive",
+      "priority": 92,
+      "review_version": 1,
+      "selection": "anchor",
+      "source": {"anchor": "Checker Contract", "path": "ai/task-card-components/checker.md"},
+      "text": "After each assigned test file, run its syntax/import check and exact narrow single-file test before writing the next file."
+    },
+    {
+      "conditions": {"continuation_kinds": ["next-slice", "revision", "checker-followup"], "phases": ["delta"]},
+      "coverage": ["continuation-scope"],
+      "id": "continuation.reuse-accepted-context",
+      "kind": "procedure",
+      "polarity": "positive",
+      "priority": 96,
+      "review_version": 1,
+      "selection": "anchor",
+      "source": {"anchor": "Runtime and Recovery", "path": "AGENTS.md"},
+      "text": "Use the accepted lineage only for the current delta; inspect named targets first and report a stale accepted fact instead of rebuilding repository-wide context."
+    },
+    {
+      "conditions": {"gates_any": ["large-repo"]},
+      "coverage": ["bounded-discovery"],
+      "id": "large-repo.bounded-discovery",
+      "kind": "retrieval",
+      "polarity": "positive",
+      "priority": 88,
+      "review_version": 1,
+      "selection": "anchor",
+      "source": {"anchor": "Worktree / Large Repo Strategy Gate", "path": "ai/task-card-components/large-repo.md"},
+      "text": "Start from supplied targets and source-of-truth evidence; if discovery is still necessary, use one bounded locator query instead of broad repository scanning."
+    },
+    {
+      "conditions": {"gates_any": ["root-cause"]},
+      "coverage": ["root-cause-evidence"],
+      "id": "root-cause.keep-disproof-bound",
+      "kind": "procedure",
+      "polarity": "positive",
+      "priority": 89,
+      "review_version": 1,
+      "selection": "anchor",
+      "source": {"anchor": "Root Cause Gate", "path": "ai/task-card-components/root-cause.md"},
+      "text": "Keep the symptom, hypothesis, checked comparison, fix mechanism, and disproof stop rule tied to the current evidence before changing the mechanism."
+    },
+    {
+      "conditions": {"gates_any": ["tdd"]},
+      "coverage": ["test-order"],
+      "id": "tdd.red-green-scope",
+      "kind": "validation",
+      "polarity": "positive",
+      "priority": 90,
+      "review_version": 1,
+      "selection": "anchor",
+      "source": {"anchor": "Test-First / TDD Contract", "path": "ai/task-card-components/tdd.md"},
+      "text": "Preserve the frozen red/green evidence order; do not expand from the assigned acceptance behavior into unrelated test coverage."
+    },
+    {
+      "conditions": {"languages_any": ["shell", "bash", "config", "bazel", "yaml", "toml"]},
+      "coverage": ["textual-retrieval"],
+      "id": "retrieval.lexical-for-shell-config",
+      "kind": "retrieval",
+      "polarity": "positive",
+      "priority": 82,
+      "review_version": 1,
+      "selection": "rescue",
+      "source": {"anchor": "Bounded CodeGraph for Indexed Code", "path": "AGENTS.md"},
+      "text": "Use targeted lexical search for Shell, configuration, build text, and log/error strings; reserve CodeGraph for concrete indexed-code symbol relationships."
+    },
+    {
+      "conditions": {"codegraph_statuses": ["ready", "used-for-concrete-symbol", "used"]},
+      "coverage": ["worktree-bound-graph"],
+      "id": "retrieval.codegraph-worktree-bound",
+      "kind": "retrieval",
+      "polarity": "positive",
+      "priority": 81,
+      "review_version": 1,
+      "selection": "rescue",
+      "source": {"anchor": "Context and Safety", "path": "AGENTS.md"},
+      "text": "Use CodeGraph only for a concrete indexed symbol question whose result is bound to this execution worktree and current state; otherwise use the supplied evidence and targeted reads."
+    },
+    {
+      "conditions": {"task_types": ["bugfix", "regression"]},
+      "coverage": ["narrow-validation"],
+      "id": "validation.narrow-failure-first",
+      "kind": "validation",
+      "polarity": "positive",
+      "priority": 80,
+      "review_version": 1,
+      "selection": "rescue",
+      "source": {"anchor": "Validation Contract", "path": "ai/task-card-components/core.md"},
+      "text": "Run the exact narrow failing or assigned validation first; do not substitute a broad suite for the frozen validation contract."
+    },
+    {
+      "conditions": {"languages_any": ["shell", "bash", "config", "bazel", "yaml", "toml"]},
+      "coverage": ["textual-retrieval-boundary"],
+      "id": "retrieval.avoid-broad-graph-for-text",
+      "kind": "retrieval",
+      "polarity": "negative",
+      "priority": 83,
+      "review_version": 1,
+      "selection": "rescue",
+      "source": {"anchor": "Bounded CodeGraph for Indexed Code", "path": "AGENTS.md"},
+      "text": "Do not use broad CodeGraph discovery for Shell, configuration, build text, or log/error strings; start with the supplied evidence and targeted lexical search."
+    }
+  ]
+}

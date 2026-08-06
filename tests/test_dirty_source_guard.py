@@ -38,6 +38,10 @@ RUN_APPROVED_VALIDATION = ROOT / "scripts" / "run-approved-validation.py"
 CLAUDE_EXTENSION_CAPSULE = ROOT / "scripts" / "claude-extension-capsule.py"
 CONTEXT_LEASE = ROOT / "scripts" / "context-lease.py"
 BUILD_EXECUTION_CAPSULE = ROOT / "scripts" / "build-execution-capsule.py"
+BUILD_CONTEXT_CHECKPOINT = ROOT / "scripts" / "build-context-checkpoint.py"
+BUILD_RECOVERY_DELTA = ROOT / "scripts" / "build-recovery-delta.py"
+COMPILE_SKILL_CONTEXT = ROOT / "scripts" / "compile-skill-context.py"
+SKILL_CONTEXT_RULES = ROOT / "assets" / "skill-context" / "rules-v1.json"
 TEMP_ROOT = ROOT / ".worktrees" / "dirty-source-guard-tests"
 
 def find_bash():
@@ -116,6 +120,11 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(CLAUDE_EXTENSION_CAPSULE, self.repo / "scripts" / "claude-extension-capsule.py")
         shutil.copy2(CONTEXT_LEASE, self.repo / "scripts" / "context-lease.py")
         shutil.copy2(BUILD_EXECUTION_CAPSULE, self.repo / "scripts" / "build-execution-capsule.py")
+        shutil.copy2(BUILD_CONTEXT_CHECKPOINT, self.repo / "scripts" / "build-context-checkpoint.py")
+        shutil.copy2(BUILD_RECOVERY_DELTA, self.repo / "scripts" / "build-recovery-delta.py")
+        shutil.copy2(COMPILE_SKILL_CONTEXT, self.repo / "scripts" / "compile-skill-context.py")
+        (self.repo / "assets" / "skill-context").mkdir(parents=True)
+        shutil.copy2(SKILL_CONTEXT_RULES, self.repo / "assets" / "skill-context" / "rules-v1.json")
         self._write_fake_spark()
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
@@ -135,6 +144,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self._run(["git", "add", "scripts/run-approved-validation.py"], cwd=self.repo)
         self._run(["git", "add", "scripts/claude-extension-capsule.py",
                    "scripts/context-lease.py", "scripts/build-execution-capsule.py",
+                   "scripts/build-context-checkpoint.py", "scripts/build-recovery-delta.py",
+                   "scripts/compile-skill-context.py", "assets/skill-context/rules-v1.json",
                    "scripts/run-codex-spark.sh"], cwd=self.repo)
         self._run(["git", "commit", "-m", "init"], cwd=self.repo)
 
@@ -565,6 +576,71 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             encoding="utf-8",
         )
         return task
+
+    def _write_complete_standard_builder_card(self, name="COMPLETE_BUILDER.md"):
+        task = self.repo / "task-cards" / name
+        task.parent.mkdir(exist_ok=True)
+        task.write_text(
+            "# Complete Builder\n\n"
+            "## Goal\n\nImplement the bounded change.\n\n"
+            "## Task Mode\n\n| Field | Value |\n|---|---|\n| Mode | builder |\n\n"
+            "## Scope\n\n- Write paths: README.md\n\n"
+            "## Handoff Contract\n\n- Must do: edit README.md only.\n\n"
+            "## Acceptance Criteria\n\n- [ ] README changed.\n\n"
+            "## Validation Contract\n\n```validation\ntrue\n```\n\n"
+            "## Stop Conditions\n\n- Stop if another path is needed.\n\n"
+            "## Required Report\n\n- Changed path and exact check result.\n",
+            encoding="utf-8",
+        )
+        return task
+
+    def test_complete_standard_builder_uses_bounded_bootstrap_capsule(self):
+        self._write_complete_standard_builder_card()
+        result = self._dispatch("task-cards/COMPLETE_BUILDER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        self.assertEqual(runtime["builder_mode"], "standard")
+        self.assertEqual(runtime["execution_capsule_mode"], "bootstrap")
+        self.assertTrue(runtime["auto_bootstrap_capsule"])
+        receipt = json.loads(
+            pathlib.Path(runtime["execution_capsule_receipt"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(receipt["hard_contract_coverage"]["status"], "complete")
+        card = pathlib.Path(runtime["worktree"]) / "CLAUDE_TASK_CARD.md"
+        self.assertIn("Bounded execution view", card.read_text(encoding="utf-8"))
+
+    def test_recovery_classification_creates_bound_delta_without_replaying_history(self):
+        task = self._write_complete_standard_builder_card("RECOVERY.md")
+        task.write_text(
+            task.read_text(encoding="utf-8")
+            + "\n## Revision Delta\n\n- Restore the one missing README line.\n",
+            encoding="utf-8",
+        )
+        classification = self.case_root / "attempt-classification.json"
+        classification.write_text(json.dumps({
+            "schema_version": 1,
+            "failure_class": "model-no-progress",
+            "recommended_action": "narrow-and-redispatch-once",
+            "same_worktree_retry_eligible": False,
+            "raw_model_output": "must never enter prompt",
+        }), encoding="utf-8")
+        result = self._dispatch(
+            "task-cards/RECOVERY.md",
+            extra_args=["--recovery-classification", str(classification)],
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        self.assertEqual(runtime["recovery_delta_mode"], "classification-bound")
+        delta = pathlib.Path(runtime["recovery_delta"])
+        self.assertTrue(delta.is_file())
+        self.assertNotIn("raw_model_output", delta.read_text(encoding="utf-8"))
+        prompt = (pathlib.Path(runtime["worktree"]) / "CLAUDE_PROMPT.md").read_text(encoding="utf-8")
+        self.assertIn("## Bounded Recovery Delta", prompt)
+        self.assertNotIn("must never enter prompt", prompt)
 
     def test_low_risk_checker_defaults_to_reuse_managed(self):
         self._write_low_risk_checker_card()
@@ -1881,6 +1957,84 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("do not open or summarize", prompt)
         self.assertNotIn("may be consulted", prompt)
 
+    def test_context_lease_auto_rehydrates_after_warm_limit(self):
+        self._write_builder_task_card()
+        self._run(["git", "add", "task-cards/BUILDER.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add task"], cwd=self.repo)
+        first = self._dispatch(
+            "task-cards/BUILDER.md", {"FAKE_CLAUDE_MODE": "stage-change"}
+        )
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        runtime_path = self._artifact_path(first.stdout, "Runtime Identity")
+        first_runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+
+        next_card = self.repo / "next-slice.md"
+        next_card.write_text(
+            "# Next Slice\n\n## Task Mode\n\n| Field | Value |\n|---|---|\n"
+            "| Mode | builder |\n\n## Goal\n\nFinish the adjacent slice.\n\n"
+            "## Handoff Contract\n\nUpdate README.md only.\n\n"
+            "## Acceptance Criteria\n\n- README remains valid.\n\n"
+            "## Validation Contract\n\n```validation\ntrue\n```\n",
+            encoding="utf-8",
+        )
+        prior_lease = None
+        last_lease = None
+        for ordinal in range(1, 5):
+            lease = self.repo / ".worktrees" / f"slice-{ordinal}.context-lease.json"
+            command = [
+                sys.executable, "scripts/context-lease.py", "create",
+                "--prior-task-id", first_runtime["task_id"],
+                "--next-task-card", str(next_card), "--next-role", "builder",
+                "--continuation-kind", "next-slice",
+                "--contract-hash", "sha256:" + "a" * 64,
+                "--accepted-existing-path", "README.md",
+                "--allow-new-write-path", "README.md",
+                "--tool-profile", first_runtime["tool_profile"],
+                "--output", str(lease),
+            ]
+            if prior_lease is not None:
+                command.extend(["--parent-lease", str(prior_lease)])
+            prepared = subprocess.run(
+                command, cwd=self.repo, text=True, capture_output=True,
+            )
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            prepared_value = json.loads(prepared.stdout)
+            runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+            runtime["context_lease_id"] = prepared_value["context_lease"]["lease_id"]
+            runtime["context_lease_calls_used"] = ordinal
+            runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+            prior_lease = lease
+            last_lease = lease
+
+        result = self._dispatch(
+            next_card,
+            {},
+            [
+                "--context-lease", str(last_lease),
+                "--continuation-kind", "next-slice",
+                "--tool-profile", first_runtime["tool_profile"],
+            ],
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        self.assertEqual(runtime["context_lease_route"], "capsule-rehydrate")
+        self.assertEqual(runtime["context_checkpoint_mode"], "automatic")
+        self.assertEqual(runtime["claude_session_mode"], "new")
+        checkpoint = pathlib.Path(runtime["context_checkpoint"])
+        checkpoint_receipt = pathlib.Path(runtime["context_checkpoint_receipt"])
+        self.assertTrue(checkpoint.is_file())
+        self.assertTrue(checkpoint_receipt.is_file())
+        self.assertIn(
+            "aiwf-context-checkpoint-v1",
+            checkpoint.read_text(encoding="utf-8"),
+        )
+        prompt = (
+            self._artifact_path(result.stdout, "Worktree") / "CLAUDE_PROMPT.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("aiwf-context-checkpoint-v1", prompt)
+
     def test_missing_resume_session_records_failure_and_retries_fresh_same_owner(self):
         _, _, first_runtime = self._do_fresh_dispatch()
         prior_task_id = first_runtime["task_id"]
@@ -2609,6 +2763,20 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             )
         self._run(["git", "add", "task-cards/BUILDER.md"], cwd=self.repo)
         self._run(["git", "commit", "-m", "add legacy auto builder task"], cwd=self.repo)
+        result = self._dispatch("task-cards/BUILDER.md")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("Builder Mode:    execution-only", result.stdout)
+
+    def test_auto_builder_mode_accepts_execution_only_safe_alias(self):
+        task = self._write_builder_task_card()
+        with task.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## Claude Context Packet\n\n| Field | Value |\n|---|---|\n"
+                "| Context is sufficient for execution? | yes |\n"
+                "| Execution-only safe? | yes |\n"
+            )
+        self._run(["git", "add", "task-cards/BUILDER.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add safe alias task"], cwd=self.repo)
         result = self._dispatch("task-cards/BUILDER.md")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Builder Mode:    execution-only", result.stdout)

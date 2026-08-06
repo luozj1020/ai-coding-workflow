@@ -54,7 +54,11 @@ def make_state(tmp_path, allowed_paths=None, phase="implementation"):
         "revision": 0,
         "task_id": "T-PHASE5",
         "phase": phase,
-        "repository_state_hash": "sha256:fixture-worktree-v1",
+        # The broker binds cache objects to the same digest-shaped worktree
+        # identity accepted by Workflow State.  Keep the fixture synthetic,
+        # but structurally valid so individual query tests reach their own
+        # assertions instead of failing state preflight.
+        "repository_state_hash": "sha256:" + "f" * 64,
         "goal": {"id": "G-1", "statement": "Optimize graph", "acceptance_ids": ["AC-1"]},
         "constraints": [],
         "accepted_decisions": [],

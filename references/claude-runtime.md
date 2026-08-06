@@ -12,6 +12,15 @@ sufficient; otherwise use `exploratory` for a bounded unclear implementation
 path. Prefer one responsibility and measurable acceptance, but do not require
 Codex to discover every exact file before Claude starts.
 
+A standard Builder card that already contains the complete write boundary,
+acceptance, validation, stop-condition, and report contracts automatically uses
+a bounded **bootstrap capsule** by default. This does not change Builder mode,
+tool profile, or authority: it removes only Codex-only/audit sections and proves
+that every present hard-contract section survived byte-identically. Incomplete
+or exploratory cards keep their legacy execution view rather than guessing
+missing requirements. Set `CLAUDE_CODE_AUTO_BOOTSTRAP_CAPSULE=0` only for a
+compatibility diagnosis.
+
 Builder implements and reports direction. Codex reviews direction. Checker/Test writes or runs assigned tests only after direction acceptance. Do not mix implementation, test writing, and broad validation unless the task card explicitly records `mixed-exception`. Non-blocking acknowledgement with `proceed` must continue editing in the same run.
 
 ## Failure Attribution
@@ -89,6 +98,22 @@ stable worktree content hash, and issue the single-writer Codex grant. Unknown
 process visibility fails closed. Transport, trust, approval, and sandbox
 failures never contribute.
 
+For `model-no-progress`, `acknowledgement-only`, or
+`report-evidence-mismatch`, Codex may first freeze a revised card with an
+explicit `Revision Delta` or `Required Revisions`, then dispatch it with:
+
+```bash
+bash ai/dispatch-to-claude.sh REVISED_CARD.md \
+  --recovery-classification PRIOR_ATTEMPT_CLASSIFICATION.json
+```
+
+The dispatcher creates a receipt-bound `Bounded Recovery Delta` containing only
+the safe failure class, route, current-card hash, and no-replay boundary. It
+does not copy model text, logs, source, diffs, or change requests; the revised
+Task Card remains authoritative. Transport failures must use exact
+`--retry-in-place-task-id` instead, while direction/authority failures require
+review rather than a generated recovery delta.
+
 When useful on-plan work has exactly one semantic blocker, `aiwf advisor-continuation` may prepare a one-call same-worktree continuation. It does not invoke a model or dispatch by itself. Bind request/evidence, state hash, allowed and forbidden paths, and one-call idempotency.
 
 Worktree continuity and model memory are separate. Initial dispatch assigns an explicit Claude session UUID. Retry-in-place, reviewed continuation, and advisor continuation resume that UUID from the prior runtime receipt when valid. If Claude rejects that UUID with a conversation/session-not-found result, the dispatcher writes a hash-bound `session-resume-failure.json` receipt with `counts_as_model_failure=false`, then makes exactly one fresh-session attempt with the same owner, task, worktree, and write scope. Other resume failures remain terminal. When no resumable UUID exists, runtime records `unavailable-file-backed-fallback` and starts a new named session. `--bare` disables auto-memory/customization, not explicit conversation persistence. Never describe file-only continuation as restored model memory.
@@ -102,16 +127,38 @@ tool-profile, and visible model/provider identities. Every accepted slice gets
 a newly hash-bound lease; pass `--parent-lease` when continuing an existing
 lineage. Do not treat a lease as persistent write authority.
 
-The default warm-call limit is three. A later compatible call must use a
-bounded checkpoint via `--rehydrate-from` and starts a fresh Claude session, or
-explicitly use `--force-fresh-session`. Each call still starts a fresh
-restricted process so sandbox mounts and exact write paths are rebound.
-Long-lived stream-json daemons are not part of this contract.
+The default warm-call limit is three. On the next compatible call, dispatch
+automatically creates a bounded deterministic checkpoint under the common
+`.worktrees/` root and starts a fresh Claude session with a delta capsule.
+The checkpoint is hash-bound to the lease, the approved state, and the next
+Task Card; it contains accepted paths/state digests and unresolved findings,
+never source, diffs, or transcript text. A caller may instead provide a
+compatibility `--rehydrate-from` checkpoint (recorded as legacy-unbound) or explicitly use
+`--force-fresh-session`. Each call still starts a fresh restricted process so
+sandbox mounts and exact write paths are rebound. Long-lived stream-json
+daemons are not part of this contract.
 
 Because dispatch uses `claude --bare`, project `CLAUDE.md`/`AGENTS.md` are not
 the model-facing startup cost. Execution-only and Context Lease calls use
 `build-execution-capsule.py` to render a bounded bootstrap or delta card;
 `TASK_CARD_FULL.md` remains the audit source and is not appended to the prompt.
+
+The deterministic skill-context packet adds only registry-approved procedural,
+retrieval, validation, or output-contract cues. Each cue has source/hash
+provenance, an applicability reason, polarity (`positive` or `negative`), and
+an optional conflict group. Conflicting cues fail before dispatch; hard
+authority, write-scope, acceptance, validation, and stop rules remain in the
+frozen card and cannot be supplied by the registry.
+
+The default compilation strategy is `coverage`: it combines top-down
+preset/gate/continuation candidates with bottom-up language/task/section
+candidates, retains active anchors, and rescues only cues with new required
+coverage. The receipt records the candidate routes, marginal coverage,
+zero-marginal exclusions, and source-heading span hashes when available.
+`--context-compile-strategy anchors-only` exists solely for a paired benchmark
+ablation; it must not become an ordinary lower-context production default.
+The runtime stores the selected strategy and phase metrics expose coverage and
+candidate counts without storing prompt bodies.
 
 Required exact-path write enforcement uses writable staging sources outside the
 worktree and binds only those sources over their declared destinations inside
@@ -315,6 +362,11 @@ command contains neither an environment expansion nor a per-task absolute path.
 Bubblewrap and the receipt still enforce exact declared targets.
 This keeps the tool schema stable without broadening write authority. Cache attribution hashes
 the final allowed-tools contract after both runner and writer entries exist.
+
+The prompt is emitted as a stable static core followed by dynamic worktree
+evidence and the task suffix. Phase metrics record the respective byte counts
+and `static-core-v1` layout identifier; they diagnose prefix stability but do
+not claim a provider cache hit.
 
 ## Reports
 

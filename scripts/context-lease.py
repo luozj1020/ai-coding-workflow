@@ -209,14 +209,18 @@ def validate(args: argparse.Namespace) -> Dict[str, Any]:
     calls_used = int(context.get("calls_used", 0))
     warm_limit = int(context.get("max_warm_calls", WARM_CALL_LIMIT))
     route = "warm-resume"
+    checkpoint_required = False
     if args.force_fresh_session:
         route = "cold-fresh"
     elif calls_used > warm_limit:
         route = "capsule-rehydrate"
         if args.rehydrate_from is None:
-            raise LeaseError(
-                "warm-call limit reached; provide --rehydrate-from or --force-fresh-session"
-            )
+            if args.allow_auto_rehydrate:
+                checkpoint_required = True
+            else:
+                raise LeaseError(
+                    "warm-call limit reached; provide --rehydrate-from or --force-fresh-session"
+                )
     if args.rehydrate_from is not None:
         path = args.rehydrate_from.resolve()
         if not path.is_file():
@@ -231,6 +235,7 @@ def validate(args: argparse.Namespace) -> Dict[str, Any]:
         "session_id": context.get("session_id"),
         "calls_used": calls_used,
         "max_warm_calls": warm_limit,
+        "checkpoint_required": checkpoint_required,
     }
 
 
@@ -265,6 +270,10 @@ def parser() -> argparse.ArgumentParser:
     validate_p.add_argument("--provider-route-sha256")
     validate_p.add_argument("--force-fresh-session", action="store_true")
     validate_p.add_argument("--rehydrate-from", type=Path)
+    validate_p.add_argument(
+        "--allow-auto-rehydrate", action="store_true",
+        help="return a pending capsule-rehydrate route instead of requiring a caller-supplied checkpoint",
+    )
     return result
 
 

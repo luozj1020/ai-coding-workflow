@@ -29,8 +29,14 @@ class ExecutionCapsuleTests(unittest.TestCase):
             '(\"build-execution-capsule.py\", \"ai/build-execution-capsule.py\")',
             installer,
         )
+        self.assertIn('("build-context-checkpoint.py", "ai/build-context-checkpoint.py")', installer)
+        self.assertIn('("build-recovery-delta.py", "ai/build-recovery-delta.py")', installer)
         self.assertIn("schemas/context-lease-v1.schema.json", installer)
+        self.assertIn("schemas/context-checkpoint-v1.schema.json", installer)
+        self.assertIn("schemas/recovery-delta-v1.schema.json", installer)
         self.assertIn('\"context-lease\":\"context-lease.py\"', cli)
+        self.assertIn('\"context-checkpoint\":\"build-context-checkpoint.py\"', cli)
+        self.assertIn('\"recovery-delta\":\"build-recovery-delta.py\"', cli)
         self.assertIn('\"execution-capsule\":\"build-execution-capsule.py\"', cli)
 
     def test_delta_capsule_omits_control_plane_sections_and_binds_checkpoint(self) -> None:
@@ -44,6 +50,7 @@ class ExecutionCapsuleTests(unittest.TestCase):
                 "# Task\n\n"
                 "## Goal\n\nImplement the next slice.\n\n"
                 "## Routing Economics\n\n" + ("Do not send this control detail. " * 40) + "\n\n"
+                "## Scope\n\n- Write paths: src/a.py\n\n"
                 "## Handoff Contract\n\n- Must do: edit src/a.py\n\n"
                 "## Acceptance Criteria\n\n- AC-2 passes.\n",
                 encoding="utf-8",
@@ -60,11 +67,31 @@ class ExecutionCapsuleTests(unittest.TestCase):
             text = output.read_text(encoding="utf-8")
             self.assertIn("Implement the next slice", text)
             self.assertIn("API shape is frozen", text)
+            self.assertIn("Write paths: src/a.py", text)
             self.assertNotIn("Routing Economics", text)
             self.assertLess(len(text.encode("utf-8")), len(card.read_bytes()) + len(checkpoint.read_bytes()))
             self.assertEqual(
                 json.loads(receipt.read_text(encoding="utf-8"))["mode"], "delta"
             )
+
+    def test_strict_contract_coverage_fails_for_missing_categories(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            card = root / "card.md"
+            card.write_text(
+                "## Goal\n\nImplement.\n\n"
+                "## Scope\n\n- Write paths: src/a.py\n\n"
+                "## Handoff Contract\n\n- Must do: edit.\n\n"
+                "## Acceptance Criteria\n\n- [ ] pass\n",
+                encoding="utf-8",
+            )
+            completed = run(
+                sys.executable, str(SCRIPTS / "build-execution-capsule.py"),
+                "--task-card", str(card), "--output", str(root / "out.md"),
+                "--require-complete-contract", cwd=ROOT, check=False,
+            )
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("lacks required hard-contract categories", completed.stderr)
 
     def test_capsule_fails_when_card_has_no_executable_contract(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -93,6 +120,7 @@ class ContextLeaseTests(unittest.TestCase):
         for name in (
             "context-lease.py", "prepare-worktree-continuation.py",
             "worktree_state_hash.py", "process-identity.py",
+            "build-context-checkpoint.py", "build-execution-capsule.py",
         ):
             shutil.copy2(SCRIPTS / name, scripts / name)
         (self.repo / "src.txt").write_text("base\n", encoding="utf-8")
@@ -169,6 +197,17 @@ class ContextLeaseTests(unittest.TestCase):
             "--tool-profile", "minimal-builder", *extra, check=check,
         )
 
+    def checkpoint(
+        self, output: Path, receipt: Path, *, check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        return run(
+            sys.executable, str(self.repo / "scripts" / "build-context-checkpoint.py"),
+            "--context-lease", str(self.lease),
+            "--next-task-card", str(self.card),
+            "--output", str(output), "--receipt", str(receipt),
+            cwd=self.repo, check=check,
+        )
+
     def test_create_and_validate_warm_resume(self) -> None:
         lease = self.create()
         self.assertEqual(lease["context_lease"]["session_id"], self.runtime["claude_session_id"])
@@ -221,10 +260,69 @@ class ContextLeaseTests(unittest.TestCase):
         blocked = self.validate(check=False)
         self.assertEqual(blocked.returncode, 2)
         self.assertIn("warm-call limit reached", blocked.stderr)
+        pending = json.loads(self.validate("--allow-auto-rehydrate").stdout)
+        self.assertEqual(pending["route"], "capsule-rehydrate")
+        self.assertTrue(pending["checkpoint_required"])
         checkpoint = self.repo / "checkpoint.md"
         checkpoint.write_text("accepted state summary\n", encoding="utf-8")
         result = json.loads(self.validate("--rehydrate-from", str(checkpoint)).stdout)
         self.assertEqual(result["route"], "capsule-rehydrate")
+
+    def test_auto_checkpoint_is_bound_compact_and_rejects_card_drift(self) -> None:
+        first = self.create(self.lease, "--max-warm-calls", "1")
+        self.runtime.update({
+            "context_lease_id": first["context_lease"]["lease_id"],
+            "context_lease_calls_used": 1,
+        })
+        self.runtime_path.write_text(json.dumps(self.runtime), encoding="utf-8")
+        second_path = self.repo / ".worktrees" / "lease-2.json"
+        self.create(
+            second_path, "--parent-lease", str(self.lease),
+            "--max-warm-calls", "1",
+        )
+        self.lease = second_path
+
+        checkpoint = self.repo / ".worktrees" / "checkpoint.md"
+        checkpoint_receipt = self.repo / ".worktrees" / "checkpoint.json"
+        generated = json.loads(self.checkpoint(checkpoint, checkpoint_receipt).stdout)
+        self.assertEqual(generated["status"], "created")
+        checkpoint_text = checkpoint.read_text(encoding="utf-8")
+        self.assertIn("aiwf-context-checkpoint-v1", checkpoint_text)
+        self.assertIn("Current task-card digest", checkpoint_text)
+        self.assertNotIn("accepted slice one", checkpoint_text)
+        self.assertLess(len(checkpoint_text.encode("utf-8")), 12 * 1024)
+
+        capsule = self.repo / ".worktrees" / "capsule.md"
+        capsule_receipt = self.repo / ".worktrees" / "capsule.json"
+        completed = run(
+            sys.executable, str(self.repo / "scripts" / "build-execution-capsule.py"),
+            "--task-card", str(self.card), "--output", str(capsule),
+            "--mode", "delta", "--continuation-kind", "next-slice",
+            "--rehydrate-from", str(checkpoint),
+            "--rehydrate-receipt", str(checkpoint_receipt),
+            "--receipt", str(capsule_receipt), cwd=self.repo,
+        )
+        self.assertEqual(completed.returncode, 0)
+        binding = json.loads(capsule_receipt.read_text(encoding="utf-8"))[
+            "checkpoint_binding"
+        ]
+        self.assertEqual(binding["binding"], "receipt-bound")
+
+        self.card.write_text(
+            self.card.read_text(encoding="utf-8") + "\nChanged.\n",
+            encoding="utf-8",
+        )
+        drift = run(
+            sys.executable, str(self.repo / "scripts" / "build-execution-capsule.py"),
+            "--task-card", str(self.card),
+            "--output", str(self.repo / ".worktrees" / "drift.md"),
+            "--mode", "delta", "--continuation-kind", "next-slice",
+            "--rehydrate-from", str(checkpoint),
+            "--rehydrate-receipt", str(checkpoint_receipt),
+            cwd=self.repo, check=False,
+        )
+        self.assertEqual(drift.returncode, 2)
+        self.assertIn("not bound to this task card", drift.stderr)
 
 
 if __name__ == "__main__":

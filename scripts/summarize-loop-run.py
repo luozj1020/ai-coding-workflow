@@ -226,6 +226,88 @@ def parse_claude_phase_metrics(paths: list[Path]) -> dict[str, int | float | Non
     return result
 
 
+def parse_context_reuse_metrics(paths: list[Path]) -> dict:
+    """Aggregate explicit Context Lease/capsule evidence from dispatcher metrics.
+
+    Older metrics files deliberately remain valid but do not contribute a
+    context-reuse sample.  This keeps benchmark comparisons from inventing
+    cache/rehydration outcomes for historical runs.
+    """
+    routes: dict[str, int] = {}
+    checkpoint_modes: dict[str, int] = {}
+    capsule_modes: dict[str, int] = {}
+    prompt_layouts: dict[str, int] = {}
+    recovery_delta_modes: dict[str, int] = {}
+    compilation_strategies: dict[str, int] = {}
+    minimum_sufficient_count = 0
+    bytes_by_field = {
+        "context_checkpoint_bytes": 0,
+        "execution_capsule_bytes": 0,
+        "skill_context_packet_bytes": 0,
+        "cache_stable_prefix_bytes": 0,
+        "cache_task_suffix_bytes": 0,
+    }
+    counts_by_field = {
+        "context_coverage_required_count": 0,
+        "context_coverage_uncovered_count": 0,
+        "context_candidate_topdown_count": 0,
+        "context_candidate_bottomup_count": 0,
+        "context_zero_marginal_omitted_count": 0,
+        "context_rescue_marginal_coverage_count": 0,
+    }
+    samples = 0
+    for path in paths:
+        try:
+            value = json.loads(read_text(path))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(value, dict):
+            continue
+        route = value.get("context_lease_route")
+        checkpoint_mode = value.get("context_checkpoint_mode")
+        capsule_mode = value.get("execution_capsule_mode")
+        prompt_layout = value.get("cache_prompt_layout")
+        recovery_delta_mode = value.get("recovery_delta_mode")
+        compilation_strategy = value.get("context_compilation_strategy")
+        if not any(isinstance(item, str) and item for item in (
+            route, checkpoint_mode, capsule_mode,
+        )):
+            continue
+        samples += 1
+        for bucket, item, fallback in (
+            (routes, route, "none"),
+            (checkpoint_modes, checkpoint_mode, "none"),
+            (capsule_modes, capsule_mode, "legacy"),
+            (prompt_layouts, prompt_layout, "unrecorded"),
+            (recovery_delta_modes, recovery_delta_mode, "none"),
+            (compilation_strategies, compilation_strategy, "unrecorded"),
+        ):
+            key = item if isinstance(item, str) and item else fallback
+            bucket[key] = bucket.get(key, 0) + 1
+        for field in bytes_by_field:
+            number = value.get(field)
+            if isinstance(number, (int, float)) and not isinstance(number, bool) and number >= 0:
+                bytes_by_field[field] += int(number)
+        for field in counts_by_field:
+            number = value.get(field)
+            if isinstance(number, (int, float)) and not isinstance(number, bool) and number >= 0:
+                counts_by_field[field] += int(number)
+        if value.get("context_minimum_sufficient") is True:
+            minimum_sufficient_count += 1
+    return {
+        "samples": samples,
+        "routes": dict(sorted(routes.items())),
+        "checkpoint_modes": dict(sorted(checkpoint_modes.items())),
+        "execution_capsule_modes": dict(sorted(capsule_modes.items())),
+        "cache_prompt_layouts": dict(sorted(prompt_layouts.items())),
+        "recovery_delta_modes": dict(sorted(recovery_delta_modes.items())),
+        "context_compilation_strategies": dict(sorted(compilation_strategies.items())),
+        "context_minimum_sufficient_count": minimum_sufficient_count,
+        **bytes_by_field,
+        **counts_by_field,
+    }
+
+
 def parse_decision(paths: list[Path]) -> str:
     for path in reversed(paths):
         text = read_text(path)
@@ -961,6 +1043,9 @@ def summarize(path: Path) -> dict:
     elapsed_seconds = parse_progress_seconds(artifacts["progress"])
     stage_seconds = parse_progress_stage_seconds(artifacts["progress"])
     claude_phase_seconds = parse_claude_phase_metrics(list(dict.fromkeys(artifacts["phase_metrics"])))
+    context_reuse = parse_context_reuse_metrics(
+        list(dict.fromkeys(artifacts["phase_metrics"]))
+    )
     stability = stability_findings(
         artifacts["progress"] + artifacts["status"] + artifacts["report"] + artifacts["checker"],
         checker_results,
@@ -1028,6 +1113,7 @@ def summarize(path: Path) -> dict:
         "diagnostic_probes": diagnostic_probes,
         "economics": economics,
         "handoff_metrics": handoff_metrics,
+        "context_reuse": context_reuse,
     }
 
 
@@ -1100,6 +1186,31 @@ def render_markdown(summary: dict) -> str:
     totals = handoff.get("totals", {}) if isinstance(handoff.get("totals"), dict) else {}
     for key in ["payload_bytes", "task_card_bytes", "review_packet_bytes"]:
         lines.append(f"| total_{key} | {format_value(totals.get(key))} |")
+
+    context_reuse = summary.get("context_reuse", {})
+    lines.extend(["", "## Context Reuse", "", "| Field | Value |", "|-------|-------|"])
+    for key in [
+        "samples",
+        "routes",
+        "checkpoint_modes",
+        "execution_capsule_modes",
+        "cache_prompt_layouts",
+        "recovery_delta_modes",
+        "context_compilation_strategies",
+        "context_minimum_sufficient_count",
+        "context_coverage_required_count",
+        "context_coverage_uncovered_count",
+        "context_candidate_topdown_count",
+        "context_candidate_bottomup_count",
+        "context_zero_marginal_omitted_count",
+        "context_rescue_marginal_coverage_count",
+        "context_checkpoint_bytes",
+        "execution_capsule_bytes",
+        "skill_context_packet_bytes",
+        "cache_stable_prefix_bytes",
+        "cache_task_suffix_bytes",
+    ]:
+        lines.append(f"| {key} | {format_value(context_reuse.get(key))} |")
 
     lines.extend(["", "## Claude Evidence Classification", "", "| Field | Value |", "|-------|-------|"])
     for key in [

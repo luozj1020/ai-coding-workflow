@@ -197,6 +197,16 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertTrue((repo / "ai" / "locate-code.py").exists())
             self.assertTrue((repo / "ai" / "summarize-loop-run.py").exists())
             self.assertTrue((repo / "ai" / "benchmark-loop-runs.py").exists())
+            self.assertTrue((repo / "ai" / "context-lease.py").exists())
+            self.assertTrue((repo / "ai" / "build-context-checkpoint.py").exists())
+            self.assertTrue((repo / "ai" / "build-recovery-delta.py").exists())
+            self.assertTrue((repo / "ai" / "build-execution-capsule.py").exists())
+            self.assertTrue((repo / "ai" / "compile-skill-context.py").exists())
+            self.assertTrue((repo / "ai" / "skill-context" / "rules-v1.json").exists())
+            self.assertTrue((repo / "ai" / "schemas" / "context-lease-v1.schema.json").exists())
+            self.assertTrue((repo / "ai" / "schemas" / "context-checkpoint-v1.schema.json").exists())
+            self.assertTrue((repo / "ai" / "schemas" / "context-compilation-v1.schema.json").exists())
+            self.assertTrue((repo / "ai" / "schemas" / "recovery-delta-v1.schema.json").exists())
             self.assertTrue((repo / "ai" / "model-usage.py").exists())
             self.assertTrue((repo / "ai" / "run-approved-validation.py").exists())
             self.assertTrue((repo / "ai" / "economics-experiment.py").exists())
@@ -275,6 +285,38 @@ class InstallWorkflowTests(unittest.TestCase):
             (repo / "ai" / "profiles" / "base.json").write_text("{}", encoding="utf-8")
             third = self.run_installer(repo, "--update-workflow-files")
             self.assertIn("updated: ai/profiles/base.json", third.stdout)
+
+    def test_installed_context_compiler_uses_installed_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            self.run_installer(repo, "--update-workflow-files")
+            card = repo / "slice.md"
+            packet = repo / ".worktrees" / "packet.md"
+            receipt = repo / ".worktrees" / "packet.json"
+            card.write_text(
+                "# Slice\n\n"
+                "<!-- task-card-components: preset=builder; gates=large-repo -->\n\n"
+                "## Goal\n\nImplement the bounded slice.\n\n"
+                "## Handoff Contract\n\n- Modify only `src/example.py`.\n\n"
+                "## Acceptance Criteria\n\n- AC-1\n\n"
+                "## Validation Contract\n\n- Run the named check.\n\n"
+                "## Stop Conditions\n\n- Stop on scope drift.\n\n"
+                "## Required Report\n\n- Report the result.\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable, str(repo / "ai" / "compile-skill-context.py"),
+                    "--task-card", str(card), "--output", str(packet),
+                    "--receipt", str(receipt),
+                ],
+                cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(packet.exists())
+            self.assertIn("Compiled Execution Guidance", packet.read_text(encoding="utf-8"))
+            self.assertTrue(receipt.exists())
 
     def test_install_preserves_gitignore_and_adds_worktree_rules(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -554,21 +596,14 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("two current-task rounds", agents)
             self.assertIn("Seeded/fallback reports never count", agents)
             self.assertIn("On-Demand References", agents)
-            self.assertIn("Evidence compression", claude)
+            self.assertLess(len(claude.encode("utf-8")), 3_000)
+            self.assertIn("## Claude Execution Core", claude)
             self.assertIn("CLAUDE_TASK_CARD.md", claude)
-            self.assertIn("Builder tasks", claude)
-            self.assertIn("Checker/Test tasks", claude)
-            self.assertIn("Stall / Ambiguity Triage", claude)
-            self.assertIn("orchestration ambiguity", claude)
-            self.assertIn("Execution Progress", claude)
-            self.assertIn("Direction and boundary acknowledgement", claude)
-            self.assertIn("Do not turn acknowledgement into a loop", claude)
-            self.assertIn("continue implementation in the same run", claude)
-            self.assertIn("not a valid final report", claude)
-            self.assertIn("Spec, root cause, and test-first discipline", claude)
-            self.assertIn("failing test or failing evidence before production edits", claude)
-            self.assertIn("Codex Spark evidence", claude)
-            self.assertIn("Parallel Execution Gate", claude)
+            self.assertIn("receipt-authorized", claude)
+            self.assertIn("Do not merge", claude)
+            self.assertIn("Replace seeded progress/report", claude)
+            self.assertIn("Stop and report", claude)
+            self.assertNotIn("@AGENTS.md", claude)
             checker = (
                 repo / "ai" / "task-card-components" / "checker.md"
             ).read_text(encoding="utf-8")
@@ -576,20 +611,27 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("strict source-of-truth fixture or layout", checker)
             self.assertIn("non-blocking change-size advisory", checker)
 
-    def test_claude_import_is_deduplicated_and_near_top(self):
+    def test_legacy_claude_import_is_removed_but_user_owned_import_is_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
-            repo = pathlib.Path(tmp) / "repo"
-            repo.mkdir()
-            (repo / "CLAUDE.md").write_text(
+            legacy = pathlib.Path(tmp) / "legacy"
+            legacy.mkdir()
+            (legacy / "CLAUDE.md").write_text(
+                "# Claude Code Configuration\n\n@AGENTS.md\n",
+                encoding="utf-8",
+            )
+            self.run_installer(legacy)
+            self.assertNotIn("@AGENTS.md", (legacy / "CLAUDE.md").read_text(encoding="utf-8"))
+
+            custom = pathlib.Path(tmp) / "custom"
+            custom.mkdir()
+            (custom / "CLAUDE.md").write_text(
                 "# Claude Code Configuration\n\nCustom note.\n\n@AGENTS.md\n",
                 encoding="utf-8",
             )
-
-            self.run_installer(repo)
-
-            lines = (repo / "CLAUDE.md").read_text(encoding="utf-8").splitlines()
-            self.assertEqual(lines.count("@AGENTS.md"), 1)
-            self.assertLess(lines.index("@AGENTS.md"), lines.index(BEGIN_MARKER))
+            self.run_installer(custom)
+            content = (custom / "CLAUDE.md").read_text(encoding="utf-8")
+            self.assertIn("Custom note.", content)
+            self.assertIn("@AGENTS.md", content)
 
     def test_installed_dispatch_resolves_proxy_mode_with_safe_default(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -920,17 +962,11 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("task-card-components/catalog.md", agents)
             self.assertIn("reviewer-owned correction", agents)
             self.assertIn("references/review-policy.md", agents)
-            self.assertIn("Loop stop rules", claude)
-            self.assertIn("Progress memory", claude)
-            self.assertIn("Current Phase", claude)
-            self.assertIn("Execution Readiness Gate", claude)
-            self.assertIn("Handoff Contract", claude)
-            self.assertIn("Unknowns and Decision Gates", claude)
-            self.assertIn("tests/evidence only", claude)
-            self.assertIn("--no-discover --command", claude)
-            self.assertIn("Local validation allowed?", claude)
-            self.assertIn("approval or sandbox policy blocks validation", claude)
-            self.assertIn("which phases remain for a fresh owner route", claude)
+            self.assertIn("execution capsule", claude)
+            self.assertIn("receipt-authorized", claude)
+            self.assertIn("exact permitted checks", claude)
+            self.assertIn("Replace seeded progress/report", claude)
+            self.assertIn("Do not guess", claude)
 
     def test_installed_run_loop_preserves_dispatch_observability_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1906,9 +1942,9 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Route every frozen implementation slice", agents)
             self.assertIn("compact summaries and paths", agents)
 
-            # CLAUDE.md managed section must describe evidence compression
-            self.assertIn("Evidence compression", claude)
-            self.assertIn("summaries and artifact paths", claude)
+            # CLAUDE.md stays a small fallback core; task capsules carry detail.
+            self.assertIn("## Claude Execution Core", claude)
+            self.assertNotIn("@AGENTS.md", claude)
 
     def test_installed_templates_include_spark_stage_routing(self):
         """Required checks 1-7: validate Spark stage documentation propagation."""

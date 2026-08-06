@@ -158,10 +158,28 @@ with `python ai/context-lease.py create ...`, then dispatch with
 `--context-lease LEASE --continuation-kind next-slice`. The lease reuses the
 recorded session/worktree but rebinds the sandbox and exact write scope. Create
 a new hash-bound lease after every accepted slice. After the default three warm
-calls, provide a bounded checkpoint with `--rehydrate-from` so a fresh session
-receives only a delta execution capsule. Dispatcher calls use `claude --bare`;
-`CLAUDE.md` is not model context for this path, and `TASK_CARD_FULL.md` remains
-audit-only.
+calls, the dispatcher automatically derives a bounded, receipt-bound checkpoint
+and gives a fresh session only a delta execution capsule. The checkpoint retains
+accepted state references rather than source, diffs, or transcript text; a
+caller-supplied `--rehydrate-from` remains available as a legacy-unbound
+compatibility path. Dispatcher calls
+use `claude --bare`; `CLAUDE.md` is not model context for this path, and
+`TASK_CARD_FULL.md` remains audit-only.
+
+Before rendering the execution card, supported dispatchers run the local,
+model-free `ai/compile-skill-context.py`. It selects a small set of
+provenance-bound procedural, retrieval, and validation cues from the chosen
+task-card components and writes `*.skill-context.md` plus a JSON receipt under
+`.worktrees/`. It cannot add authority or replace the frozen write scope,
+acceptance, validation, or stop conditions. The packet is bound to the exact
+full-card digest before it can be embedded in `CLAUDE_TASK_CARD.md`.
+
+The default `coverage` strategy combines top-down preset/gate candidates with
+bottom-up task-fact candidates, then includes rescue cues only for uncovered
+procedural labels. Its receipt records candidate routes, source-heading spans,
+marginal coverage, and zero-marginal exclusions. Use
+`--context-compile-strategy anchors-only` only as a paired benchmark ablation;
+it intentionally disables rescue and is not the normal dispatch default.
 
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 
@@ -956,7 +974,7 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
 
 The benchmark aggregates advisor usage, diagnostic probe usage/cost, same-worktree continuation success, avoided full redispatches, conservative re-exploration evidence, Spark invocation/auto-disable/fallback status, parallel-dispatch usage, spec adherence, root-cause evidence, and TDD fields. Estimated token/time savings remain unavailable unless an audit contains explicit numeric evidence.
 
-The benchmark also aggregates execution owner, task-card/review-packet bytes, control-plane time, Checker model dispatches, and approximate Claude-diff reuse. Primary runs, efficient final-candidate reviews, and accepted legacy loops write records automatically. History append is idempotent; reuse remains unavailable until Claude and final diffs are both bound.
+The benchmark also aggregates execution owner, task-card/review-packet bytes, Context Lease/checkpoint/capsule metrics, control-plane time, Checker model dispatches, and approximate Claude-diff reuse. Primary runs, efficient final-candidate reviews, and accepted legacy loops write records automatically. History append is idempotent; reuse remains unavailable until Claude and final diffs are both bound.
 
 Controlled economics experiments record Spark calls/tokens but exclude role
 `spark` from charged cost, paired cost ratios, and recommendations; raw usage
@@ -1113,7 +1131,7 @@ For agent-driven runs, the dispatcher is the only sampling owner and appends mat
 
 `Execution Phase: implementation` is only edit readiness and must include `Context Acquisition Complete: yes` plus a non-empty `Planned First Write`. It does not refresh the full active window. A product diff or valid owned report is durable progress. After the first product change, an unchanged product digest defaults to an idle candidate at 600 seconds. With the timeout advisor enabled, two confirmations corroborate a high-confidence Spark stop suggestion but do not stop Claude by themselves; active validation, declared tail work, and explicit blockers are exempt. Configure these bounds with `CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, `CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS`, and `CLAUDE_CODE_PRODUCT_IDLE_CONFIRMATIONS`.
 
-Builder cards use conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation remain disabled until assigned precisely. After that bounded tail, Claude sets `Completion Ready: yes`, writes its final report/result, and exits normally. Planner/Checker calls with a valid owned report, no blocker, and their role-specific durable evidence receive a final flush window (`CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS`, default 20) before the dispatcher identity-stops a lingering child; this records dispatch convergence, not semantic acceptance. Direct children are frozen as a process tree before termination so a parent shell cannot resume for a last write; brokered calls terminate the model process group and record `cancelled`. The dispatcher writes `<task-id>.phase-metrics.json`; when `AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE` is exported by an experiment run, it also copies the same diagnostic metrics into that run directory automatically.
+Builder cards use conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation remain disabled until assigned precisely. After that bounded tail, Claude sets `Completion Ready: yes`, writes its final report/result, and exits normally. Planner/Checker calls with a valid owned report, no blocker, and their role-specific durable evidence receive a final flush window (`CLAUDE_CODE_COMPLETION_READY_TIMEOUT_SECONDS`, default 20) before the dispatcher identity-stops a lingering child; this records dispatch convergence, not semantic acceptance. Direct children are frozen as a process tree before termination so a parent shell cannot resume for a last write; brokered calls terminate the model process group and record `cancelled`. The dispatcher writes `<task-id>.phase-metrics.json`, including Context Lease route, checkpoint mode, and bounded capsule byte metrics; when `AI_WORKFLOW_CLAUDE_PHASE_METRICS_FILE` is exported by an experiment run, it also copies the same diagnostic metrics into that run directory automatically.
 
 CodeGraph is guarded per execution worktree. The default `CLAUDE_CODE_CODEGRAPH_POLICY=fallback` rejects graph results whose `projectPath`/`worktreeMismatch` or pending state does not match the isolated worktree, writes `<task-id>.codegraph-worktree.json`, and directs Claude to LSP/locator/targeted reads. Use `repair` to sync or reindex that execution worktree explicitly, or `off` to disable graph use without probing.
 

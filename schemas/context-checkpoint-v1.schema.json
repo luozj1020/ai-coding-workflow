@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIWF Context Checkpoint v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "status",
+    "checkpoint_id",
+    "context_lease_path",
+    "context_lease_sha256",
+    "next_task_card",
+    "next_task_card_sha256",
+    "approved_worktree_state_sha256",
+    "checkpoint_sha256",
+    "checkpoint_bytes",
+    "model_generated",
+    "output"
+  ],
+  "properties": {
+    "schema": {"const": "aiwf-context-checkpoint-v1"},
+    "schema_version": {"const": 1},
+    "status": {"const": "created"},
+    "checkpoint_id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "context_lease_path": {"type": "string"},
+    "context_lease_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "next_task_card": {"type": "string"},
+    "next_task_card_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "approved_worktree_state_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "checkpoint_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "checkpoint_bytes": {"type": "integer", "minimum": 0},
+    "model_generated": {"const": false},
+    "output": {"type": "string"}
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-coding-workflow.local/schemas/recovery-delta-v1.schema.json",
+  "title": "AIWF bounded recovery delta v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "schema_version",
+    "status",
+    "task_card_sha256",
+    "attempt_classification",
+    "failure_class",
+    "recommended_action",
+    "delta_sections",
+    "delta_sha256",
+    "delta_bytes",
+    "model_generated"
+  ],
+  "properties": {
+    "schema": {"const": "aiwf-recovery-delta-v1"},
+    "schema_version": {"const": 1},
+    "status": {"const": "created"},
+    "task_card_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "attempt_classification": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      }
+    },
+    "failure_class": {"enum": ["model-no-progress", "acknowledgement-only", "report-evidence-mismatch"]},
+    "recommended_action": {"const": "narrow-and-redispatch-once"},
+    "delta_sections": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "delta_sha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "delta_bytes": {"type": "integer", "minimum": 1},
+    "model_generated": {"const": false}
+  },
+  "additionalProperties": true
+}

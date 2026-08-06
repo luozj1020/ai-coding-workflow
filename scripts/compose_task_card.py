@@ -4,6 +4,7 @@
 import argparse
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -59,7 +60,48 @@ def select_components(catalog, preset, gates):
     return selected
 
 
-def compose(root, catalog, preset, gates):
+def _metadata_token(value):
+    return re.sub(r"[^a-z0-9_.+-]+", "-", str(value).strip().lower()).strip("-")
+
+
+def _metadata_tokens(value):
+    if isinstance(value, str):
+        values = re.split(r"[,\s]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = ()
+    result = []
+    for item in values:
+        token = _metadata_token(item)
+        if token and token not in result:
+            result.append(token)
+    return result
+
+
+def context_facts_metadata(facts):
+    """Return a safe, compact subset of routing facts for local compilation.
+
+    The task card is an audit artifact, so never serialize free-form goals,
+    paths, or user text here.  These normalized classifiers only let the local
+    context compiler choose rule-registry cues after the card is frozen.
+    """
+    if not isinstance(facts, dict):
+        return ""
+    repository = facts.get("repository") if isinstance(facts.get("repository"), dict) else {}
+    values = {
+        "task-type": _metadata_token(facts.get("task_type") or ""),
+        "repository-scale": _metadata_token(
+            facts.get("repository_size") or repository.get("routing_scale") or ""
+        ),
+        "languages": ",".join(_metadata_tokens(facts.get("languages") or facts.get("language"))),
+        "routing-event": _metadata_token(facts.get("routing_event") or ""),
+    }
+    rendered = ["{}={}".format(key, value) for key, value in values.items() if value]
+    return "<!-- task-context-facts: {} -->".format("; ".join(rendered)) if rendered else ""
+
+
+def compose(root, catalog, preset, gates, facts=None):
     selected = select_components(catalog, preset, gates)
     parts = []
     for name in selected:
@@ -78,7 +120,9 @@ def compose(root, catalog, preset, gates):
         ",".join(gates) if gates else "none",
     )
     body = "\n\n".join(parts).replace("{{TASK_MODE}}", runtime["task_mode"])
-    return metadata + "\n\n" + body + "\n", selected
+    context_metadata = context_facts_metadata(facts)
+    prefix = metadata + ("\n" + context_metadata if context_metadata else "")
+    return prefix + "\n\n" + body + "\n", selected
 
 
 def recommend_components(facts):
@@ -166,6 +210,7 @@ def main(argv=None):
         if args.list:
             print(json.dumps({"presets": catalog["presets"], "gates": catalog["gates"]}, indent=2, sort_keys=True))
             return 0
+        facts = None
         if args.select_from:
             facts = json.loads(Path(args.select_from).read_text(encoding="utf-8"))
             recommendation = recommend_components(facts)
@@ -179,7 +224,7 @@ def main(argv=None):
         if not args.preset or not args.output:
             raise ValueError("--preset and --output are required unless --list is used")
         gates = list(dict.fromkeys(args.gate))
-        content, selected = compose(root, catalog, args.preset, gates)
+        content, selected = compose(root, catalog, args.preset, gates, facts=facts)
         output = Path(args.output)
         if output.exists() and not args.force:
             raise FileExistsError("output exists; use --force: {}".format(output))

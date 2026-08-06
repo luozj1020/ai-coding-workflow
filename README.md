@@ -942,16 +942,36 @@ per-call sandbox and write receipt. The lease binds the solution contract,
 worktree state, session, role, tool profile, model/provider route when visible,
 and next-card hash. It is consumed once; create the next lease from the newly
 accepted state and pass `--parent-lease` to preserve the lineage. The default
-warm limit is three calls. Beyond it, pass a bounded deterministic checkpoint
-with `--rehydrate-from`; the dispatcher starts a fresh session with a delta
-execution capsule instead of replaying an unbounded transcript.
+warm limit is three calls. On the next compatible call, the dispatcher creates
+a bounded deterministic checkpoint automatically and starts a fresh session
+with a delta execution capsule instead of replaying an unbounded transcript.
+The checkpoint contains only accepted state hashes, paths, and bounded review
+findings—not source, diffs, or conversation text. A caller-supplied
+`--rehydrate-from` checkpoint remains a legacy-unbound compatibility path.
 
 The dispatcher always invokes Claude with `--bare`, so repository `CLAUDE.md`
-and its `@AGENTS.md` import are not part of dispatched model context. The actual
-cold-start payload is `CLAUDE_PROMPT.md`; execution-only and Context Lease calls
-now render a bounded `CLAUDE_TASK_CARD.md`, while `TASK_CARD_FULL.md` remains an
-audit artifact. This keeps safety policy in deterministic enforcement and sends
-Claude only the current executable contract.
+is not part of dispatched model context. `CLAUDE.md` is nevertheless kept as a
+small standalone fallback for manual sessions; it never imports `AGENTS.md`.
+The actual cold-start payload is `CLAUDE_PROMPT.md`; execution-only and Context
+Lease calls render a bounded `CLAUDE_TASK_CARD.md`, while `TASK_CARD_FULL.md`
+remains an audit artifact. This keeps safety policy in deterministic enforcement
+and sends Claude only the current executable contract.
+
+Supported dispatchers also run the local, model-free
+`ai/compile-skill-context.py` before rendering the execution card. It selects a
+small provenance-bound set of procedural, retrieval, and validation cues from
+the chosen components, writes `*.skill-context.md` plus a receipt under
+`.worktrees/`, and binds the packet to the exact full-card digest. It cannot
+select authority or replace the frozen write scope, acceptance, validation, or
+stop conditions.
+
+The default `coverage` strategy combines top-down preset/gate candidates with
+bottom-up task-fact candidates, then rescues only cues that cover a missing
+procedural need. Its receipt explains every inclusion and exclusion, including
+source-heading spans, marginal coverage, and zero-marginal suppression. For a
+paired experiment only, pass `--context-compile-strategy anchors-only` to keep
+anchors while deliberately disabling rescue; do not use that ablation as a
+normal low-context production mode.
 
 Run an evidence check:
 
@@ -1232,7 +1252,7 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.report.md` | Claude modification report for human/Codex review |
 | `*.claude-progress.md` | Claude self-reported milestone progress for status display and review evidence |
 | `*.monitor-events.log` | Material and terminal boundaries consumed by the blocking monitor |
-| `*.phase-metrics.json` | Context, implementation, validation, tail, edit-ready, and product-idle timing |
+| `*.phase-metrics.json` | Context, implementation, validation, tail, edit-ready, product-idle, Context Lease route, and checkpoint/capsule byte metrics |
 | `*.activity-observation.json` | Metadata-only session/control/product activity ages and remaining windows; no transcript content |
 | `*.extension-capsule.json` / `*.extension-advisor.json` | Privacy-limited recent assistant/tool activity and the hash-bound Spark timeout judgment |
 | `*.recovered-completion.json` | Recoverable diff/receipt evidence when Claude prose is missing; never direct acceptance |
@@ -1357,7 +1377,7 @@ python ai/benchmark-loop-runs.py .worktrees/loop-* \
   --json-output .worktrees/workflow-benchmark.json
 ```
 
-The benchmark also aggregates execution owner, task-card/review-packet bytes, control-plane time, Checker model dispatches, and approximate Claude-diff reuse. Primary runs, efficient final-candidate reviews, and accepted legacy loops write economics records automatically; history append is idempotent by run/task identity. `calibrate` derives a conservative task-type owner bias only after enough accepted samples. Reuse stays unavailable until both Claude and final diffs are explicitly bound. Existing decision, quality, timing, token/cost, stability, advisor, Spark, and parallel metadata remain available.
+The benchmark also aggregates execution owner, task-card/review-packet bytes, Context Lease/checkpoint/capsule metrics, control-plane time, Checker model dispatches, and approximate Claude-diff reuse. Primary runs, efficient final-candidate reviews, and accepted legacy loops write economics records automatically; history append is idempotent by run/task identity. `calibrate` derives a conservative task-type owner bias only after enough accepted samples. Reuse stays unavailable until both Claude and final diffs are explicitly bound. Existing decision, quality, timing, token/cost, stability, advisor, Spark, and parallel metadata remain available.
 
 **Economics experiment preparation:** Codex, Spark, and Claude wrappers normalize terminal usage into the same append-only ledger. Missing provider fields remain `null` and make `usage_complete=false`; the workflow never estimates tokens. Prepare a balanced three-arm manifest before spending model quota:
 
@@ -1793,7 +1813,12 @@ Run the local smoke tests before changing installer or workflow scripts:
 python scripts/run-tests.py quick
 ```
 
-The tests use only the Python standard library and cover installer idempotency, managed-block preservation, `CLAUDE.md` import placement, Codex skill copy exclusions, dispatch dirty-source guard behavior, proxy defaults, progress artifacts, watcher parsing, and operation helper installation. Runtime artifacts are created only under ignored workspace paths such as `.worktrees/` and are not part of the release contents.
+The tests use only the Python standard library and cover installer idempotency,
+managed-block preservation, compact `CLAUDE.md` migration, Codex skill copy
+exclusions, dispatch dirty-source guard behavior, proxy defaults, progress
+artifacts, watcher parsing, and operation helper installation. Runtime artifacts
+are created only under ignored workspace paths such as `.worktrees/` and are not
+part of the release contents.
 
 ## License
 

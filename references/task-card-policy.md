@@ -61,6 +61,13 @@ annotation. Backtick-quote a legitimate path that itself contains spaces.
 
 Use the `revision` preset for narrowed retries and reviewer-requested corrections. Bind the accepted baseline and describe only the delta; do not copy the original task card. The dispatcher preserves the composed card as the full audit artifact and derives Claude's current-phase view with an execution-section allowlist.
 
+For a counted no-progress, acknowledgement-only, or report-evidence mismatch,
+a recovery redispatch requires an explicit `Revision Delta` or `Required
+Revisions` in the new card. Pass the prior deterministic classification through
+`--recovery-classification`; do not hand-copy model logs, prior diffs, or full
+conversation history into the card. Transport retry remains an exact same-card,
+same-worktree `--retry-in-place-task-id` operation, not a revision.
+
 Use `exploratory-builder` only when explicitly selected for a bounded feature
 whose goal is stable but implementation path remains unclear. It must produce
 source changes plus evidence, not a prose-only repository survey. Large or
@@ -114,6 +121,47 @@ example, the async/sync rule, and their deterministic evidence hash. A file or
 symbol name alone is insufficient. If these facts are unavailable, do not mark
 the packet execution-sufficient. Repository-local scratch files are forbidden
 unless listed in Write paths; generated helpers use `$TMPDIR`.
+
+Before dispatch, `ai/compile-skill-context.py` may compile a small, hash-bound
+`Compiled Execution Guidance` section from the selected preset/gates and compact
+routing facts. It uses only deterministic registry entries and retains each
+entry's source path, anchor, source hash when available, and task-card hash.
+It may rescue bounded retrieval/validation/procedure cues from an unselected
+reference, but never synthesizes or trims authority, write scope, acceptance,
+validation, or stop conditions. Those remain the exact task-card sections; an
+unsafe registry kind, conflict, or stale card binding fails closed.
+
+Registry entries have deterministic applicability conditions, priority, source
+provenance, polarity (`positive` action or `negative` boundary), and optional
+conflict group/review version. The compilation receipt records why each rule
+matched, every occupied conflict group, and selected negative boundaries. Do
+not encode authority or a product requirement as a compiler cue.
+
+The compiler uses two deterministic candidate routes: top-down route facts
+(preset, role, phase, gate, continuation) and bottom-up task facts (language,
+task type, repository scale, CodeGraph status, and present contract sections).
+`coverage` is the default strategy: active anchors are retained, then rescue
+cues are chosen only when they add an uncovered procedural label. The receipt
+therefore records required/covered/uncovered labels, each candidate's route,
+marginal coverage, and why it was selected or excluded (including
+`zero-marginal-coverage`). Source provenance includes a source hash and, when a
+Markdown heading is available, a bound line span/hash. This is evidence for a
+smallest sufficient cue set, not permission to infer a missing task contract.
+
+`--context-compile-strategy anchors-only` is a benchmark-only ablation arm. It
+retains selected preset/gate anchors but records all rescue cues as omitted;
+compare it with the default `coverage` strategy only for identical task,
+model/provider, tool-profile, and frozen-contract lanes. The `Required Report`
+section is also an explicit output binding: compiler cues may remind Claude not
+to confuse control files with evidence, but may never add report fields or
+replace the frozen output contract.
+
+When a standard Builder card has all five hard-contract categories (write
+boundary, acceptance, validation, stop conditions, and report), dispatch may
+derive a bootstrap execution capsule automatically. The capsule receipt proves
+every present source section in those categories was retained byte-identically;
+it must fail rather than silently omit one. This is context compression, not a
+new Builder role or an execution-only readiness claim.
 
 ## Evidence
 
