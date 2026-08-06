@@ -32,11 +32,10 @@ references preemptively.
 
 ## Minimal Procedure
 
-1. For concrete indexed-code symbols and relationships, observe first with one
-   bounded, worktree-valid CodeGraph query. For behavior/file discovery use
-   `ai/locate-code.py` (healthy indexes are attempted by default); use lexical
-   search for Shell, configuration, text, or unsupported graph languages.
-   Record the compact result or exact skip reason before targeted reads.
+1. For concrete indexed-code symbols/relationships, query worktree-valid
+   CodeGraph once. Use `ai/locate-code.py` for behavior/files; use lexical
+   search for Shell/config/text/unsupported languages. Record result/skip
+   before targeted reads.
 2. Route from current facts before creating a card. Load routing policy only
    when ownership or Spark behavior is relevant.
 3. Keep Codex's short plan in the Task Card. Treat it as Codex's only normal
