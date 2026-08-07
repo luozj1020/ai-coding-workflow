@@ -21,7 +21,15 @@ and bounded semantic review.
 
 Installing the Skill does not require every task to use it. For a poor fit,
 record `workflow bypassed: <reason>` and proceed directly without task-card or
-Spark overhead.
+Spark overhead. For bounded direct Codex work—including maintenance of this
+Skill—record the decision without delegating:
+
+```bash
+python scripts/aiwf.py direct --kind workflow-maintenance \
+  --reason "refresh direct-mode policy" --path SKILL.md --check "git diff --check"
+```
+
+It records exact paths and checks, but starts neither Spark nor Claude.
 
 ## Claude-first routing for scarce Codex quota
 

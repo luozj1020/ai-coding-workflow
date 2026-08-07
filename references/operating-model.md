@@ -60,7 +60,12 @@ OBSERVE -> ROUTE -> PLAN/DIRECT -> EXECUTE -> VERIFY -> REVIEW
                                                      +-- reject -> OBSERVE (re-plan)
 ```
 
-Each iteration:
+For a genuinely small local change, use `python ai/aiwf.py direct --reason ...
+--path ...` to record the explicit no-delegation decision. It skips task cards,
+Spark, and Claude but still names exact write paths and deterministic checks;
+it never grants merge authority.
+
+Each delegated iteration:
 
 1. **OBSERVE:** Codex gathers context using low-token tools.
 2. **ROUTE:** deterministic facts select a Claude execution role by default; Planner requires explicit opt-in. Spark can replace Codex estimation.

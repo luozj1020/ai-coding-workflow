@@ -314,6 +314,50 @@ def evidence_label(value: str) -> str:
     return labels.get(value, value)
 
 
+def lifecycle_state(
+    *, terminal: bool, running: bool, overall_running: bool, progress: str, status: str,
+) -> tuple[str, str]:
+    """Classify the only operator-visible lifecycle and startup outcome."""
+    text = "\n".join((progress, status)).lower()
+    if terminal:
+        return "terminal", "completed"
+    if "capability" in text and ("blocked" in text or "mismatch" in text):
+        return "preflight-blocked", "capability-blocked"
+    if any(token in text for token in ("needs_host_execution", "transport failure", "network is restricted")):
+        return "preflight-blocked", "transport-blocked"
+    if any(token in text for token in ("approval blocked", "permission denied", "read-only file system")):
+        return "preflight-blocked", "approval-blocked"
+    if running:
+        return "running", "started"
+    if overall_running:
+        return "finalizing", "started"
+    if progress or status:
+        return "stopped-without-terminal-receipt", "started"
+    return "not-started", "not-started"
+
+
+def usability(
+    *, lifecycle: str, overall_running: bool, outcome: Dict[str, Any], conflicts: List[str],
+) -> tuple[str, List[str]]:
+    """Return a strict, evidence-only handoff readiness result."""
+    reasons: List[str] = []
+    if lifecycle != "terminal":
+        reasons.append("terminal-receipt-required")
+    if overall_running:
+        reasons.append("no-active-writer-required")
+    if outcome.get("dispatch_success") is not True:
+        reasons.append("dispatch-success-required")
+    if outcome.get("artifact_valid") is not True:
+        reasons.append("artifact-validation-required")
+    if outcome.get("validation_success") not in {True, "passed", "success"}:
+        reasons.append("specified-validation-required")
+    if outcome.get("semantic_acceptance") not in {True, "accepted", "accept"}:
+        reasons.append("codex-semantic-acceptance-required")
+    if conflicts:
+        reasons.append("evidence-conflicts-must-be-resolved")
+    return ("yes" if not reasons else "no"), reasons
+
+
 def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     collected_at = datetime.now(timezone.utc).isoformat()
     root = repo_root(args.repo_root)
@@ -412,6 +456,14 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         implementation_complete and tail_work_complete
         and progress["next_check"].strip().lower() == "exit"
     )
+    lifecycle, startup = lifecycle_state(
+        terminal=terminal, running=effective_running, overall_running=effective_overall_running,
+        progress=progress_tail, status=status_tail,
+    )
+    usable, usability_reasons = usability(
+        lifecycle=lifecycle, overall_running=effective_overall_running,
+        outcome=outcome, conflicts=conflicts,
+    )
 
     if visibility and not terminal and not dispatcher_observed_running:
         decision, confidence, reason = "visibility-unknown", "high", "process-visibility-restricted"
@@ -467,6 +519,8 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
             "worktree": collected_at,
         },
         "decision": decision,
+        "lifecycle_state": lifecycle, "startup_state": startup,
+        "usable": usable, "usability_reasons": usability_reasons,
         "confidence": confidence, "reason_code": reason,
         "codex_review_required": "yes" if codex_review else "no",
         "interrupt_authorized": "no", "monitor_level": level,
@@ -506,7 +560,7 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def render_text(value: Dict[str, Any]) -> str:
-    keys = ("decision", "confidence", "reason_code", "codex_review_required",
+    keys = ("lifecycle_state", "startup_state", "usable", "decision", "confidence", "reason_code", "codex_review_required",
             "interrupt_authorized", "finish_expected", "finish_recommended",
             "execution_phase", "implementation_complete", "completion_ready",
             "execution_activity_state", "edit_ready", "product_idle_seconds", "idle_confirmations",

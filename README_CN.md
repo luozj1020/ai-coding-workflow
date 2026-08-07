@@ -19,7 +19,15 @@
 | 委派能够实质减少 Codex 的规划或编辑工作 | Codex 已掌握精确上下文，编排成本高于修改本身 |
 
 安装 Skill 不代表所有任务都必须使用它。不适合时记录 `workflow bypassed:
-<reason>`，直接执行，不生成任务卡，也不为证明绕过而调用 Spark。
+<reason>`，直接执行，不生成任务卡，也不为证明绕过而调用 Spark。对于有界的
+Codex 直接修改（包括维护本 Skill），使用下面的命令记录决定，而不进入委派流程：
+
+```bash
+python scripts/aiwf.py direct --kind workflow-maintenance \
+  --reason "更新直接修改策略" --path SKILL.md --check "git diff --check"
+```
+
+它会记录精确路径和检查项，但不会启动 Spark 或 Claude。
 
 ## 面向稀缺 Codex 额度的 Claude-first 路由
 

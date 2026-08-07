@@ -11,16 +11,18 @@ revision, assigned tests, and long validation; Spark gives bounded advice;
 humans own merge and destructive or high-impact approval.
 
 Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
-Use one bounded CodeGraph query first for concrete indexed-code symbols/relationships.
-Use `ai/locate-code.py` for behavior/files; use lexical search for Shell/config/text
-or unsupported languages. Record result/skip before broad reads. Do not browse the web unless
-the user requests current external information. Ordinary-risk work proceeds
-after deterministic checks without a second business confirmation.
+For indexed-code symbols, use one bounded CodeGraph query first;
+`ai/locate-code.py` for behavior/files; lexical search for Shell/config/text.
+Record result/skip before broad reads. Do not browse unless asked. Ordinary-risk
+work proceeds after deterministic checks without a second business confirmation.
 
-Apply this workflow only when durable Claude output justifies its latency. For
-tiny or urgent edits, ordinary questions, read-only investigation, interactive
-debugging, or unreliable isolation/evidence, record `workflow bypassed:
-<reason>` and use Codex/local tools without a card or Spark call.
+Classify before workflow references/cards: `bypass` for questions/read-only/
+tiny/urgent work; `direct` for bounded local
+Codex edits (including workflow maintenance); and `delegated` only when durable
+Claude output will materially reduce Codex work. Bypass records `workflow
+bypassed: <reason>`. Direct work records `python ai/aiwf.py direct --reason ...
+--path ...` and uses only the files/checks needed for the edit—no Task Card,
+Spark, or Claude call merely to audit it. Setup/update loads setup policy only.
 
 ## Claude-First Ownership
 
@@ -29,22 +31,19 @@ ROUTE every initial, revision, narrow, retry, split-child, and next-phase action
 confirmed high-risk core semantics favor Codex, or Codex applies a reviewed
 deterministic correction. Unknown risk increases review, not ownership changes.
 
-Codex owns the short core plan in the Task Card, its only normal handwritten
-workflow artifact. Deterministic helpers create route, review, hash, freeze,
+For delegated work, Codex owns the short core plan in the Task Card, its only
+normal handwritten workflow artifact. Deterministic helpers create route, review, hash, freeze,
 receipt, and continuation artifacts; do not hand-edit their JSON or receipts.
 Claude `solution-planner` is never inferred and requires
 `solution_planner_opt_in=true`. Prefer one Claude execution round; additional
 roles must remove material Codex work, not merely save model tokens.
 
-When Spark quota is available, run one advisory `task-card-audit` before each
-non-Express delegation; use `execution-cost-estimator` only for unresolved
-ownership. Spark cannot expand frozen scope or replace Codex review. Invalid or
-unavailable Spark auto-disables, but sandbox-network failure must produce exit
-75 and one identical authorized host retry before Claude starts. Reuse the
-stable launcher and cached host preference; never add environment prefixes to
-work around stale launchers. Treat routing event `implementation` as
-`next-phase`; `preflight-bundle` is diagnostic/compatibility-only. Load the
-routing reference for exact retry/result rules.
+When quota allows, run one advisory `task-card-audit` before non-Express
+delegation; use `execution-cost-estimator` only for unresolved ownership. Spark
+cannot expand scope or replace Codex review. Network failure exits 75, then
+requires one identical authorized host retry. Reuse the stable launcher/host
+preference, never environment prefixes. `implementation` aliases `next-phase`;
+`preflight-bundle` is diagnostic-only. Load routing policy for exact rules.
 
 Use `execution-builder` for frozen solutions, `batch-builder` for mechanical
 work, and `exploratory-builder` for bounded new features. Large work uses a

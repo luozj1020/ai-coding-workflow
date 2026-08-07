@@ -7,7 +7,17 @@ worth additional orchestration and latency. Bypass it for tiny or urgent edits,
 ordinary code questions, read-only investigation, tight interactive debugging,
 or when Claude execution, worktree isolation, or reviewable evidence is not
 reliable. Record `workflow bypassed: <reason>` and use ordinary Codex/local tools;
-do not create a task card or call Spark solely to justify the bypass.
+do not create a task card or call Spark solely to justify the bypass. For a
+bounded direct Codex change, including workflow maintenance, emit the compact
+no-delegation decision instead:
+
+```bash
+python ai/aiwf.py direct --kind workflow-maintenance \
+  --reason "refresh direct-mode policy" --path AGENTS.md --check "git diff --check"
+```
+
+This records scope and checks without creating a Task Card, calling Spark, or
+starting Claude.
 
 ## Installing This Skill for Codex
 
@@ -98,10 +108,11 @@ This repository has been set up with a multi-agent AI coding workflow. The workf
 - **Claude-compatible auxiliary model**  -  optional cost-efficient execution or exhaustive review helper
 - **LSP / Locator / CodeGraph / MCP**  -  low-token code intelligence with bounded large-repo lookup before broad reads
 
-**Core principle:** Codex writes the short core plan in the Task Card; this is
-its only normal handwritten workflow artifact. Claude edits product files by
-default. Deterministic tools generate route, review, freeze, receipt, and other
-control artifacts; Spark remains advisory.
+**Core principle:** for delegated work, Codex writes the short core plan in the
+Task Card; this is its only normal handwritten workflow artifact. Direct local
+work uses `aiwf direct`, not a Task Card. Claude edits product files by default
+only after delegation. Deterministic tools generate route, review, freeze,
+receipt, and other control artifacts; Spark remains advisory.
 
 For non-trivial changes, split Claude work into two roles:
 

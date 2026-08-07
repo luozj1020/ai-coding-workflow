@@ -18,7 +18,7 @@ python ai/compose_task_card.py --preset builder --gate root-cause --output ai/ta
 | `exploratory-builder` | Stable goal/boundary with an unclear implementation path | bounded exploration, source changes, durable evidence, explicit stop conditions |
 | `checker` | Test writing or assigned validation | validation ownership and evidence |
 | `revision` | Direction accepted; bounded corrections remain | delta-only revision contract |
-| `control-plane` | Workflow repair explicitly owned by Codex/human | exception evidence |
+| `control-plane` | Explicit human-requested control-plane audit or model delegation | exception evidence |
 
 ## Optional Gates
 
@@ -34,7 +34,9 @@ python ai/compose_task_card.py --preset builder --gate root-cause --output ai/ta
 
 ## Selection Rules
 
-- ROUTE before selecting components; an explicit Codex fast path needs no card.
+- ROUTE before selecting components; an explicit Codex fast path or bounded
+  direct workflow-maintenance change needs no card. Do not select
+  `control-plane` merely to create an audit trail for Codex's local edit.
 - Never auto-select `solution-planner`; require `solution_planner_opt_in=true`,
   then freeze its contract after one adversarial Codex review.
 - Select `exploratory-builder` explicitly when one combined exploration and

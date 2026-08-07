@@ -96,6 +96,7 @@ PYTHON_SCRIPTS = [
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
     ("claude-healthcheck.py", "ai/claude-healthcheck.py"),
     ("claude-monitor-decision.py", "ai/claude-monitor-decision.py"),
+    ("direct-change.py", "ai/direct-change.py"),
     ("claude-extension-capsule.py", "ai/claude-extension-capsule.py"),
     ("claude-process-state.py", "ai/claude-process-state.py"),
     ("codegraph-worktree-guard.py", "ai/codegraph-worktree-guard.py"),

@@ -1355,6 +1355,7 @@ class InstallWorkflowTests(unittest.TestCase):
             monitor = repo / "ai" / "monitor-claude.sh"
             self.assertTrue(monitor.exists())
             self.assertTrue((repo / "ai" / "claude-monitor-decision.py").exists())
+            self.assertTrue((repo / "ai" / "direct-change.py").exists())
             self.assertTrue((repo / "ai" / "claude-extension-capsule.py").exists())
             self.assertTrue((repo / "ai" / "codegraph-worktree-guard.py").exists())
             self.assertTrue((repo / "ai" / "parallel-task-gate.py").exists())

@@ -336,6 +336,13 @@ authorizes interruption. Use
 sandbox cannot see PIDs without a terminal event, report `visibility-unknown`
 from the dispatch environment and never launch a duplicate Builder.
 
+Use `python ai/aiwf.py status snapshot --task-id <id> --format text` for the
+single operator-facing result. It reports startup/lifecycle states, changed-path
+counts, deterministic gates, and `usable`. `usable=yes` requires a terminal
+receipt, no active writer, successful dispatch/artifact/specified validation,
+Codex semantic acceptance, and no evidence conflicts; it never authorizes
+merge.
+
 Each dispatch writes `<task-id>.phase-metrics.json` with approximate heartbeat-observed context acquisition, implementation, validation, tail, and completion-ready timing. Use it to identify context reacquisition or post-implementation tail waste; do not treat sampled boundaries as provider billing timestamps.
 It also writes `<task-id>.phase-events.jsonl` when the normalized phase or
 current validation command changes. Phases are `exploring`, `editing`,

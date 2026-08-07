@@ -4,7 +4,14 @@ Load this reference when authoring task cards/specs, choosing gates, building Co
 
 ## Planning Gates
 
-Write a task card only after pre-card routing selects delegation/spec-first. Codex reads the small `ai/task-card-components/catalog.md`, selects one preset and only material gates, then lets the local zero-model composer read and join their bodies:
+Write a task card only after pre-card routing selects actual Claude delegation,
+an explicit human-requested planning/spec artifact, or the Spark audit that
+precedes that delegation. A direct Codex change—including Skill/workflow
+maintenance—uses `aiwf direct` plus its exact paths/checks instead; do not
+compose a `control-plane` card merely to document or audit your own local edit.
+Codex reads the small `ai/task-card-components/catalog.md`, selects one preset
+and only material gates, then lets the local zero-model composer read and join
+their bodies:
 
 ```bash
 python ai/compose_task_card.py --preset builder --gate root-cause --output ai/task-cards/TASK.md

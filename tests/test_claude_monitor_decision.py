@@ -181,6 +181,10 @@ class ClaudeMonitorDecisionTests(unittest.TestCase):
         with temporary, mock.patch.object(module, "role_state", return_value="not-running"):
             value = module.snapshot(args)
         self.assertEqual(value["decision"], "terminal")
+        self.assertEqual(value["lifecycle_state"], "terminal")
+        self.assertEqual(value["startup_state"], "completed")
+        self.assertEqual(value["usable"], "no")
+        self.assertIn("artifact-validation-required", value["usability_reasons"])
         self.assertTrue(value["dispatch_success"])
         self.assertFalse(value["artifact_valid"])
         self.assertEqual(value["completion_state"], "needs-review")

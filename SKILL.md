@@ -1,53 +1,41 @@
 ---
 name: ai-coding-workflow
-description: Install, update, or run a Claude-first workflow for non-trivial repository changes when durable delegated output justifies longer latency and bounded Codex review. Avoid tiny or urgent edits, ordinary questions, read-only or interactive debugging, latency-sensitive work, and environments without reliable Claude isolation or review evidence.
+description: Run or update a Claude-first workflow only for non-trivial repository changes that will use durable Claude delegation. Skip questions, read-only work, tiny/urgent local edits, and direct Skill maintenance unless delegation is explicitly requested.
 ---
 
 # AI Coding Workflow
 
 ## Applicability Gate
 
-Use this Skill for multi-file or multi-phase implementation, mechanical batches,
-assigned tests, or long validation. Otherwise record
-`workflow bypassed: <reason>` and use ordinary local tools.
+Classify before references, a Task Card, or a model call:
+**bypass** (question/read-only/tiny/urgent: record `workflow bypassed: <reason>`);
+**direct** (bounded Codex or Skill maintenance: in a bootstrapped repo run
+`python ai/aiwf.py direct --reason ... --path ...`, no card/Spark/Claude);
+**delegated** (durable Claude
+output materially reduces Codex work); or **setup/update** (load only
+`references/setup-policy.md`).
 
-In a bootstrapped repository, managed `AGENTS.md` is authoritative. Load only
-the one reference needed for the current operation. For end-to-end work, load
-references sequentially as phase boundaries change; do not load multiple
-references preemptively.
+Semantic auto-load without `$` never expands bypass/direct into model work.
+For delegation, load only one matching reference; do not load multiple preemptively.
 
 ## Core Contract
 
 - Follow `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
-- `claude-first` is the default: Codex owns core planning in the Task Card and
-  bounded semantic review; Claude owns implementation, revision, and
-  assigned Builder or Checker/Test work. `solution-planner` is explicit opt-in,
-  never an automatic route. Explicit human ownership remains authoritative.
-- Gather bounded deterministic evidence before model work. Treat every model
-  report as a claim until diff, receipt, and validation evidence agree.
-- Keep one writing owner, exact write scope, isolated worktrees, and hash-bound
-  continuation/recovery. Missing or stale ownership evidence fails closed.
-- Models never merge. Human approval remains required for destructive,
-  production-impacting, or materially ambiguous decisions.
+- Codex freezes the short Task Card and bounded review; Claude owns assigned
+  Builder/Checker/Test work. `solution-planner` is explicit opt-in.
+- Model reports are claims until diff, receipt, and validation agree. Keep one
+  writer, exact scope, isolated worktrees, and hash-bound recovery; stale
+  ownership fails closed. Models never merge; humans own high-impact approval.
 
 ## Minimal Procedure
 
-1. For concrete indexed-code symbols/relationships, query worktree-valid
-   CodeGraph once. Use `ai/locate-code.py` for behavior/files; use lexical
-   search for Shell/config/text/unsupported languages. Record result/skip
-   before targeted reads.
-2. Route from current facts before creating a card. Load routing policy only
-   when ownership or Spark behavior is relevant.
-3. Keep Codex's short plan in the Task Card. Treat it as Codex's only normal
-   handwritten workflow artifact; deterministic helpers serialize routing,
-   review, freeze, receipt, and continuation artifacts. Load task-card policy
-   for details.
-4. Dispatch with `bash ai/dispatch-to-claude.sh <card>` and use the runtime
-   reference for host retry, monitoring, continuation, or failure attribution.
-5. Verify deterministically. Use Checker/Test only when assigned test or
-   validation work materially reduces Codex effort.
-6. Review bounded evidence and return accept, revise, split, or reject. Humans
-   perform final merge.
+1. Classify; bypass/direct stop after local edits/checks.
+2. Delegated only: query valid CodeGraph once; use `ai/locate-code.py` for
+   behavior/files and lexical search for Shell/config/text; record result/skip.
+3. Route, compose the short card, and dispatch. Use Checker/Test only when its
+   assigned work materially reduces Codex effort.
+4. Verify deterministically, then review bounded evidence: accept, revise,
+   split, or reject. Humans merge.
 
 When the user explicitly requests Skill feedback, produce a read-only
 retrospective from the current conversation and the minimum necessary runtime
