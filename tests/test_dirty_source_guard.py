@@ -213,6 +213,17 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "else\n"
                 "  cat >/dev/null\n"
                 "fi\n"
+                "if [ \"${FAKE_CLAUDE_TRANSCRIPT_ACTIVITY:-0}\" = 1 ]; then\n"
+                "  _fake_session='' _fake_previous=''\n"
+                "  for _fake_arg in \"$@\"; do\n"
+                "    if [ \"${_fake_previous}\" = --session-id ] || [ \"${_fake_previous}\" = --resume ]; then _fake_session=\"${_fake_arg}\"; break; fi\n"
+                "    _fake_previous=\"${_fake_arg}\"\n"
+                "  done\n"
+                "  if [ -n \"${_fake_session}\" ]; then\n"
+                "    mkdir -p \"${HOME}/.claude/projects\"\n"
+                "    printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Reading declared task targets\"},{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"TASK_CARD.md\"}}]}}' > \"${HOME}/.claude/projects/${_fake_session}.jsonl\"\n"
+                "  fi\n"
+                "fi\n"
                 "if [ \"${FAKE_CLAUDE_STATUS_ACTIVITY:-0}\" = 1 ]; then echo 'tool activity: editing declared target' >&2; fi\n"
                 "case \"${FAKE_CLAUDE_MODE:-success}\" in\n"
                 "  fail-empty)\n"
@@ -509,6 +520,13 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             "if [ \"${FAKE_SPARK_INVALID:-0}\" = 1 ]; then exit 0; fi\n"
             "echo \"decision=${FAKE_SPARK_DECISION:-continue}\"\n"
             "echo \"confidence=${FAKE_SPARK_CONFIDENCE:-high}\"\n"
+            "if [ -n \"${FAKE_SPARK_ACTIVITY_ASSESSMENT:-}\" ]; then\n"
+            "  echo \"activity_assessment=${FAKE_SPARK_ACTIVITY_ASSESSMENT}\"\n"
+            "elif [ \"${FAKE_SPARK_DECISION:-continue}\" = interrupt-candidate ]; then\n"
+            "  echo 'activity_assessment=unproductive'\n"
+            "else\n"
+            "  echo 'activity_assessment=task-directed'\n"
+            "fi\n"
             "echo 'reason_code=fake-timeout-advice'\n"
             "echo 'summary=bounded fake timeout advice'\n"
             "echo 'codex_review_required=no'\n"
@@ -1486,8 +1504,9 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(activity["authority"], "diagnostic-only")
         self.assertEqual(
             activity["session_activity_source"],
-            "session-store-mtime-without-content-read",
+            "session-id-filtered-transcript-mtime-without-content-read",
         )
+        self.assertIn("matching_session_entries", activity)
         self.assertFalse(activity["model_tool_split_available"])
         self.assertFalse(activity["refreshes_product_window"])
         self.assertTrue((self.case_root / "home" / ".claude" / "session-env").is_dir())
@@ -4353,6 +4372,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "FAKE_CLAUDE_PRE_DIFF_SLEEP": "7",
                 "FAKE_CLAUDE_SLEEP_SECONDS": "1",
                 "FAKE_CLAUDE_STATUS_ACTIVITY": "1",
+                "FAKE_CLAUDE_TRANSCRIPT_ACTIVITY": "1",
                 "FAKE_SPARK_SLEEP_SECONDS": "2",
                 "FAKE_SPARK_DECISION": "continue",
                 "FAKE_SPARK_CONFIDENCE": "high",
@@ -4391,6 +4411,78 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("hard runtime timeout", progress)
         self.assertNotIn("context acquisition timeout without substantive", progress)
 
+    def test_context_extension_requires_task_directed_spark_assessment(self):
+        """A generic Spark `continue` cannot extend a context-only session."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_ADVISOR": "on",
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS": "5",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS": "1",
+                "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "stop",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "3",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "4",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "12",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "20",
+                "FAKE_CLAUDE_MODE": "delayed-diff",
+                "FAKE_CLAUDE_PRE_DIFF_SLEEP": "7",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "1",
+                "FAKE_CLAUDE_STATUS_ACTIVITY": "1",
+                "FAKE_CLAUDE_TRANSCRIPT_ACTIVITY": "1",
+                "FAKE_SPARK_DECISION": "continue",
+                "FAKE_SPARK_CONFIDENCE": "high",
+                "FAKE_SPARK_ACTIVITY_ASSESSMENT": "insufficient",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("decision=uncertain", progress)
+        self.assertIn("activity_assessment=insufficient", progress)
+        self.assertIn("First substantive progress detected", progress)
+        self.assertNotIn("Spark-confirmed context-acquisition extension", progress)
+
+    def test_context_interrupt_requires_unproductive_spark_assessment(self):
+        """Ambiguous activity cannot terminate context acquisition early."""
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_TIMEOUT_ADVISOR": "on",
+                "CLAUDE_CODE_BUILDER_MODE": "execution-only",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_LEAD_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_CALL_TIMEOUT_SECONDS": "5",
+                "CLAUDE_CODE_TIMEOUT_ADVISOR_MAX_ATTEMPTS": "1",
+                "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "2",
+                "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "stop",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "3",
+                "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "4",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "12",
+                "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "20",
+                "FAKE_CLAUDE_MODE": "delayed-diff",
+                "FAKE_CLAUDE_PRE_DIFF_SLEEP": "7",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "1",
+                "FAKE_CLAUDE_STATUS_ACTIVITY": "1",
+                "FAKE_CLAUDE_TRANSCRIPT_ACTIVITY": "1",
+                "FAKE_SPARK_DECISION": "interrupt-candidate",
+                "FAKE_SPARK_CONFIDENCE": "high",
+                "FAKE_SPARK_ACTIVITY_ASSESSMENT": "insufficient",
+            },
+        )
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
+        self.assertIn("decision=uncertain", progress)
+        self.assertIn("spark-interrupt-without-unproductive-assessment", progress)
+        self.assertIn("First substantive progress detected", progress)
+        self.assertNotIn("context acquisition timeout without substantive", progress)
+
     def test_active_deadline_waits_for_spark_judgment_before_extending(self):
         self._write_builder_task_card()
         result = self._dispatch(
@@ -4403,11 +4495,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_TIMEOUT_SECONDS": "2",
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "4",
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
-                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "12",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "24",
                 "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "20",
                 "FAKE_CLAUDE_MODE": "worktree-change",
-                "FAKE_CLAUDE_SLEEP_SECONDS": "10",
+                "FAKE_CLAUDE_SLEEP_SECONDS": "16",
                 "FAKE_CLAUDE_STATUS_ACTIVITY": "1",
+                "FAKE_CLAUDE_TRANSCRIPT_ACTIVITY": "1",
                 "FAKE_SPARK_SLEEP_SECONDS": "3",
                 "FAKE_SPARK_DECISION": "continue",
                 "FAKE_SPARK_CONFIDENCE": "high",
@@ -4422,8 +4515,8 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
             next((self.repo / ".worktrees").glob("claude-*.extension-advisor.json")).read_text()
         )
         applied = [event for event in receipt["events"] if event["status"] == "applied-extend"]
-        self.assertEqual(len(applied), 1)
-        self.assertEqual(applied[0]["decision"], "continue")
+        self.assertGreaterEqual(len(applied), 1)
+        self.assertTrue(all(event["decision"] == "continue" for event in applied))
 
     def test_product_growth_supersedes_running_spark_and_refreshes_full_window(self):
         self._write_builder_task_card()
@@ -4436,11 +4529,12 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "CLAUDE_CODE_TIMEOUT_SECONDS": "4",
                 "CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS": "3",
                 "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
-                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "15",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "24",
                 "CLAUDE_CODE_PRODUCT_IDLE_TIMEOUT_SECONDS": "20",
                 "FAKE_CLAUDE_MODE": "product-during-advisor",
-                "FAKE_CLAUDE_SECOND_WRITE_DELAY_SECONDS": "5",
-                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "2",
+                "FAKE_CLAUDE_SECOND_WRITE_DELAY_SECONDS": "8",
+                "FAKE_CLAUDE_POST_PROGRESS_SLEEP": "3",
+                "FAKE_CLAUDE_STATUS_ACTIVITY": "1",
                 "FAKE_SPARK_SLEEP_SECONDS": "8",
             },
         )

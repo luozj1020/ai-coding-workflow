@@ -79,12 +79,12 @@ Use stable CLI flags for host execution, dirty snapshots, tool profiles,
 retry-in-place, and reviewed continuation. If a launcher lacks them or Spark's
 exit-75 handoff, refresh the bootstrapped workflow before any model call.
 
-Do not poll or use PID/clock-only liveness. Block once on
-`monitor-claude.sh wait` and inspect compact material or terminal evidence only
-at review boundaries. Product-content changes refresh a complete active window
-and invalidate pending timeout advice. Near a boundary, one bounded Spark
-evaluation may advise, but cannot stop Claude; the dispatcher requires
-product-idle corroboration and enforces the hard cap.
+Do not poll or use PID/clock-only liveness. Use one blocking
+`monitor-claude.sh wait` and inspect only boundary evidence. Product content
+alone refreshes the active window. Spark sees redacted, session-bound activity:
+`task-directed` may extend; `unproductive` may advise interruption, never stop
+Claude. Mtimes, control files, reports, and tokens never prove work.
+Product-idle corroboration and the hard cap apply.
 
 Classify failures before retry or takeover. Pre-interaction transport,
 approval/sandbox blockers, dirty source, and stale HEAD are not model failures.

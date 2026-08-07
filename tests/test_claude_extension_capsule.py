@@ -81,6 +81,29 @@ class ClaudeExtensionCapsuleTests(unittest.TestCase):
             self.assertNotIn("user task input", assistant)
             self.assertIn("[REDACTED]", assistant)
             self.assertGreater(reasoning_bytes, 0)
+            summary = module._activity_summary(
+                events, transcript_available=True, session_recent=True
+            )
+            self.assertTrue(summary["transcript_activity_recent"])
+            self.assertEqual(summary["activity_signal"], "recent-tool-activity")
+            self.assertEqual(summary["tool_start_count"], 1)
+            self.assertEqual(summary["tool_error_count"], 0)
+            self.assertEqual(summary["recent_tools"], ["Edit"])
+            self.assertEqual(summary["recent_target_hints"], ["src/allowed.py"])
+
+    def test_activity_summary_rejects_status_only_or_stale_transcript_activity(self):
+        module = load_module()
+        events = [{"kind": "assistant-output", "excerpt": "working"}]
+        self.assertFalse(
+            module._activity_summary(
+                events, transcript_available=True, session_recent=False
+            )["transcript_activity_recent"]
+        )
+        summary = module._activity_summary(
+            [], transcript_available=False, session_recent=True
+        )
+        self.assertFalse(summary["transcript_activity_recent"])
+        self.assertEqual(summary["activity_signal"], "no-fresh-model-activity")
 
     def test_session_selection_never_falls_back_to_another_lineage(self):
         module = load_module()

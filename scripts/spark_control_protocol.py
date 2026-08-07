@@ -18,6 +18,7 @@ from typing import Any, Mapping, Optional
 FIELD = re.compile(r"^([a-z][a-z0-9_]*)=(.*)$")
 KINDS = {"route", "monitor", "failure", "parallel"}
 CONFIDENCE = {"high", "medium", "low"}
+ACTIVITY_ASSESSMENTS = {"task-directed", "unproductive", "insufficient"}
 ROUTE_DECISIONS = {"codex-fast-path", "claude-builder", "spec-first", "human-clarification"}
 MONITOR_DECISIONS = {"continue", "inspect", "interrupt-candidate", "terminal", "visibility-unknown", "uncertain"}
 FAILURE_DECISIONS = {"wait", "retry", "continue-same-worktree", "narrow", "split", "codex-takeover", "human-review"}
@@ -96,12 +97,16 @@ def normalize(kind: str, source: Mapping[str, Any], *, evidence: Optional[Mappin
         decision = _bounded(values.get("decision", "uncertain"))
         if decision not in MONITOR_DECISIONS:
             decision = "uncertain"
+        activity_assessment = _bounded(values.get("activity_assessment", "insufficient")).lower()
+        if activity_assessment not in ACTIVITY_ASSESSMENTS:
+            activity_assessment = "insufficient"
         detail = {
             "next_check_seconds": _bounded(values.get("next_check_seconds")),
             "execution_phase": _bounded(values.get("execution_phase")),
             "implementation_complete": _bool(values.get("implementation_complete")),
             "completion_ready": _bool(values.get("completion_ready")),
             "finish_recommended": _bool(values.get("finish_recommended")),
+            "activity_assessment": activity_assessment,
             "interrupt_authorized": False,
         }
     elif kind == "failure":
@@ -160,6 +165,8 @@ def validate(kind: str, value: Mapping[str, Any]) -> tuple[bool, list[str]]:
         errors.append("decision")
     if kind == "monitor" and value.get("interrupt_authorized") is not False:
         errors.append("interrupt-authority")
+    if kind == "monitor" and value.get("activity_assessment") not in ACTIVITY_ASSESSMENTS:
+        errors.append("activity-assessment")
     if kind == "failure" and value.get("takeover_authorized") is not False:
         errors.append("takeover-authority")
     if kind == "parallel" and value.get("dispatch_authorized") is not False:

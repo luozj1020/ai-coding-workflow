@@ -47,6 +47,15 @@ class SparkControlProtocolTests(unittest.TestCase):
             "reason_code=confirmed-deviation\ninterrupt_authorized=yes\n",
         )
         self.assertFalse(value["interrupt_authorized"])
+        self.assertEqual(value["activity_assessment"], "insufficient")
+
+    def test_monitor_preserves_bounded_activity_assessment(self):
+        value = MODULE.parse_and_normalize(
+            "monitor",
+            "decision=continue\nconfidence=high\n"
+            "activity_assessment=task-directed\n",
+        )
+        self.assertEqual(value["activity_assessment"], "task-directed")
 
     def test_monitor_preserves_structured_completion_advice(self):
         value = MODULE.parse_and_normalize(

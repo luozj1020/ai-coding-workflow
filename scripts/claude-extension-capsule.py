@@ -182,6 +182,75 @@ def _collect_events(paths: list[Path], max_bytes: int, max_events: int) -> tuple
     return events[-max_events:], _bounded_tail("\n".join(assistant_parts), 2400), reasoning_bytes
 
 
+def _activity_summary(
+    events: list[dict[str, Any]], *, transcript_available: bool, session_recent: bool
+) -> dict[str, Any]:
+    """Reduce model activity to safe, decision-useful counters.
+
+    A recent session-store mtime alone can be caused by runtime bookkeeping.
+    Timeout triage must therefore distinguish it from evidence that Claude
+    actually emitted assistant content, reasoning activity, or a tool call.
+    The summary intentionally carries no thinking text or tool-result payload.
+    """
+    counts = {
+        "assistant_output": 0,
+        "assistant_reasoning_activity": 0,
+        "tool_start": 0,
+        "tool_result": 0,
+        "tool_error": 0,
+    }
+    count_key = {
+        "assistant-output": "assistant_output",
+        "assistant-reasoning-activity": "assistant_reasoning_activity",
+        "tool-start": "tool_start",
+        "tool-result": "tool_result",
+    }
+    tools: list[str] = []
+    targets: list[str] = []
+    for event in events:
+        kind = str(event.get("kind", ""))
+        if kind in count_key:
+            counts[count_key[kind]] += 1
+        if kind == "tool-result" and event.get("is_error"):
+            counts["tool_error"] += 1
+        if kind == "tool-start":
+            tool = str(event.get("tool", "")).strip()
+            if tool and tool not in tools and len(tools) < 8:
+                tools.append(tool)
+            target = str(event.get("target_hint", "")).strip()
+            if target and target not in targets and len(targets) < 8:
+                targets.append(target)
+
+    model_events = (
+        counts["assistant_output"]
+        + counts["assistant_reasoning_activity"]
+        + counts["tool_start"]
+        + counts["tool_result"]
+    )
+    transcript_activity_recent = bool(
+        transcript_available and session_recent and model_events > 0
+    )
+    if not transcript_activity_recent:
+        signal = "no-fresh-model-activity"
+    elif counts["tool_start"]:
+        signal = "recent-tool-activity"
+    elif counts["assistant_output"]:
+        signal = "recent-assistant-output"
+    else:
+        signal = "recent-reasoning-activity"
+    return {
+        "transcript_activity_recent": transcript_activity_recent,
+        "activity_signal": signal,
+        "assistant_output_count": counts["assistant_output"],
+        "assistant_reasoning_event_count": counts["assistant_reasoning_activity"],
+        "tool_start_count": counts["tool_start"],
+        "tool_result_count": counts["tool_result"],
+        "tool_error_count": counts["tool_error"],
+        "recent_tools": tools,
+        "recent_target_hints": targets,
+    }
+
+
 def _load_product_state(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -273,6 +342,9 @@ def main() -> int:
         card_sha = "sha256:" + hashlib.sha256(card_bytes).hexdigest()
     except OSError:
         card_sha = None
+    activity_summary = _activity_summary(
+        events, transcript_available=bool(paths), session_recent=session_recent
+    )
 
     value = {
         "schema_version": 1,
@@ -301,7 +373,11 @@ def main() -> int:
         "recent_runtime_status_untrusted": status_excerpt,
         "runtime_status_recent": status_recent,
         "session_activity_recent": session_recent,
-        "activity_evidence_available": bool((events and session_recent) or (status_excerpt and status_recent)),
+        "activity_summary": activity_summary,
+        # Runtime status may show that the dispatcher is alive, but it is not
+        # model activity and cannot by itself justify an extension.
+        "status_activity_available": bool(status_excerpt and status_recent),
+        "activity_evidence_available": activity_summary["transcript_activity_recent"],
         "reasoning_activity_bytes": reasoning_bytes,
         "reasoning_content_persisted": False,
         "tool_result_payloads_persisted": False,

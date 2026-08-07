@@ -4247,16 +4247,19 @@ monitor_event() {
 observe_runtime_activity() {
     # Observe only filesystem metadata. The dispatcher intentionally does not
     # read Claude session JSONL/transcript contents, and the resulting signal
-    # is diagnostic only: it never refreshes product-progress deadlines.
+    # is diagnostic only: it never refreshes product-progress deadlines.  The
+    # observation is session-id filtered so another concurrent/old transcript
+    # in the same Claude home cannot make this task appear active.
     local now_epoch="$1"
     local phase="$2"
     "$PYTHON_CMD" - "$ACTIVITY_OBSERVATION_FILE" "$TASK_ID" \
-        "${_CLAUDE_PROJECTS_SOURCE:-}" "$now_epoch" "${LAST_CONTROL_ACTIVITY_EPOCH:-0}" \
+        "${_CLAUDE_PROJECTS_OBSERVATION_ROOT:-}" "${CLAUDE_SESSION_ID:-}" \
+        "$now_epoch" "${LAST_CONTROL_ACTIVITY_EPOCH:-0}" \
         "${LAST_PRODUCT_CHANGE_EPOCH:-0}" "${ACTIVE_EXECUTION_DEADLINE:-0}" \
         "${HARD_TIMEOUT_DEADLINE:-0}" "$phase" <<'PYEOF'
 import json, os, sys, tempfile
 
-(output, task_id, session_root, now_raw, control_raw, product_raw,
+(output, task_id, session_root, session_id, now_raw, control_raw, product_raw,
  active_raw, hard_raw, phase) = sys.argv[1:]
 now = int(now_raw)
 control = int(control_raw or 0)
@@ -4266,11 +4269,11 @@ hard = int(hard_raw or 0)
 
 session = 0
 visited = 0
+matching = 0
 pending = [session_root] if session_root and os.path.isdir(session_root) else []
 while pending and visited < 512:
     current = pending.pop()
     try:
-        session = max(session, int(os.stat(current, follow_symlinks=False).st_mtime))
         entries = list(os.scandir(current))
     except OSError:
         continue
@@ -4279,9 +4282,11 @@ while pending and visited < 512:
             break
         visited += 1
         try:
-            session = max(session, int(entry.stat(follow_symlinks=False).st_mtime))
             if entry.is_dir(follow_symlinks=False):
                 pending.append(entry.path)
+            elif session_id and session_id in entry.name:
+                session = max(session, int(entry.stat(follow_symlinks=False).st_mtime))
+                matching += 1
         except OSError:
             continue
 
@@ -4308,7 +4313,8 @@ value = {
     "active_window_remaining_seconds": remaining(active),
     "hard_timeout_remaining_seconds": remaining(hard),
     "session_entries_sampled": visited,
-    "session_activity_source": "session-store-mtime-without-content-read",
+    "matching_session_entries": matching,
+    "session_activity_source": "session-id-filtered-transcript-mtime-without-content-read",
     "model_tool_split_available": False,
     "refreshes_product_window": False,
     "authority": "diagnostic-only",
@@ -5456,6 +5462,10 @@ _CLAUDE_SESSION_ENV_SOURCE="${TASK_TMPDIR}/claude-session-env"
 _CLAUDE_SESSION_ENV_TARGET="${HOME:-}/.claude/session-env"
 _CLAUDE_PROJECTS_SOURCE="${WORKTREE_ROOT}/.session-store/${_LINEAGE_ROOT_TASK_ID:-$TASK_ID}/projects"
 _CLAUDE_PROJECTS_TARGET="${HOME:-}/.claude/projects"
+# In non-sandbox compatibility mode Claude writes its ordinary per-user
+# transcript store.  Observe only the current session there; required exact
+# write scope instead binds a lineage-local store and uses that as the source.
+_CLAUDE_PROJECTS_OBSERVATION_ROOT="${HOME:-}/.claude/projects"
 _WRITE_SCOPE_SYNC_FAILED=0
 _WRITING_RUNTIME_ROLE=0
 if { [ "$_PARSED_TASK_MODE" = "builder" ] || [ "$_PARSED_TASK_MODE" = "checker-test" ]; } && \
@@ -5519,6 +5529,7 @@ PYEOF
             echo "failure_category=write-sandbox-session-storage-unavailable" >&2
             exit 1
         }
+        _CLAUDE_PROJECTS_OBSERVATION_ROOT="$_CLAUDE_PROJECTS_SOURCE"
         for _writer_input_name in CONTENT OLD_FRAGMENT NEW_FRAGMENT; do
             printf 'AIWF_WRITER_INPUT_V1\n' > "${_CLAUDE_WRITER_INPUT_SOURCE}/${_writer_input_name}"
         done
@@ -6253,6 +6264,9 @@ EXTENSION_ADVISOR_DECISION=""
 EXTENSION_ADVISOR_CONFIDENCE=""
 EXTENSION_ADVISOR_REASON=""
 EXTENSION_ADVISOR_SUMMARY=""
+EXTENSION_ADVISOR_ACTIVITY_EVIDENCE="false"
+EXTENSION_ADVISOR_ACTIVITY_SIGNAL="unavailable"
+EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT="insufficient"
 EXTENSION_ADVISOR_NEXT_EPOCH=0
 EXTENSION_ADVISOR_LAST_STATUS="not-run"
 EXTENSION_ADVISOR_WAITING_FOR_IDLE_RECORDED=0
@@ -6271,11 +6285,14 @@ write_extension_advisor_receipt() {
         "$status" "$reason" "$decision" "$confidence" \
         "$EXTENSION_ADVISOR_BASE_DIGEST" "${CURRENT_WORKTREE_DIGEST:-}" \
         "$EXTENSION_ADVISOR_ATTEMPTS" "$EXTENSION_CAPSULE_FILE" \
-        "$EXTENSION_ADVISOR_OUTPUT_FILE" "${NOW_EPOCH:-0}" <<'PYEOF'
+        "$EXTENSION_ADVISOR_OUTPUT_FILE" "${NOW_EPOCH:-0}" \
+        "$EXTENSION_ADVISOR_ACTIVITY_EVIDENCE" "$EXTENSION_ADVISOR_ACTIVITY_SIGNAL" \
+        "$EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT" <<'PYEOF'
 import hashlib, json, os, sys, tempfile
 
 (path, task_id, evaluation_id, window_kind, status, reason, decision, confidence,
- baseline_digest, current_digest, attempts, capsule, output, sampled_at) = sys.argv[1:]
+ baseline_digest, current_digest, attempts, capsule, output, sampled_at,
+ activity_evidence, activity_signal, activity_assessment) = sys.argv[1:]
 
 def digest(candidate):
     try:
@@ -6300,6 +6317,9 @@ value = {
     "capsule": capsule,
     "capsule_sha256": digest(capsule),
     "spark_output_sha256": digest(output),
+    "model_activity_evidence_available": activity_evidence == "true",
+    "model_activity_signal": activity_signal or "unavailable",
+    "spark_activity_assessment": activity_assessment or "insufficient",
     "spark_is_advisory": True,
     "interrupt_authorized_by_spark": False,
     "hard_timeout_still_authoritative": True,
@@ -6319,6 +6339,9 @@ history.append({
     "reason": reason or None,
     "decision": decision or None,
     "confidence": confidence or None,
+    "model_activity_evidence_available": activity_evidence == "true",
+    "model_activity_signal": activity_signal or "unavailable",
+    "spark_activity_assessment": activity_assessment or "insufficient",
     "baseline_product_digest": baseline_digest or None,
     "current_product_digest": current_digest or None,
     "sampled_at_epoch": int(sampled_at or 0),
@@ -6374,11 +6397,14 @@ start_extension_advisor() {
     EXTENSION_ADVISOR_CONFIDENCE=""
     EXTENSION_ADVISOR_REASON=""
     EXTENSION_ADVISOR_SUMMARY=""
+    EXTENSION_ADVISOR_ACTIVITY_EVIDENCE="false"
+    EXTENSION_ADVISOR_ACTIVITY_SIGNAL="unavailable"
+    EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT="insufficient"
     EXTENSION_ADVISOR_WAITING_FOR_IDLE_RECORDED=0
     : > "$EXTENSION_ADVISOR_OUTPUT_FILE"
     : > "$EXTENSION_ADVISOR_STDERR_FILE"
     if ! "$PYTHON_CMD" "${SCRIPT_DIR}/claude-extension-capsule.py" \
-        --session-root "${_CLAUDE_PROJECTS_SOURCE:-}" \
+        --session-root "${_CLAUDE_PROJECTS_OBSERVATION_ROOT:-}" \
         --session-id "$CLAUDE_SESSION_ID" \
         --task-id "$TASK_ID" \
         --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
@@ -6468,23 +6494,50 @@ collect_extension_advisor() {
     local spark_status="$(awk -F= '$1=="spark_status" {v=$2} END {print v}' "$EXTENSION_ADVISOR_OUTPUT_FILE" 2>/dev/null || true)"
     local response_received="$(awk -F= '$1=="spark_model_response_received" {v=$2} END {print v}' "$EXTENSION_ADVISOR_OUTPUT_FILE" 2>/dev/null || true)"
     local activity_evidence="false"
+    local activity_signal="unavailable"
     if [ -s "$EXTENSION_CAPSULE_FILE" ]; then
-        activity_evidence="$($PYTHON_CMD -c 'import json,sys; print("true" if json.load(open(sys.argv[1], encoding="utf-8")).get("activity_evidence_available") else "false")' "$EXTENSION_CAPSULE_FILE" 2>/dev/null || echo false)"
+        IFS=$'\t' read -r activity_evidence activity_signal < <(
+            "$PYTHON_CMD" - "$EXTENSION_CAPSULE_FILE" <<'PYEOF' 2>/dev/null || printf 'false\tunavailable\n'
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    summary = value.get("activity_summary") or {}
+    evidence = value.get("activity_evidence_available") is True
+    signal = str(summary.get("activity_signal", "unavailable"))
+    print(("true" if evidence else "false") + "\t" + signal)
+except (OSError, TypeError, ValueError):
+    print("false\tunavailable")
+PYEOF
+        )
     fi
+    EXTENSION_ADVISOR_ACTIVITY_EVIDENCE="$activity_evidence"
+    EXTENSION_ADVISOR_ACTIVITY_SIGNAL="$activity_signal"
+    EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT="$(awk -F= '$1=="activity_assessment" {v=$2} END {print v}' "$EXTENSION_ADVISOR_OUTPUT_FILE" 2>/dev/null || true)"
     case "$EXTENSION_ADVISOR_DECISION" in continue|inspect|interrupt-candidate|uncertain) ;; *) EXTENSION_ADVISOR_DECISION="" ;; esac
     case "$EXTENSION_ADVISOR_CONFIDENCE" in high|medium|low) ;; *) EXTENSION_ADVISOR_CONFIDENCE="low" ;; esac
-    if [ "$EXTENSION_ADVISOR_DECISION" = "continue" ] && [ "$activity_evidence" != "true" ]; then
+    case "$EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT" in task-directed|unproductive|insufficient) ;; *) EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT="insufficient" ;; esac
+    if [ "$EXTENSION_ADVISOR_DECISION" = "continue" ] && \
+       { [ "$activity_evidence" != "true" ] || [ "$EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT" != "task-directed" ]; }; then
         EXTENSION_ADVISOR_DECISION="uncertain"
         EXTENSION_ADVISOR_CONFIDENCE="low"
-        EXTENSION_ADVISOR_REASON="no-recent-model-or-tool-activity"
+        if [ "$activity_evidence" != "true" ]; then
+            EXTENSION_ADVISOR_REASON="no-recent-model-or-tool-activity"
+        else
+            EXTENSION_ADVISOR_REASON="spark-missing-task-directed-activity-assessment"
+        fi
+    elif [ "$EXTENSION_ADVISOR_DECISION" = "interrupt-candidate" ] && \
+         [ "$EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT" != "unproductive" ]; then
+        EXTENSION_ADVISOR_DECISION="uncertain"
+        EXTENSION_ADVISOR_CONFIDENCE="low"
+        EXTENSION_ADVISOR_REASON="spark-interrupt-without-unproductive-assessment"
     fi
     if [ "$advisor_status" -eq 0 ] && [ "$spark_status" = "success" ] && \
        [ "$response_received" = "yes" ] && [ -n "$EXTENSION_ADVISOR_DECISION" ]; then
         EXTENSION_ADVISOR_STATE="ready"
         write_extension_advisor_receipt "ready" "${EXTENSION_ADVISOR_REASON:-spark-judgment}" \
             "$EXTENSION_ADVISOR_DECISION" "$EXTENSION_ADVISOR_CONFIDENCE"
-        progress_log "Spark timeout judgment ready: window_kind=${EXTENSION_ADVISOR_WINDOW_KIND}, evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID}, decision=${EXTENSION_ADVISOR_DECISION}, confidence=${EXTENSION_ADVISOR_CONFIDENCE}, product_digest_bound=${EXTENSION_ADVISOR_BASE_DIGEST}"
-        monitor_event "event=extension-evaluation-result running=yes terminal=no window_kind=${EXTENSION_ADVISOR_WINDOW_KIND} evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID} decision=${EXTENSION_ADVISOR_DECISION} confidence=${EXTENSION_ADVISOR_CONFIDENCE} reason=${EXTENSION_ADVISOR_REASON:-spark-judgment} product_digest=${EXTENSION_ADVISOR_BASE_DIGEST}"
+        progress_log "Spark timeout judgment ready: window_kind=${EXTENSION_ADVISOR_WINDOW_KIND}, evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID}, decision=${EXTENSION_ADVISOR_DECISION}, confidence=${EXTENSION_ADVISOR_CONFIDENCE}, reason=${EXTENSION_ADVISOR_REASON:-spark-judgment}, activity_evidence=${EXTENSION_ADVISOR_ACTIVITY_EVIDENCE}, activity_signal=${EXTENSION_ADVISOR_ACTIVITY_SIGNAL}, activity_assessment=${EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT}, product_digest_bound=${EXTENSION_ADVISOR_BASE_DIGEST}"
+        monitor_event "event=extension-evaluation-result running=yes terminal=no window_kind=${EXTENSION_ADVISOR_WINDOW_KIND} evaluation_id=${EXTENSION_ADVISOR_EVALUATION_ID} decision=${EXTENSION_ADVISOR_DECISION} confidence=${EXTENSION_ADVISOR_CONFIDENCE} reason=${EXTENSION_ADVISOR_REASON:-spark-judgment} activity_evidence=${EXTENSION_ADVISOR_ACTIVITY_EVIDENCE} activity_signal=${EXTENSION_ADVISOR_ACTIVITY_SIGNAL} activity_assessment=${EXTENSION_ADVISOR_ACTIVITY_ASSESSMENT} product_digest=${EXTENSION_ADVISOR_BASE_DIGEST}"
     else
         EXTENSION_ADVISOR_STATE="failed"
         EXTENSION_ADVISOR_REASON="spark-unavailable-or-invalid"

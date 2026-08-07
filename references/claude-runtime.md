@@ -225,6 +225,22 @@ Execution-only, batch, and test-writing Checker tasks use a first durable-output
 
 The active deadline therefore enters `extension-pending`, not immediate termination. If Claude produces a canonical product-content change while Spark is running or while its snapshot is pending, the dispatcher cancels the task-scoped Spark process group and invalidates the stale judgment; the ordinary product-growth rule has already refreshed a complete active window from that change. Spark results are accepted only when their bound product digest still matches. When the digest is quiet but Spark confirms useful on-plan activity, further extensions use `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` and `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS`; report, progress, terminal text, token use, and control-file growth never refresh a product window.
 
+Context acquisition is intentionally different from implementation: repository
+reading, code-location work, tool calls, and bounded assistant reasoning may be
+useful before a safe first write exists. At its boundary, the timeout capsule
+therefore supplies Spark a redacted assistant-output tail and normalized tool
+events, plus a deterministic activity summary. A session-store mtime or
+dispatcher status update is not model-activity evidence. Spark must explicitly
+classify the activity as `task-directed` to advise `continue`, or
+`unproductive` to advise `interrupt-candidate`; missing or ambiguous activity
+is `insufficient` and cannot terminate Claude. None of those advisory signals
+refreshes a product window by itself: only a canonical product-content change
+does. This keeps long but productive context acquisition viable without
+allowing control-file churn or token use to extend a run indefinitely.
+Activity observation is bound to the active session UUID; unrelated historical
+or concurrent transcripts under the same Claude home cannot make a new task
+appear active.
+
 The single terminal monitor wait streams `extension-evaluation-started`,
 `extension-evaluation-pending`, and `extension-evaluation-result` notices as
 continuing boundaries. These notices never end the wait or authorize Codex to
