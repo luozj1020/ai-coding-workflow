@@ -13,7 +13,7 @@ humans own merge and destructive or high-impact approval.
 Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
 For indexed-code symbols, use one bounded CodeGraph query first;
 `ai/locate-code.py` for behavior/files; lexical search for Shell/config/text.
-Record result/skip before broad reads. Do not browse unless asked. Ordinary-risk
+Record result/skip before broad reads. Do not browse the web unless asked. Ordinary-risk
 work proceeds after deterministic checks without a second business confirmation.
 
 Classify before workflow references/cards: `bypass` for questions/read-only/
