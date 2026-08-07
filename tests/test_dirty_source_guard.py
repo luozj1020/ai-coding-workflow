@@ -1567,7 +1567,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
     def test_workspace_trust_preflight_stops_before_builder_window(self):
         self._write_task_card()
-        result = self._dispatch({
+        result = self._dispatch(extra_env={
             "CLAUDE_CODE_API_PROBE_MODE": "always",
             "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
             "FAKE_CLAUDE_HEALTHCHECK_TRUST": "1",
