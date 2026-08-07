@@ -290,14 +290,96 @@ def stable_hash(worktree: Path, samples: int, interval: float) -> Tuple[str, Lis
     return observed[-1], observed
 
 
+def _runtime_attempt_binding(runtime: Dict[str, Any]) -> Dict[str, str]:
+    worktree_text = str(runtime.get("worktree") or "")
+    source_text = str(runtime.get("source_repository") or "")
+    source_base = str(runtime.get("source_base_commit") or runtime.get("base_commit") or "")
+    execution_base = str(
+        runtime.get("execution_base_commit") or runtime.get("worktree_start_commit") or ""
+    )
+    lineage_root = str(runtime.get("lineage_root_task_id") or "")
+    session_id = str(runtime.get("claude_session_id") or "")
+    if not all((worktree_text, source_text, source_base, execution_base, lineage_root, session_id)):
+        raise TakeoverError("runtime attempt lineage binding is incomplete")
+    worktree = Path(worktree_text).resolve()
+    card = worktree / "TASK_CARD_FULL.md"
+    if not worktree.is_dir() or not card.is_file():
+        raise TakeoverError("runtime attempt worktree/card is unavailable")
+    return {
+        "task_id": str(runtime.get("task_id") or ""),
+        "lineage_root_task_id": lineage_root,
+        "task_card_sha256": digest(card),
+        "source_base_commit": source_base,
+        "execution_base_commit": execution_base,
+        "source_repository": str(Path(source_text).resolve()),
+        "worktree": str(worktree),
+        "claude_session_id": session_id,
+    }
+
+
+def _validate_candidate_attempt_lineage(
+    candidate: Dict[str, Any], runtime_path: Path, runtime: Dict[str, Any], task_id: str,
+) -> None:
+    lineage = candidate.get("attempt_lineage")
+    if not isinstance(lineage, dict) or lineage.get("schema") != "aiwf-takeover-attempt-lineage-v1":
+        raise TakeoverError("takeover candidate lacks a bound attempt lineage")
+    if lineage.get("relation") != "retry-in-place":
+        raise TakeoverError("takeover candidate was not produced by retry-in-place")
+    if lineage.get("current_task_id") != task_id:
+        raise TakeoverError("current task does not match takeover attempt lineage")
+    if lineage.get("current_runtime_receipt") != str(runtime_path):
+        raise TakeoverError("current runtime path does not match takeover attempt lineage")
+    if lineage.get("current_runtime_receipt_object") != digest(runtime_path):
+        raise TakeoverError("current runtime changed after takeover candidate issuance")
+
+    prior_task_id = str(lineage.get("prior_task_id") or "")
+    prior_runtime_text = str(lineage.get("prior_runtime_receipt") or "")
+    if not prior_task_id or not prior_runtime_text:
+        raise TakeoverError("takeover candidate prior attempt lineage is incomplete")
+    prior_runtime_path = Path(prior_runtime_text).resolve()
+    if lineage.get("prior_runtime_receipt_object") != digest(prior_runtime_path):
+        raise TakeoverError("prior runtime changed after takeover candidate issuance")
+    prior_runtime = load_json(prior_runtime_path, "prior runtime receipt")
+    if prior_runtime.get("task_id") != prior_task_id:
+        raise TakeoverError("prior runtime task identity mismatch")
+
+    current_binding = _runtime_attempt_binding(runtime)
+    prior_binding = _runtime_attempt_binding(prior_runtime)
+    if current_binding["task_id"] != task_id:
+        raise TakeoverError("current runtime attempt binding task identity mismatch")
+    binding = lineage.get("binding")
+    if not isinstance(binding, dict):
+        raise TakeoverError("takeover candidate attempt binding is unavailable")
+    for key, expected in current_binding.items():
+        if binding.get(key) != expected:
+            raise TakeoverError(f"takeover candidate attempt binding mismatch: {key}")
+    for key in (
+        "lineage_root_task_id", "task_card_sha256", "source_base_commit",
+        "execution_base_commit", "source_repository", "worktree", "claude_session_id",
+    ):
+        if prior_binding[key] != current_binding[key]:
+            raise TakeoverError(f"prior/current takeover attempt mismatch: {key}")
+    if candidate.get("lineage_root_task_id") != current_binding["lineage_root_task_id"]:
+        raise TakeoverError("candidate lineage root does not match current runtime")
+    if runtime.get("strategy") != "retry-in-place" or runtime.get("retry_of") != prior_task_id:
+        raise TakeoverError("current runtime is not an explicit retry of the prior task")
+    try:
+        current_ordinal = int(runtime.get("retry_ordinal", -1))
+        prior_ordinal = int(prior_runtime.get("retry_ordinal", -1))
+    except (TypeError, ValueError) as exc:
+        raise TakeoverError("takeover retry ordinal is invalid") from exc
+    if current_ordinal != prior_ordinal + 1:
+        raise TakeoverError("takeover retry ordinal is not consecutive")
+
+
 def prepare(args: argparse.Namespace) -> Dict[str, Any]:
     _load_takeover_modules()
     candidate_path = args.receipt.resolve()
     runtime_path = args.runtime.resolve()
     candidate = load_json(candidate_path, "takeover candidate")
     runtime = load_json(runtime_path, "runtime receipt")
-    if candidate.get("schema_version") != 2 or candidate.get("status") != "preparation-required":
-        raise TakeoverError("receipt is not a schema-v2 takeover candidate")
+    if candidate.get("schema_version") != 3 or candidate.get("status") != "preparation-required":
+        raise TakeoverError("receipt is not a schema-v3 takeover candidate")
     if candidate.get("authorization") != "codex-takeover-candidate":
         raise TakeoverError("receipt does not represent a Codex takeover candidate")
     if candidate.get("runtime_receipt") != str(runtime_path):
@@ -307,6 +389,7 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
     task_id = str(candidate.get("current_task_id") or "")
     if not task_id or runtime.get("task_id") != task_id:
         raise TakeoverError("runtime task identity mismatch")
+    _validate_candidate_attempt_lineage(candidate, runtime_path, runtime, task_id)
     worktree = Path(str(runtime.get("worktree") or "")).resolve()
     if not worktree.is_dir():
         raise TakeoverError("runtime worktree is unavailable")

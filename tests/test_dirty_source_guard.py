@@ -206,7 +206,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
                 "    echo 'No conversation found for session' >&2\n"
                 "    exit 42\n"
                 "  fi\n"
-                "  FAKE_CLAUDE_MODE=success\n"
+                "  FAKE_CLAUDE_MODE=\"${FAKE_CLAUDE_RESUME_FALLBACK_MODE:-success}\"\n"
                 "fi\n"
                 "if [ -n \"${FAKE_CLAUDE_PROMPT_CAPTURE:-}\" ]; then\n"
                 "  cat > \"${FAKE_CLAUDE_PROMPT_CAPTURE}\"\n"
@@ -1567,7 +1567,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
     def test_workspace_trust_preflight_stops_before_builder_window(self):
         self._write_task_card()
-        result = self._dispatch(extra_env={
+        result = self._dispatch({
             "CLAUDE_CODE_API_PROBE_MODE": "always",
             "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
             "FAKE_CLAUDE_HEALTHCHECK_TRUST": "1",
@@ -2042,21 +2042,42 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("aiwf-context-checkpoint-v1", prompt)
 
     def test_missing_resume_session_records_failure_and_retries_fresh_same_owner(self):
-        _, _, first_runtime = self._do_fresh_dispatch()
+        self._write_builder_task_card()
+        self._run(["git", "add", "task-cards/BUILDER.md"], cwd=self.repo)
+        self._run(["git", "commit", "-m", "add builder task"], cwd=self.repo)
+        first = self._dispatch(
+            "task-cards/BUILDER.md",
+            {"FAKE_CLAUDE_MODE": "seed-only", "FAKE_CLAUDE_SLEEP_SECONDS": "0"},
+        )
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        first_runtime = json.loads(
+            self._artifact_path(first.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        first_attempt = json.loads(
+            self._artifact_path(first.stdout, "Attempt Class").read_text(encoding="utf-8")
+        )
+        self.assertTrue(first_attempt["counts_toward_takeover"])
         prior_task_id = first_runtime["task_id"]
         invocation_log = self.case_root / "resume-invocations.log"
         marker = self.case_root / "resume-missing.marker"
 
-        result = self._dispatch(extra_env={
+        result = self._dispatch("task-cards/BUILDER.md", {
             "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": prior_task_id,
             "FAKE_CLAUDE_MODE": "resume-missing-once",
+            "FAKE_CLAUDE_RESUME_FALLBACK_MODE": "seed-only",
             "FAKE_CLAUDE_RESUME_MARKER": str(marker),
             "FAKE_CLAUDE_INVOCATION_LOG": str(invocation_log),
+            "FAKE_CLAUDE_SLEEP_SECONDS": "0",
         })
 
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         runtime = json.loads(
             self._artifact_path(result.stdout, "Runtime Identity").read_text(encoding="utf-8")
+        )
+        self.assertNotEqual(runtime["claude_session_id"], first_runtime["claude_session_id"])
+        self.assertEqual(runtime["claude_session_generation"], 1)
+        self.assertEqual(
+            runtime["claude_session_replaced_from"], first_runtime["claude_session_id"],
         )
         receipt = self.repo / ".worktrees" / f"{runtime['task_id']}.session-resume-failure.json"
         value = json.loads(receipt.read_text(encoding="utf-8"))
@@ -2071,20 +2092,24 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         )
         progress = self._artifact_path(result.stdout, "Progress Log").read_text(encoding="utf-8")
         self.assertIn("retrying once with same owner and fresh session", progress)
+        attempt = json.loads(
+            self._artifact_path(result.stdout, "Attempt Class").read_text(encoding="utf-8")
+        )
+        self.assertEqual(attempt["failure_class"], "model-no-progress")
+        self.assertEqual(
+            attempt["attempt_identity"]["claude_session_id"], runtime["claude_session_id"],
+        )
+        self.assertNotIn("Takeover Receipt:", result.stdout)
 
-    def test_two_linked_execution_timeouts_issue_bounded_takeover_receipt(self):
+    def test_two_linked_execution_no_progress_rounds_issue_bounded_takeover_receipt(self):
         task = self._write_builder_task_card()
         with task.open("a", encoding="utf-8") as handle:
             handle.write("\n## Scope\n\n- Write paths: README.md\n- Forbidden paths: deploy/\n")
-        timeout_env = {
+        no_progress_env = {
             "CLAUDE_CODE_BUILDER_MODE": "execution-only",
-            "CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS": "1",
-            "CLAUDE_CODE_FIRST_PROGRESS_ACTION": "stop",
-            "CLAUDE_CODE_API_PROBE_MODE": "adaptive",
-            "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
-            "FAKE_CLAUDE_MODE": "seed-only",
+            "FAKE_CLAUDE_MODE": "success",
         }
-        first = self._dispatch("task-cards/BUILDER.md", timeout_env)
+        first = self._dispatch("task-cards/BUILDER.md", no_progress_env)
         self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
         first_runtime_path = self._artifact_path(first.stdout, "Runtime Identity")
         first_task_id = json.loads(first_runtime_path.read_text(encoding="utf-8"))["task_id"]
@@ -2093,13 +2118,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
         second = self._dispatch(
             "task-cards/BUILDER.md",
-            {**timeout_env, "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": first_task_id},
+            {**no_progress_env, "CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID": first_task_id},
         )
         self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
         receipt_path = self._artifact_path(second.stdout, "Takeover Receipt")
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["schema_version"], 3)
         self.assertEqual(receipt["authorization"], "codex-takeover-candidate")
         self.assertEqual(receipt["status"], "preparation-required")
+        self.assertEqual(receipt["attempt_lineage"]["relation"], "retry-in-place")
         self.assertTrue(receipt["takeover_preparation_required"])
         self.assertEqual(receipt["allowed_write_paths"], ["README.md"])
         self.assertFalse(receipt["merge_authorized"])

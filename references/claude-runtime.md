@@ -25,7 +25,16 @@ Builder implements and reports direction. Codex reviews direction. Checker/Test 
 
 ## Failure Attribution
 
-Run `ai/classify-claude-attempt.py` before retry/takeover accounting. Transport failure before acknowledgement/diff/report/progress is `transient-transport`: preserve the worktree, retry in place at most once, and do not count it toward takeover. Runtime metadata records the lineage root and retry ordinal. Ordinal one exhausts the same-worktree transport retry; a second transport failure must return `fallback-local-or-reroute` instead of recommending another retry. Approval/sandbox blockers, including an untrusted Claude workspace, also do not count. Acknowledgement-only, clean exit without progress, confirmed direction deviation, and a report/product role mismatch with zero product delta count. A successful interaction followed by context timeout and zero durable product output is model no-progress even when retry budget is exhausted; two consecutive counted receipts remain sufficient for the takeover candidate.
+Run `ai/classify-claude-attempt.py` before retry/takeover accounting. Transport failure before acknowledgement/diff/report/progress is `transient-transport`: preserve the worktree, retry in place at most once, and do not count it toward takeover. Runtime metadata records the lineage root and retry ordinal. Ordinal one exhausts the same-worktree transport retry; a second transport failure must return `fallback-local-or-reroute` instead of recommending another retry. Approval/sandbox blockers, including an untrusted Claude workspace, also do not count. Acknowledgement-only, clean exit without progress, confirmed direction deviation, and a report/product role mismatch with zero product delta count. A successful interaction followed by context timeout and zero durable product output is model no-progress even when retry budget is exhausted.
+
+Two counted receipts can form a takeover candidate only across one explicit
+`retry-in-place` edge. The builder binds both classifications to the same
+lineage root, source/execution base, source repository, physical worktree,
+task-card hash, and Claude session UUID. A reviewed/advisor continuation,
+Context Lease, changed card/base/worktree, or any fresh session resets the
+failure count. This includes the automatic fresh-session fallback after
+`session-not-found`: it may preserve the task and worktree, but it cannot
+inherit a prior conversation's takeover count.
 
 Before classifying zero usable output as model no-progress, run one fixed interaction diagnostic in the same resolved route:
 
@@ -116,7 +125,7 @@ review rather than a generated recovery delta.
 
 When useful on-plan work has exactly one semantic blocker, `aiwf advisor-continuation` may prepare a one-call same-worktree continuation. It does not invoke a model or dispatch by itself. Bind request/evidence, state hash, allowed and forbidden paths, and one-call idempotency.
 
-Worktree continuity and model memory are separate. Initial dispatch assigns an explicit Claude session UUID. Retry-in-place, reviewed continuation, and advisor continuation resume that UUID from the prior runtime receipt when valid. If Claude rejects that UUID with a conversation/session-not-found result, the dispatcher writes a hash-bound `session-resume-failure.json` receipt with `counts_as_model_failure=false`, then makes exactly one fresh-session attempt with the same owner, task, worktree, and write scope. Other resume failures remain terminal. When no resumable UUID exists, runtime records `unavailable-file-backed-fallback` and starts a new named session. `--bare` disables auto-memory/customization, not explicit conversation persistence. Never describe file-only continuation as restored model memory.
+Worktree continuity and model memory are separate. Initial dispatch assigns an explicit Claude session UUID. Retry-in-place, reviewed continuation, and advisor continuation resume that UUID from the prior runtime receipt when valid. If Claude rejects that UUID with a conversation/session-not-found result, the dispatcher writes a hash-bound `session-resume-failure.json` receipt with `counts_as_model_failure=false`, then makes exactly one fresh-session attempt with the same owner, task, worktree, and write scope. The runtime receipt is atomically updated with the replacement UUID and generation, so that attempt starts a new takeover-accounting scope. Other resume failures remain terminal. When no resumable UUID exists, runtime records `unavailable-file-backed-fallback` and starts a new named session. `--bare` disables auto-memory/customization, not explicit conversation persistence. Never describe file-only continuation as restored model memory.
 
 Sequential slices under one frozen solution contract may use a one-use Context
 Lease. Create it with `ai/context-lease.py create` only after Codex accepts the

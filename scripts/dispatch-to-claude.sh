@@ -3144,6 +3144,7 @@ _RUNTIME_TMP="${RUNTIME_JSON}.tmp.$$"
     printf '  "claude_session_mode": "%s",\n' "$CLAUDE_SESSION_MODE_EFFECTIVE"
     printf '  "claude_session_resume_status": "%s",\n' "$CLAUDE_SESSION_RESUME_STATUS"
     printf '  "claude_session_prior_task_id": "%s",\n' "$CLAUDE_SESSION_PRIOR_TASK_ID"
+    printf '  "claude_session_generation": 0,\n'
     printf '  "model_hint": "%s",\n' "$_CONTEXT_MODEL_HINT"
     printf '  "provider_route_sha256": "%s",\n' "$_CONTEXT_PROVIDER_ROUTE_SHA256"
     if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
@@ -4893,6 +4894,49 @@ claude_is_running() {
     return 0
 }
 
+refresh_runtime_session_identity() {
+    # A resume failure deliberately starts a different Claude conversation.
+    # Keep the runtime receipt authoritative so a later takeover cannot join
+    # the prior session's counted result to this fresh-session result.
+    local new_session_id="$1"
+    local resume_failure_file="$2"
+    [ -n "$PYTHON_CMD" ] || return 1
+    "$PYTHON_CMD" - "$RUNTIME_JSON" "$new_session_id" "$resume_failure_file" <<'PYEOF'
+import json, os, sys, tempfile
+
+runtime_path, new_session_id, failure_path = sys.argv[1:]
+with open(runtime_path, encoding="utf-8") as handle:
+    value = json.load(handle)
+if not isinstance(value, dict):
+    raise ValueError("runtime receipt is not an object")
+old_session_id = str(value.get("claude_session_id") or "")
+if not old_session_id or not new_session_id or old_session_id == new_session_id:
+    raise ValueError("session replacement identity is invalid")
+try:
+    generation = int(value.get("claude_session_generation", 0))
+except (TypeError, ValueError) as exc:
+    raise ValueError("runtime session generation is invalid") from exc
+value["claude_session_id"] = new_session_id
+value["claude_session_mode"] = "new"
+value["claude_session_resume_status"] = "resume-failed-session-not-found-fresh-fallback"
+value["claude_session_replaced_from"] = old_session_id
+value["claude_session_resume_failure_receipt"] = (
+    failure_path if os.path.isfile(failure_path) else None
+)
+value["claude_session_generation"] = generation + 1
+directory = os.path.dirname(runtime_path) or "."
+fd, temporary = tempfile.mkstemp(prefix="." + os.path.basename(runtime_path), dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, runtime_path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PYEOF
+}
+
 run_claude() {
     # Common Claude CLI arguments shared by all invocation paths.
     # Tool profile arrays (_CLAUDE_TOOLS_ARGS, _CLAUDE_ALLOWED_ARGS) are
@@ -5025,6 +5069,10 @@ PYEOF
         fi
         CLAUDE_SESSION_MODE_EFFECTIVE="new"
         CLAUDE_SESSION_RESUME_STATUS="resume-failed-session-not-found-fresh-fallback"
+        if ! refresh_runtime_session_identity "$CLAUDE_SESSION_ID" "$resume_failure_file"; then
+            progress_log "Claude resume fallback blocked: runtime session identity could not be refreshed"
+            return 1
+        fi
         : > "$RESULT_FILE"
         : > "$STATUS_FILE"
         progress_log "Claude resume failed: session-not-found; recorded ${resume_failure_file}; retrying once with same owner and fresh session"
@@ -8681,6 +8729,22 @@ ATTEMPT_COUNTS_TOWARD_TAKEOVER="unknown"
 ATTEMPT_RECOMMENDED_ACTION="inspect-evidence-before-counting"
 ATTEMPT_SAME_WORKTREE_RETRY="false"
 if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; then
+    # Claude runs in a task-owned background process. A resume fallback can
+    # replace its session UUID there, so terminal accounting must read the
+    # authoritative runtime receipt instead of the dispatcher's stale shell
+    # variable.
+    _ATTEMPT_SESSION_ID="$CLAUDE_SESSION_ID"
+    if [ -s "$RUNTIME_JSON" ]; then
+        _ATTEMPT_SESSION_ID="$("$PYTHON_CMD" - "$RUNTIME_JSON" <<'PYEOF' 2>/dev/null || true
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(value.get("claude_session_id", ""))
+except (OSError, ValueError, TypeError):
+    pass
+PYEOF
+)"
+    fi
     _ATTEMPT_PROGRESS="none"
     if [ "$DISPATCH_EVIDENCE_STATE" = "acknowledgement only" ]; then
         _ATTEMPT_PROGRESS="acknowledgement"
@@ -8700,6 +8764,24 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/classify-claude-attempt.py" ]; th
         --task-mode "${_PARSED_TASK_MODE:-unknown}"
         --report-consistency "${REPORT_CONSISTENCY_STATUS:-not-run}"
     )
+    # A classification can be retained without an identity for diagnostics,
+    # but only a complete session-bound identity may later participate in a
+    # two-round takeover candidate.
+    if [ -n "$_ATTEMPT_SESSION_ID" ] && [ -f "${WORKTREE_DIR}/TASK_CARD_FULL.md" ]; then
+        _ATTEMPT_ARGS+=(
+            --task-id "$TASK_ID"
+            --lineage-root-task-id "${_LINEAGE_ROOT_TASK_ID:-$TASK_ID}"
+            --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md"
+            --source-base-commit "$BASE_COMMIT"
+            --execution-base-commit "$WORKTREE_START_COMMIT"
+            --source-repository "$REPO_ROOT"
+            --worktree "$WORKTREE_DIR"
+            --claude-session-id "$_ATTEMPT_SESSION_ID"
+        )
+        if [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ]; then
+            _ATTEMPT_ARGS+=(--retry-of "$CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID")
+        fi
+    fi
     if [ "$ADVISOR_USED" = "true" ]; then _ATTEMPT_ARGS+=(--advisor-used); fi
     if [ "$VALID_CLAUDE_REPORT" -eq 1 ]; then _ATTEMPT_ARGS+=(--valid-report); fi
     if [ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ]; then _ATTEMPT_ARGS+=(--semantic-error); fi
@@ -8715,15 +8797,20 @@ PYEOF
     fi
 fi
 
-_TAKEOVER_PRIOR_TASK_ID="${_REVIEWED_CONTINUATION_TASK_ID:-${_ADVISOR_CONTINUE_TASK_ID:-${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}}}"
+# Failure accounting cannot cross a reviewed/advisor continuation or a fresh
+# route. Only the explicit retry-in-place edge joins two attempts, and the
+# receipt builder additionally binds both attempts to one Claude session.
+_TAKEOVER_PRIOR_TASK_ID="${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}"
 if [ -n "$_TAKEOVER_PRIOR_TASK_ID" ] && [ -s "$ATTEMPT_CLASSIFICATION_FILE" ] && \
    [ -s "${WORKTREE_ROOT}/${_TAKEOVER_PRIOR_TASK_ID}.attempt-classification.json" ] && \
+   [ -s "${WORKTREE_ROOT}/${_TAKEOVER_PRIOR_TASK_ID}.runtime.json" ] && \
    [ -f "${SCRIPT_DIR}/build-takeover-receipt.py" ]; then
     if "$PYTHON_CMD" "${SCRIPT_DIR}/build-takeover-receipt.py" \
         --current "$ATTEMPT_CLASSIFICATION_FILE" \
         --prior "${WORKTREE_ROOT}/${_TAKEOVER_PRIOR_TASK_ID}.attempt-classification.json" \
         --task-card "${WORKTREE_DIR}/TASK_CARD_FULL.md" \
         --runtime "$RUNTIME_JSON" \
+        --prior-runtime "${WORKTREE_ROOT}/${_TAKEOVER_PRIOR_TASK_ID}.runtime.json" \
         --current-task-id "$TASK_ID" --prior-task-id "$_TAKEOVER_PRIOR_TASK_ID" \
         --lineage-root-task-id "${_LINEAGE_ROOT_TASK_ID:-$_TAKEOVER_PRIOR_TASK_ID}" \
         --output "$TAKEOVER_RECEIPT_FILE" >/dev/null 2>&1; then

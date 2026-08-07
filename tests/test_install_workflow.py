@@ -593,7 +593,7 @@ class InstallWorkflowTests(unittest.TestCase):
             self.assertIn("Checker/Test Claude", agents)
             self.assertIn("conditional, not automatic", agents)
             self.assertIn("checker skipped: deterministic evidence sufficient", agents)
-            self.assertIn("two current-task rounds", agents)
+            self.assertIn("explicit same-session `retry-in-place` pair", agents)
             self.assertIn("Seeded/fallback reports never count", agents)
             self.assertIn("On-Demand References", agents)
             self.assertLess(len(claude.encode("utf-8")), 3_000)

@@ -17,10 +17,10 @@ Record result/skip before broad reads. Do not browse the web unless asked. Ordin
 work proceeds after deterministic checks without a second business confirmation.
 
 Classify before workflow references/cards: `bypass` for questions/read-only/
-tiny/urgent work; `direct` for bounded local
-Codex edits (including workflow maintenance); and `delegated` only when durable
-Claude output will materially reduce Codex work. Bypass records `workflow
-bypassed: <reason>`. Direct work records `python ai/aiwf.py direct --reason ...
+tiny/urgent work; `direct` for bounded local Codex edits (including workflow
+maintenance); and `delegated` only when durable Claude output will materially
+reduce Codex work. Bypass records `workflow bypassed: <reason>`. Direct work
+records `python ai/aiwf.py direct --reason ...
 --path ...` and uses only the files/checks needed for the edit—no Task Card,
 Spark, or Claude call merely to audit it. Setup/update loads setup policy only.
 
@@ -88,8 +88,10 @@ product-idle corroboration and enforces the hard cap.
 
 Classify failures before retry or takeover. Pre-interaction transport,
 approval/sandbox blockers, dirty source, and stale HEAD are not model failures.
-One acknowledgement-only/no-progress round gets one tighter retry; two current-task rounds
-may permit scoped takeover. Prior-session failures do not transfer automatically.
+One acknowledgement-only/no-progress round gets one tighter retry; only an
+explicit same-session `retry-in-place` pair with matching card, baseline, and
+worktree bindings may permit scoped takeover. Prior-session failures, including
+a fresh session after resume failure, do not transfer automatically.
 
 Keep useful on-plan evidence. Prefer a reviewed same-worktree continuation after
 direction acceptance. Resume the leased Builder before opening a new same-owner

@@ -31,7 +31,14 @@ class PrepareCodexTakeoverTests(unittest.TestCase):
         (self.worktree / "file.txt").write_text("base\n", encoding="utf-8")
         subprocess.run(["git", "add", "."], cwd=self.worktree, check=True)
         subprocess.run(["git", "commit", "-qm", "base"], cwd=self.worktree, check=True)
+        self.card = self.worktree / "TASK_CARD_FULL.md"
+        self.card.write_text(
+            "## Scope\n\n- Write paths: file.txt\n- Forbidden paths: deploy/\n",
+            encoding="utf-8",
+        )
+        self.prior_task_id = "claude-round-1"
         self.task_id = "claude-round-2"
+        self.session_id = "session-1"
         self.identity = self.root / "claude.process.json"
         self.identity.write_text(json.dumps({
             "schema_version": 1,
@@ -46,17 +53,57 @@ class PrepareCodexTakeoverTests(unittest.TestCase):
         self.runtime.write_text(json.dumps({
             "task_id": self.task_id,
             "worktree": str(self.worktree),
+            "source_repository": str(self.worktree),
+            "source_base_commit": "source-base",
+            "execution_base_commit": "execution-base",
+            "lineage_root_task_id": "root",
+            "retry_ordinal": 1,
+            "retry_of": self.prior_task_id,
+            "strategy": "retry-in-place",
+            "claude_session_id": self.session_id,
             "process_identity_files": {"claude": str(self.identity)},
+        }), encoding="utf-8")
+        self.prior_runtime = self.root / "prior.runtime.json"
+        self.prior_runtime.write_text(json.dumps({
+            "task_id": self.prior_task_id,
+            "worktree": str(self.worktree),
+            "source_repository": str(self.worktree),
+            "source_base_commit": "source-base",
+            "execution_base_commit": "execution-base",
+            "lineage_root_task_id": "root",
+            "retry_ordinal": 0,
+            "strategy": "fresh",
+            "claude_session_id": self.session_id,
         }), encoding="utf-8")
         self.candidate = self.root / "candidate.json"
         self.candidate.write_text(json.dumps({
-            "schema_version": 2,
+            "schema_version": 3,
             "status": "preparation-required",
             "authorization": "codex-takeover-candidate",
             "current_task_id": self.task_id,
             "lineage_root_task_id": "root",
             "runtime_receipt": str(self.runtime.resolve()),
             "runtime_receipt_object": MOD.digest(self.runtime),
+            "attempt_lineage": {
+                "schema": "aiwf-takeover-attempt-lineage-v1",
+                "relation": "retry-in-place",
+                "prior_runtime_receipt": str(self.prior_runtime.resolve()),
+                "prior_runtime_receipt_object": MOD.digest(self.prior_runtime),
+                "current_runtime_receipt": str(self.runtime.resolve()),
+                "current_runtime_receipt_object": MOD.digest(self.runtime),
+                "binding": {
+                    "task_id": self.task_id,
+                    "lineage_root_task_id": "root",
+                    "task_card_sha256": MOD.digest(self.card),
+                    "source_base_commit": "source-base",
+                    "execution_base_commit": "execution-base",
+                    "source_repository": str(self.worktree.resolve()),
+                    "worktree": str(self.worktree.resolve()),
+                    "claude_session_id": self.session_id,
+                },
+                "prior_task_id": self.prior_task_id,
+                "current_task_id": self.task_id,
+            },
             "allowed_write_paths": ["file.txt"],
             "forbidden_paths": [],
             "required_validation": "run focused tests",
@@ -64,6 +111,14 @@ class PrepareCodexTakeoverTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def _refresh_candidate_current_runtime_digest(self) -> None:
+        candidate = json.loads(self.candidate.read_text(encoding="utf-8"))
+        candidate["runtime_receipt_object"] = MOD.digest(self.runtime)
+        candidate["attempt_lineage"]["current_runtime_receipt_object"] = MOD.digest(
+            self.runtime
+        )
+        self.candidate.write_text(json.dumps(candidate), encoding="utf-8")
 
     def test_prepare_confirms_single_writer_and_writes_deny_marker(self) -> None:
         output = self.root / "grant.json"
@@ -86,6 +141,40 @@ class PrepareCodexTakeoverTests(unittest.TestCase):
         runtime = json.loads(self.runtime.read_text(encoding="utf-8"))
         runtime["changed"] = True
         self.runtime.write_text(json.dumps(runtime), encoding="utf-8")
+        rc = MOD.main([
+            "--receipt", str(self.candidate),
+            "--runtime", str(self.runtime),
+            "--no-owner-lease",
+            "--output", str(self.root / "grant.json"),
+            "--stability-interval", "0",
+        ])
+        self.assertEqual(rc, 2)
+        self.assertFalse((self.root / "grant.json").exists())
+
+    def test_legacy_unbound_candidate_fails_closed(self) -> None:
+        candidate = json.loads(self.candidate.read_text(encoding="utf-8"))
+        candidate["schema_version"] = 2
+        candidate.pop("attempt_lineage")
+        self.candidate.write_text(json.dumps(candidate), encoding="utf-8")
+        rc = MOD.main([
+            "--receipt", str(self.candidate),
+            "--runtime", str(self.runtime),
+            "--no-owner-lease",
+            "--output", str(self.root / "grant.json"),
+            "--stability-interval", "0",
+        ])
+        self.assertEqual(rc, 2)
+        self.assertFalse((self.root / "grant.json").exists())
+
+    def test_prior_session_mismatch_fails_closed(self) -> None:
+        prior = json.loads(self.prior_runtime.read_text(encoding="utf-8"))
+        prior["claude_session_id"] = "different-session"
+        self.prior_runtime.write_text(json.dumps(prior), encoding="utf-8")
+        candidate = json.loads(self.candidate.read_text(encoding="utf-8"))
+        candidate["attempt_lineage"]["prior_runtime_receipt_object"] = MOD.digest(
+            self.prior_runtime
+        )
+        self.candidate.write_text(json.dumps(candidate), encoding="utf-8")
         rc = MOD.main([
             "--receipt", str(self.candidate),
             "--runtime", str(self.runtime),
@@ -121,9 +210,7 @@ class PrepareCodexTakeoverTests(unittest.TestCase):
         runtime["process_identity_files"]["checker"] = str(self.root / "checker.process.json")
         runtime["pid_files"] = {"checker": str(self.root / "checker.pid")}
         self.runtime.write_text(json.dumps(runtime), encoding="utf-8")
-        candidate = json.loads(self.candidate.read_text(encoding="utf-8"))
-        candidate["runtime_receipt_object"] = MOD.digest(self.runtime)
-        self.candidate.write_text(json.dumps(candidate), encoding="utf-8")
+        self._refresh_candidate_current_runtime_digest()
         output = self.root / "grant.json"
         rc = MOD.main([
             "--receipt", str(self.candidate),
@@ -144,9 +231,7 @@ class PrepareCodexTakeoverTests(unittest.TestCase):
         runtime["pid_files"] = {"checker": str(self.root / "checker.pid")}
         (self.root / "checker.pid").write_text("12345\n", encoding="utf-8")
         self.runtime.write_text(json.dumps(runtime), encoding="utf-8")
-        candidate = json.loads(self.candidate.read_text(encoding="utf-8"))
-        candidate["runtime_receipt_object"] = MOD.digest(self.runtime)
-        self.candidate.write_text(json.dumps(candidate), encoding="utf-8")
+        self._refresh_candidate_current_runtime_digest()
         rc = MOD.main([
             "--receipt", str(self.candidate),
             "--runtime", str(self.runtime),

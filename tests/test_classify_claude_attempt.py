@@ -115,6 +115,22 @@ class ClassifyClaudeAttemptTests(unittest.TestCase):
         self.assertFalse(result["economic_stop_loss"])
         self.assertTrue(result["same_worktree_retry_eligible"])
 
+    def test_attempt_identity_is_preserved_for_lineage_binding(self):
+        identity = {
+            "schema": "aiwf-attempt-identity-v1",
+            "task_id": "round-2",
+            "lineage_root_task_id": "round-1",
+            "task_card_sha256": "sha256:" + "a" * 64,
+            "source_base_commit": "base",
+            "execution_base_commit": "execution",
+            "source_repository": "/repo",
+            "worktree": "/repo/.worktrees/round-1",
+            "claude_session_id": "session-1",
+            "retry_of": "round-1",
+        }
+        result = classify(exit_code=0, outcome="success", attempt_identity=identity)
+        self.assertEqual(result["attempt_identity"], identity)
+
     # --- advisor continuation eligibility ---
 
     def test_useful_onplan_semantic_eligible(self):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -25,6 +26,7 @@ def classify(
     blocker_kind: str = "none", advisor_used: bool = False,
     delegation_mode: str = "unknown", retry_ordinal: int = 0,
     task_mode: str = "unknown", report_consistency: str = "not-run",
+    attempt_identity: Optional[dict] = None,
 ) -> dict:
     report_mismatch = report_consistency in {"contradictory", "error", "role-mismatch"}
     report_useful = valid_report and not report_mismatch and (
@@ -101,7 +103,12 @@ def classify(
         "takeover_authorized": False,
         "task_mode": task_mode,
         "report_consistency": report_consistency,
+        "attempt_identity": attempt_identity,
     }
+
+
+def _task_card_sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -120,10 +127,44 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--task-mode", default="unknown")
     p.add_argument("--report-consistency", default="not-run")
     p.add_argument("--error-text-file", type=Path)
+    p.add_argument("--task-id")
+    p.add_argument("--lineage-root-task-id")
+    p.add_argument("--task-card", type=Path)
+    p.add_argument("--source-base-commit")
+    p.add_argument("--execution-base-commit")
+    p.add_argument("--source-repository")
+    p.add_argument("--worktree")
+    p.add_argument("--claude-session-id")
+    p.add_argument("--retry-of")
     args = p.parse_args(argv)
     error_text = ""
     if args.error_text_file:
         error_text = args.error_text_file.read_text(encoding="utf-8", errors="replace")[:16384]
+    identity_values = (
+        args.task_id, args.lineage_root_task_id, args.task_card,
+        args.source_base_commit, args.execution_base_commit,
+        args.source_repository, args.worktree, args.claude_session_id,
+    )
+    attempt_identity = None
+    if any(value is not None for value in identity_values):
+        if not all(identity_values):
+            p.error(
+                "attempt identity requires task, lineage, card, baseline, repository, worktree, and session"
+            )
+        if not args.task_card.is_file():
+            p.error("attempt identity task card is unavailable")
+        attempt_identity = {
+            "schema": "aiwf-attempt-identity-v1",
+            "task_id": args.task_id,
+            "lineage_root_task_id": args.lineage_root_task_id,
+            "task_card_sha256": _task_card_sha256(args.task_card),
+            "source_base_commit": args.source_base_commit,
+            "execution_base_commit": args.execution_base_commit,
+            "source_repository": str(Path(args.source_repository).resolve()),
+            "worktree": str(Path(args.worktree).resolve()),
+            "claude_session_id": args.claude_session_id,
+            "retry_of": args.retry_of or None,
+        }
     print(json.dumps(classify(
         exit_code=args.exit_code, outcome=args.outcome, semantic_error=args.semantic_error,
         diff_changes=args.diff_changes, valid_report=args.valid_report, progress=args.progress,
@@ -131,6 +172,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         blocker_kind=args.blocker_kind, advisor_used=args.advisor_used,
         delegation_mode=args.delegation_mode, retry_ordinal=max(0, args.retry_ordinal),
         task_mode=args.task_mode, report_consistency=args.report_consistency,
+        attempt_identity=attempt_identity,
     ), sort_keys=True))
     return 0
 

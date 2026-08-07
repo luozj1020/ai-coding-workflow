@@ -184,10 +184,14 @@ Codex may directly edit implementation files only when at least one condition is
 Before editing, Codex must state the failed attempts, why another Claude revision is unlikely to help, the files/modules it will touch, and the validation it will run. The edit should be narrow and should not bypass safety approvals.
 
 When two directly linked attempts both have counted classifications, the
-dispatcher may issue a `*.takeover-receipt.json` candidate. Codex must not edit
-from that candidate. `aiwf prepare-takeover` performs the atomic single-writer
-transfer and produces the actual grant only after old-process termination and a
-stable baseline. Codex stays inside the grant's hash-bound
+dispatcher may issue a `*.takeover-receipt.json` candidate only when the second
+is an explicit `retry-in-place` of the first and both receipts bind the same
+Claude session UUID, task-card hash, source/execution baselines, source
+repository, and physical worktree. A reviewed/advisor continuation or any
+fresh session is a new accounting scope, even when it reuses a worktree. Codex
+must not edit from that candidate. `aiwf prepare-takeover` performs the atomic
+single-writer transfer and produces the actual grant only after old-process
+termination and a stable baseline. Codex stays inside the grant's hash-bound
 `allowed_write_paths` and runs the bound narrow validation.
 
 No-progress evidence, an early Claude exit, invalid result JSON, missing report, or a single failed implementation does not by itself satisfy the threshold. However, a successful interaction that reaches context timeout with zero product delta is a counted `model-no-progress` round, and a role-mismatched/contradictory report with zero delta is counted `report-evidence-mismatch`; two consecutive counted rounds must not deadlock merely because the transport retry budget is zero. In single-round cases Codex should produce a smaller revision task with clearer acceptance criteria, stronger stop conditions, and required evidence for Claude.
@@ -209,7 +213,11 @@ This is an ownership re-route, not failure-based takeover. After Codex accepts t
 
 A first architectural, broad semantic, or poorly understood direction deviation is not eligible and does not automatically authorize takeover. Revise, split, or reject instead. If routing still selects Claude, prefer reviewed same-worktree continuation so Claude does not reacquire accepted large-repository context.
 
-Failure counts are scoped to the current task/loop. Prior-session Claude failures may justify a sharper task card, narrower scope, or stronger stop gates, but they do not by themselves authorize Codex to skip Claude in a new session. To count prior failures toward takeover, Codex must cite matching task IDs and artifact paths showing the same failure pattern.
+Failure counts are scoped to one session-bound retry lineage. Prior-session
+Claude failures may justify a sharper task card, narrower scope, or stronger
+stop gates, but they do not authorize Codex to skip Claude in a new session.
+Matching task IDs or artifact paths alone are insufficient: the runtime must
+prove the explicit retry edge and every bound identity must match.
 
 If Claude first produced a usable implementation direction but lacked required tests/evidence, and a tightened second Claude task exits with no result/report and no useful progress, Codex may mark the current task as repeated Claude failure. The direct intervention should be a control-plane salvage, not a rewrite: cite both attempts, reuse or mirror the reviewer-accepted first-round direction when possible, add only the missing implementation/tests/evidence, and run the validation named in the task card.
 
