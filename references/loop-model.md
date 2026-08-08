@@ -6,10 +6,10 @@ The AI coding workflow is an explicit observe/plan/execute/verify/review/learn l
 
 Core principle:
 
-**Codex owns the short core plan, freezes intent, and reviews. Claude Code
-implements, revises, tests, and validates. A separate Claude solution-contract
-round is explicit opt-in only. LSP/locator/CodeGraph/MCP tools gather low-token
-evidence first.**
+**Codex freezes and reviews the compact Task JSON; `aiwf run` deterministically
+projects its execution card. Claude Code implements, revises, tests, and
+validates. A separate Claude solution-contract round is explicit opt-in only.
+LSP/locator/CodeGraph/MCP tools gather low-token evidence first.**
 
 ## State Machine
 
@@ -67,7 +67,7 @@ The loop treats unknowns as first-class planning and review evidence:
 
 Each handoff should be directly checkable:
 
-- Codex -> Claude: `Execution Readiness Gate` confirms the task is implementation-ready, and `Handoff Contract` defines Must do, Must not do, May decide, Must report, and Stop condition.
+- Codex -> Claude: reviewed Task JSON supplies goal, scoped boundaries, acceptance, validation, and top-level stop conditions; deterministic routing context is included only when material.
 - Claude -> Codex: `Plan Match`, `Validation Confidence`, `Reviewer Should Check`, `Unknowns and Deviations`, and `Reviewer Briefing` make the result reviewable without reconstructing intent from the diff alone.
 - Codex -> next task: `Review-to-Next-Task Contract` carries forward context, what to keep, what to change, what not to repeat, new acceptance criteria, new unknowns/decision gates, and a new handoff contract.
 
@@ -104,17 +104,17 @@ uncertain Claude execution candidate and cannot introduce a planning round.
 
 **Owner:** Codex / GPT
 
-**Purpose:** Compose a short Claude card from routing facts, or bind an explicit Codex exception.
+**Purpose:** Freeze a compact JSON task contract and render its short Claude execution projection, or bind an explicit Codex exception.
 
 **Actions:**
 
 - For explicit Codex direct, stop before card authoring and edit from the reviewed brief.
-- For delegation, read `ai/task-card-components/catalog.md`, select a preset plus material gates, and compose the short card locally.
+- For JSON-backed delegation, freeze/review the Task JSON, then let `aiwf run` render the short execution card locally. Use the component composer only for an explicit legacy Markdown card.
 - For a revision, use the `revision` preset and record only the delta against accepted evidence.
 - For a split, decompose into smaller task cards.
 - For a reject, replan from updated evidence instead of patching blindly.
 
-**Output:** A Codex implementation brief, or one filled delegation card with acceptance criteria, scoped files/modules, evidence, loop metadata, and stop conditions.
+**Output:** A reviewed Task JSON and its deterministic delegation projection, with goal, scoped paths, acceptance, validation, material routing evidence, and stop conditions.
 
 ### 4. DISPATCH
 
@@ -169,7 +169,7 @@ uncertain Claude execution candidate and cannot introduce a planning round.
 
 **Actions:**
 
-- Compare the partial or final diff against Goal, Handoff Contract, Acceptance Criteria, Unknowns, and Decision Gates.
+- Compare the partial or final diff against the frozen goal, scope, acceptance criteria, material routing evidence, and decision gates.
 - Continue waiting when worktree changes and progress updates match the plan.
 - Interrupt and narrow the task when the implementation is off-plan, risky, or scope-expanding.
 - Dispatch a Checker/Test task only after the Builder direction is accepted.

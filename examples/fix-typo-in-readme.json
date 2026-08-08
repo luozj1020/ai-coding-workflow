@@ -39,9 +39,6 @@
     "may_decide": [],
     "must_report": [
       "Exact line changed"
-    ],
-    "stop_condition": [
-      "Typo not found at specified location"
     ]
   },
   "validation": [],

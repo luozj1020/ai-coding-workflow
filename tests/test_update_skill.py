@@ -84,6 +84,28 @@ class ParseArgsGuidedSetupTests(unittest.TestCase):
         args = self.module.parse_args([])
         self.assertIsNone(args.source)
 
+    def test_project_only_accepts_local_only_and_doctor(self):
+        args = self.module.parse_args(["--project-only", "--local-only", "--doctor"])
+        self.assertTrue(args.project_only)
+        self.assertTrue(args.local_only)
+        self.assertTrue(args.doctor)
+
+    def test_skill_only_rejects_project_refresh_options(self):
+        for option in ("--project-only", "--local-only", "--doctor"):
+            with self.subTest(option=option), self.assertRaises(SystemExit):
+                self.module.parse_args(["--skill-only", option])
+
+    def test_auto_setup_uses_apply_for_execution(self):
+        preview = self.module.parse_args(["--auto-setup", "/tmp/repo"])
+        apply = self.module.parse_args(["--auto-setup", "/tmp/repo", "--apply"])
+        self.assertEqual(preview.auto_setup, "/tmp/repo")
+        self.assertFalse(preview.apply)
+        self.assertTrue(apply.apply)
+
+    def test_auto_setup_rejects_project_refresh_options(self):
+        with self.assertRaises(SystemExit):
+            self.module.parse_args(["--auto-setup", "/tmp/repo", "--project-only"])
+
 
 class ResolveSourceTests(unittest.TestCase):
     def setUp(self):
@@ -186,6 +208,46 @@ class ProjectRefreshDiscoveryTests(unittest.TestCase):
         )
         self.assertNotIn("--bootstrap-repo", command)
 
+    def test_project_only_uses_git_root_without_existing_workflow_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = pathlib.Path(tmp) / "repo"
+            nested = repo / "src" / "nested"
+            nested.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+            args = self.module.parse_args(["--project-only"])
+
+            selected = self.module.select_project_repository(args, current_dir=str(nested))
+
+            self.assertTrue(os.path.samefile(selected, repo))
+
+    def test_local_only_without_a_project_target_fails_closed(self):
+        args = self.module.parse_args(["--local-only"])
+        with self.assertRaisesRegex(RuntimeError, "needs a project target"):
+            self.module.build_install_command(
+                "/source/install_for_codex.py", args, current_dir="/tmp"
+            )
+
+    def test_explicit_service_check_is_forwarded_without_compact_mode(self):
+        args = self.module.parse_args(["--code-search-services", "check"])
+        command = self.module.build_install_command(
+            "/source/install_for_codex.py", args, current_dir="/tmp"
+        )
+        self.assertNotIn("--summary-only", command)
+        self.assertEqual(
+            command[command.index("--code-search-services") + 1], "check"
+        )
+
+    def test_normal_refresh_forwards_local_only_and_doctor(self):
+        args = self.module.parse_args(
+            ["--bootstrap-repo", "/tmp/repo", "--local-only", "--doctor"]
+        )
+        command = self.module.build_install_command(
+            "/source/install_for_codex.py", args, current_dir="/tmp"
+        )
+        self.assertIn("--bootstrap-repo", command)
+        self.assertIn("--local-only", command)
+        self.assertIn("--doctor", command)
+
 
 class BuildGuidedPhasesTests(unittest.TestCase):
     def setUp(self):
@@ -210,29 +272,50 @@ class BuildGuidedPhasesTests(unittest.TestCase):
         labels = [p["label"] for p in phases]
         self.assertEqual(labels, ["skill-update", "workflow-bootstrap", "auto-setup", "doctor"])
 
-    def test_phase_commands_reference_source_scripts(self):
+    def test_phase_commands_use_the_activated_skill_after_install(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = pathlib.Path(tmp) / "source"
+            installed = pathlib.Path(tmp) / "installed" / "ai-coding-workflow"
             (source / "scripts").mkdir(parents=True)
             (source / "assets").mkdir()
             (source / "scripts" / "install_for_codex.py").write_text("ok\n", encoding="utf-8")
-            _, _, phases = self.module.build_guided_phases(str(source), "/tmp/repo")
+            _, _, phases = self.module.build_guided_phases(
+                str(source), "/tmp/repo", installed_dir=str(installed)
+            )
         # skill-update uses install_for_codex.py
-        self.assertIn("install_for_codex.py", phases[0]["argv"][1])
+        self.assertEqual(
+            phases[0]["argv"][1], str(source / "scripts" / "install_for_codex.py")
+        )
         self.assertIn("--summary-only", phases[0]["argv"])
         self.assertEqual(
             phases[0]["argv"][phases[0]["argv"].index("--code-search-services") + 1],
             "skip",
         )
-        # workflow-bootstrap uses install_workflow.py
-        self.assertIn("install_workflow.py", phases[1]["argv"][1])
+        # Later phases use the package activated by phase 1, not the source tree.
+        self.assertEqual(
+            phases[1]["argv"][1], str(installed / "scripts" / "install_workflow.py")
+        )
         self.assertIn("--update-workflow-files", phases[1]["argv"])
         self.assertIn("--summary-only", phases[1]["argv"])
-        # auto-setup uses install_for_codex.py --auto-setup
+        self.assertEqual(
+            phases[2]["argv"][1], str(installed / "scripts" / "install_for_codex.py")
+        )
         self.assertIn("--auto-setup", phases[2]["argv"])
         self.assertIn("--apply", phases[2]["argv"])
-        # doctor uses doctor_workflow.py
-        self.assertIn("doctor_workflow.py", phases[3]["argv"][1])
+        self.assertEqual(
+            phases[3]["argv"][1], str(installed / "scripts" / "doctor_workflow.py")
+        )
+
+    def test_guided_phase_forwards_local_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / "source"
+            (source / "scripts").mkdir(parents=True)
+            (source / "assets").mkdir()
+            (source / "scripts" / "install_for_codex.py").write_text("ok\n", encoding="utf-8")
+            _, _, phases = self.module.build_guided_phases(
+                str(source), "/tmp/repo", local_only=True
+            )
+        self.assertIn("--local-only", phases[1]["argv"])
 
 
 class PrintGuidedPreviewTests(unittest.TestCase):
@@ -468,6 +551,68 @@ class MainGuidedSetupTests(unittest.TestCase):
                 result = self.module.main(["--source", str(source), "--setup-repo", str(repo), "--apply"])
 
         self.assertEqual(result, 1)
+
+
+class MainCompatibilityModeTests(unittest.TestCase):
+    def setUp(self):
+        self.module = load_module()
+
+    def _make_source(self, root):
+        source = root / "source"
+        scripts = source / "scripts"
+        scripts.mkdir(parents=True)
+        (source / "assets").mkdir()
+        (scripts / "install_for_codex.py").write_text("ok\n", encoding="utf-8")
+        (scripts / "install_workflow.py").write_text("ok\n", encoding="utf-8")
+        (scripts / "doctor_workflow.py").write_text("ok\n", encoding="utf-8")
+        return source
+
+    def test_project_only_skips_skill_activation_and_can_run_doctor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = self._make_source(root)
+            repo = root / "repo"
+            repo.mkdir()
+            calls = []
+
+            def record(command, heading):
+                calls.append((list(command), heading))
+                return 0
+
+            with patch.object(self.module, "run_command", side_effect=record):
+                result = self.module.main(
+                    [
+                        "--source", str(source), "--project-only",
+                        "--bootstrap-repo", str(repo), "--doctor",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("install_workflow.py", calls[0][0][1])
+        self.assertNotIn("install_for_codex.py", calls[0][0][1])
+        self.assertIn("doctor_workflow.py", calls[1][0][1])
+
+    def test_auto_setup_reuses_the_direct_installer_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            source = self._make_source(root)
+            repo = root / "repo"
+            repo.mkdir()
+            calls = []
+
+            def record(command, heading):
+                calls.append((list(command), heading))
+                return 0
+
+            with patch.object(self.module, "run_command", side_effect=record):
+                result = self.module.main(["--source", str(source), "--auto-setup", str(repo)])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("install_for_codex.py", calls[0][0][1])
+        self.assertIn("--auto-setup", calls[0][0])
+        self.assertNotIn("--apply", calls[0][0])
 
 
 if __name__ == "__main__":

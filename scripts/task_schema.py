@@ -41,6 +41,8 @@ VALID_RISK_KEYS = {
     "public_api", "data_model", "security", "migration",
     "permission", "concurrency", "cross_module", "production_impact",
 }
+# ``stop_condition`` remains readable for v1 audit compatibility. New task
+# contracts put executable stops only in top-level ``stop_conditions``.
 VALID_HANDOFF_KEYS = {"must_do", "must_not_do", "may_decide", "must_report", "stop_condition"}
 VALID_VALIDATION_KEYS = {"id", "command", "description", "local_allowed"}
 
@@ -508,16 +510,149 @@ def _render_list(items: List[str], ordered: bool = False) -> str:
     return "\n".join(lines)
 
 
+def _text_items(value: Any) -> List[str]:
+    """Return non-empty text values without inventing execution context."""
+    if isinstance(value, (list, tuple)):
+        values = value
+    elif value is None:
+        values = []
+    else:
+        values = [value]
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _metadata_token(value: Any, fallback: str) -> str:
+    """Render a bounded machine-readable token for the execution-card header."""
+    rendered = "".join(
+        char.lower() if char.isalnum() or char in "-_" else "-"
+        for char in str(value or "")
+    ).strip("-_")
+    return rendered or fallback
+
+
+def _render_execution_context(context: Dict[str, Any]) -> str:
+    """Render only task-specific context that is actually available."""
+    entries = [
+        ("Exact symbols/tests", context.get("symbols")),
+        ("Interface signatures", context.get("interface_signatures")),
+        ("Runnable call example", context.get("runnable_examples")),
+        ("Async/sync contract", context.get("async_contract")),
+        ("Root-cause evidence", context.get("root_cause_evidence")),
+        ("Reference implementation", context.get("source_of_truth_example")),
+        ("Known constraints", context.get("constraints")),
+    ]
+    parts = []
+    for label, value in entries:
+        values = _text_items(value)
+        if not values:
+            continue
+        if len(values) == 1:
+            parts.append("**{}:** {}".format(label, values[0]))
+        else:
+            parts.append("**{}:**\n{}".format(label, _render_list(values)))
+
+    # Batch units are not a second scope list: they are only emitted when the
+    # router resolved independent units for a batch-specific assignment.
+    if context.get("builder_mode") == "batch":
+        transformation = _text_items(context.get("transformation_rule"))
+        units = _text_items(context.get("independent_write_units"))
+        if transformation:
+            parts.append("**Transformation rule:** {}".format(transformation[0]))
+        if units:
+            parts.append("**Independent write units:**\n{}".format(_render_list(units)))
+    return "\n\n".join(parts)
+
+
+def _render_execution_task_card(
+    task: Dict[str, Any], execution_context: Optional[Dict[str, Any]]
+) -> str:
+    """Project one reviewed JSON task into a compact Claude execution card.
+
+    This is deliberately not an editable second contract.  It retains only
+    execution-relevant JSON fields plus conditional routing facts that cannot
+    be represented by task scope (for example an exact symbol or interface
+    signature).  Static builder protocol lives in the dispatcher prompt.
+    """
+    context = execution_context if isinstance(execution_context, dict) else {}
+    task_mode = _metadata_token(context.get("task_mode", task.get("mode")), "unknown")
+    builder_mode = _metadata_token(context.get("builder_mode"), "standard")
+    sections = [
+        "<!-- aiwf-execution-card-v1; task-mode={}; builder-mode={} -->".format(
+            task_mode, builder_mode
+        ),
+        "# Task: {}".format(task.get("id", "unknown")),
+        _render_section("Goal", str(task.get("goal", ""))),
+    ]
+
+    scope = task.get("scope", {}) if isinstance(task.get("scope"), dict) else {}
+    scope_parts = []
+    for key, label in (
+        ("write_paths", "Write paths"),
+        ("read_paths", "Read paths"),
+        ("forbidden_paths", "Forbidden paths"),
+    ):
+        values = _text_items(scope.get(key))
+        if values:
+            scope_parts.append("**{}:**\n{}".format(label, _render_list(values)))
+    if scope_parts:
+        sections.append(_render_section("Scope", "\n\n".join(scope_parts)))
+
+    context_body = _render_execution_context(context)
+    if context_body:
+        sections.append(_render_section("Execution Context", context_body))
+
+    acceptance = task.get("acceptance", [])
+    if isinstance(acceptance, list) and acceptance:
+        rows = [
+            [item.get("id", ""), item.get("description", "")]
+            for item in acceptance if isinstance(item, dict)
+        ]
+        if rows:
+            sections.append(
+                _render_section("Acceptance Criteria", _render_table(["ID", "Description"], rows))
+            )
+
+    validation = task.get("validation", [])
+    if isinstance(validation, list) and validation:
+        lines = []
+        for item in validation:
+            if not isinstance(item, dict):
+                continue
+            command = " ".join(_text_items(item.get("command")))
+            if not command:
+                continue
+            label = str(item.get("id", "validation"))
+            description = str(item.get("description", "")).strip()
+            local_note = " (local execution disabled)" if item.get("local_allowed") is False else ""
+            suffix = " — {}".format(description) if description else ""
+            lines.append("- **{}:** `{}`{}{}".format(label, command, suffix, local_note))
+        if lines:
+            sections.append(_render_section("Validation Contract", "\n".join(lines)))
+
+    # ``handoff.stop_condition`` is a legacy v1 audit field. The top-level
+    # list is the sole execution source, preserving old input compatibility
+    # without reproducing the same stop semantics in the projection.
+    stop_conditions = _text_items(task.get("stop_conditions"))
+    if stop_conditions:
+        sections.append(_render_section("Stop Conditions", _render_list(stop_conditions)))
+
+    return "\n".join(sections)
+
+
 def render_task_card(
     task: Dict[str, Any],
     view: str = "audit",
     include_sections: Optional[List[str]] = None,
+    execution_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Render a task card as Markdown.
 
     view='audit': include all sections (for human review).
     view='execution': include only execution-relevant sections (for Claude).
     """
+    if view == "execution":
+        return _render_execution_task_card(task, execution_context)
+
     sections: List[str] = []
 
     # Header
@@ -553,10 +688,9 @@ def render_task_card(
         sections.append(_render_section("Acceptance Criteria", _render_table(["ID", "Description", "Validation"], rows)))
 
     # Risk
-    if view == "audit":
-        risk = task.get("risk", {})
-        risk_rows = [[k, v] for k, v in risk.items()]
-        sections.append(_render_section("Risk Assessment", _render_table(["Category", "Value"], risk_rows)))
+    risk = task.get("risk", {})
+    risk_rows = [[k, v] for k, v in risk.items()]
+    sections.append(_render_section("Risk Assessment", _render_table(["Category", "Value"], risk_rows)))
 
     # Handoff
     handoff = task.get("handoff", {})
@@ -582,18 +716,16 @@ def render_task_card(
     if stop:
         sections.append(_render_section("Stop Conditions", _render_list(stop)))
 
-    # Extensions (audit view only, and only if present and non-empty)
-    if view == "audit":
-        extensions = task.get("extensions", {})
-        if extensions:
-            # Only render active extensions (those with enabled=true or meaningful content)
-            active_parts = []
-            for ext_name, ext_data in extensions.items():
-                if isinstance(ext_data, dict) and ext_data.get("enabled") is False:
-                    continue  # Skip disabled extensions
-                active_parts.append(f"**{ext_name}:**\n```json\n{json.dumps(ext_data, indent=2)}\n```")
-            if active_parts:
-                sections.append(_render_section("Extensions", "\n\n".join(active_parts)))
+    # Extensions are audit-only and only appear when present and non-empty.
+    extensions = task.get("extensions", {})
+    if extensions:
+        active_parts = []
+        for ext_name, ext_data in extensions.items():
+            if isinstance(ext_data, dict) and ext_data.get("enabled") is False:
+                continue
+            active_parts.append(f"**{ext_name}:**\n```json\n{json.dumps(ext_data, indent=2)}\n```")
+        if active_parts:
+            sections.append(_render_section("Extensions", "\n\n".join(active_parts)))
 
     return "\n".join(sections)
 

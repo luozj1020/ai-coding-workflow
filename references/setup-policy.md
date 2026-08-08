@@ -25,6 +25,21 @@ launchers are always validated. Failures and bounded mismatch paths remain
 visible even in compact mode. Direct installer diagnostics can opt out by
 omitting `--summary-only`.
 
+To refresh only a project from the selected source—without changing the
+user-level Skill—use the same wrapper. This is the compatibility path for a
+direct `install_workflow.py --update-workflow-files` refresh:
+
+```bash
+python scripts/update_skill.py --project-only
+python scripts/update_skill.py --project-only --bootstrap-repo /path/to/repo --local-only --doctor
+```
+
+`--bootstrap-current` and `--bootstrap-repo` select a target in either full
+or project-only mode. `--local-only` is forwarded to the project installer;
+`--doctor` runs the matching doctor after a successful refresh. A normal
+update may also use those flags, for example
+`python scripts/update_skill.py --bootstrap-current --doctor`.
+
 An updater run from the installed Skill never treats that installed directory
 as its own source. Installation records the real source-checkout path, HEAD,
 dirty state, and package content hash. The installed updater reuses that
@@ -129,11 +144,19 @@ python scripts/install_for_codex.py --auto-setup /path/to/repo --apply
 
 The helper detects Python, Node, Go, and Rust profiles; chooses safe user-level package managers; plans LSP tools; initializes CodeGraph only when warranted; and installs Zoekt only for sufficiently large repositories. Missing safe managers are reported as `manual/blocked`, not guessed around.
 
-After bootstrap, run `python ai/doctor_workflow.py`. A normal `update_skill.py`
-run automatically refreshes an already-bootstrapped current repository; use
-`--skill-only` only as an explicit opt-out. If doctor reports workflow-version
-drift or a stale launcher error, run the printed refresh command before any
-model call. Never compensate with an environment-prefixed launcher.
+The updater also exposes that legacy direct mode without activating the Skill:
+
+```bash
+python scripts/update_skill.py --auto-setup /path/to/repo
+python scripts/update_skill.py --auto-setup /path/to/repo --apply
+```
+
+After bootstrap, run `python ai/doctor_workflow.py`, or add `--doctor` to an
+updater project refresh. A normal `update_skill.py` run automatically refreshes
+an already-bootstrapped current repository; use `--skill-only` only as an
+explicit opt-out. If doctor reports workflow-version drift or a stale launcher
+error, run the printed refresh command before any model call. Never compensate
+with an environment-prefixed launcher.
 
 Skill and managed `AGENTS.md` changes do not replace instructions already loaded
 into a running Codex conversation. After an update reports success, start a new
@@ -143,4 +166,4 @@ installed indicate that the current session still carries old instructions.
 
 ## Search Services
 
-CodeGraph indexing remains the user's choice. Zoekt is an optional local indexed search service for repeated large-repository work. Sourcegraph is optional external/self-hosted integration, not a default dependency. Use `--code-search-services skip|check` for deterministic non-interactive installation behavior.
+CodeGraph indexing remains the user's choice. Zoekt is an optional local indexed search service for repeated large-repository work. Sourcegraph is optional external/self-hosted integration, not a default dependency. `update_skill.py` defaults to `--code-search-services skip`; pass `ask` or `check` to forward the explicit choice to the Skill installer.

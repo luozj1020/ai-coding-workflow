@@ -4,23 +4,25 @@ Load this reference when authoring task cards/specs, choosing gates, building Co
 
 ## Planning Gates
 
-Write a task card only after pre-card routing selects actual Claude delegation,
-an explicit human-requested planning/spec artifact, or the Spark audit that
-precedes that delegation. A direct Codex change—including Skill/workflow
-maintenance—uses `aiwf direct` plus its exact paths/checks instead; do not
-compose a `control-plane` card merely to document or audit your own local edit.
-Codex reads the small `ai/task-card-components/catalog.md`, selects one preset
-and only material gates, then lets the local zero-model composer read and join
-their bodies:
+Create a legacy Markdown task card only after routing selects actual Claude
+delegation or an explicit human-requested planning/spec artifact. The primary
+JSON-backed `aiwf run` path freezes the Task JSON and renders its execution card
+deterministically; Codex does not hand-author that Markdown. A direct Codex
+change—including Skill/workflow maintenance—uses `aiwf direct` plus its exact
+paths/checks instead; do not compose a `control-plane` card merely to document
+or audit your own local edit. Legacy Markdown work reads the small
+`ai/task-card-components/catalog.md`, selects one preset and only material
+gates, then lets the local zero-model composer read and join their bodies:
 
 ```bash
 python ai/compose_task_card.py --preset builder --gate root-cause --output ai/task-cards/TASK.md
 ```
 
-The composed Task Card is Codex's only normal handwritten workflow artifact.
-Put the core plan, frozen intent, review delta, and dispatch scope there. Do not
-use an editor or `apply_patch` to create or change route JSON, adversarial review
-JSON, solution-contract JSON, receipts, hashes, or continuation approvals.
+For JSON-backed delegation, the reviewed Task JSON is the only task contract;
+`delegation-task-card.md` is a disposable deterministic execution projection.
+Do not use an editor or `apply_patch` to change generated cards, route JSON,
+adversarial review JSON, solution-contract JSON, receipts, hashes, or
+continuation approvals.
 Keep ephemeral routing on stdout when possible. When a file is required, use
 the deterministic helper's `--output`; Claude alone writes a Planner draft.
 
@@ -34,21 +36,26 @@ python ai/compose_task_card.py --select-from routing-facts.json --output ai/task
 If those facts select `codex-fast-path`, the command returns `skip_card=true`
 and writes no delegation card.
 
-The integrated `aiwf run` path performs the same selection only after routing,
-fills `delegation-task-card.md` from reviewed Task JSON and routing facts, and
-inlines bounded context into that one card. After deterministic validation and
-bounded Codex review, an ordinary-risk card proceeds directly to dispatch; it
-does not wait for a second human confirmation. `--preview` explicitly requests
-the zero-model inspection path. Product/API/data-model ambiguity and
-destructive/high-impact actions remain stop conditions requiring human
-authority. The integrated path does not create a duplicate standalone Context
-Packet or pass the source JSON to the Markdown dispatcher.
+The integrated `aiwf run` path performs selection after routing and renders
+`delegation-task-card.md` from reviewed Task JSON plus bounded routing facts.
+It does not create a duplicate standalone Context Packet or pass source JSON to
+the Markdown dispatcher. After deterministic validation and bounded Codex
+review, an ordinary-risk task proceeds directly to dispatch; `--preview`
+explicitly requests the zero-model inspection path. Product/API/data-model
+ambiguity and destructive/high-impact actions remain stop conditions requiring
+human authority.
 
-The local composer fills deterministic fields from routing facts; Spark may
-return structured missing fields. Codex reviews only the compact goal,
-boundaries, acceptance, and high-risk invariants instead of authoring a long
-card. Do not read `ai/task-card-template.md` by default; it is compatibility-only.
+The local composer remains for explicit legacy Markdown cards. On the JSON
+path, Codex reviews the compact JSON goal, boundaries, acceptance, and high-risk
+invariants; the renderer, not Codex, formats the execution card. Spark may
+return advisory structured missing fields but cannot rewrite the contract. Do
+not read `ai/task-card-template.md` by default; it is compatibility-only.
 Never omit a material stop condition:
+
+New JSON tasks put every executable stop in top-level `stop_conditions`. The
+v1 `handoff.stop_condition` field remains accepted only to render legacy audit
+cards; the base profile no longer generates it, and execution projections never
+read it.
 
 Builder presets ship with conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation are disabled/not-required until Codex replaces them with exact assignments. Do not leave ambiguous placeholders or enable broad tail work merely to make the card look complete.
 
@@ -95,16 +102,17 @@ Implementation cards bind the frozen contract hash and include only their slice;
 they must not invite Claude to repeat repository-wide planning. Codex performs
 one adversarial freeze review, not full task-card authorship plus replanning.
 
-Role/preset names and runtime task modes are separate namespaces. A composed
-`solution-planner` card therefore declares `Mode = builder` and
-`Builder mode = solution-planning`; `execution-builder`, `batch-builder`, and
-`exploratory-builder` map similarly. Card lint and dispatch normalize these
-known role aliases for compatibility before capability probing, preserve both
-declared and effective values in receipts, and reject unknown or conflicting
-combinations before Claude starts. `solution-planning` uses the minimal Builder
-profile: Read/Edit/Bash plus the receipt-bound exact writer when native Write is
-absent. Repository location stays available through bounded Bash/`rg`, so
-missing native Glob/Grep does not block a planning session.
+Role/preset names and runtime task modes are separate namespaces. JSON-backed
+execution cards encode `task-mode=builder` and
+`builder-mode=solution-planning` in their deterministic header;
+`execution-builder`, `batch-builder`, and `exploratory-builder` map similarly.
+Legacy Markdown tables remain accepted. Dispatch normalizes known role aliases
+for compatibility before capability probing, preserves declared and effective
+values in receipts, and rejects unknown or conflicting combinations before
+Claude starts. `solution-planning` uses the minimal Builder profile: Read/Edit/
+Bash plus the receipt-bound exact writer when native Write is absent.
+Repository location stays available through bounded Bash/`rg`, so missing native
+Glob/Grep does not block a planning session.
 
 Testing responsibility must state whether Checker model dispatch is required.
 Default to local deterministic validation. Select Checker only for assigned test
@@ -178,7 +186,9 @@ No model authorizes merge. Codex gives accept/revise/split/reject; humans merge.
 
 ## JSON Task Cards
 
-JSON is optional. When JSON and Markdown share a task identity, JSON is source of truth. Use:
+JSON is the primary contract for delegated `aiwf run` work. When JSON and
+Markdown share an identity, JSON is source of truth and the generated Markdown
+must not be edited. Use:
 
 ```bash
 python ai/lint-task-card.py task.json
@@ -186,4 +196,9 @@ python ai/compose-profiles.py task.json --output composed.json
 python ai/render-task-card.py task.json --view execution
 ```
 
-Profile scalar conflicts hard-fail. Audit view retains risk and handoff detail; execution view contains only goal, scope, acceptance, validation, and stop conditions. Installed schemas, profiles, and examples live under `ai/schemas/`, `ai/profiles/`, and `ai/examples/`.
+Profile scalar conflicts hard-fail. Audit view retains risk and handoff detail;
+execution view contains task ID, goal, scope, acceptance, validation, top-level
+stop conditions, and conditional routing context. It omits the identity table,
+full handoff, static builder protocol, progress checklist, and duplicated scope
+context. Installed schemas, profiles, and examples live under `ai/schemas/`,
+`ai/profiles/`, and `ai/examples/`.

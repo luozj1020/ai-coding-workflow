@@ -494,8 +494,16 @@ _TASK_MODE_BUILDER_HINT=""
 _TASK_MODE_NORMALIZED=0
 _TASK_MODE_NORMALIZATION_REASON="none"
 _TASK_MODE_ROLE_ALIAS="none"
-if [ -f "$TASK_CARD" ]; then
+if [ -n "${AI_WORKFLOW_TASK_MODE:-}" ]; then
+    _PARSED_TASK_MODE="$(printf '%s' "$AI_WORKFLOW_TASK_MODE" | tr '[:upper:]' '[:lower:]')"
+elif [ -f "$TASK_CARD" ]; then
     _PARSED_TASK_MODE="$(awk -F'|' '
+        /aiwf-execution-card-v1/ {
+            value = $0
+            sub(/^.*task-mode=/, "", value)
+            sub(/[;[:space:]>].*$/, "", value)
+            if (value != "") { print tolower(value); exit }
+        }
         /^\|/ && NF >= 3 {
             field = $2; value = $3
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", field)
@@ -503,7 +511,15 @@ if [ -f "$TASK_CARD" ]; then
             if (tolower(field) == "mode") { print tolower(value); exit }
         }
     ' "$TASK_CARD" 2>/dev/null || true)"
+fi
+if [ -f "$TASK_CARD" ]; then
     _TASK_CARD_BUILDER_MODE="$(awk -F'|' '
+        /aiwf-execution-card-v1/ {
+            value = $0
+            sub(/^.*builder-mode=/, "", value)
+            sub(/[;[:space:]>].*$/, "", value)
+            if (value != "") { print tolower(value); exit }
+        }
         /^\|/ && NF >= 3 {
             field = $2; value = $3
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", field)
@@ -3827,7 +3843,7 @@ Rules:
 - Do not edit product source, tests, build files, or documentation. Your durable output is `solution-contract.draft.json`.
 - Converge on one coherent end state: invariants, integration points, acceptance criteria, non-goals, genuine unknowns, and independently executable slices.
 - Each slice must declare non-overlapping write scope, dependencies, and acceptance IDs. Do not turn recommendations into mandatory scope.
-- Validate the draft with the exact task-card command. If validation cannot run, record the blocker and still leave the best schema-shaped draft.
+- Validate with `python ai/solution-contract.py validate solution-contract.draft.json`. If validation cannot run, record the blocker and still leave the best schema-shaped draft.
 - Update `CLAUDE_REPORT.md` with the draft path, validation evidence, unresolved blocking decisions, and no source-change confirmation.
 - Set `Implementation Complete: yes`, `Completion Ready: yes`, and `Next Check: exit` only after the structured draft is written; then exit normally.
 

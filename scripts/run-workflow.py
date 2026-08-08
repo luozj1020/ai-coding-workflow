@@ -36,7 +36,6 @@ import argparse
 import importlib.util
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -69,168 +68,31 @@ spark_execution_availability = _load_module(
 )
 
 
-def _validation_command(value: Any) -> str:
-    if isinstance(value, list):
-        return " ".join(str(part) for part in value)
-    return str(value or "not assigned")
-
-
-def _card_cell(value: Any) -> str:
-    """Render bounded structured context safely inside a Markdown table cell."""
-    if isinstance(value, list):
-        value = "; ".join(str(item) for item in value)
-    return str(value or "not supplied").replace("|", "\\|").replace("\r", " ").replace("\n", "<br>")
-
-
-def _instantiate_delegation_card(
-    template: str,
+def _render_delegation_card(
     composed: Dict[str, Any],
     facts: Dict[str, Any],
     execution: Dict[str, Any],
 ) -> str:
-    """Fill a selected component card from the already-reviewed Task JSON."""
-    scope = composed.get("scope", {}) if isinstance(composed.get("scope"), dict) else {}
-    handoff = composed.get("handoff", {}) if isinstance(composed.get("handoff"), dict) else {}
-    acceptance = composed.get("acceptance", []) if isinstance(composed.get("acceptance"), list) else []
-    validation = composed.get("validation", []) if isinstance(composed.get("validation"), list) else []
-    role = execution.get("claude_role", "execution-builder")
-    write_paths = scope.get("write_paths", [])
-    forbidden_paths = scope.get("forbidden_paths", [])
-    target_files = facts.get("target_files", [])
-    validation_lines = [
-        _validation_command(item.get("command"))
-        for item in validation if isinstance(item, dict)
-    ]
-    acceptance_lines = [
-        f"- [ ] {item.get('id', 'acceptance')}: {item.get('description', '')}"
-        for item in acceptance if isinstance(item, dict)
-    ] or ["- [ ] Complete the observable goal inside the declared scope."]
-    test_owner = "Claude" if facts.get("test_writing_required") else "Codex/local deterministic tools"
-    interface_signatures = facts.get("interface_signatures", [])
-    runnable_examples = facts.get("runnable_examples", [])
-    async_contract = facts.get("async_contract", "")
-    interface_ready = bool(interface_signatures and runnable_examples and async_contract)
-    if facts.get("test_writing_required") and not interface_ready:
-        context_sufficient = "no — executable interface evidence missing"
-    else:
-        context_sufficient = "yes" if target_files and role != "solution-planner" else "bounded-planning"
-    execution_only = "yes" if role == "execution-builder" and target_files else "no"
-    interface_material = {
-        "interface_signatures": interface_signatures,
-        "runnable_examples": runnable_examples,
-        "async_contract": async_contract,
+    """Render the one deterministic execution projection for a JSON task."""
+    builder_mode = execution.get("builder_mode", "standard")
+    context = {
+        "task_mode": composed.get("mode", ""),
+        "builder_mode": builder_mode,
+        "symbols": facts.get("symbols", []),
+        "interface_signatures": facts.get("interface_signatures", []),
+        "runnable_examples": facts.get("runnable_examples", []),
+        "async_contract": facts.get("async_contract", ""),
+        "root_cause_evidence": facts.get("root_cause_evidence", ""),
+        "source_of_truth_example": facts.get("source_of_truth_example", ""),
+        "constraints": facts.get("constraints", []),
+        "transformation_rule": facts.get("transformation_rule", ""),
+        "independent_write_units": (
+            facts.get("target_files", []) if builder_mode == "batch" else []
+        ),
     }
-    interface_hash = content_hash(
-        json.dumps(interface_material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ) if any((interface_signatures, runnable_examples, async_contract)) else "not supplied"
-
-    text = template.replace("<!-- stable task id -->", str(composed.get("id", facts.get("task_id", "unknown"))))
-    text = text.replace("<!-- one observable outcome -->", str(composed.get("goal", "")))
-    scope_body = (
-        "## Scope\n\n"
-        f"- Write paths: {', '.join(map(str, write_paths)) or 'none'}\n"
-        f"- Read paths: {', '.join(map(str, target_files)) or 'bounded by the selected role'}\n"
-        f"- Forbidden paths: {', '.join(map(str, forbidden_paths)) or 'none'}\n"
-        "- Explicitly out of scope: unrelated cleanup, redesign, deployment, merge\n\n"
-        "## Claude Context Packet"
+    return task_schema.render_task_card(
+        composed, view="execution", execution_context=context
     )
-    text = re.sub(
-        r"## Scope\n\n.*?\n\n## Claude Context Packet",
-        lambda _match: scope_body,
-        text,
-        count=1,
-        flags=re.S,
-    )
-    context_body = (
-        "## Claude Context Packet\n\n"
-        "| Field | Value |\n|---|---|\n"
-        f"| Target files/modules | {', '.join(map(str, target_files)) or 'bounded discovery inside declared scope'} |\n"
-        f"| Exact symbols/tests | {', '.join(map(str, facts.get('symbols', []))) or 'not supplied'} |\n"
-        f"| Exact interface signatures | {_card_cell(interface_signatures)} |\n"
-        f"| Runnable construction/call example | {_card_cell(runnable_examples)} |\n"
-        f"| Async/sync contract | {_card_cell(async_contract)} |\n"
-        f"| Interface evidence hash | {interface_hash} |\n"
-        f"| Root-cause evidence or relevant excerpt | {facts.get('root_cause_evidence') or 'not applicable'} |\n"
-        f"| Reference implementation/source of truth | {facts.get('source_of_truth_example') or 'task contract and existing repository patterns'} |\n"
-        f"| Known constraints | {', '.join(map(str, facts.get('constraints', []))) or 'scope and acceptance below'} |\n"
-        f"| Do not read/modify | {', '.join(map(str, forbidden_paths)) or 'unrelated paths'} |\n"
-        f"| Context is sufficient for execution? | {context_sufficient} |\n"
-        f"| Execution-only eligible? | {execution_only} |\n\n"
-        "## Handoff Contract"
-    )
-    text = re.sub(
-        r"## Claude Context Packet\n\n.*?\n\n## Handoff Contract",
-        lambda _match: context_body,
-        text,
-        count=1,
-        flags=re.S,
-    )
-    handoff_body = (
-        "## Handoff Contract\n\n"
-        f"- Must do: {', '.join(map(str, handoff.get('must_do', []))) or composed.get('goal', '')}\n"
-        f"- Must not do: {', '.join(map(str, handoff.get('must_not_do', []))) or 'broaden scope or merge'}\n"
-        "- May decide: local implementation details inside the frozen assignment\n"
-        "- Stop and report when: a stop condition below is reached\n\n"
-        "## Acceptance Criteria"
-    )
-    text = re.sub(
-        r"## Handoff Contract\n\n.*?\n\n## Acceptance Criteria",
-        lambda _match: handoff_body,
-        text,
-        count=1,
-        flags=re.S,
-    )
-    text = re.sub(
-        r"## Acceptance Criteria\n\n.*?\n\n## Testing Responsibility",
-        lambda _match: "## Acceptance Criteria\n\n" + "\n".join(acceptance_lines) + "\n\n## Testing Responsibility",
-        text, count=1, flags=re.S,
-    )
-    testing_body = (
-        "## Testing Responsibility\n\n| Responsibility | Owner |\n|---|---|\n"
-        f"| Implementation | {'none — structured planning only' if role == 'solution-planner' else 'Claude'} |\n"
-        f"| Test writing | {test_owner} |\n"
-        f"| Narrow validation | {'Claude' if validation_lines else 'not assigned'} |\n"
-        f"| Checker model dispatch | {'yes' if execution.get('checker_model_dispatch') else 'no'} |\n"
-        "| Direction review | Codex |\n| Final review | Codex |\n\n## Validation Contract"
-    )
-    text = re.sub(
-        r"## Testing Responsibility\n\n.*?\n\n## Validation Contract",
-        lambda _match: testing_body,
-        text,
-        count=1,
-        flags=re.S,
-    )
-    validation_body = (
-        "## Validation Contract\n\n"
-        f"- Local validation allowed: {'yes' if validation_lines else 'no'}\n"
-        f"- Exact narrow command: {'; '.join(validation_lines) or 'not assigned'}\n"
-        "- Required evidence: exit status and compact result summary\n\n## Execution Progress"
-    )
-    text = re.sub(
-        r"## Validation Contract\n\n.*?\n\n## Execution Progress",
-        lambda _match: validation_body,
-        text,
-        count=1,
-        flags=re.S,
-    )
-    text = text.replace("| Transformation rule | replace with one deterministic rule |", f"| Transformation rule | {facts.get('transformation_rule') or 'apply the task-defined deterministic transformation'} |")
-    text = text.replace("| Independent write units | replace with exact non-overlapping paths |", f"| Independent write units | {', '.join(map(str, target_files or write_paths)) or 'not resolved — stop'} |")
-    text = text.replace("| Source-of-truth example | replace with one existing correct pattern |", f"| Source-of-truth example | {facts.get('source_of_truth_example') or 'task-defined existing pattern'} |")
-    text = text.replace(
-        "| Narrow validation assigned | no — replace with one exact command when required |",
-        f"| Narrow validation assigned | {'; '.join(validation_lines) if validation_lines else 'no'} |",
-    )
-    text = text.replace(
-        "| Documentation assigned | no — replace with exact files when required |",
-        "| Documentation assigned | no |",
-    )
-    text = text.replace("- Observable goal:", f"- Observable goal: {composed.get('goal', '')}")
-    text = text.replace("- Exploration/read boundary:", f"- Exploration/read boundary: {', '.join(map(str, write_paths)) or 'declared repository scope'}")
-    text = text.replace("- Existing constraints and invariants:", f"- Existing constraints and invariants: {', '.join(map(str, facts.get('constraints', []))) or 'preserve existing contracts'}")
-    text = text.replace("- Known integration points:", f"- Known integration points: {', '.join(map(str, target_files)) or 'to be resolved inside boundary'}")
-    text = text.replace("- Non-goals:", "- Non-goals: source edits during planning, unrelated redesign")
-    text = text.replace("- Required acceptance surface:", f"- Required acceptance surface: {', '.join(item.get('id', '') for item in acceptance if isinstance(item, dict)) or 'observable goal'}")
-    return text
 workflow_economics = _load_module("workflow_economics", "workflow_economics.py")
 
 # ---------------------------------------------------------------------------
@@ -699,13 +561,12 @@ def phase_plan(ctx: RunContext) -> None:
         })
         if recommendation.get("skip_card"):
             raise PhaseError("plan", "failed", "delegated owner selected but card composer requested skip")
-        content, selected_components = composer.compose(
-            component_root,
+        selected_components = composer.select_components(
             catalog,
             recommendation["preset"],
             recommendation.get("gates", []),
         )
-        content = _instantiate_delegation_card(content, ctx.composed, ctx.facts, execution)
+        content = _render_delegation_card(ctx.composed, ctx.facts, execution)
         delegation_card = ctx.run_dir / "delegation-task-card.md"
         # Path.write_text gained the newline argument after Python 3.9.
         # Use Path.open so the CI-supported Python 3.9 path still forces LF.
@@ -832,12 +693,6 @@ def phase_dispatch(ctx: RunContext) -> None:
     dispatch_card = Path(dispatch_card_value)
     if ctx.execution_plan.get("execution", {}).get("single_pass_allowed"):
         text = dispatch_card.read_text(encoding="utf-8")
-        text = re.sub(
-            r"(?im)^\|\s*Mode\s*\|\s*builder\s*\|",
-            "| Mode | mixed-exception |",
-            text,
-            count=1,
-        )
         text += "\n## Mixed Exception\nExpress Lane authorizes implementation plus exact narrow validation only.\n"
         dispatch_card = ctx.run_dir / "single-pass-task-card.md"
         dispatch_card.write_text(text, encoding="utf-8")
@@ -1064,6 +919,11 @@ def phase_dispatch(ctx: RunContext) -> None:
     dispatch_env["AI_WORKFLOW_RUN_ID"] = ctx.run_id
     dispatch_env["AI_WORKFLOW_TASK_ID"] = ctx.facts.get("task_id", "")
     dispatch_env["AI_WORKFLOW_HANDOFF_TASK_TYPE"] = ctx.facts.get("task_type", "unknown")
+    dispatch_env["AI_WORKFLOW_TASK_MODE"] = (
+        "mixed-exception"
+        if ctx.execution_plan.get("execution", {}).get("single_pass_allowed")
+        else str(ctx.composed.get("mode", ""))
+    )
     dispatch_env["CLAUDE_CODE_BUILDER_MODE"] = ctx.execution_plan.get("execution", {}).get(
         "builder_mode", "standard"
     )

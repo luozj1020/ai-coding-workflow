@@ -174,8 +174,8 @@ class TestRunWorkflowPreview(unittest.TestCase):
             self.assertEqual(result["model_calls"], [])
             self.assertEqual(result["status"], "routed")
 
-    def test_claude_solution_planner_preview_composes_dispatchable_card(self):
-        """A positive Claude route composes only the selected short card first."""
+    def test_claude_solution_planner_preview_renders_json_execution_projection(self):
+        """A positive Claude route renders one compact JSON-derived card."""
         with tempfile.TemporaryDirectory() as tmp:
             task = make_task(task_id="solution-plan", write_paths=["README.md"])
             task["extensions"]["routing_hints"] = {
@@ -212,13 +212,19 @@ class TestRunWorkflowPreview(unittest.TestCase):
             self.assertFalse((run_dir / "context-packet.json").exists())
             self.assertFalse((run_dir / "CLAUDE_CONTEXT_PACKET.md").exists())
             card = card_path.read_text(encoding="utf-8")
-            self.assertIn("## Claude Solution Planner Contract", card)
+            self.assertIn("# Task: solution-plan", card)
+            self.assertIn("builder-mode=solution-planning", card)
+            self.assertNotIn("## Claude Solution Planner Contract", card)
+            self.assertNotIn("## Task Identity", card)
+            self.assertNotIn("## Handoff Contract", card)
+            self.assertNotIn("## Testing Responsibility", card)
+            self.assertNotIn("## Execution Progress", card)
             self.assertIn("run_lifecycle", card)
             self.assertIn("preserve Task JSON schema", card)
             self.assertIn("run_lifecycle(task_path: Path", card)
             self.assertIn("synchronous function; do not await", card)
-            self.assertRegex(card, r"Interface evidence hash \| [0-9a-f]{64}")
-            self.assertNotIn("<!-- one observable outcome -->", card)
+            self.assertNotIn("Interface evidence hash", card)
+            self.assertNotIn("Target files/modules", card)
             plan = json.loads((run_dir / "execution-plan.json").read_text())
             self.assertEqual(plan["task_card_components"], ["core", "solution-planner"])
             self.assertEqual(plan["context_delivery"], "inline-delegation-task-card")
@@ -260,6 +266,40 @@ class TestRunWorkflowPreview(unittest.TestCase):
                 "Claude Solution Planner Contract",
                 (run_dir / "delegation-task-card.md").read_text(encoding="utf-8"),
             )
+
+    def test_preview_execution_card_deduplicates_scope_and_omits_static_protocol(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(
+                task_id="projection",
+                write_paths=["README.md"],
+                forbidden_paths=["private/"],
+            )
+            task["scope"]["read_paths"] = ["src/reader.py"]
+            task["extensions"]["routing_hints"] = {
+                "symbols": ["Reader.load"],
+                "constraints": ["preserve parser behavior"],
+            }
+            result = run_workflow.run_lifecycle(
+                task_path=write_task(tmp, task),
+                run_dir_base=Path(tmp),
+                repo=ROOT,
+                profiles_dir=PROFILES,
+            )
+            card = (Path(result["run_dir"]) / "delegation-task-card.md").read_text(
+                encoding="utf-8"
+            )
+
+            self.assertIn("# Task: projection", card)
+            self.assertIn("**Read paths:**", card)
+            self.assertEqual(card.count("src/reader.py"), 1)
+            self.assertEqual(card.count("private/"), 1)
+            self.assertIn("Reader.load", card)
+            self.assertNotIn("Target files/modules", card)
+            self.assertNotIn("Do not read/modify", card)
+            self.assertNotIn("Handoff Contract", card)
+            self.assertNotIn("Testing Responsibility", card)
+            self.assertNotIn("Execution Progress", card)
+            self.assertLess(len(card.encode("utf-8")), 2_000)
 
     def test_preview_writes_result_json(self):
         """Preview mode writes result.json with all required fields."""

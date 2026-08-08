@@ -69,7 +69,7 @@ Each delegated iteration:
 
 1. **OBSERVE:** Codex gathers context using low-token tools.
 2. **ROUTE:** deterministic facts select a Claude execution role by default; Planner requires explicit opt-in. Spark can replace Codex estimation.
-3. **PLAN/DIRECT:** Codex freezes the short core plan; local helpers compose the Claude card and structured artifacts.
+3. **PLAN/DIRECT:** Codex freezes the compact Task JSON; local helpers render its Claude execution projection and structured artifacts.
 4. **EXECUTE:** Claude produces its assigned durable result in an isolated worktree; Codex direct is exceptional.
 5. **VERIFY:** local deterministic tools run by default; Checker/Test Claude is conditional.
 6. **REVIEW:** Codex evaluates the evidence and decides.
@@ -79,8 +79,10 @@ Each delegated iteration:
 
 ### Task Card
 
-A task card is a compact execution contract for one Claude unit. Local facts and
-components build it after routing; Codex should not write a monolithic card.
+A JSON-backed task card is a compact deterministic execution projection for one
+Claude unit. The reviewed Task JSON is the contract; local routing facts add
+only material context, and Codex does not write a monolithic Markdown card.
+Components remain available only for explicit legacy Markdown compatibility.
 
 Fields:
 
@@ -96,9 +98,10 @@ Fields:
 - **Evidence**  -  LSP/locator/CodeGraph/MCP data gathered before implementation
 - **Loop context**  -  parent task ID, iteration, prior decision, revision instructions, budget/stop conditions, required evidence
 
-Default authoring: the deterministic selector chooses a preset from routing
-facts, Spark may fill structured gaps, and Codex reviews only material fields.
-The monolithic `ai/task-card-template.md` is compatibility-only.
+Default authoring: Codex reviews the compact Task JSON, the deterministic
+renderer projects it with routing facts, and Spark may advise structured gaps
+without rewriting the contract. The monolithic `ai/task-card-template.md` and
+component composer are compatibility-only.
 
 ### Evidence Packet
 
@@ -136,7 +139,7 @@ Human or Codex/GPT
        |
        +-- explicit/high-risk Codex -> implementation
        |
-       +-- default Claude role -> short Task Card -> isolated worktree
+       +-- default Claude role -> reviewed Task JSON -> deterministic execution card -> isolated worktree
        |
        v
   Evidence Packet (bounded results + diff/checks when applicable)
@@ -147,8 +150,8 @@ Human or Codex/GPT
        v
   Decision: accept / revise / split / reject
        |
-       +-- revise -> new Task Card (next iteration)
-       +-- split  -> child Task Cards
+       +-- revise -> new Task JSON (next iteration)
+       +-- split  -> child Task JSON files
        +-- reject -> re-observe
        +-- accept -> Human (final merge)
 ```

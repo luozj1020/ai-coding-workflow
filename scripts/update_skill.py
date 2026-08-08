@@ -7,6 +7,11 @@ Usage:
     python scripts/update_skill.py --pull
     python scripts/update_skill.py --bootstrap-current
     python scripts/update_skill.py --bootstrap-repo /path/to/repo
+    python scripts/update_skill.py --project-only
+    python scripts/update_skill.py --project-only --local-only
+    python scripts/update_skill.py --bootstrap-current --doctor
+    python scripts/update_skill.py --auto-setup /path/to/repo
+    python scripts/update_skill.py --auto-setup /path/to/repo --apply
     python scripts/update_skill.py --setup-current
     python scripts/update_skill.py --setup-current --apply
     python scripts/update_skill.py --setup-repo /path/to/repo
@@ -16,7 +21,8 @@ Usage:
 By default this updates the Codex skill from the local source tree that
 contains this script and refreshes the current repository when it is already
 bootstrapped. Bootstrap options select an explicit target; --skill-only opts
-out of project-local refresh. Use --source when running the helper from an
+out of project-local refresh. --project-only refreshes a project without
+activating the user-level Skill. Use --source when running the helper from an
 installed skill but updating from a separate cloned repository.
 
 Guided setup (--setup-current / --setup-repo) coordinates all steps in one
@@ -33,6 +39,7 @@ import subprocess
 import sys
 
 INSTALL_PROVENANCE_FILE = ".aiwf-install-provenance.json"
+SKILL_NAME = "ai-coding-workflow"
 
 
 def script_root():
@@ -67,12 +74,18 @@ def parse_args(argv=None):
     parser.add_argument(
         "--bootstrap-current",
         action="store_true",
-        help="After updating the skill, bootstrap and refresh workflow files in the current working directory.",
+        help=(
+            "Bootstrap and refresh workflow files in the current repository after "
+            "updating the Skill, or select that target with --project-only."
+        ),
     )
     parser.add_argument(
         "--bootstrap-repo",
         metavar="PATH",
-        help="After updating the skill, bootstrap and refresh workflow files in the given repository path.",
+        help=(
+            "Bootstrap and refresh workflow files in PATH after updating the Skill, "
+            "or select that target with --project-only."
+        ),
     )
     parser.add_argument(
         "--skill-only",
@@ -80,6 +93,44 @@ def parse_args(argv=None):
         help=(
             "Update only the user-level Skill. By default, an already-bootstrapped "
             "current repository is refreshed too so local ai/ launchers cannot drift."
+        ),
+    )
+    parser.add_argument(
+        "--project-only",
+        action="store_true",
+        help=(
+            "Refresh a project from the selected source without updating the "
+            "user-level Skill. Defaults to the current Git repository."
+        ),
+    )
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help=(
+            "For a project refresh, keep workflow control-plane ignores in "
+            ".git/info/exclude instead of editing .gitignore."
+        ),
+    )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run the workflow doctor after a project refresh.",
+    )
+    parser.add_argument(
+        "--code-search-services",
+        choices=["ask", "skip", "check"],
+        default="skip",
+        help=(
+            "Optional Zoekt/Sourcegraph service behavior while updating the Skill "
+            "(default: skip)."
+        ),
+    )
+    parser.add_argument(
+        "--auto-setup",
+        metavar="REPO",
+        help=(
+            "Run the source package's environment-aware setup for REPO; preview "
+            "by default and use --apply to make changes."
         ),
     )
     parser.add_argument(
@@ -95,21 +146,46 @@ def parse_args(argv=None):
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="With --setup-current or --setup-repo, execute the coordinated setup sequence.",
+        help="Execute guided setup or --auto-setup; both otherwise preview their plan.",
     )
     args = parser.parse_args(argv)
+    guided_setup = args.setup_current or args.setup_repo
     if args.bootstrap_current and args.bootstrap_repo:
         parser.error("--bootstrap-current and --bootstrap-repo are mutually exclusive")
-    if args.skill_only and (args.bootstrap_current or args.bootstrap_repo):
-        parser.error("--skill-only and --bootstrap-* are mutually exclusive")
+    if args.skill_only and (
+        args.bootstrap_current
+        or args.bootstrap_repo
+        or args.project_only
+        or args.local_only
+        or args.doctor
+    ):
+        parser.error(
+            "--skill-only cannot be combined with project refresh, --local-only, or --doctor"
+        )
     if args.setup_current and args.setup_repo:
         parser.error("--setup-current and --setup-repo are mutually exclusive")
-    if args.apply and not (args.setup_current or args.setup_repo):
-        parser.error("--apply is only valid with --setup-current or --setup-repo")
-    if (args.bootstrap_current or args.bootstrap_repo) and (args.setup_current or args.setup_repo):
+    if args.project_only and guided_setup:
+        parser.error("--project-only and --setup-* modes are mutually exclusive")
+    if args.auto_setup and (
+        guided_setup
+        or args.bootstrap_current
+        or args.bootstrap_repo
+        or args.skill_only
+        or args.project_only
+        or args.local_only
+        or args.doctor
+    ):
+        parser.error(
+            "--auto-setup cannot be combined with guided setup or project refresh options"
+        )
+    if args.apply and not (guided_setup or args.auto_setup):
+        parser.error("--apply is only valid with --setup-* or --auto-setup")
+    if (args.bootstrap_current or args.bootstrap_repo) and guided_setup:
         parser.error("--bootstrap-* and --setup-* modes are mutually exclusive")
-    if args.pull and (args.setup_current or args.setup_repo) and not args.apply:
-        parser.error("--pull changes the source checkout; use it with guided setup only when --apply is present")
+    if args.pull and (guided_setup or args.auto_setup) and not args.apply:
+        parser.error(
+            "--pull changes the source checkout; use it with preview modes only when --apply is present"
+        )
     return args
 
 
@@ -163,6 +239,11 @@ def bootstrapped_repository(path):
     root = git_toplevel(path)
     launcher = os.path.join(root, "ai", "dispatch-to-claude.sh")
     return root if os.path.isfile(launcher) else None
+
+
+def installed_skill_dir():
+    """Return the active user-level Skill path used by install_for_codex.py."""
+    return os.path.join(os.path.expanduser("~"), ".codex", "skills", SKILL_NAME)
 
 
 def read_install_provenance(installed_root):
@@ -231,27 +312,107 @@ def maybe_pull(source, enabled):
     subprocess.run(["git", "-C", source, "pull", "--ff-only"], check=True)
 
 
-def build_install_command(installer, args, current_dir=None):
-    cmd = [
-        sys.executable or "python",
-        installer,
-        "--summary-only",
-        "--code-search-services",
-        "skip",
-    ]
+def select_project_repository(args, current_dir=None):
+    """Select the requested project target, or an implicit bootstrapped target."""
+    current_dir = os.path.abspath(current_dir or os.getcwd())
     if args.bootstrap_current:
-        cmd.extend(["--bootstrap-repo", git_toplevel(current_dir or os.getcwd())])
-    elif args.bootstrap_repo:
-        cmd.extend(["--bootstrap-repo", args.bootstrap_repo])
-    elif not args.skill_only:
-        current_dir = os.path.abspath(current_dir or os.getcwd())
-        repository = bootstrapped_repository(current_dir)
-        if repository:
-            cmd.extend(["--bootstrap-repo", repository])
+        return git_toplevel(current_dir)
+    if args.bootstrap_repo:
+        return os.path.abspath(args.bootstrap_repo)
+    if args.project_only:
+        return git_toplevel(current_dir)
+    if args.skill_only:
+        return None
+    return bootstrapped_repository(current_dir)
+
+
+def build_skill_update_command(installer, code_search_services="skip", python_cmd=None):
+    """Build the installer invocation for a user-level Skill update."""
+    cmd = [python_cmd or sys.executable or "python", installer]
+    # Keep the default update compact. Explicit service handling is an operator
+    # request, so retain the installer's normal output for ask/check modes.
+    if code_search_services == "skip":
+        cmd.append("--summary-only")
+    cmd.extend(["--code-search-services", code_search_services])
     return cmd
 
 
-def build_guided_phases(source, repo_path, python_cmd=None):
+def build_install_command(installer, args, current_dir=None, project_repo=None):
+    """Build a Skill update plus an optional installed-copy project refresh."""
+    cmd = build_skill_update_command(installer, args.code_search_services)
+    if project_repo is None:
+        project_repo = select_project_repository(args, current_dir=current_dir)
+    if project_repo:
+        cmd.extend(["--bootstrap-repo", project_repo])
+        if args.local_only:
+            cmd.append("--local-only")
+        if args.doctor:
+            cmd.append("--doctor")
+    elif args.local_only:
+        raise RuntimeError(
+            "--local-only needs a project target. Use --project-only, "
+            "--bootstrap-current, or --bootstrap-repo PATH."
+        )
+    elif args.doctor:
+        raise RuntimeError(
+            "--doctor needs a project target. Use --project-only, "
+            "--bootstrap-current, or --bootstrap-repo PATH."
+        )
+    return cmd
+
+
+def build_project_refresh_command(source, repo_path, args, python_cmd=None):
+    """Build a source-backed project refresh without activating the Skill."""
+    source = os.path.abspath(source)
+    workflow_installer = os.path.join(source, "scripts", "install_workflow.py")
+    if not os.path.isfile(workflow_installer):
+        raise FileNotFoundError(
+            "install_workflow.py not found under source: {}".format(source)
+        )
+    command = [
+        python_cmd or sys.executable or "python",
+        workflow_installer,
+        os.path.abspath(repo_path),
+        "--update-workflow-files",
+        "--summary-only",
+    ]
+    if args.local_only:
+        command.append("--local-only")
+    return command
+
+
+def build_doctor_command(source, repo_path, python_cmd=None):
+    """Build a source-backed doctor command for --project-only."""
+    source = os.path.abspath(source)
+    doctor = os.path.join(source, "scripts", "doctor_workflow.py")
+    if not os.path.isfile(doctor):
+        raise FileNotFoundError(
+            "doctor_workflow.py not found under source: {}".format(source)
+        )
+    return [python_cmd or sys.executable or "python", doctor, os.path.abspath(repo_path)]
+
+
+def build_auto_setup_command(installer, repo_path, apply=False, python_cmd=None):
+    """Build the direct compatibility path for install_for_codex --auto-setup."""
+    command = [
+        python_cmd or sys.executable or "python",
+        installer,
+        "--auto-setup",
+        os.path.abspath(repo_path),
+    ]
+    if apply:
+        command.append("--apply")
+    return command
+
+
+def build_guided_phases(
+    source,
+    repo_path,
+    python_cmd=None,
+    installed_dir=None,
+    local_only=False,
+    code_search_services="skip",
+):
     """Return the ordered list of guided-setup phases.
 
     Each phase is a dict with keys: label, description, argv, cwd.
@@ -261,32 +422,42 @@ def build_guided_phases(source, repo_path, python_cmd=None):
     source = os.path.abspath(source)
     installer = os.path.join(source, "scripts", "install_for_codex.py")
     repo_abs = os.path.abspath(repo_path)
-    workflow_installer = os.path.join(source, "scripts", "install_workflow.py")
-    doctor = os.path.join(source, "scripts", "doctor_workflow.py")
+    installed_dir = os.path.abspath(installed_dir or installed_skill_dir())
+    workflow_installer = os.path.join(installed_dir, "scripts", "install_workflow.py")
+    installed_installer = os.path.join(installed_dir, "scripts", "install_for_codex.py")
+    doctor = os.path.join(installed_dir, "scripts", "doctor_workflow.py")
+    skill_update = build_skill_update_command(
+        installer,
+        code_search_services=code_search_services,
+        python_cmd=python_cmd,
+    )
+    workflow_refresh = [
+        python_cmd,
+        workflow_installer,
+        repo_abs,
+        "--update-workflow-files",
+        "--summary-only",
+    ]
+    if local_only:
+        workflow_refresh.append("--local-only")
 
     phases = [
         {
             "label": "skill-update",
             "description": "Install/update skill from source",
-            "argv": [
-                python_cmd, installer, "--summary-only",
-                "--code-search-services", "skip",
-            ],
+            "argv": skill_update,
             "cwd": None,
         },
         {
             "label": "workflow-bootstrap",
-            "description": "Bootstrap/refresh workflow in {}".format(repo_abs),
-            "argv": [
-                python_cmd, workflow_installer, repo_abs,
-                "--update-workflow-files", "--summary-only",
-            ],
+            "description": "Bootstrap/refresh workflow from the activated Skill in {}".format(repo_abs),
+            "argv": workflow_refresh,
             "cwd": None,
         },
         {
             "label": "auto-setup",
             "description": "Environment-aware tool configuration",
-            "argv": [python_cmd, installer, "--auto-setup", repo_abs, "--apply"],
+            "argv": [python_cmd, installed_installer, "--auto-setup", repo_abs, "--apply"],
             "cwd": None,
         },
         {
@@ -348,6 +519,27 @@ def run_guided_setup(source, repo_path, phases):
     return 0
 
 
+def run_command(command, heading):
+    """Run one update command and return its process status without a traceback."""
+    print(heading)
+    print("  Command: {}".format(" ".join(_quote_cmd(part) for part in command)))
+    try:
+        subprocess.run(command, check=True)
+    except FileNotFoundError:
+        print("Error: command not found: {}".format(command[0]), file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print("Error: {}".format(exc), file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as exc:
+        print(
+            "Error: command failed with exit {}.".format(exc.returncode),
+            file=sys.stderr,
+        )
+        return exc.returncode or 1
+    return 0
+
+
 def main(argv=None):
     args = parse_args(argv)
     try:
@@ -357,7 +549,11 @@ def main(argv=None):
         print("Error: {}".format(exc), file=sys.stderr)
         return 2
 
-    maybe_pull(source, args.pull)
+    try:
+        maybe_pull(source, args.pull)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        print("Error: {}".format(exc), file=sys.stderr)
+        return 2
     current_commit = git_commit(source)
     print("Resolved update source:")
     print("  Checkout: {}".format(source))
@@ -371,26 +567,73 @@ def main(argv=None):
             provenance.get("source_dirty", "unknown")
         ))
 
+    # Direct compatibility path for the legacy environment setup command. It
+    # deliberately does not activate the user-level Skill or alter workflow
+    # files unless --apply is selected by the operator.
+    if args.auto_setup:
+        command = build_auto_setup_command(installer, args.auto_setup, apply=args.apply)
+        action = "Applying environment-aware setup:" if args.apply else "Auto-setup preview:"
+        return run_command(command, action)
+
     # Guided setup path
     if args.setup_current or args.setup_repo:
         repo_path = os.getcwd() if args.setup_current else args.setup_repo
-        _, _, phases = build_guided_phases(source, repo_path)
+        _, _, phases = build_guided_phases(
+            source,
+            repo_path,
+            local_only=args.local_only,
+            code_search_services=args.code_search_services,
+        )
         if args.apply:
             return run_guided_setup(source, repo_path, phases)
         print_guided_preview(source, repo_path, phases)
         return 0
 
+    project_repo = select_project_repository(args, current_dir=os.getcwd())
+    if args.project_only:
+        try:
+            command = build_project_refresh_command(source, project_repo, args)
+        except FileNotFoundError as exc:
+            print("Error: {}".format(exc), file=sys.stderr)
+            return 2
+        print("Refreshing project workflow only (Skill installation skipped):")
+        print("  Source: {}".format(source))
+        print("  Repository: {}".format(project_repo))
+        result = run_command(command, "Project refresh:")
+        if result:
+            return result
+        if args.doctor:
+            try:
+                doctor_command = build_doctor_command(source, project_repo)
+            except FileNotFoundError as exc:
+                print("Error: {}".format(exc), file=sys.stderr)
+                return 2
+            result = run_command(doctor_command, "Running workflow doctor:")
+            if result:
+                return result
+        print("Restart Codex before using refreshed managed AGENTS.md policy.")
+        return 0
+
     # Update the Skill and automatically refresh an already-bootstrapped current
     # repository. This prevents a new managed policy from driving stale ai/
     # launchers that lack stable host/snapshot CLI parameters.
-    cmd = build_install_command(installer, args, current_dir=os.getcwd())
+    try:
+        cmd = build_install_command(
+            installer,
+            args,
+            current_dir=os.getcwd(),
+            project_repo=project_repo,
+        )
+    except RuntimeError as exc:
+        print("Error: {}".format(exc), file=sys.stderr)
+        return 2
     print("Updating ai-coding-workflow:")
     print("  Source: {}".format(source))
-    print("  Command: {}".format(" ".join(cmd)))
-    subprocess.run(cmd, check=True)
-    if "--bootstrap-repo" in cmd:
-        repo_index = cmd.index("--bootstrap-repo") + 1
-        print("Project workflow refreshed: {}".format(cmd[repo_index]))
+    result = run_command(cmd, "Skill update:")
+    if result:
+        return result
+    if project_repo:
+        print("Project workflow refreshed: {}".format(project_repo))
     elif args.skill_only:
         print("Project workflow refresh: intentionally skipped (--skill-only).")
     else:

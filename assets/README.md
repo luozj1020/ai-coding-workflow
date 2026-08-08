@@ -61,6 +61,15 @@ python scripts/update_skill.py
 
 `update_skill.py` refreshes the user-level Skill and, when the current repository is already bootstrapped, its local workflow files too. Use `--skill-only` only when intentionally leaving project-local `ai/*` files unchanged. Running `install_workflow.py` without its update flag still reports outdated local files without overwriting them.
 
+Use `python scripts/update_skill.py --project-only` to refresh only the current
+project from the selected source without activating the user-level Skill. Add
+`--bootstrap-repo /path/to/repo` to select another target, `--local-only` to
+keep control-plane ignores in `.git/info/exclude`, and `--doctor` to verify the
+refreshed workflow. The updater also accepts
+`--code-search-services ask|skip|check` for explicit Skill-install service
+behavior and exposes environment setup as
+`python scripts/update_skill.py --auto-setup /path/to/repo [--apply]`.
+
 Bootstrap also manages `.codex/rules/ai-coding-workflow.rules`. Once the project
 is trusted and Codex is restarted, the rule allows the exact standard
 `bash ai/dispatch-to-claude.sh ...` and
@@ -108,11 +117,11 @@ This repository has been set up with a multi-agent AI coding workflow. The workf
 - **Claude-compatible auxiliary model**  -  optional cost-efficient execution or exhaustive review helper
 - **LSP / Locator / CodeGraph / MCP**  -  low-token code intelligence with bounded large-repo lookup before broad reads
 
-**Core principle:** for delegated work, Codex writes the short core plan in the
-Task Card; this is its only normal handwritten workflow artifact. Direct local
-work uses `aiwf direct`, not a Task Card. Claude edits product files by default
-only after delegation. Deterministic tools generate route, review, freeze,
-receipt, and other control artifacts; Spark remains advisory.
+**Core principle:** for JSON-backed delegation, Codex freezes and reviews the
+Task JSON; `aiwf run` deterministically renders Claude's execution card. Direct
+local work uses `aiwf direct`, not a Task Card. Claude edits product files by
+default only after delegation. Deterministic tools generate route, review,
+freeze, receipt, control artifacts, and rendered cards; Spark remains advisory.
 
 For non-trivial changes, split Claude work into two roles:
 
@@ -121,7 +130,7 @@ For non-trivial changes, split Claude work into two roles:
 
 Task cards can require **Direction / Boundary Acknowledgement** before editing. Claude restates the goal, scope, out-of-scope boundaries, likely files, acceptance criteria, testing responsibility, confusions, and risks. This is a gate, not a discussion loop: at most one blocking acknowledgement is allowed per task or phase unless Codex materially changes the goal, scope, boundaries, or risk. Codex answers with exactly one decision: proceed, narrow-once/re-dispatch, split, or stop.
 
-`aiwf run task.json` validates, routes, composes the short execution card, and
+`aiwf run task.json` validates, routes, and deterministically renders the short execution card from JSON, then
 dispatches it by default without a second human confirmation. Use
 `aiwf run task.json --preview` for a zero-model inspection. This removes only
 the ordinary Task Card dispatch pause: unresolved product/API/data-model
@@ -155,12 +164,12 @@ not by the Skill.
 Runtime role propagation is explicit after routing: `solution-planner` selects
 `solution-planning`, `exploratory-builder` selects `exploratory`, `batch-builder`
 selects `batch`, and `execution-builder` selects `execution-only`. These are
-Builder modes; the task-card `Mode` remains `builder`. Known role aliases in
-that field are normalized before tool probing, and conflicts fail before Claude
-starts.
+Builder modes; JSON-backed cards carry their task/builder modes in deterministic
+metadata, while legacy tables remain accepted. Known role aliases are normalized
+before tool probing, and conflicts fail before Claude starts.
 
 After Codex accepts a Builder's main direction, prefer one reviewed same-worktree
-Claude continuation. `Mode = revision` is normalized as Builder and can
+Claude continuation. Legacy `Mode = revision` is normalized as Builder and can
 transition directly to a reviewed `checker-test` continuation. A deterministic correction may route to Codex only when it
 already holds the exact context and no new decision is needed.
 
@@ -256,9 +265,27 @@ CLAUDE.md                     # Claude Code configuration
 
 ## Quick Start
 
-### JSON Task Cards (opt-in)
+### JSON Task Cards (primary delegated path)
 
-Task cards can be authored as structured JSON instead of Markdown. JSON provides schema validation, deterministic profile composition, and machine-readable acceptance criteria. Existing Markdown task cards remain fully supported — JSON is purely opt-in.
+For delegated `aiwf run` work, Task JSON is the single task contract. Codex
+freezes/reviews that JSON; the workflow composes profiles and deterministically
+renders `delegation-task-card.md` for Claude. Do not hand-edit the rendered
+Markdown card: it is a disposable execution projection, not a second source of
+truth.
+
+```bash
+python ai/aiwf.py run tasks/PROJ-123.json --preview
+
+# Inspect the same deterministic projection without dispatching.
+python ai/render-task-card.py tasks/PROJ-123.json --view execution
+```
+
+The execution projection contains the task ID, goal, scope, acceptance,
+validation, top-level stop conditions, and only context facts that are actually
+available (such as symbols or an interface signature). It intentionally omits
+the audit-only identity table, full handoff, static Builder protocol, progress
+checklist, and duplicated target/forbidden-path context. Spark remains advisory
+and cannot write or redefine the Task JSON.
 
 ```bash
 # Lint a task card JSON
@@ -273,8 +300,8 @@ python ai/render-task-card.py ai/task-cards/PROJ-123.json --view execution
 ```
 
 Key behaviors:
-- **JSON is source of truth** when both `.json` and `.md` exist for the same task.
-- **Audit view** includes risk, extensions, full handoff. **Execution view** includes only goal, scope, acceptance, validation, stop conditions.
+- **JSON is source of truth** whenever it exists for a delegated task. Legacy hand-authored Markdown cards remain supported only for explicit compatibility flows.
+- **Audit view** includes risk, extensions, full handoff. **Execution view** is a minimal JSON projection with conditional execution context.
 
 ### Workflow State IR (opt-in)
 
@@ -520,10 +547,12 @@ human ownership.
 - **Conflict hard-fail.** Profile composition raises on conflicting scalars; use `lint-task-card.py` to catch before dispatch.
 - Schemas live at `ai/schemas/`, profiles at `ai/profiles/`, examples at `ai/examples/`.
 
-### 1. Select Components and Create a Short Task Card
+### 1. Legacy Markdown Cards (explicit compatibility only)
 
-Codex reads the compact catalog, selects a preset and only material gates, then
-uses the deterministic composer:
+The JSON-backed `aiwf run` path does not use this step: it renders the
+execution card directly from reviewed Task JSON. For an explicit legacy
+Markdown compatibility flow, Codex can select a compact preset and material
+gates, then use the deterministic composer:
 
 ```bash
 python ai/compose_task_card.py --select-from ai/plans/PROJ-123/task-facts.json \
@@ -533,7 +562,8 @@ python ai/compose_task_card.py --preset builder --output ai/task-cards/PROJ-123.
 # Add --gate root-cause, for example, only when applicable.
 ```
 
-Fill the generated card. The legacy full template remains compatibility-only.
+Fill the generated legacy card only in that compatibility flow. The legacy full
+template remains compatibility-only.
 
 For bounded loops, fill `Goal Loop Contract` in the task card. Prefer deterministic fields such as success signal, max attempts, repeated-failure threshold, no-improvement threshold, regression stop rule, required evidence, and benchmark tags. Use `Spec Gate` before broad ambiguous work, `Root Cause Gate` before bugfixes/regression fixes, `Test-First / TDD Contract` when red-green evidence matters, and `Finish Branch Gate` before claiming work ready for merge. Use `Advisor Gate` when a stronger model, Codex reviewer, or human expert should advise before risky work; record timing, call caps, output budget, result visibility, conflict reconciliation, and fallback behavior. Leave `Codex Spark Gate` at `auto` when Spark should perform low-cost task-size classification, task-card audit, plan splitting, validation planning, failure triage, or review/evidence checking, with auto-disable on Spark unavailability. Use micro-builder only after explicit tiny-scope authorization. Use `Unknowns` to record blindspot scan requests, questions that would change architecture, reference examples, and where Claude should record deviations from plan.
 

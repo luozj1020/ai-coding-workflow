@@ -53,8 +53,10 @@ class InstallForCodexTests(unittest.TestCase):
             (src / "CLAUDE.md").write_text("generated\n", encoding="utf-8")
             (src / "assets" / "AGENTS.md").write_text("template\n", encoding="utf-8")
             (src / "assets" / "CLAUDE.md").write_text("template\n", encoding="utf-8")
+            (src / "scripts" / "install_for_codex.py").write_text("ok\n", encoding="utf-8")
             (src / "scripts" / "update_skill.py").write_text("ok\n", encoding="utf-8")
             (src / "scripts" / "install_workflow.py").write_text("ok\n", encoding="utf-8")
+            (src / "scripts" / "doctor_workflow.py").write_text("ok\n", encoding="utf-8")
             (src / "scripts" / "tool.pyc").write_text("compiled\n", encoding="utf-8")
             (src / "__pycache__" / "x.pyc").write_text("compiled\n", encoding="utf-8")
             (src / ".worktrees" / "artifact.txt").write_text("artifact\n", encoding="utf-8")
@@ -100,8 +102,10 @@ class InstallForCodexTests(unittest.TestCase):
             (src / "SKILL.md").write_text("new\n", encoding="utf-8")
             (src / "assets" / "AGENTS.md").write_text("agents\n", encoding="utf-8")
             (src / "assets" / "CLAUDE.md").write_text("claude\n", encoding="utf-8")
+            (src / "scripts" / "install_for_codex.py").write_text("installer\n", encoding="utf-8")
             (src / "scripts" / "install_workflow.py").write_text("install\n", encoding="utf-8")
             (src / "scripts" / "update_skill.py").write_text("update\n", encoding="utf-8")
+            (src / "scripts" / "doctor_workflow.py").write_text("doctor\n", encoding="utf-8")
             dest.mkdir(parents=True)
             (dest / "SKILL.md").write_text("old\n", encoding="utf-8")
             real_replace = self.module.os.replace
@@ -138,6 +142,21 @@ class InstallForCodexTests(unittest.TestCase):
             self.assertTrue(marker.exists())
             self.assertEqual(marker.read_text(encoding="utf-8"), "ok\n")
 
+    def test_skill_validation_requires_the_doctor_used_by_guided_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = pathlib.Path(tmp) / "skill"
+            (skill / "assets").mkdir(parents=True)
+            (skill / "scripts").mkdir()
+            (skill / "SKILL.md").write_text("skill\n", encoding="utf-8")
+            (skill / "assets" / "AGENTS.md").write_text("agents\n", encoding="utf-8")
+            (skill / "assets" / "CLAUDE.md").write_text("claude\n", encoding="utf-8")
+            (skill / "scripts" / "install_for_codex.py").write_text("installer\n", encoding="utf-8")
+            (skill / "scripts" / "install_workflow.py").write_text("install\n", encoding="utf-8")
+            (skill / "scripts" / "update_skill.py").write_text("update\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "doctor_workflow.py"):
+                self.module.validate_skill_tree(str(skill))
+
     def test_copy_skill_skips_unchanged_package_activation(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = pathlib.Path(tmp) / "src"
@@ -147,8 +166,10 @@ class InstallForCodexTests(unittest.TestCase):
             (src / "SKILL.md").write_text("skill\n", encoding="utf-8")
             (src / "assets" / "AGENTS.md").write_text("agents\n", encoding="utf-8")
             (src / "assets" / "CLAUDE.md").write_text("claude\n", encoding="utf-8")
+            (src / "scripts" / "install_for_codex.py").write_text("installer\n", encoding="utf-8")
             (src / "scripts" / "install_workflow.py").write_text("install\n", encoding="utf-8")
             (src / "scripts" / "update_skill.py").write_text("update\n", encoding="utf-8")
+            (src / "scripts" / "doctor_workflow.py").write_text("doctor\n", encoding="utf-8")
 
             self.assertEqual(self.module.copy_skill(str(src), str(dest)), "installed")
             marker_inode = (dest / "SKILL.md").stat().st_ino
@@ -182,6 +203,32 @@ class InstallForCodexTests(unittest.TestCase):
 
             self.assertIn("--summary-only", run.call_args.args[0])
 
+    def test_bootstrap_forwards_local_only_to_the_installed_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = pathlib.Path(tmp) / "skill"
+            repo = pathlib.Path(tmp) / "repo"
+            (skill / "scripts").mkdir(parents=True)
+            (skill / "scripts" / "install_workflow.py").write_text("ok\n", encoding="utf-8")
+            repo.mkdir()
+            with patch.object(self.module.subprocess, "run") as run:
+                self.module.run_bootstrap(str(skill), str(repo), local_only=True)
+
+            self.assertIn("--local-only", run.call_args.args[0])
+
+    def test_doctor_uses_the_installed_skill_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = pathlib.Path(tmp) / "skill"
+            repo = pathlib.Path(tmp) / "repo"
+            (skill / "scripts").mkdir(parents=True)
+            (skill / "scripts" / "doctor_workflow.py").write_text("ok\n", encoding="utf-8")
+            repo.mkdir()
+            with patch.object(self.module.subprocess, "run") as run:
+                self.module.run_doctor(str(skill), str(repo))
+
+            self.assertEqual(
+                run.call_args.args[0][1], str(skill / "scripts" / "doctor_workflow.py")
+            )
+
     def test_copy_skill_records_source_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = pathlib.Path(tmp) / "src"
@@ -191,8 +238,10 @@ class InstallForCodexTests(unittest.TestCase):
             (src / "SKILL.md").write_text("skill\n", encoding="utf-8")
             (src / "assets" / "AGENTS.md").write_text("agents\n", encoding="utf-8")
             (src / "assets" / "CLAUDE.md").write_text("claude\n", encoding="utf-8")
+            (src / "scripts" / "install_for_codex.py").write_text("installer\n", encoding="utf-8")
             (src / "scripts" / "install_workflow.py").write_text("install\n", encoding="utf-8")
             (src / "scripts" / "update_skill.py").write_text("update\n", encoding="utf-8")
+            (src / "scripts" / "doctor_workflow.py").write_text("doctor\n", encoding="utf-8")
             subprocess.run(["git", "init", "-q"], cwd=str(src), check=True)
             subprocess.run(["git", "add", "-A"], cwd=str(src), check=True)
             subprocess.run(
@@ -333,6 +382,18 @@ class InstallForCodexTests(unittest.TestCase):
     def test_parse_args_accepts_summary_only(self):
         args = self.module.parse_args(["--summary-only"])
         self.assertTrue(args.summary_only)
+
+    def test_parse_args_accepts_bootstrap_local_only_and_doctor(self):
+        args = self.module.parse_args(
+            ["--bootstrap-repo", "/tmp/repo", "--local-only", "--doctor"]
+        )
+        self.assertTrue(args.local_only)
+        self.assertTrue(args.doctor)
+
+    def test_parse_args_rejects_local_only_or_doctor_without_bootstrap(self):
+        for option in ("--local-only", "--doctor"):
+            with self.subTest(option=option), self.assertRaises(SystemExit):
+                self.module.parse_args([option])
 
     def test_detect_context_tools_reports_codegraph_initialization(self):
         with tempfile.TemporaryDirectory() as tmp:

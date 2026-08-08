@@ -104,6 +104,14 @@ class TestComposeLintRender(unittest.TestCase):
         self.assertIn("handoff", composed)
         self.assertIn("must_do", composed["handoff"])
 
+    def test_base_profile_does_not_add_static_handoff_or_duplicate_stops(self):
+        base = json.loads((PROFILES / "base.json").read_text(encoding="utf-8"))
+        self.assertNotIn("handoff", base)
+        self.assertEqual(
+            base["stop_conditions"],
+            ["scope_boundary_crossed", "acceptance_unreachable", "external_blocker"],
+        )
+
     def test_example_lints_clean(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPTS / "lint-task-card.py"), str(EXAMPLES / "fix-typo-in-readme.json")],
@@ -136,6 +144,8 @@ class TestComposeLintRender(unittest.TestCase):
             self.assertEqual(result.returncode, 0, f"Render failed: {result.stderr}")
             rendered = pathlib.Path(outpath).read_text(encoding="utf-8")
             self.assertIn("Task Card", rendered)
+            self.assertIn("Task Identity", rendered)
+            self.assertIn("Handoff Contract", rendered)
             self.assertIn("Goal", rendered)
             self.assertIn("Acceptance", rendered)
         finally:
@@ -161,7 +171,9 @@ class TestComposeLintRender(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, f"Render failed: {result.stderr}")
             rendered = pathlib.Path(outpath).read_text(encoding="utf-8")
-            self.assertIn("Task Card", rendered)
+            self.assertIn("# Task: example-fix-typo-001", rendered)
+            self.assertNotIn("Task Identity", rendered)
+            self.assertNotIn("Handoff Contract", rendered)
         finally:
             os.unlink(outpath)
 
@@ -766,6 +778,61 @@ class TestAuditVsExecution(unittest.TestCase):
         task = _make_valid_task()
         execution = self.ts.render_task_card(task, view="execution")
         self.assertNotIn("Risk Assessment", execution)
+
+    def test_execution_projects_only_one_stop_and_scope_contract(self):
+        task = _make_valid_task()
+        task["scope"]["read_paths"] = ["src/reader.py"]
+        task["scope"]["forbidden_paths"] = ["private/"]
+        task["handoff"] = {
+            "must_do": ["Report a result"],
+            "stop_condition": ["handoff-only-stop"],
+        }
+        task["stop_conditions"] = ["top-level-stop"]
+
+        execution = self.ts.render_task_card(
+            task,
+            view="execution",
+            execution_context={
+                "task_mode": "builder",
+                "builder_mode": "standard",
+                "target_files": ["src/reader.py"],
+                "forbidden_paths": ["private/"],
+            },
+        )
+
+        self.assertIn("<!-- aiwf-execution-card-v1; task-mode=builder; builder-mode=standard -->", execution)
+        self.assertIn("**Read paths:**", execution)
+        self.assertEqual(execution.count("src/reader.py"), 1)
+        self.assertEqual(execution.count("private/"), 1)
+        self.assertIn("top-level-stop", execution)
+        self.assertNotIn("handoff-only-stop", execution)
+        self.assertNotIn("Task Identity", execution)
+        self.assertNotIn("Handoff Contract", execution)
+        self.assertNotIn("Target files/modules", execution)
+        self.assertNotIn("Interface evidence hash", execution)
+
+    def test_execution_context_is_conditional_and_task_specific(self):
+        task = _make_valid_task()
+        no_context = self.ts.render_task_card(task, view="execution")
+        self.assertNotIn("Execution Context", no_context)
+
+        execution = self.ts.render_task_card(
+            task,
+            view="execution",
+            execution_context={
+                "symbols": ["Worker.run"],
+                "interface_signatures": ["Worker.run(job: Job) -> Result"],
+                "runnable_examples": ["Worker().run(job)"],
+                "async_contract": "synchronous",
+                "root_cause_evidence": "null result bypasses retry",
+                "source_of_truth_example": "src/reference.py:Worker.run",
+                "constraints": ["preserve retry behavior"],
+            },
+        )
+
+        self.assertIn("## Execution Context", execution)
+        self.assertIn("Worker.run", execution)
+        self.assertIn("preserve retry behavior", execution)
 
     def test_audit_includes_risk_section(self):
         task = _make_valid_task()

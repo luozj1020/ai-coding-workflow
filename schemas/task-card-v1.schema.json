@@ -195,7 +195,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Conditions that must stop execution."
+          "description": "Deprecated v1 audit-only field. New task contracts put all execution stop conditions in top-level stop_conditions."
         }
       },
       "description": "Handoff contract for the task."

@@ -21,8 +21,10 @@ For delegation, load only one matching reference; do not load multiple preemptiv
 ## Core Contract
 
 - Follow `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
-- Codex freezes the short Task Card and bounded review; Claude owns assigned
-  Builder/Checker/Test work. `solution-planner` is explicit opt-in.
+- For JSON-backed delegation, Codex freezes and reviews the compact Task JSON;
+  `aiwf run` deterministically renders the execution card. Claude owns assigned
+  Builder/Checker/Test work. Legacy Markdown cards remain an explicit
+  compatibility path; `solution-planner` is explicit opt-in.
 - Model reports are claims until diff, receipt, and validation agree. Keep one
   writer, exact scope, isolated worktrees, and hash-bound recovery; stale
   ownership fails closed. Models never merge; humans own high-impact approval.
@@ -32,8 +34,9 @@ For delegation, load only one matching reference; do not load multiple preemptiv
 1. Classify; bypass/direct stop after local edits/checks.
 2. Delegated only: query valid CodeGraph once; use `ai/locate-code.py` for
    behavior/files and lexical search for Shell/config/text; record result/skip.
-3. Route, compose the short card, and dispatch. Use Checker/Test only when its
-   assigned work materially reduces Codex effort.
+3. Route, freeze/review Task JSON, and dispatch its deterministic execution
+   projection. Use Checker/Test only when its assigned work materially reduces
+   Codex effort.
 4. Verify deterministically, then review bounded evidence: accept, revise,
    split, or reject. Humans merge.
 

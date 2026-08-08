@@ -31,9 +31,9 @@ ROUTE every initial, revision, narrow, retry, split-child, and next-phase action
 confirmed high-risk core semantics favor Codex, or Codex applies a reviewed
 deterministic correction. Unknown risk increases review, not ownership changes.
 
-For delegated work, Codex owns the short core plan in the Task Card, its only
-normal handwritten workflow artifact. Deterministic helpers create route, review, hash, freeze,
-receipt, and continuation artifacts; do not hand-edit their JSON or receipts.
+For JSON-backed delegation, Codex freezes and reviews Task JSON; `aiwf run`
+renders its execution card deterministically. Never hand-edit JSON, rendered
+cards, or receipts. Helpers create workflow state deterministically.
 Claude `solution-planner` is never inferred and requires
 `solution_planner_opt_in=true`. Prefer one Claude execution round; additional
 roles must remove material Codex work, not merely save model tokens.
@@ -51,9 +51,8 @@ short Codex plan; the solution planner remains explicit opt-in.
 Route every frozen implementation slice independently. Compatible sequential
 slices may reuse one hash-bound Context Lease.
 
-For delegation, read only `ai/task-card-components/catalog.md`, select one
-preset plus material gates, and run `python ai/compose_task_card.py ...`.
-Revision cards contain only the accepted-evidence binding and requested delta.
+The component composer is for explicit legacy Markdown cards only; `aiwf run`
+renders JSON-backed execution cards directly.
 
 ## Dispatch and Validation
 
