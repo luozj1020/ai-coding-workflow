@@ -34,7 +34,8 @@ It records exact paths and checks, but starts neither Spark nor Claude.
 ## Claude-first routing for scarce Codex quota
 
 The default `claude-first` profile minimizes Codex editing and rereview work.
-Codex owns the short core plan in the Task Card; Claude owns implementation,
+Codex freezes and reviews the short core plan in Task JSON; `aiwf run`
+deterministically renders the execution card. Claude owns implementation,
 revision, assigned tests, and long validation. `solution-planner` is never
 selected automatically and requires explicit `solution_planner_opt_in=true`.
 Single-task latency is advisory because users can run different repositories in
@@ -205,8 +206,9 @@ explicit spec changes reopen planning.
 When explicitly selected, the role reaches runtime directly: `solution-planner` maps to
 `solution-planning`, `exploratory-builder` to `exploratory`, `batch-builder` to
 `batch`, and `execution-builder` to `execution-only`. These are Builder modes;
-the task-card `Mode` remains `builder`. Known role aliases in that field are
-normalized before tool probing, while conflicting combinations fail early.
+JSON-backed cards carry their task/builder modes in deterministic metadata,
+while legacy tables remain accepted. Known role aliases are normalized before
+tool probing, while conflicting combinations fail early.
 
 ## Common actions
 
@@ -219,10 +221,12 @@ normalized before tool probing, while conflicting combinations fail early.
 | **Install Skill** | Once per computer | `python scripts/install_for_codex.py` |
 | **Update Skill** | After pulling a newer checkout; refresh an already-bootstrapped current repo automatically | `python scripts/update_skill.py` |
 | **Update Skill only** | Explicitly leave project-local `ai/` files unchanged | `python scripts/update_skill.py --skill-only` |
+| **Refresh project only** | Update local workflow files without changing the user-level Skill | `python scripts/update_skill.py --project-only` |
+| **Refresh + doctor** | Refresh a selected project then verify its workflow without changing the Skill | `python scripts/update_skill.py --project-only --bootstrap-repo /path/to/repo --doctor` |
 | **Bootstrap project** | Once per repository | `python scripts/install_workflow.py .` |
 | **Bootstrap local-only** | Repositories that should not commit workflow control-plane files | `python scripts/install_workflow.py . --local-only` |
-| **Auto-setup repo** | Detect profiles and plan LSP/CodeGraph/Zoekt | `python scripts/install_for_codex.py --auto-setup /path/to/repo` |
-| **Auto-setup apply** | Install missing LSP tools and init CodeGraph/Zoekt | `python scripts/install_for_codex.py --auto-setup /path/to/repo --apply` |
+| **Auto-setup repo** | Detect profiles and plan LSP/CodeGraph/Zoekt without updating the Skill | `python scripts/update_skill.py --auto-setup /path/to/repo` |
+| **Auto-setup apply** | Install missing LSP tools and init CodeGraph/Zoekt | `python scripts/update_skill.py --auto-setup /path/to/repo --apply` |
 | **Refresh project workflow** | Existing bootstrapped repository | `python scripts/install_workflow.py . --update-workflow-files` |
 | **Claude provider check** | Show the effective CC Switch endpoint/model without secrets | `python scripts/claude-healthcheck.py` |
 | **Claude endpoint probe** | Advisory network evidence; transient failure does not block dispatch | `python scripts/claude-healthcheck.py --probe` |
@@ -242,7 +246,7 @@ probe environment, and Claude executable. Zero usable output or transport
 symptoms force a live probe and invalidate failed availability evidence. Set
 `CLAUDE_CODE_API_PROBE_MODE=always` only when a fresh diagnostic is required.
 
-These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create or refresh the target repository's `ai/` directory. Already bootstrapped projects keep local copies of `ai/dispatch-to-claude.sh`, `ai/task-card-template.md`, and other workflow files. Use `update_skill.py --bootstrap-current` or `install_workflow.py . --update-workflow-files` to refresh those local copies after updating the Skill.
+These actions are separate. Installing the Skill only makes Codex discover the workflow; it does not create or refresh the target repository's `ai/` directory. Already bootstrapped projects keep local copies of `ai/dispatch-to-claude.sh`, `ai/task-card-template.md`, and other workflow files. Use `update_skill.py --bootstrap-current` to refresh them with a Skill update, or `update_skill.py --project-only` to refresh only the project. `--local-only` and `--doctor` are forwarded to that project refresh when requested.
 
 Refreshing an existing project also installs
 `.codex/rules/ai-coding-workflow.rules`. Restart Codex after the refresh so the
@@ -352,9 +356,12 @@ ai-coding-workflow/
 
 ---
 
-## JSON Task Cards (opt-in)
+## JSON Task Cards (primary delegated path)
 
-Task cards can be authored as structured JSON instead of (or alongside) Markdown. JSON task cards provide schema validation, deterministic profile composition, and machine-readable acceptance criteria. Existing Markdown task cards and the dispatcher remain fully supported — JSON is an opt-in addition.
+For delegated `aiwf run` work, Task JSON is the one task contract. Codex
+freezes/reviews it; the workflow composes profiles and deterministically renders
+the Markdown execution projection for Claude. Existing hand-authored Markdown
+cards remain supported only as an explicit compatibility path.
 
 ### Source checkout commands
 
@@ -387,14 +394,16 @@ python ai/compose-profiles.py ai/task-cards/PROJ-123.json --output composed.json
 python ai/render-task-card.py ai/task-cards/PROJ-123.json --view execution
 ```
 
-### JSON as opt-in source of truth
+### JSON source of truth
 
-When a task card exists as both `.json` and `.md`, the JSON file is the source of truth. The Markdown file is the human-readable rendering. Use `render-task-card.py` to regenerate the Markdown from JSON.
+When a task has JSON, that file is the source of truth. Its generated Markdown
+is a disposable execution projection, not an editable second contract. Use
+`render-task-card.py` to inspect or regenerate it from JSON.
 
 ### Audit vs execution rendering
 
 - **Audit view** (`--view audit`): includes all sections — risk assessment, extensions, full handoff contract. For human review.
-- **Execution view** (`--view execution`): includes only execution-relevant sections — goal, scope, acceptance, validation, stop conditions. For Claude dispatch.
+- **Execution view** (`--view execution`): includes goal, scope, acceptance, validation, top-level stop conditions, and conditional routing context. It omits identity, full handoff, and static protocol. For Claude dispatch.
 
 ### Conflict hard-fail
 
@@ -402,7 +411,8 @@ Profile composition is deterministic and fail-closed. If two profiles define con
 
 ### Legacy Markdown compatibility
 
-Markdown task cards continue to work unchanged. The dispatcher, templates, and review scripts all support Markdown. JSON is purely opt-in for teams that want schema validation and structured composition.
+Legacy Markdown task cards continue to work unchanged. The dispatcher, templates,
+and review scripts support them as a compatibility path.
 
 ### Installed asset layout
 
@@ -483,9 +493,10 @@ For routine updates from a cloned checkout, use the wrapper:
 python scripts/update_skill.py
 python scripts/update_skill.py --bootstrap-current
 python scripts/update_skill.py --pull --bootstrap-repo /path/to/your-project
+python scripts/update_skill.py --project-only --bootstrap-repo /path/to/your-project --local-only --doctor
 ```
 
-`python scripts/update_skill.py` updates the user-level Codex Skill and automatically refreshes the containing Git repository when it is already bootstrapped, even when invoked from a subdirectory. `--bootstrap-current` makes that intent explicit, `--bootstrap-repo` targets another repository, and `--skill-only` intentionally leaves project-local workflow files unchanged. Normal updates use compact summaries, skip optional service prompts, and avoid staging or replacing an unchanged Skill package. Project refresh still verifies managed content and validates every changed shell launcher. The command reports whether project refresh happened and reminds you to restart Codex.
+`python scripts/update_skill.py` updates the user-level Codex Skill and automatically refreshes the containing Git repository when it is already bootstrapped, even when invoked from a subdirectory. `--bootstrap-current` makes that intent explicit, `--bootstrap-repo` targets another repository, and `--skill-only` intentionally leaves project-local workflow files unchanged. `--project-only` skips Skill activation and refreshes only the selected project; it supports `--local-only` and `--doctor`. Normal updates use compact summaries, skip optional service prompts, and avoid staging or replacing an unchanged Skill package. Pass `--code-search-services ask|check` for an explicit installer service action. Project refresh still verifies managed content and validates every changed shell launcher. The command reports whether project refresh happened and reminds you to restart Codex.
 
 The installed updater records and reuses the real source checkout rather than
 silently using the installed Skill as its own update source. Missing or invalid
@@ -534,7 +545,7 @@ python scripts/update_skill.py --setup-current --apply
 python scripts/update_skill.py --setup-repo /path/to/your-project --apply
 ```
 
-Guided setup runs four phases in order: (1) install/update the skill, (2) bootstrap or refresh workflow files, (3) run environment-aware auto-setup for LSP/CodeGraph/Zoekt, and (4) run the repository doctor. If any phase fails, execution stops and the exact failed command is shown.
+Guided setup runs four phases in order: (1) install/update the skill, (2) bootstrap or refresh workflow files, (3) run environment-aware auto-setup for LSP/CodeGraph/Zoekt, and (4) run the repository doctor. After phase 1, phases 2–4 execute from the newly activated Skill rather than the source checkout, so the installed package and project refresh cannot drift. If any phase fails, execution stops and the exact failed command is shown.
 
 When running from an already installed skill but updating from a separate clone, point it at the clone:
 
@@ -746,7 +757,7 @@ no more than 2.0x direct execution, and at least 30% less Codex work.
 
 An auxiliary/mechanical delegation with insufficient accepted history runs as one serial **canary**. It cannot release parallel work or an automatic Checker. A counted canary model failure requires a fresh ROUTE before redispatch, while transport/approval failures retain same-worktree recovery. Efficient preparation also stops before Claude when its default 45-second, 24 KiB task-card, 64 KiB Context Packet, or 80 KiB combined control-plane budget is exceeded.
 
-After Codex accepts a Builder's main direction, every correction still starts with a fresh Spark `--routing-event revision` estimate before another task card is written. A local deterministic correction may route to **reviewer-owned bounded correction** when Codex already holds the exact reviewed context, no new design decision is needed, and the calibrated edit fits the repository-scale direct gate. This is an economic ownership route, not a claim that one Claude result met the repeated-failure takeover threshold. Architectural or broad direction deviation is not eligible; revise, split, or reject instead. If Claude remains owner, prefer reviewed same-worktree continuation. `Mode = revision` is normalized as Builder and may transition directly to a reviewed `checker-test` continuation.
+After Codex accepts a Builder's main direction, every correction still starts with a fresh Spark `--routing-event revision` estimate before the next JSON task contract is frozen. A local deterministic correction may route to **reviewer-owned bounded correction** when Codex already holds the exact reviewed context, no new design decision is needed, and the calibrated edit fits the repository-scale direct gate. This is an economic ownership route, not a claim that one Claude result met the repeated-failure takeover threshold. Architectural or broad direction deviation is not eligible; revise, split, or reject instead. If Claude remains owner, prefer reviewed same-worktree continuation. Legacy `Mode = revision` is normalized as Builder and may transition directly to a reviewed `checker-test` continuation.
 
 When Claude appears stuck, first classify the cause before blaming execution: task-card ambiguity, mixed-role assignment, dirty source/stale HEAD, permission or approval blocker, long-running validation, missing progress artifact, external environment, or true no-progress.
 

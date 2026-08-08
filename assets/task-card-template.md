@@ -1,8 +1,10 @@
 # Legacy Full Task Card (Compatibility Only)
 
-> Default authoring path: Codex reads `ai/task-card-components/catalog.md`,
-> selects a preset and material gates, then runs `python ai/compose_task_card.py`.
-> Do not load or fill this monolithic template for ordinary tasks.
+> This is a legacy Markdown compatibility artifact. The default JSON-backed
+> path freezes Task JSON and lets `aiwf run` render the execution card
+> deterministically. Do not load or fill this monolithic template for ordinary
+> tasks. Use `ai/task-card-components/catalog.md` only when an explicit legacy
+> Markdown card is required.
 
 ## ID
 

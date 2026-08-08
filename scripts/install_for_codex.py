@@ -692,8 +692,10 @@ def validate_skill_tree(path):
         "SKILL.md",
         "assets/AGENTS.md",
         "assets/CLAUDE.md",
+        "scripts/install_for_codex.py",
         "scripts/install_workflow.py",
         "scripts/update_skill.py",
+        "scripts/doctor_workflow.py",
     ]
     missing = [rel for rel in required if not os.path.isfile(os.path.join(path, rel))]
     if missing:
@@ -761,6 +763,22 @@ def parse_args(argv=None):
         help="After installing the skill, bootstrap the given repository path.",
     )
     parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help=(
+            "With --bootstrap-current or --bootstrap-repo, keep workflow control-plane "
+            "ignores in .git/info/exclude instead of editing .gitignore."
+        ),
+    )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help=(
+            "With --bootstrap-current or --bootstrap-repo, run the installed "
+            "workflow doctor after the refresh."
+        ),
+    )
+    parser.add_argument(
         "--auto-setup",
         metavar="REPO",
         help="Auto-configure LSP, CodeGraph, and Zoekt for the given repository.",
@@ -786,16 +804,31 @@ def parse_args(argv=None):
         parser.error("--bootstrap-current and --bootstrap-repo are mutually exclusive")
     if args.apply and not args.auto_setup:
         parser.error("--apply requires --auto-setup")
+    if args.local_only and not (args.bootstrap_current or args.bootstrap_repo):
+        parser.error("--local-only requires --bootstrap-current or --bootstrap-repo")
+    if args.doctor and not (args.bootstrap_current or args.bootstrap_repo):
+        parser.error("--doctor requires --bootstrap-current or --bootstrap-repo")
+    if args.auto_setup and (
+        args.bootstrap_current
+        or args.bootstrap_repo
+        or args.local_only
+        or args.doctor
+    ):
+        parser.error(
+            "--auto-setup cannot be combined with bootstrap, --local-only, or --doctor"
+        )
     return args
 
 
-def run_bootstrap(installed_skill_dir, repo_path, summary_only=False):
+def run_bootstrap(installed_skill_dir, repo_path, summary_only=False, local_only=False):
     """Run install_workflow.py from the installed skill against *repo_path*."""
     installer = os.path.join(installed_skill_dir, "scripts", "install_workflow.py")
     if not os.path.isfile(installer):
         raise FileNotFoundError("Workflow installer not found: {}".format(installer))
     repo_abs = os.path.abspath(repo_path)
     command = [sys.executable, installer, repo_abs, "--update-workflow-files"]
+    if local_only:
+        command.append("--local-only")
     if summary_only:
         command.append("--summary-only")
     else:
@@ -804,6 +837,21 @@ def run_bootstrap(installed_skill_dir, repo_path, summary_only=False):
         print("  Command:    {}".format(
             " ".join(quote_cmd_arg(part) for part in command)
         ))
+    subprocess.run(command, check=True)
+
+
+def run_doctor(installed_skill_dir, repo_path):
+    """Run the doctor shipped in the active installed Skill."""
+    doctor = os.path.join(installed_skill_dir, "scripts", "doctor_workflow.py")
+    if not os.path.isfile(doctor):
+        raise FileNotFoundError("Workflow doctor not found: {}".format(doctor))
+    repo_abs = os.path.abspath(repo_path)
+    command = [sys.executable, doctor, repo_abs]
+    print("\nRunning workflow doctor:")
+    print("  Repository: {}".format(repo_abs))
+    print("  Command:    {}".format(
+        " ".join(quote_cmd_arg(part) for part in command)
+    ))
     subprocess.run(command, check=True)
 
 
@@ -899,7 +947,14 @@ def main(argv=None):
     elif args.bootstrap_repo:
         bootstrap_repo = args.bootstrap_repo
     if bootstrap_repo:
-        run_bootstrap(dest, bootstrap_repo, summary_only=args.summary_only)
+        run_bootstrap(
+            dest,
+            bootstrap_repo,
+            summary_only=args.summary_only,
+            local_only=args.local_only,
+        )
+        if args.doctor:
+            run_doctor(dest, bootstrap_repo)
         if not args.summary_only:
             print_context_tool_guidance(dest, bootstrap_repo)
     elif not args.summary_only:
