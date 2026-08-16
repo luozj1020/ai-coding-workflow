@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -10,6 +11,26 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "claude_task_id.py"
 MONITOR = ROOT / "scripts" / "monitor-claude.sh"
+
+
+def bash_exe() -> str:
+    if os.name == "nt":
+        for candidate in (
+            pathlib.Path(r"C:\Program Files\Git\bin\bash.exe"),
+            pathlib.Path(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        ):
+            if candidate.is_file():
+                return str(candidate)
+    return "bash"
+
+
+def bash_path(path: pathlib.Path) -> str:
+    value = str(path)
+    if os.name == "nt":
+        value = value.replace("\\", "/")
+        if len(value) >= 2 and value[1] == ":":
+            value = "/" + value[0].lower() + value[2:]
+    return value
 
 
 def load_module():
@@ -97,8 +118,8 @@ class ClaudeTaskIdTests(unittest.TestCase):
             )
             result = subprocess.run(
                 [
-                    "bash",
-                    str(MONITOR),
+                    bash_exe(),
+                    bash_path(MONITOR),
                     "decision",
                     runtime_id,
                     "--json",

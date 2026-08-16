@@ -161,7 +161,9 @@ class ReviewedContinuationTest(unittest.TestCase):
         self.assertEqual(approval["inherited_builder_mode"], "execution-only")
         self.assertEqual(approval["inherited_tool_profile"], "locator-builder")
         self.assertEqual(approval["prior_context_lease_id"], "lease-prior-1")
-        self.assertEqual(approval["authorization_path"], str(self.approval))
+        self.assertTrue(
+            Path(approval["authorization_path"]).samefile(self.approval)
+        )
         self.assertIn("--reviewed-continuation", approval["dispatch_argv"])
         validated = self.helper(
             "validate", "--approval", str(self.approval),
@@ -212,8 +214,14 @@ class ReviewedContinuationTest(unittest.TestCase):
         approval = json.loads(result.stdout)
         authorization = Path(approval["authorization_path"])
         self.assertTrue(authorization.is_file())
-        self.assertTrue(authorization.is_relative_to(self.repo / ".worktrees"))
-        self.assertFalse(authorization.is_relative_to(self.worktree))
+        self.assertTrue(
+            authorization.resolve().is_relative_to(
+                (self.repo / ".worktrees").resolve()
+            )
+        )
+        self.assertFalse(
+            authorization.resolve().is_relative_to(self.worktree.resolve())
+        )
         self.assertIn(str(authorization), approval["dispatch_command"])
 
     def test_authorization_inside_product_worktree_is_rejected(self) -> None:
