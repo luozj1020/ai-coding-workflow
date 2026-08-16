@@ -106,6 +106,64 @@ class SparkExecutionAvailabilityTests(unittest.TestCase):
             self.assertEqual(persisted["preferred_execution_env"], "host")
             self.assertEqual(written["state_file"], str(state))
 
+    def test_recent_failure_opens_mode_scoped_circuit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            state = repo / "circuit.json"
+            with mock.patch.dict(
+                os.environ,
+                {"CODEX_SPARK_CIRCUIT_STATE_FILE": str(state)},
+                clear=False,
+            ):
+                self.module.record_circuit_failure(
+                    repo, "task-card-audit", "test-timeout", {"exit_code": -1}
+                )
+                result = self.module.circuit(repo, "task-card-audit")
+                other = self.module.circuit(repo, "postflight-bundle")
+
+            self.assertTrue(result["open"])
+            self.assertEqual(result["detail"]["exit_code"], -1)
+            self.assertFalse(other["open"])
+            self.assertEqual(other["status"], "context-mismatch")
+
+    def test_circuit_expires_and_success_closes_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            state = repo / "circuit.json"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CODEX_SPARK_CIRCUIT_STATE_FILE": str(state),
+                    "CODEX_SPARK_CIRCUIT_TTL_SECONDS": "10",
+                },
+                clear=False,
+            ):
+                self.module.record_circuit_failure(
+                    repo, "task-card-audit", "test-timeout"
+                )
+                future = datetime.now(timezone.utc) + timedelta(seconds=11)
+                expired = self.module.circuit(repo, "task-card-audit", future)
+                self.module.record_circuit_success(
+                    repo, "task-card-audit", "test-success"
+                )
+                closed = self.module.circuit(repo, "task-card-audit")
+
+            self.assertFalse(expired["open"])
+            self.assertEqual(expired["status"], "expired")
+            self.assertFalse(closed["open"])
+            self.assertEqual(closed["status"], "closed")
+
+    def test_task_card_audit_uses_short_budget(self):
+        with mock.patch.dict(
+            os.environ, {"CODEX_SPARK_AUDIT_TIMEOUT_SECONDS": "25"}, clear=False
+        ):
+            self.assertEqual(
+                self.module.audit_timeout_seconds(120, "task-card-audit"), 25
+            )
+            self.assertEqual(
+                self.module.audit_timeout_seconds(120, "postflight-bundle"), 120
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

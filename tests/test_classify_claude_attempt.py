@@ -64,6 +64,12 @@ class ClassifyClaudeAttemptTests(unittest.TestCase):
         self.assertEqual(result["failure_class"], "recoverable-evidence")
         self.assertEqual(result["recommended_action"], "review-existing-evidence")
 
+    def test_tail_evidence_gap_never_requests_implementation_retry(self):
+        result = classify(outcome="evidence_tail_incomplete", diff_changes=1)
+        self.assertEqual(result["failure_class"], "recoverable-evidence")
+        self.assertEqual(result["recommended_action"], "review-existing-evidence")
+        self.assertFalse(result["counts_toward_takeover"])
+
     def test_direction_deviation_wins(self):
         result = classify(diff_changes=2, direction="off-plan")
         self.assertEqual(result["failure_class"], "direction-deviation")

@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import stat
 import symtable
 import sys
@@ -27,6 +28,9 @@ RUNTIME_PROTOCOL = "aiwf-exact-write-v3"
 DEFAULT_MAX_BYTES = 16 * 1024 * 1024
 LARGE_FRAGMENT_MIN_BYTES = 4096
 LARGE_FRAGMENT_MAX_FRACTION = 0.75
+ABNORMAL_GROWTH_MIN_BASE_LINES = 20
+ABNORMAL_GROWTH_ABSOLUTE_ALLOWANCE = 400
+ABNORMAL_GROWTH_MULTIPLIER = 3
 
 
 class ApprovedWriteError(ValueError):
@@ -227,6 +231,89 @@ def _top_level_imports(tree: ast.Module) -> Counter[tuple[object, ...]]:
     return values
 
 
+def _main_guard_count(tree: ast.Module) -> int:
+    count = 0
+    for node in tree.body:
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+            continue
+        if not isinstance(test.left, ast.Name) or test.left.id != "__name__":
+            continue
+        if not isinstance(test.ops[0], ast.Eq) or len(test.comparators) != 1:
+            continue
+        value = test.comparators[0]
+        if isinstance(value, ast.Constant) and value.value == "__main__":
+            count += 1
+    return count
+
+
+def _secondary_module_string_count(tree: ast.Module) -> int:
+    return sum(
+        1 for index, node in enumerate(tree.body)
+        if index > 0 and isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
+def _validate_python_file_boundaries(
+    previous_source: str, candidate_source: str,
+    previous_tree: Optional[ast.Module], candidate_tree: ast.Module,
+) -> list[str]:
+    """Reject common whole-module concatenation signatures."""
+    candidate_lines = candidate_source.splitlines()
+    previous_lines = previous_source.splitlines()
+    internal_headers = [
+        index for index, line in enumerate(candidate_lines, 1)
+        if (line.startswith("#!") and index != 1)
+        or (
+            re.search(r"^[ \t]*#.*coding[:=][ \t]*[-\w.]+", line)
+            and index > 2
+        )
+    ]
+    if internal_headers:
+        raise ApprovedWriteError(
+            "candidate validation failed: internal module header at lines "
+            + ", ".join(str(value) for value in internal_headers[:8])
+        )
+    previous_main_guards = _main_guard_count(previous_tree) if previous_tree else 0
+    candidate_main_guards = _main_guard_count(candidate_tree)
+    if candidate_main_guards > 1 and candidate_main_guards > previous_main_guards:
+        raise ApprovedWriteError(
+            "candidate validation failed: newly duplicated module entry point"
+        )
+    previous_secondary_strings = (
+        _secondary_module_string_count(previous_tree) if previous_tree else 0
+    )
+    candidate_secondary_strings = _secondary_module_string_count(candidate_tree)
+    if (
+        candidate_secondary_strings > previous_secondary_strings
+        and candidate_secondary_strings > 0
+    ):
+        raise ApprovedWriteError(
+            "candidate validation failed: secondary module-level string suggests "
+            "a concatenated file boundary"
+        )
+    if len(previous_lines) >= ABNORMAL_GROWTH_MIN_BASE_LINES:
+        maximum = max(
+            len(previous_lines) + ABNORMAL_GROWTH_ABSOLUTE_ALLOWANCE,
+            len(previous_lines) * ABNORMAL_GROWTH_MULTIPLIER,
+        )
+        if len(candidate_lines) > maximum:
+            raise ApprovedWriteError(
+                "candidate validation failed: abnormal line-count growth "
+                f"({len(previous_lines)} -> {len(candidate_lines)}; maximum {maximum})"
+            )
+    return [
+        "python-module-header-boundary",
+        "python-single-module-entry-point",
+        "python-no-secondary-module-string",
+        "python-bounded-line-growth",
+    ]
+
+
 def _module_import_bindings(tree: ast.Module) -> set[str]:
     bindings: set[str] = set()
     for node in tree.body:
@@ -320,6 +407,13 @@ def _validate_candidate(
             previous_tree = ast.parse(previous.decode("utf-8"), filename=relative_path)
         except (SyntaxError, UnicodeDecodeError):
             previous_tree = None
+        try:
+            previous_source = previous.decode("utf-8")
+        except UnicodeDecodeError:
+            previous_source = ""
+        checks.extend(_validate_python_file_boundaries(
+            previous_source, source, previous_tree, candidate_tree,
+        ))
         if previous_tree is not None:
             _reject_new_duplicates(
                 "definitions",

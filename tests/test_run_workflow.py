@@ -174,6 +174,66 @@ class TestRunWorkflowPreview(unittest.TestCase):
             self.assertEqual(result["model_calls"], [])
             self.assertEqual(result["status"], "routed")
 
+    def test_oversized_task_stops_before_spark_or_claude(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(write_paths=[
+                "README.md", "README_CN.md", "SKILL.md", "assets/README.md",
+                "references/task-card-policy.md", "scripts/task_schema.py",
+            ])
+            task_path = write_task(tmp, task)
+            result = run_workflow.run_lifecycle(
+                task_path=task_path,
+                run_dir_base=Path(tmp),
+                repo=ROOT,
+                profiles_dir=PROFILES,
+            )
+            self.assertEqual(result["status"], "routed")
+            self.assertEqual(result["final_decision"], "split-required")
+            self.assertEqual(result["model_calls"], [])
+            self.assertTrue(result["task_granularity"]["blocking"])
+            run_dir = Path(result["run_dir"])
+            decision = json.loads(
+                (run_dir / "dispatch-preview.json").read_text(encoding="utf-8")
+            )
+            plan = json.loads(
+                (run_dir / "execution-plan.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(decision["action"], "split-task-before-dispatch")
+            self.assertFalse(decision["claude_dispatched"])
+            self.assertFalse(decision["spark_dispatched"])
+            self.assertFalse(plan["spark"]["invoke"])
+            self.assertEqual(plan["spark"]["skip_reason"], "skip.task-split-required")
+
+    def test_reviewed_granularity_exception_reaches_normal_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(write_paths=[
+                "README.md", "README_CN.md", "SKILL.md", "assets/README.md",
+                "references/task-card-policy.md", "scripts/task_schema.py",
+            ])
+            task["extensions"]["task_shape"] = {
+                "responsibilities": ["synchronize one generated contract"],
+                "split_decision": "exception",
+                "split_reason": "the six projections share one generator and one atomic check",
+            }
+            task_path = write_task(tmp, task)
+            result = run_workflow.run_lifecycle(
+                task_path=task_path,
+                run_dir_base=Path(tmp),
+                repo=ROOT,
+                profiles_dir=PROFILES,
+            )
+            self.assertEqual(result["status"], "routed")
+            self.assertEqual(result["final_decision"], "claude-dispatch-ready")
+            self.assertEqual(
+                result["task_granularity"]["status"],
+                "split-exception-reviewed",
+            )
+            card = (Path(result["run_dir"]) / "delegation-task-card.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Task Granularity", card)
+            self.assertIn("the six projections share one generator", card)
+
     def test_claude_solution_planner_preview_renders_json_execution_projection(self):
         """A positive Claude route renders one compact JSON-derived card."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -358,8 +418,8 @@ class TestRunWorkflowPreview(unittest.TestCase):
             events_path = run_dir / "run-events.jsonl"
             self.assertTrue(events_path.exists())
             lines = [
-                l for l in events_path.read_text().splitlines()
-                if l.strip()
+                line for line in events_path.read_text().splitlines()
+                if line.strip()
             ]
             self.assertGreater(len(lines), 0)
             for line in lines:
@@ -455,6 +515,40 @@ class TestRunWorkflowStandardLane(unittest.TestCase):
 
 
 class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
+    def test_recent_equivalent_failure_skips_spark_and_continues_to_claude(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_path = write_task(root, make_task())
+            state = root / "spark-circuit.json"
+            dispatcher = root / "dispatcher.sh"
+            dispatcher.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+
+            with mock.patch.dict(
+                os.environ,
+                {"CODEX_SPARK_CIRCUIT_STATE_FILE": str(state)},
+                clear=False,
+            ):
+                run_workflow.spark_execution_availability.record_circuit_failure(
+                    ROOT, "task-card-audit", "test-timeout"
+                )
+                with mock.patch.object(run_workflow, "_run_spark_attempt") as attempt:
+                    result = run_workflow.run_lifecycle(
+                        task_path=task_path,
+                        execute=True,
+                        dispatcher=str(dispatcher),
+                        run_dir_base=root,
+                        repo=ROOT,
+                        profiles_dir=PROFILES,
+                    )
+
+            attempt.assert_not_called()
+            record = json.loads(
+                (Path(result["run_dir"]) / "spark-dispatch.json").read_text()
+            )
+            self.assertEqual(record["skip_reason"], "skip.spark-circuit-open")
+            self.assertTrue(record["continued_to_claude"])
+            self.assertEqual(record["time_budget_seconds"], 30)
+
     def test_sandbox_handoff_stops_before_claude_and_persists_route(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -644,8 +738,8 @@ class TestRunWorkflowArtifacts(unittest.TestCase):
             run_dir = Path(result["run_dir"])
             events_path = run_dir / "run-events.jsonl"
             lines = [
-                l for l in events_path.read_text().splitlines()
-                if l.strip()
+                line for line in events_path.read_text().splitlines()
+                if line.strip()
             ]
             timestamps = []
             for line in lines:

@@ -409,6 +409,16 @@ is a disposable execution projection, not an editable second contract. Use
 
 Profile composition is deterministic and fail-closed. If two profiles define conflicting scalar values for the same field, composition raises an error rather than silently picking one. Use `lint-task-card.py` to catch conflicts before dispatch.
 
+### Task-shape and complex-gate contracts
+
+`aiwf run` writes `task-granularity.json` before dispatch. Six write paths,
+three distinct responsibilities, three new modules, or a compound multi-file
+task produces `split-required` and prevents both Spark and Claude from starting.
+Split the JSON task or record a reviewed `extensions.task_shape` exception with
+a concrete reason. Tasks implementing aggregation or acceptance gates use
+`extensions.complex_gate_contract` to freeze at least two counterexamples and
+one fail-closed condition; incomplete contracts fail JSON validation.
+
 ### Legacy Markdown compatibility
 
 Legacy Markdown task cards continue to work unchanged. The dispatcher, templates,
@@ -859,6 +869,11 @@ orchestration, not permission to
 abandon the model call; only a failed host attempt establishes that the current
 route is unavailable.
 
+The dispatcher prints the canonical `Runtime ID`. Dispatch and monitor use the
+same validator, so safe custom preflight/DAG IDs are directly accepted by
+`monitor-claude.sh`; callers must not synthesize a different `claude-`-prefixed
+ID.
+
 The startup connectivity probe runs before full worktree construction. Its
 cache identity is independent of the requested tool profile; the observed tool
 inventory is checked separately against each card. Receipts distinguish
@@ -905,16 +920,30 @@ ownership economics remain unresolved, Spark runs `execution-cost-estimator`;
 otherwise it runs one bounded `task-card-audit`. The audit is attached as an
 advisory-only appendix and cannot expand frozen scope or acceptance. Set
 `AI_WORKFLOW_SPARK_GATE=off` for a task-local opt-out. Express and zero-budget
-routes still skip Spark.
+routes still skip Spark. Integrated audits use a 30-second budget by default;
+an unusable result opens a five-minute, mode-scoped circuit breaker so an
+equivalent audit is skipped while deterministic preflight and Claude continue.
 
 The estimator now records repository scale, historical worktree cost, `task_role`, `context_reacquisition_cost`, `codex_semantic_rereview`, `solution_clarity`, and `semantic_concentration`. `python ai/repository-scale.py --format json` exposes the deterministic facts without a model call. `--fast-path-max-diff-lines` / `CODEX_FAST_PATH_MAX_DIFF_LINES` and `--concentrated-fast-path-max-diff-lines` / `CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES` explicitly override the auto-selected line ceilings. The 1.5x/2.0 calibration still applies. Actual edits may exceed the estimate while scope, solution, and context stay stable.
 
-After Claude exits, the dispatcher writes `<task-id>.report-consistency.json` and `<task-id>.outcome.json`. Reports must end with exact changed-file/count/cleanliness claims. Assigned tests also require `claimed_test_count=<n>` and a matching test diff; assigned validation requires `claimed_validation_command=<command>` and `claimed_validation_exit_code=<code>`. Revision findings use `resolved_finding=<id>|file=<path>|symbol=<symbol>|test=<name or not-required>`. The verifier compares file lists, detected added test declarations, and finding evidence. Missing or contradictory claims set `completion_state=needs-review`. `dispatch_success`, `artifact_valid`, `validation_success`, and `semantic_acceptance` remain separate; only Codex review can establish semantic acceptance.
+After Claude exits, the dispatcher writes `<task-id>.report-consistency.json` and `<task-id>.outcome.json`. Reports must end with exact changed-file/count/cleanliness claims. Assigned tests also require `claimed_test_count=<n>` and a matching test diff; assigned validation requires `claimed_validation_command=<command>` and `claimed_validation_exit_code=<code>`. Revision findings use `resolved_finding=<id>|file=<path>|symbol=<symbol>|test=<name or not-required>`. The verifier compares file lists, detected added test declarations, and finding evidence. Missing or contradictory claims set `completion_state=needs-review`. A finalized product diff without a valid report additionally sets `operator_state=implementation-stable-awaiting-review`; this ends runtime monitoring while preserving mandatory Codex review. `dispatch_success`, `artifact_valid`, `validation_success`, and `semantic_acceptance` remain separate; only Codex review can establish semantic acceptance.
+
+The acceptance bundle's `review_evidence` block directly lists scoped changed
+files, patch/recovered-diff hash, baseline commits, report availability, and
+exact validation commands with exit codes. A missing report therefore creates
+one bounded deterministic recovery receipt, not another implementation round.
 
 Dirty-snapshot runtime evidence separates the original `source_base_commit`
 from the synthetic `execution_base_commit`. Same-worktree retry validates each
 against the corresponding repository/worktree HEAD and inherits the snapshot
 baseline without re-snapshotting the still-dirty source worktree.
+
+A productive run writes `<task-id>.scoped.patch` plus a machine-readable
+`<task-id>.scoped-handoff.json` beside the worktree. The patch starts at the
+execution baseline and contains only approved product paths, including new
+files. Dirty-snapshot manifests explicitly forbid whole-worktree merge and give
+human-reviewable `git apply --check` / `git apply` commands; models never apply
+or merge the handoff.
 
 When a Claude diff is useful but incomplete, preserve the dirty isolated worktree. If Codex accepts its direction and there is one bounded semantic blocker, use `aiwf advisor-continuation` and continue in the same worktree with state-hash, allowlist, forbidden-path, and once-only guards. Do not pay for a fresh checkout and full reimplementation merely to recover prose evidence.
 
@@ -923,18 +952,23 @@ For a reviewed Builder revision or Builder→Checker handoff that does not need 
 ```bash
 python ai/aiwf.py reviewed-continuation prepare \
   --prior-task-id claude-... \
-  --next-task-card /absolute/next-card.md \
-  --next-role checker-test \
+  --next-task-card /absolute/next-task.json \
   --decision accepted-direction \
   --accepted-existing-path src/accepted-implementation.cc \
-  --allow-new-write-path tests/continuation_test.cc \
-  --output .worktrees/continuation-approval.json
+  --allow-new-write-path tests/continuation_test.cc
 
-bash ai/dispatch-to-claude.sh /absolute/next-card.md \
-  --reviewed-continuation .worktrees/continuation-approval.json
+# Run the receipt's dispatch_command exactly as emitted.
 ```
 
-The approval binds the exact dirty state, file content/mode, source/base/worktree HEAD, and next-card hash. Dispatch consumes it once and reuses the same worktree without reset, clean, checkout, or a new worktree setup window. Accepted implementation paths remain visible to Checker, while its new writes stay inside the declared test/validation paths. State drift, live prior processes, replay, scope expansion, managed/advisor/retry/parallel origins, and Checker→Builder transitions fail closed.
+The helper accepts Task JSON, rendered execution-card metadata, and legacy
+Markdown. It derives the next role, inherits the Builder mode, verified tool
+profile, and Context Lease lineage, and writes authorization outside the
+product worktree by default. The approval binds the exact dirty state, file
+content/mode, source/base/worktree HEAD, and next-card hash. Dispatch consumes
+it once and reuses the same worktree without reset, clean, checkout, or a new
+worktree setup window. State drift, live prior processes, replay, scope
+expansion, managed/advisor/retry/parallel origins, and Checker→Builder
+transitions fail closed.
 
 For sequential implementation slices under one frozen solution contract, issue
 a one-use Context Lease after Codex accepts each slice:
@@ -1285,9 +1319,9 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.codex-events.jsonl` | Raw Codex JSON events when available |
 | `*.codex-usage.txt` | Codex review token/cost usage summary when available |
 
-While Claude is running, the dispatcher distinguishes self-reported edit readiness from durable product-content changes. Agent controllers block on `monitor-claude.sh wait` and review bounded diff/decision evidence only when a material or terminal boundary arrives. `watch-claude.sh` and `status-claude.sh` remain manual diagnostics; they are not polling instructions. Interruption still requires corroborated deviation or confirmed no-progress evidence.
+While Claude is running, the dispatcher distinguishes self-reported edit readiness from durable product-content changes. Agent controllers block on `monitor-claude.sh wait` and review bounded diff/decision evidence only when a material or terminal boundary arrives. Compact status includes `last_verified_product_event`, sourced only from dispatcher product/window/terminal boundaries. `watch-claude.sh` and `status-claude.sh` remain manual diagnostics; they are not polling instructions. Interruption still requires corroborated deviation or confirmed no-progress evidence.
 
-An explicit tool profile is checked against the early stream-init inventory before a full worktree is created. Capability mismatch writes terminal result/outcome receipts with `builder_started=false` and `worktree_created=false`. The ordinary metadata-only activity receipt exposes session/control/product ages and remaining windows without reading Claude session JSONL; its combined session signal is diagnostic and cannot extend a product window. Only near an active deadline, the timeout-advisor capsule reads the current session UUID's bounded transcript tail, strips thinking and successful tool-result payloads, redacts assistant text, and records normalized tool events for Spark advice.
+An explicit or auto-resolved tool profile is checked against the early stream-init inventory before a full worktree is created. Capability mismatch writes terminal result/outcome receipts with `builder_started=false` and `worktree_created=false`. The ordinary metadata-only activity receipt exposes session/control/product ages and remaining windows without reading Claude session JSONL; its combined session signal is diagnostic and cannot extend a product window. Only near an active deadline, the timeout-advisor capsule reads the current session UUID's bounded transcript tail, strips thinking and successful tool-result payloads, redacts assistant text, and records normalized tool events for Spark advice.
 
 If Direction / Boundary Acknowledgement is required, Claude should write the acknowledgement before editing. When blocking approval is required, Codex gives one final decision before Claude proceeds. After `proceed`, Claude must continue the assigned task instead of repeatedly asking for the same confirmation.
 
@@ -1339,10 +1373,20 @@ The loop runner automates Steps 3-5, stopping on accept, max iterations, or huma
 **Checker-only validation:** Installed projects include `ai/check-worktree.sh`. Prefer exact task-card checks:
 
 ```bash
-bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover --command 'tests=pytest tests/test_target.py'
+bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover \
+  --jobs 4 --command 'tests=pytest tests/test_target.py'
 ```
 
-The dispatcher records a checker report after Claude finishes, but broad discovery is disabled by default to avoid unrelated pytest/ruff/mypy noise. Pass `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'` for exact dispatcher-run checks, or `CLAUDE_CODE_CHECKER_DISCOVER=1` when the task card explicitly allows broad project discovery.
+The checker runs independent read-only commands concurrently (default four),
+keeps result order deterministic, and writes one JSON validation receipt beside
+the Markdown report. Its mandatory boundary pass includes virtual patches for
+untracked files plus Python/JSON/TOML and cross-file concatenation checks, so an
+empty tracked `git diff --check` is not accepted as complete evidence. The
+dispatcher records these artifacts after Claude finishes, but broad discovery
+is disabled by default to avoid unrelated pytest/ruff/mypy noise. Pass
+`CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'` for exact
+dispatcher-run checks, or `CLAUDE_CODE_CHECKER_DISCOVER=1` only when the task
+card explicitly allows broad project discovery.
 
 **Checker Reuse Risk Gate:** Before dispatching a `checker-test` task, fill the Checker Reuse Risk Gate in the task card with exact rows: Public API risk, Data model risk, Security risk, Migration risk, Permission risk, Concurrency risk, Cross-module risk, Production impact. Each row must be explicit `no` for task-derived checker worktree reuse to default to `reuse-managed`. Missing, `unknown`, `n/a`, `duplicate`, `high` risk, DAG, or parallel tasks stay `fresh`. The environment variable `CLAUDE_CODE_WORKTREE_STRATEGY=fresh|reuse-managed` overrides this default. Existing reset safety via `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` remains unchanged.
 

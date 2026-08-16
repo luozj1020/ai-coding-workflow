@@ -82,6 +82,53 @@ def _task_card_source(path: Path | None) -> str:
     return "hash-bound-compatible-card"
 
 
+def _review_evidence(
+    paths: list[str],
+    report: dict[str, Any] | None,
+    validation: dict[str, Any] | None,
+    handoff: dict[str, Any] | None,
+    recovered: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Flatten the highest-value deterministic facts for bounded review."""
+    patch = (handoff or {}).get("patch")
+    patch = patch if isinstance(patch, dict) else {}
+    validation_results = []
+    raw_results = (validation or {}).get("results", [])
+    raw_results = raw_results if isinstance(raw_results, list) else []
+    for item in raw_results:
+        if not isinstance(item, dict):
+            continue
+        validation_results.append({
+            "index": item.get("index"),
+            "label": item.get("label"),
+            "command": item.get("command"),
+            "exit_code": item.get("exit_code"),
+        })
+    changed_files = (handoff or {}).get("changed_files")
+    if not isinstance(changed_files, list):
+        changed_files = [{"path": path, "change": "unknown"} for path in paths]
+    report_status = status_of(report, "status")
+    report_available = report_status in {"consistent", "passed", "success", "valid", "ok"}
+    if recovered and recovered.get("claude_report_complete") is False:
+        report_available = False
+    return {
+        "changed_files": changed_files,
+        "changed_path_count": len(changed_files),
+        "diff_sha256": (recovered or {}).get("diff_sha256") or patch.get("sha256"),
+        "source_base_commit": (handoff or {}).get("source_base_commit"),
+        "execution_base_commit": (handoff or {}).get("execution_base_commit"),
+        "claude_report_available": report_available,
+        "report_status": report_status,
+        "validation_status": status_of(validation, "status"),
+        "validation_results": validation_results,
+        "validation_command_count": len(validation_results),
+        "evidence_source": (
+            "deterministic-recovery" if recovered is not None
+            else "report-and-deterministic-receipts"
+        ),
+    }
+
+
 def _acceptance_index(
     graph: dict[str, Any] | None,
     delta: dict[str, Any] | None,
@@ -171,6 +218,8 @@ def recommend(
     report: dict[str, Any] | None,
     scope: dict[str, Any] | None,
     checker: dict[str, Any] | None,
+    validation: dict[str, Any] | None = None,
+    handoff: dict[str, Any] | None = None,
 ) -> str:
     if scope and scope.get("enforcement_passed") is False:
         return "revise-scope"
@@ -178,6 +227,10 @@ def recommend(
         return "inspect-validation-environment"
     if checker and checker.get("enforcement_passed") is False:
         return "revise-validation"
+    if validation and validation.get("status") == "failed":
+        return "revise-validation"
+    if handoff and handoff.get("status") == "blocked":
+        return "revise-scope"
     report_status = status_of(report, "status")
     if report_status in {"conflict", "invalid", "failed"}:
         return "revise-report-or-code"
@@ -193,6 +246,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     report = load(args.report_consistency)
     scope = load(args.write_scope)
     checker = load(args.checker_contract)
+    validation = load(getattr(args, "validation_receipt", None))
+    handoff = load(getattr(args, "scoped_handoff", None))
     recovered = load(args.recovered_completion)
     graph = load(_optional_arg(args, "acceptance_graph"))
     delta = load(_optional_arg(args, "delta_review_packet"))
@@ -205,11 +260,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     checker_skip_reason = None
     if acceptance_index and not review_selection["expanded_acceptance_ids"]:
         checker_skip_reason = "checker skipped: deterministic evidence sufficient"
+    paths = changed_paths(args.worktree)
+    review_evidence = _review_evidence(
+        paths, report, validation, handoff, recovered
+    )
     value = {
         "schema_version": 1,
         "task_id": (outcome or {}).get("task_id"),
         "authority": "evidence-summary-only",
-        "changed_paths": changed_paths(args.worktree),
+        "changed_paths": paths,
         "changed_symbols": sorted(
             str(value) for value in (symbols or {}).get("changed_symbols", []) if value
         ),
@@ -231,14 +290,26 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "validation": status_of(outcome, "validation_success"),
             "write_scope": status_of(scope, "enforcement_passed"),
             "checker_contract": status_of(checker, "enforcement_passed"),
+            "validation_fanout": status_of(validation, "status"),
+            "scoped_handoff": status_of(handoff, "status"),
             "semantic_acceptance": status_of(outcome, "semantic_acceptance"),
         },
         "completion_state": (outcome or {}).get("completion_state", "unknown"),
+        "operator_state": (outcome or {}).get("operator_state", "unknown"),
         "environment_failure_observed": bool(
             checker and checker.get("environment_failure_observed")
         ),
         "recovered_completion_available": recovered is not None,
-        "recommended_decision": recommend(outcome, report, scope, checker),
+        "review_evidence": review_evidence,
+        "recommended_decision": recommend(
+            outcome, report, scope, checker, validation, handoff
+        ),
+        "scoped_handoff": {
+            "manifest": str(getattr(args, "scoped_handoff", "") or "") or None,
+            "patch": (handoff or {}).get("patch"),
+            "dirty_snapshot": (handoff or {}).get("dirty_snapshot"),
+            "whole_worktree_merge_allowed": False,
+        },
         "checker_skip_reason": checker_skip_reason,
         "codex_output_contract": {
             "intent_freeze": ["goal", "invariants", "acceptance", "forbidden_paths"],
@@ -275,6 +346,14 @@ def compact_capsule(
         "repository_head": repository_head(worktree),
         "recommended_decision": value.get("recommended_decision"),
         "completion_state": value.get("completion_state"),
+        "operator_state": value.get("operator_state"),
+        "diff_sha256": value.get("review_evidence", {}).get("diff_sha256"),
+        "claude_report_available": value.get("review_evidence", {}).get(
+            "claude_report_available"
+        ),
+        "validation_command_count": value.get("review_evidence", {}).get(
+            "validation_command_count", 0
+        ),
         "gates": value.get("gates", {}),
         "changed_path_count": len(value.get("changed_paths", [])),
         "changed_symbol_count": len(value.get("changed_symbols", [])),
@@ -319,6 +398,8 @@ def main() -> int:
     parser.add_argument("--report-consistency", type=Path)
     parser.add_argument("--write-scope", type=Path)
     parser.add_argument("--checker-contract", type=Path)
+    parser.add_argument("--validation-receipt", type=Path)
+    parser.add_argument("--scoped-handoff", type=Path)
     parser.add_argument("--recovered-completion", type=Path)
     parser.add_argument("--acceptance-graph", type=Path)
     parser.add_argument("--delta-review-packet", type=Path)

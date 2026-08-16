@@ -12,7 +12,13 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from claude_task_id import normalize_task_id  # noqa: E402
 
 TERMINAL_RE = re.compile(
     r"Claude (?:child exited|subprocess ended|finished|completed)|Final dispatch outcome:|Dispatch Complete",
@@ -99,8 +105,13 @@ def repo_root(start: Path) -> Path:
 
 
 def latest_task(worktrees: Path) -> Optional[str]:
-    candidates = sorted(worktrees.glob("claude-*.progress.log"), key=lambda path: path.stat().st_mtime)
-    return candidates[-1].name[: -len(".progress.log")] if candidates else None
+    candidates = sorted(worktrees.glob("*.progress.log"), key=lambda path: path.stat().st_mtime)
+    for candidate in reversed(candidates):
+        try:
+            return normalize_task_id(str(candidate), artifact_input=True)
+        except ValueError:
+            continue
+    return None
 
 
 def normalize_task(value: Optional[str], worktrees: Path) -> str:
@@ -108,14 +119,7 @@ def normalize_task(value: Optional[str], worktrees: Path) -> str:
         value = latest_task(worktrees)
     if not value:
         raise ValueError("no Claude task found")
-    path = Path(value)
-    name = path.name
-    for suffix in (".progress.log", ".runtime.json", ".pid"):
-        if name.endswith(suffix):
-            name = name[: -len(suffix)]
-    if not re.fullmatch(r"claude-[A-Za-z0-9._-]+", name):
-        raise ValueError("unsafe Claude task id")
-    return name
+    return normalize_task_id(value, artifact_input=True)
 
 
 def inside(child: Path, parent: Path) -> bool:
@@ -191,6 +195,50 @@ def last_monitor_event(path: Path) -> Dict[str, str]:
         if "machine:" in line:
             return fields(line)
     return {}
+
+
+def verified_product_event(event: Dict[str, str]) -> str:
+    """Summarize only dispatcher-issued product boundary events."""
+    kind = event.get("event", "")
+    if kind not in {
+        "active-window-refreshed", "material-change",
+        "first-progress-reconciled", "terminal",
+    }:
+        return "none"
+    if not any(
+        key in event for key in (
+            "product_changes", "product_delta_from_baseline", "product_hash"
+        )
+    ):
+        return "none"
+    fields = [kind]
+    for key in (
+        "execution_state", "product_changes", "product_delta_from_baseline",
+        "active_window_refreshed", "product_hash",
+    ):
+        if event.get(key) not in {None, ""}:
+            fields.append(f"{key}={event[key]}")
+    return clean(";".join(fields), 240)
+
+
+def last_verified_product_event(path: Path) -> str:
+    """Find the newest product boundary even if later advisory events exist."""
+    for line in reversed(bounded_tail(path, 32768).splitlines()):
+        if not line.startswith("monitor_event "):
+            continue
+        try:
+            tokens = shlex.split(line[len("monitor_event "):])
+        except ValueError:
+            continue
+        event = {}
+        for token in tokens:
+            if "=" in token:
+                key, value = token.split("=", 1)
+                event[key] = value
+        summary = verified_product_event(event)
+        if summary != "none":
+            return summary
+    return "none"
 
 
 def progress_fields(worktree: Path, worktrees: Path, task_id: str, limit: int) -> Dict[str, Any]:
@@ -363,7 +411,6 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     root = repo_root(args.repo_root)
     worktrees = root / ".worktrees"
     task_id = normalize_task(args.task_id, worktrees)
-    prefix = worktrees / task_id
     progress_file = worktrees / f"{task_id}.progress.log"
     monitor_event_file = worktrees / f"{task_id}.monitor-events.log"
     status_file = worktrees / f"{task_id}.status.txt"
@@ -373,10 +420,13 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     worktree, conflicts = runtime_worktree(worktrees, task_id)
     progress_tail = bounded_tail(progress_file)
     status_tail = bounded_tail(status_file)
-    terminal = bool(TERMINAL_RE.search(progress_tail))
+    event = last_monitor_event(monitor_event_file)
+    product_event = last_verified_product_event(monitor_event_file)
+    terminal = bool(TERMINAL_RE.search(progress_tail)) or (
+        event.get("terminal") == "yes" and event.get("running") == "no"
+    )
     last_line = last_matching(progress_tail, DISPATCH_RE)
     dispatch_fields = fields(last_line)
-    event = last_monitor_event(monitor_event_file)
     helper = Path(__file__).resolve().with_name("claude-process-state.py")
     states = {
         role: role_state(
@@ -444,6 +494,18 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     evidence = evidence_label(event.get("evidence_state") or str(outcome.get("evidence_state") or ""))
     if not evidence:
         evidence = evidence_state(changes, result_size, report_text)
+    operator_state = str(outcome.get("operator_state") or "")
+    if not operator_state:
+        if terminal and evidence == "diff without report" and changes > 0:
+            operator_state = "implementation-stable-awaiting-review"
+        elif terminal and outcome.get("completion_state") in {
+            "needs-review", "semantic-review-required"
+        }:
+            operator_state = "terminal-awaiting-review"
+        elif terminal:
+            operator_state = "terminal"
+        else:
+            operator_state = "running-or-unresolved"
     if terminal and overall_running:
         conflicts.append("terminal-marker-with-live-role")
     if event.get("running") == "yes" and not running and not visibility and not terminal:
@@ -468,7 +530,12 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     if visibility and not terminal and not dispatcher_observed_running:
         decision, confidence, reason = "visibility-unknown", "high", "process-visibility-restricted"
     elif terminal and not overall_running:
-        decision, confidence, reason = "terminal", "high", "terminal-evidence"
+        reason = (
+            "implementation-stable-awaiting-review"
+            if operator_state == "implementation-stable-awaiting-review"
+            else "terminal-evidence"
+        )
+        decision, confidence = "terminal", "high"
     elif effective_running and finish_expected:
         # Completion is a voluntary-exit signal, never an interruption grant.
         # Keep waiting for the child to flush its report/result and exit itself.
@@ -499,7 +566,12 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
     else:
         decision, confidence, reason = "inspect", "low", "stopped-without-evidence"
 
-    codex_review = decision in {"inspect", "interrupt-candidate"} or direction_deviation or bool(conflicts)
+    codex_review = (
+        decision in {"inspect", "interrupt-candidate"}
+        or operator_state.endswith("awaiting-review")
+        or direction_deviation
+        or bool(conflicts)
+    )
     summary = clean(
         f"{decision}: {reason}; level={level}; running={'yes' if effective_running else 'no'}; "
         f"elapsed={elapsed}s quiet={quiet}s product_changes={changes} control_changes={control_changes}; state={execution_state}; "
@@ -534,6 +606,8 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
         "dispatcher": states["dispatcher"], "claude": states["claude"], "checker": states["checker"],
         "elapsed_seconds": elapsed, "quiet_seconds": quiet, "suspect_count": suspect,
         "execution_activity_state": execution_state,
+        "last_verified_product_event": product_event,
+        "operator_state": operator_state,
         "edit_ready": "yes" if edit_ready else "no",
         "product_idle_seconds": product_idle_seconds,
         "idle_confirmations": idle_confirmations,
@@ -560,12 +634,12 @@ def snapshot(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 def render_text(value: Dict[str, Any]) -> str:
-    keys = ("lifecycle_state", "startup_state", "usable", "decision", "confidence", "reason_code", "codex_review_required",
+    keys = ("lifecycle_state", "startup_state", "operator_state", "usable", "decision", "confidence", "reason_code", "codex_review_required",
             "interrupt_authorized", "finish_expected", "finish_recommended",
             "execution_phase", "implementation_complete", "completion_ready",
-            "execution_activity_state", "edit_ready", "product_idle_seconds", "idle_confirmations",
+            "execution_activity_state", "last_verified_product_event", "edit_ready", "product_idle_seconds", "idle_confirmations",
             "dispatch_success", "artifact_valid", "validation_success", "semantic_acceptance", "completion_state",
-            "monitor_level", "running", "collected_at", "elapsed_seconds",
+            "evidence_state", "monitor_level", "running", "collected_at", "elapsed_seconds",
             "quiet_seconds", "suspect_count", "artifact_growth", "worktree_changes",
             "product_changes", "total_product_changes", "control_changes", "summary")
     return "\n".join(f"{key}={clean(value.get(key), 240)}" for key in keys) + "\n"

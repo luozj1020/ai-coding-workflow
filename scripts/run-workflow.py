@@ -46,8 +46,8 @@ from typing import Any, Dict, List, Optional
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from evidence_hash import content_hash, evidence_hash
-from event_writer import EventWriter, build_event
+from evidence_hash import content_hash  # noqa: E402
+from event_writer import EventWriter, build_event  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Module loading
@@ -86,6 +86,7 @@ def _render_delegation_card(
         "source_of_truth_example": facts.get("source_of_truth_example", ""),
         "constraints": facts.get("constraints", []),
         "transformation_rule": facts.get("transformation_rule", ""),
+        "task_granularity": execution.get("task_granularity", {}),
         "independent_write_units": (
             facts.get("target_files", []) if builder_mode == "batch" else []
         ),
@@ -215,6 +216,7 @@ class RunContext:
         self.facts: Optional[Dict[str, Any]] = None
         self.routing: Optional[Dict[str, Any]] = None
         self.execution_plan: Optional[Dict[str, Any]] = None
+        self.task_granularity: Optional[Dict[str, Any]] = None
         self.evidence: Optional[Dict[str, Any]] = None
         self.acceptance: Optional[Dict[str, Any]] = None
         self.ladder: Optional[Dict[str, Any]] = None
@@ -273,6 +275,7 @@ class RunContext:
             "status": status,
             "lane": self.routing.get("lane") if self.routing else None,
             "execution_plan": _safe_path(self.run_dir / "execution-plan.json"),
+            "task_granularity": self.task_granularity,
             "model_calls": self.model_calls,
             "acceptance_status": self.acceptance.get("status") if self.acceptance else None,
             "review_tier": self.ladder.get("tier") if self.ladder else None,
@@ -295,6 +298,8 @@ class RunContext:
 
     def _final_decision(self, status: str) -> str:
         """Determine the final decision string."""
+        if self.task_granularity and self.task_granularity.get("blocking"):
+            return "split-required"
         if status == "completed":
             if self.ladder and self.ladder.get("tier") == "L0-local":
                 if self.acceptance and self.acceptance.get("status") == "passed":
@@ -455,11 +460,26 @@ def phase_validate(ctx: RunContext) -> None:
     if errors:
         raise PhaseError("validate", "failed", "; ".join(errors))
 
+    ctx.task_granularity = task_schema.assess_task_granularity(
+        ctx.composed, ctx.repo
+    )
+    granularity_out = ctx.run_dir / "task-granularity.json"
+    write_artifact(granularity_out, ctx.task_granularity)
+    ctx.record_artifact(granularity_out)
+
     out = ctx.run_dir / "validation-result.json"
-    write_artifact(out, {"valid": True, "errors": []})
+    write_artifact(out, {
+        "valid": True,
+        "errors": [],
+        "task_granularity_status": ctx.task_granularity.get("status"),
+        "dispatch_blocked_for_split": ctx.task_granularity.get("blocking", False),
+    })
     ctx.record_artifact(out)
     ctx.phase_timings["validate"] = time.monotonic() - start
-    ctx.emit_event("validate_complete", "setup")
+    ctx.emit_event("validate_complete", "setup", {
+        "task_granularity_status": ctx.task_granularity.get("status"),
+        "dispatch_blocked_for_split": ctx.task_granularity.get("blocking", False),
+    })
 
 
 def phase_facts(ctx: RunContext) -> None:
@@ -548,6 +568,7 @@ def phase_plan(ctx: RunContext) -> None:
     lane = ctx.routing.get("lane", "standard")
     budget = ctx.routing.get("budget", {})
     execution = ctx.routing.get("execution", {})
+    execution = {**execution, "task_granularity": ctx.task_granularity or {}}
     delegation_card = None
     selected_components: List[str] = []
     if execution.get("owner") != "codex-fast-path":
@@ -602,11 +623,13 @@ def phase_plan(ctx: RunContext) -> None:
             "remote_rounds": execution.get("remote_rounds", 1),
         },
         "planning": ctx.routing.get("planning", {}),
+        "task_granularity": ctx.task_granularity,
         "context_packet": None,
         "context_delivery": "inline-delegation-task-card" if delegation_card else "none",
         "spark": {
             "invoke": bool(
                 delegation_card
+                and not (ctx.task_granularity or {}).get("blocking")
                 and lane != "express"
                 and budget.get("spark_calls", 0) > 0
                 and os.environ.get("AI_WORKFLOW_SPARK_GATE", "auto").lower() != "off"
@@ -620,9 +643,14 @@ def phase_plan(ctx: RunContext) -> None:
             "advisory_only": True,
             "max_calls": 1,
             "skip_reason": (
-                None if delegation_card and lane != "express" and budget.get("spark_calls", 0) > 0
+                None if delegation_card and not (ctx.task_granularity or {}).get("blocking")
+                and lane != "express" and budget.get("spark_calls", 0) > 0
                 and os.environ.get("AI_WORKFLOW_SPARK_GATE", "auto").lower() != "off"
-                else "skip.no-budget-or-express-or-disabled"
+                else (
+                    "skip.task-split-required"
+                    if (ctx.task_granularity or {}).get("blocking")
+                    else "skip.no-budget-or-express-or-disabled"
+                )
             ),
         },
         "composed_task": str(ctx.run_dir / "composed-task.json"),
@@ -637,6 +665,7 @@ def phase_plan(ctx: RunContext) -> None:
     ctx.emit_event("plan_complete", "setup", {
         "lane": lane,
         "single_pass_allowed": execution.get("single_pass_allowed", False),
+        "task_granularity_status": (ctx.task_granularity or {}).get("status"),
     })
 
 
@@ -645,6 +674,30 @@ def phase_dispatch(ctx: RunContext) -> None:
     ctx.phase_order.append("dispatch")
 
     execution = ctx.execution_plan.get("execution", {})
+    if (ctx.task_granularity or {}).get("blocking"):
+        decision = {
+            "schema_version": 1,
+            "task_id": ctx.facts.get("task_id", ""),
+            "action": "split-task-before-dispatch",
+            "claude_dispatched": False,
+            "spark_dispatched": False,
+            "preview": not ctx.execute,
+            "reason_codes": ctx.task_granularity.get("blocking_reason_codes", []),
+            "task_granularity": str(ctx.run_dir / "task-granularity.json"),
+            "message": (
+                "Split this task into narrower JSON task cards, or record a reviewed "
+                "task_shape.split_decision=exception with a concrete split_reason."
+            ),
+        }
+        out = ctx.run_dir / (
+            "dispatch-decision.json" if ctx.execute else "dispatch-preview.json"
+        )
+        write_artifact(out, decision)
+        ctx.record_artifact(out)
+        ctx.phase_timings["dispatch"] = 0.0
+        ctx.stop_after_dispatch = True
+        ctx.emit_event("task_split_required", "dispatch", decision)
+        return
     if execution.get("owner") == "codex-fast-path":
         decision = {
             "schema_version": 1,
@@ -702,6 +755,11 @@ def phase_dispatch(ctx: RunContext) -> None:
         spark_record_path = ctx.run_dir / "spark-dispatch.json"
         spark_helper = HERE / "run-codex-spark.sh"
         spark_mode = str(spark_policy.get("mode", "task-card-audit"))
+        spark_circuit = spark_execution_availability.circuit(ctx.repo, spark_mode)
+        circuit_open = bool(spark_circuit.get("open"))
+        spark_timeout = spark_execution_availability.audit_timeout_seconds(
+            ctx.spark_host_retry_timeout, spark_mode
+        )
         spark_cache = spark_execution_availability.preference(ctx.repo)
         cached_host = (
             spark_cache.get("cache_valid")
@@ -732,9 +790,18 @@ def phase_dispatch(ctx: RunContext) -> None:
             "host_retry_exit_code": None,
             "host_retry_timed_out": False,
             "execution_environment_cache": spark_cache,
+            "circuit_breaker": spark_circuit,
+            "time_budget_seconds": spark_timeout,
         }
 
-        if cached_host and not ctx.spark_host_authority:
+        if circuit_open:
+            spark_record.update(
+                continued_to_claude=True,
+                skip_reason="skip.spark-circuit-open",
+                final_state="circuit_open",
+            )
+
+        if not circuit_open and cached_host and not ctx.spark_host_authority:
             spark_record.update(
                 skip_reason="skip.needs_host_execution",
                 needs_host_execution=True,
@@ -755,7 +822,7 @@ def phase_dispatch(ctx: RunContext) -> None:
 
         spark_exit = 127
         spark_timed_out = False
-        if spark_helper.is_file():
+        if not circuit_open and spark_helper.is_file():
             spark_exit, spark_timed_out = _run_spark_attempt(
                 spark_helper,
                 dispatch_card,
@@ -764,7 +831,7 @@ def phase_dispatch(ctx: RunContext) -> None:
                 spark_stdout,
                 spark_stderr,
                 ctx.repo,
-                ctx.spark_host_retry_timeout,
+                spark_timeout,
             )
             spark_record["attempted"] = True
         spark_record["exit_code"] = spark_exit
@@ -777,7 +844,10 @@ def phase_dispatch(ctx: RunContext) -> None:
             spark_stderr.read_text(encoding="utf-8", errors="replace")
             if spark_stderr.is_file() else ""
         )
-        handoff_needed = _spark_needs_host_execution(spark_text, spark_error)
+        handoff_needed = (
+            False if circuit_open
+            else _spark_needs_host_execution(spark_text, spark_error)
+        )
         spark_record["needs_host_execution"] = handoff_needed
 
         if handoff_needed:
@@ -822,7 +892,7 @@ def phase_dispatch(ctx: RunContext) -> None:
                 host_stdout,
                 host_stderr,
                 ctx.repo,
-                ctx.spark_host_retry_timeout,
+                spark_timeout,
             )
             spark_record.update(
                 host_retry_attempted=True,
@@ -837,18 +907,54 @@ def phase_dispatch(ctx: RunContext) -> None:
             spark_exit = host_exit
 
         spark_success = (
-            not spark_record.get("host_retry_timed_out")
+            not circuit_open
+            and not spark_record.get("host_retry_timed_out")
             and spark_exit == 0
             and "spark_status=success" in spark_text
         )
         spark_record["invoked"] = spark_success
         spark_record["continued_to_claude"] = True
-        spark_record["skip_reason"] = (
-            None if spark_success else "skip.spark-unavailable-or-failed"
-        )
-        spark_record["final_state"] = "invoked" if spark_success else "auto_disabled"
+        if not circuit_open:
+            spark_record["skip_reason"] = (
+                None if spark_success else "skip.spark-unavailable-or-failed"
+            )
+            spark_record["final_state"] = (
+                "invoked" if spark_success else "auto_disabled"
+            )
 
-        if spark_record.get("execution_env") == "host":
+        spark_attempted = bool(
+            spark_record.get("attempted") or spark_record.get("host_retry_attempted")
+        )
+        if spark_attempted:
+            circuit_detail = {
+                "run_id": ctx.run_id,
+                "exit_code": spark_exit,
+                "timed_out": bool(
+                    spark_timed_out or spark_record.get("host_retry_timed_out")
+                ),
+            }
+            if spark_success:
+                spark_record["circuit_breaker"] = (
+                    spark_execution_availability.record_circuit_success(
+                        ctx.repo, spark_mode, "spark-success", circuit_detail
+                    )
+                )
+            else:
+                spark_record["circuit_breaker"] = (
+                    spark_execution_availability.record_circuit_failure(
+                        ctx.repo, spark_mode, "spark-unavailable-or-failed",
+                        circuit_detail,
+                    )
+                )
+        elif not circuit_open and not spark_helper.is_file():
+            spark_record["circuit_breaker"] = (
+                spark_execution_availability.record_circuit_failure(
+                    ctx.repo, spark_mode, "spark-helper-unavailable",
+                    {"run_id": ctx.run_id},
+                )
+            )
+
+        if spark_attempted and spark_record.get("execution_env") == "host":
             cache_status = (
                 "host-available" if spark_success else "host-suspected-unavailable"
             )

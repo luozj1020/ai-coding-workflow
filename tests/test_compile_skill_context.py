@@ -425,11 +425,17 @@ class ContextCompilerTests(unittest.TestCase):
                 "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
                 "HOME": str(root / "home"),
                 "FAKE_CLAUDE_PROMPT_CAPTURE": str(capture),
-                "CLAUDE_CODE_API_PROBE_MODE": "failure-only",
+                "CLAUDE_CODE_API_PROBE_MODE": "off",
                 "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "0",
                 "CLAUDE_CODE_WRITE_SCOPE_ENFORCEMENT": "off",
                 "CLAUDE_CODE_TIMEOUT_ADVISOR": "off",
                 "CLAUDE_CODE_TERMINAL_DRAIN_SECONDS": "0",
+                "CLAUDE_CODE_HEARTBEAT_SECONDS": "1",
+                "CLAUDE_CODE_TIMEOUT_SECONDS": "15",
+                "CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS": "15",
+                "CLAUDE_CODE_HARD_TIMEOUT_SECONDS": "30",
+                "CLAUDE_CODE_CHECKER_FILE_TIMEOUT_SECONDS": "5",
+                "CLAUDE_CODE_CHECKER_JOBS": "1",
                 "AI_CODING_WORKFLOW_BYPASS_BROKER": "1",
             })
             completed = subprocess.run(

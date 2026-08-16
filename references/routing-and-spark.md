@@ -252,6 +252,15 @@ The model-call broker owns the process timeout. The default
 records a failed terminal ledger transition, and lets the wrapper emit its
 terminal envelope. Outer timeouts should be longer than this internal bound.
 
+Integrated `task-card-audit` uses a shorter 30-second budget by default
+(`CODEX_SPARK_AUDIT_TIMEOUT_SECONDS`). A timeout or unusable result opens a
+mode- and execution-context-bound five-minute circuit breaker; equivalent
+audits are skipped with `skip.spark-circuit-open` while deterministic preflight
+and Claude continue. A successful audit closes the circuit. Host handoff exit
+75 remains the one authorized retry rule above and is not disguised as a model
+failure. The circuit is advisory latency control: it cannot satisfy acceptance
+or alter frozen scope.
+
 ## Controlled Writing
 
 Use `micro-builder` only for explicitly authorized tiny isolated work. Use `controlled-builder` only with 1–3 exact `--allow-write` paths, required `--max-diff-lines` of 1–200, an existing source-of-truth pattern, exact narrow validation, and explicit exclusion of public API, data, security, migration, permission, concurrency, and cross-module contract risks. Boundary violations remain isolated, exit non-zero, and never modify the source repository, merge, or satisfy acceptance.

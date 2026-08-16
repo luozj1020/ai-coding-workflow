@@ -162,6 +162,26 @@ class ClaudeMonitorDecisionTests(unittest.TestCase):
         self.assertEqual(value["decision"], "continue")
         self.assertEqual(value["reason_code"], "named-tool-wait")
 
+    def test_last_product_event_survives_later_advisory_event(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event event=material-change execution_state=implementation-ready "
+            "product_changes=2 product_delta_from_baseline=1 running=yes"
+        )
+        monitor = args.repo_root / ".worktrees" / f"{args.task_id}.monitor-events.log"
+        with monitor.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "monitor_event event=extension-evaluation-pending running=yes "
+                "terminal=no advisor_state=running\n"
+            )
+        with temporary, mock.patch.object(module, "role_state", return_value="running"):
+            value = module.snapshot(args)
+        self.assertEqual(
+            value["last_verified_product_event"],
+            "material-change;execution_state=implementation-ready;"
+            "product_changes=2;product_delta_from_baseline=1",
+        )
+
     def test_terminal_snapshot_exposes_separate_outcome_gates(self):
         module = load_module()
         temporary, args = self.make_case(
@@ -188,6 +208,46 @@ class ClaudeMonitorDecisionTests(unittest.TestCase):
         self.assertTrue(value["dispatch_success"])
         self.assertFalse(value["artifact_valid"])
         self.assertEqual(value["completion_state"], "needs-review")
+
+    def test_custom_preflight_runtime_id_is_monitorable(self):
+        module = load_module()
+        worktrees = pathlib.Path("/tmp")
+        self.assertEqual(
+            module.normalize_task("preflight-materials-a", worktrees),
+            "preflight-materials-a",
+        )
+
+    def test_diff_without_report_has_explicit_awaiting_review_state(self):
+        module = load_module()
+        temporary, args = self.make_case(
+            "monitor_event event=terminal execution_state=tail-work "
+            "product_changes=1 evidence_state=diff-without-report "
+            "running=no terminal=yes"
+        )
+        outcome = args.repo_root / ".worktrees" / f"{args.task_id}.outcome.json"
+        outcome.write_text(json.dumps({
+            "dispatch_success": True,
+            "artifact_valid": False,
+            "validation_success": "missing-evidence",
+            "semantic_acceptance": "pending-codex-review",
+            "completion_state": "needs-review",
+            "operator_state": "implementation-stable-awaiting-review",
+            "evidence_state": "diff-without-report",
+            "product_changes": 1,
+        }), encoding="utf-8")
+        with temporary, mock.patch.object(module, "role_state", return_value="not-running"):
+            value = module.snapshot(args)
+        self.assertEqual(value["decision"], "terminal")
+        self.assertEqual(value["lifecycle_state"], "terminal")
+        self.assertEqual(value["running"], "no")
+        self.assertEqual(
+            value["operator_state"],
+            "implementation-stable-awaiting-review",
+        )
+        self.assertEqual(
+            value["last_verified_product_event"],
+            "terminal;execution_state=tail-work;product_changes=1",
+        )
 
     def test_terminal_markdown_status_cannot_invent_product_changes(self):
         module = load_module()

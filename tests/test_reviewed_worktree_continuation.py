@@ -53,6 +53,9 @@ class ReviewedContinuationTest(unittest.TestCase):
             "source_repository": str(self.repo),
             "base_commit": self.head,
             "claude_session_id": "5ef9e3c8-bdbc-4d1e-8c64-c8bd0f0e4c66",
+            "builder_mode": "execution-only",
+            "tool_profile": "locator-builder",
+            "context_lease_id": "lease-prior-1",
             "pid_files": {},
         }
         (self.repo / ".worktrees" / f"{self.task_id}.runtime.json").write_text(
@@ -155,6 +158,11 @@ class ReviewedContinuationTest(unittest.TestCase):
         self.assertEqual(approval["accepted_existing_paths"], ["src.txt"])
         self.assertEqual(approval["allow_new_write_paths"], ["src.txt"])
         self.assertIn("sha256", approval["accepted_path_state"]["src.txt"])
+        self.assertEqual(approval["inherited_builder_mode"], "execution-only")
+        self.assertEqual(approval["inherited_tool_profile"], "locator-builder")
+        self.assertEqual(approval["prior_context_lease_id"], "lease-prior-1")
+        self.assertEqual(approval["authorization_path"], str(self.approval))
+        self.assertIn("--reviewed-continuation", approval["dispatch_argv"])
         validated = self.helper(
             "validate", "--approval", str(self.approval),
             "--next-task-card", str(self.card),
@@ -168,6 +176,59 @@ class ReviewedContinuationTest(unittest.TestCase):
         )
         self.assertEqual(rejected.returncode, 2)
         self.assertIn("next_task_card_sha256", rejected.stderr)
+
+    def test_json_task_and_execution_metadata_are_native_continuation_inputs(self) -> None:
+        self.card = self.repo / "next-task.json"
+        self.card.write_text(json.dumps({
+            "schema_version": 1,
+            "mode": "builder",
+            "extensions": {
+                "routing_hints": {"claude_role": "execution-builder"}
+            },
+        }), encoding="utf-8")
+        approval = self.prepare()
+        self.assertEqual(approval["next_declared_mode"], "builder")
+        self.assertIsNone(approval["next_builder_mode"])
+        self.assertEqual(approval["inherited_builder_mode"], "execution-only")
+
+        self.card = self.repo / "next-execution-card.md"
+        self.card.write_text(
+            "<!-- aiwf-execution-card-v1; task-mode=builder; "
+            "builder-mode=execution-only -->\n# Task\n",
+            encoding="utf-8",
+        )
+        approval = self.prepare()
+        self.assertEqual(approval["next_role"], "builder")
+        self.assertEqual(approval["inherited_builder_mode"], "execution-only")
+
+    def test_default_authorization_is_control_only_and_command_is_copyable(self) -> None:
+        result = self.helper(
+            "prepare", "--prior-task-id", self.task_id,
+            "--next-task-card", str(self.card),
+            "--decision", "accepted-direction",
+            "--accepted-existing-path", "src.txt",
+            "--allow-new-write-path", "src.txt",
+        )
+        approval = json.loads(result.stdout)
+        authorization = Path(approval["authorization_path"])
+        self.assertTrue(authorization.is_file())
+        self.assertTrue(authorization.is_relative_to(self.repo / ".worktrees"))
+        self.assertFalse(authorization.is_relative_to(self.worktree))
+        self.assertIn(str(authorization), approval["dispatch_command"])
+
+    def test_authorization_inside_product_worktree_is_rejected(self) -> None:
+        rejected = self.helper(
+            "prepare", "--prior-task-id", self.task_id,
+            "--next-task-card", str(self.card),
+            "--decision", "accepted-direction",
+            "--accepted-existing-path", "src.txt",
+            "--allow-new-write-path", "src.txt",
+            "--output", str(self.worktree / "approval.json"),
+            check=False,
+        )
+        self.assertEqual(rejected.returncode, 2)
+        self.assertIn("outside the product worktree", rejected.stderr)
+        self.assertFalse((self.worktree / "approval.json").exists())
 
     def test_revision_mode_is_native_builder_continuation(self) -> None:
         self.card.write_text("| Mode | revision |\n", encoding="utf-8")

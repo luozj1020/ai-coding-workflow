@@ -92,10 +92,12 @@ POWERSHELL_SCRIPTS = [
 
 # Python helpers to install (source relative to scripts/, dest relative to repo root)
 PYTHON_SCRIPTS = [
+    ("validate-worktree-diff.py", "ai/validate-worktree-diff.py"),
     ("compose_task_card.py", "ai/compose_task_card.py"),
     ("doctor_workflow.py", "ai/doctor_workflow.py"),
     ("claude-healthcheck.py", "ai/claude-healthcheck.py"),
     ("claude-monitor-decision.py", "ai/claude-monitor-decision.py"),
+    ("claude_task_id.py", "ai/claude_task_id.py"),
     ("direct-change.py", "ai/direct-change.py"),
     ("claude-extension-capsule.py", "ai/claude-extension-capsule.py"),
     ("claude-process-state.py", "ai/claude-process-state.py"),
@@ -184,6 +186,7 @@ PYTHON_SCRIPTS = [
     ("detect-cpp-bazel.py", "ai/detect-cpp-bazel.py"),
     ("build-bazel-context.py", "ai/build-bazel-context.py"),
     ("generate-handoff.py", "ai/generate-handoff.py"),
+    ("build-scoped-handoff.py", "ai/build-scoped-handoff.py"),
     ("learn-store.py", "ai/learn-store.py"),
     ("aiwf.py", "ai/aiwf.py"),
     ("run-benchmark-suite.py", "ai/run-benchmark-suite.py"),

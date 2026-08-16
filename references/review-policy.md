@@ -80,6 +80,16 @@ Checker/Test Claude only for assigned test writing, long-running validation,
 large failure/log evidence, or an independent validation responsibility that
 materially reduces Codex work. Record the skip reason when no Checker is used.
 
+After the Builder stops writing, `check-worktree.sh` fans independent read-only
+commands out with bounded concurrency (default 4) and preserves deterministic
+input-order results in one `*.validation-receipt.json`. Its mandatory boundary
+precheck covers tracked, staged, and untracked files: untracked content is
+checked through virtual no-index patches, so an empty `git diff --check` is
+never treated as full evidence. Python syntax/AST/module-boundary checks,
+JSON/TOML parsing, abnormal growth, cross-file concatenation, and scope evidence
+run before the command fan-out. Any failed branch fails the aggregate receipt;
+parallel execution does not weaken the single Codex acceptance decision.
+
 ### Claude-Compatible Models  -  Exhaustive Scan
 
 Responsibilities:
@@ -230,6 +240,13 @@ Missing `result.json`, `CLAUDE_REPORT.md`, or acceptance prose is an evidence ga
 - If the task card assigned Claude to write tests, run checks, or produce specific acceptance evidence, and that evidence cannot be reconstructed, revise with a narrow "tests/evidence only" task. The revision should preserve the accepted implementation direction and should not invite broad rewrites.
 - If that narrow tests/evidence-only revision also produces no result/report and no useful progress, stop re-dispatching and move to the control-plane salvage rule above.
 - If Codex decides after seeing the diff that tests are acceptance-critical, it must say that explicitly in the next task card's Testing Responsibility instead of treating the original omission as Claude failure.
+
+Use the acceptance bundle's `review_evidence` block as the bounded starting
+point: it exposes the scoped changed-file/status list, patch or recovered-diff
+SHA-256, source/execution baselines, report availability, and each exact
+validation command with its exit code. Missing prose must not force Codex to
+reconstruct these facts from logs, but this summary remains non-authoritative
+until the referenced receipts and diff agree.
 
 ### Human  -  Final Authority
 

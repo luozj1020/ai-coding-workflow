@@ -25,6 +25,7 @@ class KillClaudeTests(unittest.TestCase):
         scripts.mkdir()
         for name in (
             "kill-claude.sh",
+            "claude_task_id.py",
             "prepare-codex-takeover.py",
             "process-identity.py",
             "owner_lease.py",
@@ -37,7 +38,7 @@ class KillClaudeTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_kill_helper_uses_identity_and_removes_pid_hints(self) -> None:
-        task_id = "claude-kill-test"
+        task_id = "preflight-kill-test"
         process = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60)"]
         )

@@ -8,7 +8,7 @@ PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
 export PATH
 
 usage() {
-    echo "Usage: $0 wait|decision <claude-task-id> [--interval seconds] [--until material|terminal] [--timeout seconds] [--json] [--spark auto|on|off]" >&2
+    echo "Usage: $0 wait|decision <runtime-id> [--interval seconds] [--until material|terminal] [--timeout seconds] [--json] [--spark auto|on|off]" >&2
 }
 
 if [ $# -lt 2 ]; then
@@ -17,8 +17,7 @@ if [ $# -lt 2 ]; then
 fi
 
 ACTION="$1"
-TASK_ID="$(basename "$2")"
-TASK_ID="${TASK_ID%.pid}"
+TASK_ID_INPUT="$2"
 INTERVAL=5
 JSON_OUTPUT=0
 SPARK_MODE="auto"
@@ -72,13 +71,16 @@ if [ "$INTERVAL" -eq 0 ]; then
     exit 1
 fi
 
-case "$TASK_ID" in
-    claude-*) ;;
-    *)
-        echo "Error: task id must start with claude-." >&2
-        exit 1
-        ;;
-esac
+if command -v python3 >/dev/null 2>&1; then PYTHON_CMD=python3; else PYTHON_CMD=python; fi
+TASK_ID_HELPER="${SCRIPT_DIR}/claude_task_id.py"
+if [ ! -f "$TASK_ID_HELPER" ]; then
+    echo "Error: runtime task-id helper is unavailable: $TASK_ID_HELPER" >&2
+    exit 1
+fi
+if ! TASK_ID="$($PYTHON_CMD "$TASK_ID_HELPER" normalize "$TASK_ID_INPUT" --artifact-input 2>/dev/null)"; then
+    echo "Error: unsafe or ambiguous runtime task id." >&2
+    exit 1
+fi
 
 SOURCE_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 _COMMON_GIT_DIR="$(git -C "$SOURCE_REPO_ROOT" rev-parse --git-common-dir 2>/dev/null || true)"
@@ -92,7 +94,6 @@ if [ -n "$_COMMON_GIT_DIR" ] && [ "$(basename "$_COMMON_GIT_DIR")" = ".git" ]; t
 else
     REPO_ROOT="$SOURCE_REPO_ROOT"
 fi
-if command -v python3 >/dev/null 2>&1; then PYTHON_CMD=python3; else PYTHON_CMD=python; fi
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 DECISION_HELPER="${SCRIPT_DIR}/claude-monitor-decision.py"
 EVENT_LOG="${WORKTREE_ROOT}/${TASK_ID}.monitor-events.log"

@@ -48,8 +48,8 @@ resolved route, probe environment, and Claude executable. A success is cached
 for 24 hours by default (`CLAUDE_CODE_API_AVAILABILITY_TTL_SECONDS`) and useful
 model-owned dispatch evidence refreshes it. The probe uses Claude's stream-init
 event to record the actual runtime tool inventory, bound to the requested tool
-profile. For an explicit non-default profile, this comparison occurs during the
-early connectivity probe, before a full worktree is created. A mismatch writes
+profile. For an explicit or auto-resolved non-default profile, this comparison
+occurs during the early connectivity probe, before a full worktree is created. A mismatch writes
 complete result/outcome receipts with `builder_started=false` and
 `worktree_created=false`. A missing required tool fails before Builder execution; when Bash and
 exact-write enforcement are both present, missing Edit/Write may resolve only
@@ -96,6 +96,12 @@ and removes the inherited sandbox marker; this
 is only an assertion of an already-crossed boundary and never grants authority
 by itself. Do not classify Claude as unavailable until this single host attempt
 fails.
+
+Dispatcher and monitor resolve runtime IDs through the same
+`claude_task_id.py` validator. Safe custom preflight and DAG IDs do not need a
+`claude-` prefix; artifact paths are normalized to the same ID before monitor
+lookup. The dispatcher prints `Runtime ID` explicitly, and host retry receipts
+must reuse that returned value instead of reconstructing an ID from filenames.
 
 One failed Builder attempt is not takeover permission. Tighten and re-dispatch
 once. Two consecutive current-lineage counted rounds issue a hash-bound
@@ -281,7 +287,18 @@ child, preserves and drains evidence, and records `tail-timeout`. A useful diff
 with missing prose produces `<task-id>.recovered-completion.json` for bounded
 Codex review rather than being discarded. That receipt says
 `evidence_usability=recoverable` and `direct_acceptance_eligible=false`; only a
-subsequent Codex Review Decision may identify adopted files or symbols.
+subsequent Codex Review Decision may identify adopted files or symbols. The
+tail phase permits exactly one bounded deterministic recovery and never starts
+a second implementation round merely to obtain prose. Its receipt records
+`implementation_window_complete`, `report_tail_window_seconds`,
+`report_recovery_attempts=1`, and the recovery policy alongside the diff hash
+and validation-receipt hashes. The
+terminal outcome is `evidence_tail_incomplete`, with dispatch success separated
+from `completion_state=needs-review`; it does not request another implementation
+round merely because final prose missed the evidence window. After the process
+has ended and the final product digest is frozen, outcome and monitor receipts
+also expose `operator_state=implementation-stable-awaiting-review`. This is an
+explicit terminal handoff state, not artifact validity or semantic acceptance.
 
 `Execution Phase: implementation` is an edit-readiness declaration, not durable progress. It is accepted only with `Context Acquisition Complete: yes` and a non-empty `Planned First Write`, meaning repository scanning, requirement understanding, and local planning are complete. The dispatcher grants a bounded edit-ready bridge (`CLAUDE_CODE_EDIT_READY_GRACE_SECONDS`, default 120) but refreshes a Builder's full active window only after product content changes. A report without a Builder product delta never refreshes that implementation window.
 
@@ -312,7 +329,12 @@ finalized `terminal` boundaries to
 `<task-id>.monitor-events.log`. An agent must issue one blocking
 `monitor-claude.sh wait <task-id> --until terminal` call; repeated
 `watch`, `ps`, `tail`, status, process-tree, or clock-only commands are forbidden. Read a bounded
-decision/diff only after that wait returns.
+decision/diff only after that wait returns. Compact terminal output includes
+`operator_state` and `evidence_state`, so a stopped Builder awaiting Codex review
+is not displayed as ordinary execution. It also exposes
+`last_verified_product_event`, derived only from dispatcher-issued product
+change/window-refresh/terminal events; control-file mtimes and PID-only state
+cannot populate that field.
 
 The dispatcher continuously writes `<task-id>.activity-observation.json` from
 bounded filesystem metadata only. It records session-store, control, and

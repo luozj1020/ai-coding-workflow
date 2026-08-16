@@ -38,6 +38,7 @@ class AcceptanceBundleTests(unittest.TestCase):
                 "validation_success": "verified",
                 "semantic_acceptance": "pending-codex-review",
                 "completion_state": "semantic-review-required",
+                "operator_state": "terminal-awaiting-review",
             }), encoding="utf-8")
             report.write_text(json.dumps({"status": "consistent"}), encoding="utf-8")
             scope.write_text(json.dumps({"enforcement_passed": True}), encoding="utf-8")
@@ -55,6 +56,7 @@ class AcceptanceBundleTests(unittest.TestCase):
             self.assertEqual(value["recommended_decision"], "codex-semantic-review")
             self.assertFalse(value["merge_authorized"])
             self.assertEqual(value["authority"], "evidence-summary-only")
+            self.assertEqual(value["operator_state"], "terminal-awaiting-review")
             self.assertIn("changed.py", value["changed_paths"])
 
     def test_environment_crash_routes_to_environment_inspection(self):
@@ -67,6 +69,62 @@ class AcceptanceBundleTests(unittest.TestCase):
         self.assertEqual(
             module.recommend(outcome, None, None, checker),
             "inspect-validation-environment",
+        )
+
+    def test_review_evidence_exposes_diff_files_and_validation_exit_codes(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "new.py").write_text("value = 1\n", encoding="utf-8")
+            outcome = root / "outcome.json"
+            validation = root / "validation.json"
+            handoff = root / "handoff.json"
+            recovered = root / "recovered.json"
+            outcome.write_text(json.dumps({
+                "task_id": "task-evidence", "dispatch_success": True,
+            }), encoding="utf-8")
+            validation.write_text(json.dumps({
+                "status": "passed",
+                "results": [
+                    {"index": 1, "label": "ruff", "command": "ruff check new.py", "exit_code": 0},
+                    {"index": 2, "label": "pytest", "command": "pytest -q", "exit_code": 1},
+                ],
+            }), encoding="utf-8")
+            handoff.write_text(json.dumps({
+                "status": "ready",
+                "source_base_commit": "source-base",
+                "execution_base_commit": "execution-base",
+                "changed_files": [{"path": "new.py", "change": "added"}],
+                "patch": {"sha256": "sha256:patch"},
+            }), encoding="utf-8")
+            recovered.write_text(json.dumps({
+                "diff_sha256": "sha256:recovered",
+                "claude_report_complete": False,
+            }), encoding="utf-8")
+            args = argparse.Namespace(
+                worktree=root, outcome=outcome, report_consistency=None,
+                write_scope=None, checker_contract=None,
+                validation_receipt=validation, scoped_handoff=handoff,
+                recovered_completion=recovered,
+            )
+            value = module.build(args)
+            evidence = value["review_evidence"]
+            self.assertEqual(evidence["diff_sha256"], "sha256:recovered")
+            self.assertEqual(evidence["changed_files"][0]["path"], "new.py")
+            self.assertFalse(evidence["claude_report_available"])
+            self.assertEqual(evidence["validation_command_count"], 2)
+            self.assertEqual(evidence["validation_results"][1]["exit_code"], 1)
+            self.assertEqual(evidence["execution_base_commit"], "execution-base")
+
+    def test_blocked_scoped_handoff_routes_to_scope_revision(self):
+        module = load_module()
+        self.assertEqual(
+            module.recommend(
+                {"dispatch_success": True}, None, None, None, None,
+                {"status": "blocked"},
+            ),
+            "revise-scope",
         )
 
     def test_acceptance_index_expands_only_delta_and_semantic_risk(self):
@@ -137,6 +195,7 @@ class AcceptanceBundleTests(unittest.TestCase):
                 "artifact_valid": True,
                 "validation_success": True,
                 "semantic_acceptance": "pending-codex-review",
+                "operator_state": "implementation-stable-awaiting-review",
             }), encoding="utf-8")
 
             result = subprocess.run(
@@ -153,6 +212,10 @@ class AcceptanceBundleTests(unittest.TestCase):
             full = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(capsule["kind"], "aiwf-acceptance-capsule")
             self.assertEqual(capsule["output_path"], str(output.resolve()))
+            self.assertEqual(
+                capsule["operator_state"],
+                "implementation-stable-awaiting-review",
+            )
             self.assertEqual(capsule["changed_path_count"], len(full["changed_paths"]))
             self.assertNotIn("changed_paths", capsule)
             self.assertNotIn("acceptance_index", capsule)

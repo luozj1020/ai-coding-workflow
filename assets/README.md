@@ -98,6 +98,10 @@ capability set. Environment-prefixed commands do not match the narrow project
 rule and can trigger another approval. Handoff receipts mark CLI retry args
 authoritative and the environment map legacy.
 
+The dispatcher prints the canonical `Runtime ID`. Dispatcher and monitor share
+the same validator, so a safe custom preflight or DAG ID is monitorable without
+adding a `claude-` prefix.
+
 If running from the installed Skill while using a separate clone as the update source:
 
 ```bash
@@ -223,6 +227,8 @@ ai/
   plan-progress-template.md   # Persistent progress template
   dispatch-to-claude.sh       # Dispatches task cards to Claude Code
   check-worktree.sh           # Runs checker-only validation and writes a report
+  validate-worktree-diff.py   # Checks tracked, staged, and untracked file boundaries
+  build-scoped-handoff.py     # Emits a human-reviewable product-only patch
   locate-code.py              # Low-token locator; healthy CodeGraph is queried by default
   review-with-codex.sh        # Sends evidence to Codex/GPT for review
   run-codex-spark.sh          # Optional gpt-5.3-codex-spark auxiliary runner
@@ -613,7 +619,10 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.diffstat.txt` | `git diff --stat` for tracked files |
 | `*.diff` | Full diff, including untracked implementation files |
 | `*.checker-report.md` | Checker-only validation report from `ai/check-worktree.sh` |
+| `*.validation-receipt.json` | Ordered aggregate receipt for bounded read-only validation fan-out |
 | `*.checker-logs/` | Full logs for checker commands |
+| `*.scoped.patch` | Patch from the execution baseline containing only approved product paths |
+| `*.scoped-handoff.json` | Baseline hashes, file list, dirty-snapshot warning, and human apply commands |
 | `*.source-status.txt` | Source repo state before dispatch |
 | `*.worktree-status.txt` | Worktree state after execution |
 | `*.untracked.txt` | Listing and patch evidence for untracked files |
@@ -922,10 +931,20 @@ worktree without dirtying the accepted source.
 Installed projects include `ai/check-worktree.sh`. Prefer exact task-card validation commands:
 
 ```bash
-bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover --command 'tests=pytest tests/test_target.py'
+bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover \
+  --jobs 4 --command 'tests=pytest tests/test_target.py'
 ```
 
-The dispatcher records a checker report after Claude finishes, but broad discovery is disabled by default to avoid unrelated validation noise. Pass `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'` for exact dispatcher-run checks, or `CLAUDE_CODE_CHECKER_DISCOVER=1` when the task card explicitly allows broad project discovery.
+The checker runs independent read-only commands concurrently (default four),
+keeps input-order results deterministic, and writes a JSON aggregate receipt.
+Its mandatory boundary pass checks tracked, staged, and untracked files through
+real or virtual patches and rejects syntax/module-boundary/cross-file
+concatenation failures. The dispatcher records these artifacts after Claude
+finishes, but broad discovery is disabled by default to avoid unrelated
+validation noise. Pass
+`CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'` for exact
+dispatcher-run checks, or `CLAUDE_CODE_CHECKER_DISCOVER=1` when the task card
+explicitly allows broad project discovery.
 
 **Checker Reuse Risk Gate:** Before dispatching a `checker-test` task, fill the Checker Reuse Risk Gate in the task card with exact rows: Public API risk, Data model risk, Security risk, Migration risk, Permission risk, Concurrency risk, Cross-module risk, Production impact. Each row must be explicit `no` for task-derived checker worktree reuse to default to `reuse-managed`. Missing, `unknown`, `n/a`, `duplicate`, `high` risk, DAG, or parallel tasks stay `fresh`. The environment variable `CLAUDE_CODE_WORKTREE_STRATEGY=fresh|reuse-managed` overrides this default. Existing reset safety via `CLAUDE_CODE_REUSE_WORKTREE_RESET=1` remains unchanged.
 
@@ -1166,7 +1185,7 @@ only with `--details`. On terminal state it records a task-bound observation
 receipt and refuses another watch of the same terminal event. Agent controllers
 must use one `monitor-claude.sh wait ... --until terminal` call.
 
-`watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Compact snapshots include `collected_at` plus per-source `observed_at` timestamps and separate process, report, result, and product-diff evidence, so cached fields are not presented as one fresh observation. Watch events additionally expose `execution_phase`, `implementation_complete`, `completion_ready`, and `finish_recommended`. Codex should prefer these low-token fields before reading full status, progress, or network tails.
+`watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Compact snapshots include `collected_at` plus per-source `observed_at` timestamps and separate process, report, result, and product-diff evidence, so cached fields are not presented as one fresh observation. A finalized diff without a valid report is terminal and exposes `operator_state=implementation-stable-awaiting-review`; it is not shown as still running and does not bypass Codex review. Watch events additionally expose `execution_phase`, `implementation_complete`, `completion_ready`, and `finish_recommended`. Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
 For agent-driven runs, the dispatcher is the only sampling owner and appends material/final terminal boundaries to `*.monitor-events.log`. Use one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated `watch`, `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. The wait streams product-window and `extension-evaluation-*` notices without ending, so Codex sees Spark pending/result state without polling. There is no detached supervisor. On the terminal boundary, `wait` adds a compact local decision and may invoke Spark `monitor-triage` to compress ambiguous evidence. Near the initial context boundary or a later active deadline, the same advisory mode receives a privacy-limited capsule containing the frozen contract, redacted assistant output, and normalized tool events; it never receives thinking content, user input, tool-result payloads, full logs, or source diffs. Spark returns fixed decision fields but controls no process. If an installed project copy rejects `wait --until`, run `python ai/doctor_workflow.py`; monitor helper drift is now included in the version check and the doctor prints the workflow refresh command.
 

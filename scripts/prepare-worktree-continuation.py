@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -36,6 +37,14 @@ CONTROL_FILES = {
 }
 ALLOWED_PRIOR_STRATEGIES = {"fresh", "reviewed-continuation"}
 ALLOWED_ROLES = {"builder", "checker-test"}
+ALLOWED_BUILDER_MODES = {
+    "standard", "execution-only", "solution-planning", "batch", "exploratory",
+}
+ROLE_BUILDER_MODES = {
+    "solution-planner": "solution-planning",
+    "batch-builder": "batch",
+    "exploratory-builder": "exploratory",
+}
 
 
 class ContinuationError(RuntimeError):
@@ -261,10 +270,68 @@ def normalize_task_role(value: object) -> Optional[str]:
     return "builder" if value in {"builder", "revision"} else None
 
 
-def task_role(card: Path) -> Optional[str]:
+def normalize_builder_mode(value: object) -> Optional[str]:
+    value = str(value or "").strip().lower()
+    if value in {"", "auto"}:
+        return None
+    return value if value in ALLOWED_BUILDER_MODES else None
+
+
+def task_contract(card: Path) -> Dict[str, Optional[str]]:
+    """Read task and Builder mode from Task JSON or rendered metadata.
+
+    Legacy Markdown tables remain a compatibility fallback, but JSON-backed
+    continuations no longer depend on their presence.
+    """
     text = card.read_text(encoding="utf-8", errors="replace")
-    match = re.search(r"(?im)^\|\s*Mode\s*\|\s*([^|]+)", text)
-    return normalize_task_role(match.group(1)) if match else None
+    declared_mode: object = ""
+    builder_mode: object = ""
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict):
+        declared_mode = value.get("mode", "")
+        extensions = value.get("extensions")
+        routing = extensions.get("routing_hints", {}) if isinstance(extensions, dict) else {}
+        execution = extensions.get("execution", {}) if isinstance(extensions, dict) else {}
+        if isinstance(execution, dict):
+            builder_mode = execution.get("builder_mode", "")
+        if not builder_mode and isinstance(routing, dict):
+            builder_mode = routing.get("builder_mode", "")
+            role = str(routing.get("claude_role", "")).strip().lower()
+            builder_mode = builder_mode or ROLE_BUILDER_MODES.get(role, "")
+    else:
+        metadata = re.search(
+            r"(?im)<!--\s*aiwf-execution-card-v1;\s*"
+            r"task-mode=([^;\s>]+);\s*builder-mode=([^;\s>]+)\s*-->",
+            text,
+        )
+        if metadata:
+            declared_mode, builder_mode = metadata.group(1), metadata.group(2)
+        else:
+            mode_match = re.search(r"(?im)^\|\s*Mode\s*\|\s*([^|]+)", text)
+            builder_match = re.search(
+                r"(?im)^\|\s*Builder mode\s*\|\s*([^|]+)", text
+            )
+            declared_mode = mode_match.group(1) if mode_match else ""
+            builder_mode = builder_match.group(1) if builder_match else ""
+    declared = str(declared_mode or "").strip().lower()
+    role = normalize_task_role(declared)
+    if declared in ROLE_BUILDER_MODES:
+        role = "builder"
+        builder_mode = builder_mode or ROLE_BUILDER_MODES[declared]
+    elif declared == "checker":
+        role = "checker-test"
+    return {
+        "declared_mode": declared or None,
+        "role": role,
+        "builder_mode": normalize_builder_mode(builder_mode),
+    }
+
+
+def task_role(card: Path) -> Optional[str]:
+    return task_contract(card)["role"]
 
 
 def repository_root() -> Path:
@@ -357,7 +424,9 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
     card = args.next_task_card.resolve()
     if not card.is_file():
         raise ContinuationError("next task card not found")
-    if args.next_role not in ALLOWED_ROLES or task_role(card) != args.next_role:
+    next_contract = task_contract(card)
+    next_role = args.next_role or next_contract["role"]
+    if next_role not in ALLOWED_ROLES or next_contract["role"] != next_role:
         raise ContinuationError("next role does not match task card Mode")
     prior_declared_mode = str(runtime.get("task_mode") or "").strip().lower()
     prior_role = normalize_task_role(prior_declared_mode)
@@ -365,7 +434,7 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
         prior_role = task_role(worktree / "TASK_CARD_FULL.md") or ""
     prior_session_id = str(runtime.get("claude_session_id") or "").strip()
     if prior_role == "checker-test":
-        if args.next_role != "checker-test":
+        if next_role != "checker-test":
             raise ContinuationError(
                 "Checker worktrees may only start checker-test reviewed continuation"
             )
@@ -377,6 +446,18 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
             )
     elif prior_role != "builder":
         raise ContinuationError("prior worktree role is not reviewable")
+    prior_builder_mode = normalize_builder_mode(runtime.get("builder_mode"))
+    next_builder_mode = next_contract["builder_mode"]
+    if next_role == "builder":
+        inherited_builder_mode = prior_builder_mode or next_builder_mode or "standard"
+        if next_builder_mode and next_builder_mode != inherited_builder_mode:
+            raise ContinuationError(
+                "next task card Builder mode conflicts with the reviewed continuation"
+            )
+    else:
+        inherited_builder_mode = "standard"
+    prior_tool_profile = str(runtime.get("tool_profile") or "").strip()
+    inherited_tool_profile = prior_tool_profile or None
     actual = changed_paths(worktree)
     accepted = normalize_paths(args.accepted_existing_path, worktree)
     allowed = normalize_paths(args.allow_new_write_path, worktree)
@@ -394,6 +475,16 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
     if not allowed:
         raise ContinuationError("at least one --allow-new-write-path is required")
     approval_id = uuid.uuid4().hex
+    runtime_root = runtime_repository_root(root)
+    output = (
+        args.output.resolve() if args.output else
+        runtime_root / ".worktrees" / "continuations" /
+        f"{args.prior_task_id}-{approval_id}.json"
+    )
+    if is_within(output, worktree):
+        raise ContinuationError(
+            "continuation authorization must be stored outside the product worktree"
+        )
     source_head = git(root, "rev-parse", "HEAD").strip()
     delta_review = bind_delta_review(args.delta_review_packet)
     unresolved_findings = bounded_findings(args.unresolved_finding)
@@ -409,7 +500,16 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
         "prior_declared_mode": prior_declared_mode or None,
         "prior_role": prior_role,
         "prior_claude_session_id": prior_session_id or None,
-        "next_role": args.next_role,
+        "next_role": next_role,
+        "next_declared_mode": next_contract["declared_mode"],
+        "next_builder_mode": next_builder_mode,
+        "inherited_builder_mode": inherited_builder_mode,
+        "prior_tool_profile": prior_tool_profile or None,
+        "inherited_tool_profile": inherited_tool_profile,
+        "prior_context_lease_id": runtime.get("context_lease_id"),
+        "prior_context_lease_continuation_kind": runtime.get(
+            "context_lease_continuation_kind"
+        ),
         "prior_strategy": runtime["strategy"],
         "provenance_root_strategy": runtime.get("provenance_root_strategy", "fresh"),
         "runtime_path": str(runtime_path.resolve()),
@@ -437,7 +537,14 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
             "full_prior_task_card_repeated": False,
         },
     }
-    atomic_json(args.output, value)
+    dispatch_argv = [
+        "bash", "ai/dispatch-to-claude.sh", str(card),
+        "--reviewed-continuation", str(output),
+    ]
+    value["authorization_path"] = str(output)
+    value["dispatch_argv"] = dispatch_argv
+    value["dispatch_command"] = shlex.join(dispatch_argv)
+    atomic_json(output, value)
     return value
 
 
@@ -476,8 +583,14 @@ def validate_common(approval_path: Path, card: Path) -> tuple[Dict[str, Any], Pa
     for key, expected in exact.items():
         if approval.get(key) != expected:
             raise ContinuationError(f"approval binding mismatch: {key}")
-    if task_role(card) != approval.get("next_role"):
+    contract = task_contract(card)
+    if contract["role"] != approval.get("next_role"):
         raise ContinuationError("next role/task card mismatch")
+    if approval.get("next_role") == "builder":
+        inherited = normalize_builder_mode(approval.get("inherited_builder_mode"))
+        declared_builder = contract["builder_mode"]
+        if not inherited or (declared_builder and declared_builder != inherited):
+            raise ContinuationError("next Builder mode/approval mismatch")
     actual = changed_paths(worktree)
     if actual != approval.get("accepted_existing_paths"):
         raise ContinuationError("changed path set drifted after approval")
@@ -519,14 +632,17 @@ def parser() -> argparse.ArgumentParser:
     prepare_parser = sub.add_parser("prepare")
     prepare_parser.add_argument("--prior-task-id", required=True)
     prepare_parser.add_argument("--next-task-card", type=Path, required=True)
-    prepare_parser.add_argument("--next-role", choices=sorted(ALLOWED_ROLES), required=True)
+    prepare_parser.add_argument("--next-role", choices=sorted(ALLOWED_ROLES))
     prepare_parser.add_argument("--decision", required=True)
     prepare_parser.add_argument("--accepted-existing-path", action="append", default=[], required=True)
     prepare_parser.add_argument("--allow-new-write-path", action="append", default=[], required=True)
     prepare_parser.add_argument("--delta-review-packet", type=Path)
     prepare_parser.add_argument("--unresolved-finding", action="append", default=[])
     prepare_parser.add_argument("--new-validation-ref", action="append", default=[])
-    prepare_parser.add_argument("--output", type=Path, required=True)
+    prepare_parser.add_argument(
+        "--output", type=Path,
+        help="authorization path; defaults to the common .worktrees control directory",
+    )
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("--approval", type=Path, required=True)
     validate_parser.add_argument("--next-task-card", type=Path, required=True)

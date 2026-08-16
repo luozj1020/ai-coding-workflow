@@ -259,6 +259,44 @@ class ApprovedFileWriterTests(unittest.TestCase):
             self.assertIn("newly duplicated top-level imports", result.stderr)
             self.assertEqual(staged.read_bytes(), before)
 
+    def test_concatenated_python_module_boundary_is_rejected_without_writing(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            receipt = self._receipt(root)
+            value = json.loads(receipt.read_text(encoding="utf-8"))
+            binding = next(
+                item for item in value["bindings"]
+                if item["relative_path"] == "src/allowed.py"
+            )
+            staged = pathlib.Path(binding["source"])
+            before = b'"""First module."""\nvalue = 1\n'
+            staged.write_bytes(before)
+            candidate = before + b'\n"""Second module."""\nother = 2\n'
+            result = subprocess.run(
+                [sys.executable, str(WRITER), "--receipt", str(receipt),
+                 "--path", "src/allowed.py",
+                 "--replace-old-base64", base64.b64encode(before).decode("ascii"),
+                 "--replace-new-base64", base64.b64encode(candidate).decode("ascii")],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("concatenated file boundary", result.stderr)
+            self.assertEqual(staged.read_bytes(), before)
+
+    def test_duplicate_python_module_entry_point_is_rejected(self):
+        previous = b'if __name__ == "__main__":\n    print("one")\n'
+        candidate = previous + b'\nif __name__ == "__main__":\n    print("two")\n'
+        with self.assertRaisesRegex(
+            MOD.ApprovedWriteError, "duplicated module entry point"
+        ):
+            MOD._validate_candidate("tool.py", previous, candidate)
+
+    def test_abnormal_python_line_growth_is_rejected(self):
+        previous = "".join(f"value_{index} = {index}\n" for index in range(20)).encode()
+        candidate = "".join(f"value_{index} = {index}\n" for index in range(421)).encode()
+        with self.assertRaisesRegex(MOD.ApprovedWriteError, "abnormal line-count growth"):
+            MOD._validate_candidate("tool.py", previous, candidate)
+
     def test_removed_still_used_import_is_rejected_without_writing(self):
         with tempfile.TemporaryDirectory() as raw:
             root = pathlib.Path(raw)

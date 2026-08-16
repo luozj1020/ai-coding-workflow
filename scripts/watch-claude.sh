@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # watch-claude.sh  -  Stream compact Claude dispatch progress for CLI observers.
 #
-# Usage: bash ai/watch-claude.sh [claude-<timestamp>] [--interval seconds] [--lines count] [--once] [--details] [--stale-after seconds] [--wait-profile small|medium|large] [--startup-grace seconds] [--interrupt-after seconds] [--escalation-confirmations count]
+# Usage: bash ai/watch-claude.sh [runtime-id] [--interval seconds] [--lines count] [--once] [--details] [--stale-after seconds] [--wait-profile small|medium|large] [--startup-grace seconds] [--interrupt-after seconds] [--escalation-confirmations count]
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROCESS_STATE_HELPER="${SCRIPT_DIR}/claude-process-state.py"
+TASK_ID_HELPER="${SCRIPT_DIR}/claude_task_id.py"
 
 # Git for Windows can be launched through bin/bash.exe without the usual Unix tool PATH.
 PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
 export PATH
+if command -v python3 >/dev/null 2>&1; then PYTHON_CMD=python3; else PYTHON_CMD=python; fi
 
 INTERVAL=5
 TAIL_LINES=24
@@ -273,20 +275,21 @@ progress_bar() {
 REPO_ROOT="$(resolve_repo)"
 WORKTREE_ROOT="${REPO_ROOT}/.worktrees"
 
+if [ ! -f "$TASK_ID_HELPER" ]; then
+    echo "Error: runtime task-id helper is unavailable: $TASK_ID_HELPER" >&2
+    exit 1
+fi
 if [ -z "$TASK_REF" ]; then
-    latest="$(find "$WORKTREE_ROOT" -maxdepth 1 -type f -name 'claude-*.progress.log' 2>/dev/null | sort | tail -1 || true)"
+    latest="$(find "$WORKTREE_ROOT" -maxdepth 1 -type f -name '*.progress.log' 2>/dev/null | sort | tail -1 || true)"
     if [ -z "$latest" ]; then
         echo "No Claude progress logs found under $WORKTREE_ROOT" >&2
         exit 1
     fi
-    TASK_ID="$(basename "$latest" .progress.log)"
-elif [ -d "$TASK_REF" ]; then
-    TASK_ID="$(basename "$TASK_REF")"
-else
-    TASK_ID="$(basename "$TASK_REF")"
-    TASK_ID="${TASK_ID%.progress.log}"
-    TASK_ID="${TASK_ID%.claude-progress.md}"
-    TASK_ID="${TASK_ID%.pid}"
+    TASK_REF="$latest"
+fi
+if ! TASK_ID="$($PYTHON_CMD "$TASK_ID_HELPER" normalize "$TASK_REF" --artifact-input 2>/dev/null)"; then
+    echo "Error: unsafe or ambiguous runtime task id." >&2
+    exit 1
 fi
 
 PREFIX="${WORKTREE_ROOT}/${TASK_ID}"

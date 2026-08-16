@@ -25,9 +25,18 @@ For delegation, load only one matching reference; do not load multiple preemptiv
   `aiwf run` deterministically renders the execution card. Claude owns assigned
   Builder/Checker/Test work. Legacy Markdown cards remain an explicit
   compatibility path; `solution-planner` is explicit opt-in.
+- Before any advisory or Builder call, `aiwf run` evaluates write-path count,
+  responsibility count, and new-module count. A `split-required` result blocks
+  model dispatch unless the JSON task carries a reviewed exception. Complex
+  aggregation/gate tasks freeze negative counterexamples and fail-closed rules
+  in `extensions.complex_gate_contract`.
 - Model reports are claims until diff, receipt, and validation agree. Keep one
   writer, exact scope, isolated worktrees, and hash-bound recovery; stale
-  ownership fails closed. Models never merge; humans own high-impact approval.
+  ownership fails closed. Read-only validation may fan out behind one aggregate
+  receipt. Models never merge; humans review scoped patch handoffs and own
+  high-impact approval. Acceptance bundles surface changed files, patch/diff
+  hash, exact validation commands and exit codes even when report prose is
+  missing.
 
 ## Minimal Procedure
 

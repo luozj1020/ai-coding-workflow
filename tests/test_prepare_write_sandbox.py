@@ -144,6 +144,12 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         self.assertIn("--source .aiwf-write-staging/CONTENT)", dispatcher)
         self.assertIn('--content-base64 *)', dispatcher)
         self.assertIn('.aiwf-runtime/write-approved-file.py', dispatcher)
+        self.assertIn('DISPATCH_OUTCOME="write_staging_failed"', dispatcher)
+        self.assertIn('DISPATCH_OUTCOME="missing_required_artifact"', dispatcher)
+        self.assertIn("build-scoped-handoff.py", dispatcher)
+        self.assertIn('--source-base "$BASE_COMMIT"', dispatcher)
+        self.assertIn('--execution-base "$WORKTREE_START_COMMIT"', dispatcher)
+        self.assertIn('--scoped-handoff "$SCOPED_HANDOFF_MANIFEST_FILE"', dispatcher)
         self.assertIn(
             '_VALIDATION_HELPER_REL=".aiwf-runtime/run-approved-validation.py"',
             dispatcher,

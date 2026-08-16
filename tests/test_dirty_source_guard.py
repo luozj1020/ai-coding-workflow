@@ -13,8 +13,10 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DISPATCH = ROOT / "scripts" / "dispatch-to-claude.sh"
 CHECK_WORKTREE = ROOT / "scripts" / "check-worktree.sh"
+VALIDATE_WORKTREE_DIFF = ROOT / "scripts" / "validate-worktree-diff.py"
 CLASSIFY_ATTEMPT = ROOT / "scripts" / "classify-claude-attempt.py"
 CLAUDE_HEALTHCHECK = ROOT / "scripts" / "claude-healthcheck.py"
+CLAUDE_TASK_ID = ROOT / "scripts" / "claude_task_id.py"
 DISPATCH_PREFLIGHT = ROOT / "scripts" / "dispatch-preflight.py"
 PROCESS_IDENTITY = ROOT / "scripts" / "process-identity.py"
 CODEGRAPH_WORKTREE_GUARD = ROOT / "scripts" / "codegraph-worktree-guard.py"
@@ -97,6 +99,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         shutil.copy2(DISPATCH, self.repo / "scripts" / "dispatch-to-claude.sh")
         shutil.copy2(CLASSIFY_ATTEMPT, self.repo / "scripts" / "classify-claude-attempt.py")
         shutil.copy2(CLAUDE_HEALTHCHECK, self.repo / "scripts" / "claude-healthcheck.py")
+        shutil.copy2(CLAUDE_TASK_ID, self.repo / "scripts" / "claude_task_id.py")
         shutil.copy2(DISPATCH_PREFLIGHT, self.repo / "scripts" / "dispatch-preflight.py")
         shutil.copy2(PROCESS_IDENTITY, self.repo / "scripts" / "process-identity.py")
         shutil.copy2(CODEGRAPH_WORKTREE_GUARD, self.repo / "scripts" / "codegraph-worktree-guard.py")
@@ -133,6 +136,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self._write_fake_spark()
         self._run(["git", "add", "README.md", "scripts/dispatch-to-claude.sh",
                    "scripts/classify-claude-attempt.py", "scripts/claude-healthcheck.py",
+                   "scripts/claude_task_id.py",
                    "scripts/dispatch-preflight.py", "scripts/process-identity.py",
                    "scripts/codegraph-worktree-guard.py",
                    "scripts/claude-api-availability.py",
@@ -1125,7 +1129,14 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
 
     def test_checker_progress_distinguishes_validation_skipped_by_policy(self):
         shutil.copy2(CHECK_WORKTREE, self.repo / "scripts" / "check-worktree.sh")
-        self._run(["git", "add", "scripts/check-worktree.sh"], cwd=self.repo)
+        shutil.copy2(
+            VALIDATE_WORKTREE_DIFF,
+            self.repo / "scripts" / "validate-worktree-diff.py",
+        )
+        self._run(
+            ["git", "add", "scripts/check-worktree.sh", "scripts/validate-worktree-diff.py"],
+            cwd=self.repo,
+        )
         self._run(["git", "commit", "-m", "add checker"], cwd=self.repo)
         task = self._write_task_card()
         task.write_text(
@@ -1408,6 +1419,28 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertEqual(value["evidence_usability"], "recoverable")
         self.assertFalse(value["direct_acceptance_eligible"])
         self.assertTrue(value["tail_timeout_stopped"])
+        self.assertTrue(value["implementation_window_complete"])
+        self.assertEqual(value["report_tail_window_seconds"], 2)
+        self.assertEqual(value["report_recovery_attempts"], 1)
+        self.assertEqual(
+            value["report_recovery_policy"],
+            "single-bounded-deterministic-recovery",
+        )
+        self.assertEqual(value["dispatch_outcome"], "evidence_tail_incomplete")
+        self.assertEqual(value["completion_state"], "needs-review")
+        self.assertEqual(
+            value["operator_state"],
+            "implementation-stable-awaiting-review",
+        )
+        outcome = json.loads(
+            self._artifact_path(result.stdout, "Outcome Gates").read_text(encoding="utf-8")
+        )
+        self.assertTrue(outcome["dispatch_success"])
+        self.assertEqual(outcome["dispatch_outcome"], "evidence_tail_incomplete")
+        self.assertEqual(
+            outcome["operator_state"],
+            "implementation-stable-awaiting-review",
+        )
         self.assertIn("NEW_FILE.md", value["changed_files"])
 
     def test_validation_capability_receipt_is_provided_to_claude(self):
@@ -1633,6 +1666,40 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         outcome = json.loads(outcome_file.read_text(encoding="utf-8"))
         self.assertFalse(outcome["dispatch_success"])
         self.assertEqual(outcome["completion_state"], "failed-to-dispatch")
+
+    def test_auto_profile_capability_mismatch_stops_before_worktree(self):
+        self._write_builder_task_card()
+        result = self._dispatch(
+            "task-cards/BUILDER.md",
+            {
+                "CLAUDE_CODE_API_PROBE_MODE": "always",
+                "CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED": "1",
+                "FAKE_CLAUDE_HELP_TOOLS_FLAG": "1",
+                "FAKE_CLAUDE_HELP_ALLOWED_FLAG": "--allowedTools",
+                "FAKE_CLAUDE_TOOL_INVENTORY": '["Read","Edit","Write","Bash"]',
+            },
+        )
+        self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
+        self.assertIn("tool-capability-mismatch", result.stderr)
+        result_file = next((self.repo / ".worktrees").glob("*.result.json"))
+        payload = json.loads(result_file.read_text(encoding="utf-8"))
+        self.assertEqual(payload["missing_runtime_tools"], ["Glob", "Grep"])
+        self.assertFalse(payload["builder_started"])
+        self.assertFalse(payload["worktree_created"])
+
+    def test_custom_preflight_id_is_returned_as_monitorable_runtime_id(self):
+        self._write_task_card()
+        runtime_id = "preflight-materials-a"
+        result = self._dispatch(extra_args=["--preflight-task-id", runtime_id])
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn(f"Runtime ID:       {runtime_id}", result.stdout)
+        runtime = json.loads(
+            self._artifact_path(result.stdout, "Runtime Identity").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(runtime["task_id"], runtime_id)
+        self.assertEqual(runtime["runtime_id"], runtime_id)
 
     def test_early_tool_inventory_accepts_exact_writer_fallback(self):
         self._write_builder_task_card()
@@ -3204,6 +3271,15 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Implementation changes: 1", status)
         self.assertIn("Dispatch outcome: success", status)
         self.assertNotIn("Dispatch outcome: no_useful_progress", status)
+        outcome = json.loads(
+            self._artifact_path(result.stdout, "Outcome Gates").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            outcome["operator_state"],
+            "implementation-stable-awaiting-review",
+        )
 
     def test_approval_blocked_not_classified_as_no_progress(self):
         """approval-blocked with test-only diff is not no_useful_progress"""

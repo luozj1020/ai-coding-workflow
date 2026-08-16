@@ -1,6 +1,10 @@
 import os
 import pathlib
+import json
+import shlex
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -65,6 +69,42 @@ class CheckWorktreeTests(unittest.TestCase):
             self.assertIn("SKIPPED", text)
             self.assertIn("broad discovery is disabled", text)
 
+    def test_missing_boundary_helper_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            repo = self._init_repo(root)
+            helper_dir = root / "isolated-helper"
+            helper_dir.mkdir()
+            checker = helper_dir / "check-worktree.sh"
+            shutil.copy2(SCRIPT, checker)
+            report = repo / ".worktrees" / "checker-report.md"
+            logs = repo / ".worktrees" / "logs"
+
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(checker), "--no-discover",
+                    "--report", bash_path(report), "--logs-dir", bash_path(logs),
+                ],
+                cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            receipt = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "failed")
+            self.assertFalse(receipt["boundary_validation"]["available"])
+
+    def test_validation_worker_count_is_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(pathlib.Path(tmp))
+            result = subprocess.run(
+                [bash_exe(), bash_path(SCRIPT), "--no-discover", "--jobs", "9"],
+                cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("must not exceed 8", result.stderr)
+
     def test_explicit_command_runs_without_discovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._init_repo(pathlib.Path(tmp))
@@ -97,6 +137,52 @@ class CheckWorktreeTests(unittest.TestCase):
             self.assertIn("- custom: `printf validation-ok`", text)
             self.assertIn("ALL GREEN", text)
             self.assertIn("validation-ok", text)
+            receipt = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "passed")
+            self.assertTrue(receipt["read_only_fanout"])
+            self.assertTrue(
+                receipt["boundary_validation"]["untracked_diff_check_complete"]
+            )
+
+    def test_validation_commands_fan_out_and_aggregate_in_input_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(pathlib.Path(tmp))
+            report = repo / ".worktrees" / "checker-report.md"
+            logs = repo / ".worktrees" / "logs"
+            first = logs / "first.ready"
+            second = logs / "second.ready"
+
+            def barrier_command(own: pathlib.Path, peer: pathlib.Path) -> str:
+                code = (
+                    "import pathlib,sys,time;"
+                    f"own=pathlib.Path({str(own)!r});peer=pathlib.Path({str(peer)!r});"
+                    "own.parent.mkdir(parents=True,exist_ok=True);own.touch();"
+                    "deadline=time.time()+3;"
+                    "exec('while time.time() < deadline and not peer.exists():\\n time.sleep(0.02)');"
+                    "sys.exit(0 if peer.exists() else 3)"
+                )
+                return shlex.join([sys.executable, "-c", code])
+
+            result = subprocess.run(
+                [
+                    bash_exe(), bash_path(SCRIPT), "--no-discover", "--jobs", "2",
+                    "--command", "first=" + barrier_command(first, second),
+                    "--command", "second=" + barrier_command(second, first),
+                    "--report", bash_path(report), "--logs-dir", bash_path(logs),
+                ],
+                cwd=str(repo), text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            receipt = json.loads(report.with_suffix(".json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["max_concurrency"], 2)
+            self.assertEqual(
+                [item["label"] for item in receipt["results"]], ["first", "second"]
+            )
+            self.assertEqual(
+                [item["exit_code"] for item in receipt["results"]], [0, 0]
+            )
 
     def test_task_card_validation_block_runs_without_discovery(self):
         with tempfile.TemporaryDirectory() as tmp:

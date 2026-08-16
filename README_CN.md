@@ -369,6 +369,15 @@ python ai/render-task-card.py ai/task-cards/PROJ-123.json --view execution
 
 Profile 组合是确定性的、失败即关闭的。如果两个 profile 对同一字段定义了冲突的标量值，组合会抛出错误而非静默选择其一。使用 `lint-task-card.py` 在调度前捕获冲突。
 
+### 任务粒度与复杂门禁契约
+
+`aiwf run` 会在调度前写出 `task-granularity.json`。当任务包含至少六个
+写入路径、三个独立职责、三个新模块，或同时存在多文件和多职责时，结果为
+`split-required`，Spark 与 Claude 都不会启动。应拆分 JSON 任务；确实不可拆时，
+必须在 `extensions.task_shape` 中记录经过审查的例外和具体理由。聚合或验收门禁
+任务通过 `extensions.complex_gate_contract` 冻结至少两个反例和一个失败关闭条件；
+契约不完整会在 JSON 校验阶段失败。
+
 ### 兼容传统 Markdown
 
 Markdown 任务卡继续正常工作。调度器、模板和审查脚本均支持 Markdown。JSON 仅面向需要 schema 校验和结构化组合的团队可选使用。
@@ -794,6 +803,10 @@ Claude 现在使用相同的外层边界协议。受限沙箱中的启动交互�
 `host_retry_args` 标记为权威参数，环境变量映射仅为兼容证据。exit 75 是编排请求，不是放弃模型调用的
 许可；只有宿主重试也失败后，才能判定当前路由不可用。
 
+Dispatcher 会显式打印规范化后的 `Runtime ID`。调度器和监测器共用同一个
+校验器，因此安全的自定义 preflight/DAG ID 可以直接交给
+`monitor-claude.sh`，调用方不得另行拼接 `claude-` 前缀。
+
 revision、收窄、重试、重派、拆分子任务或下一阶段卡必须重复此步骤，并改用对应的 `--routing-event`。只有 Spark 经济建议和确定性 owner gate 都倾向 Codex 时，才直接编辑并省略完整任务卡；否则再编写面向下游的精简执行卡。
 - `review-only`：快速只读审查任务卡或实现方向。
 - `task-card-audit`：派发前检查缺失 gate、职责混合、验收不清和可能导致 Claude 卡住的风险。
@@ -826,13 +839,21 @@ bash ai/run-codex-spark.sh ai/task-cards/PROJ-123.md
 
 当显式使用 `task-size-classifier` 模式，或 conservative 预算下的 auto 路由选中该模式时，helper 会在 Spark artifact 目录中用 `workspace-write` sandbox 启动 Codex。这样本地 helper 初始化有可写工作目录，但不会给源仓库写权限，且该模式仍禁止修改源代码。
 
+集成的 `task-card-audit` 默认使用 30 秒短预算；不可用结果会打开一个按模式隔离的 5 分钟熔断器，使等价审查直接跳过，而确定性预检和 Claude 继续执行。
+
 估算器现在会记录仓库规模、历史 worktree 成本、`task_role`、`context_reacquisition_cost`、`codex_semantic_rereview`、`solution_clarity` 和 `semantic_concentration`。`python ai/repository-scale.py --format json` 可在不调用模型的情况下显示确定性事实。`--fast-path-max-diff-lines` / `CODEX_FAST_PATH_MAX_DIFF_LINES` 与 `--concentrated-fast-path-max-diff-lines` / `CODEX_CONCENTRATED_FAST_PATH_MAX_DIFF_LINES` 会显式覆盖自动选择的行数上界。1.5/2.0 倍校准保持不变；范围、方案和上下文稳定时，实际编辑超过预测本身不触发重新路由。
 
-Claude 退出后，dispatcher 会写入 `<task-id>.report-consistency.json` 和 `<task-id>.outcome.json`。报告必须包含精确的变更文件、数量及无意外文件声明。任务分配了测试时，还必须提供 `claimed_test_count=<n>` 且 diff 中存在数量匹配的测试声明；分配了验证时，必须提供 `claimed_validation_command=<command>` 和 `claimed_validation_exit_code=<code>`。修订 finding 使用 `resolved_finding=<id>|file=<path>|symbol=<symbol>|test=<name or not-required>`。声明缺失或与 diff、测试证据矛盾时，终态降级为 `completion_state=needs-review`。`dispatch_success`、`artifact_valid`、`validation_success` 与 `semantic_acceptance` 分开记录，只有 Codex 审查能够确认语义验收。
+Claude 退出后，dispatcher 会写入 `<task-id>.report-consistency.json` 和 `<task-id>.outcome.json`。报告必须包含精确的变更文件、数量及无意外文件声明。任务分配了测试时，还必须提供 `claimed_test_count=<n>` 且 diff 中存在数量匹配的测试声明；分配了验证时，必须提供 `claimed_validation_command=<command>` 和 `claimed_validation_exit_code=<code>`。修订 finding 使用 `resolved_finding=<id>|file=<path>|symbol=<symbol>|test=<name or not-required>`。声明缺失或与 diff、测试证据矛盾时，终态降级为 `completion_state=needs-review`。已有最终产品 diff 但没有有效报告时，还会记录 `operator_state=implementation-stable-awaiting-review`；它会结束运行态监控，但仍要求 Codex 审查。`dispatch_success`、`artifact_valid`、`validation_success` 与 `semantic_acceptance` 分开记录，只有 Codex 审查能够确认语义验收。
+
+Acceptance bundle 的 `review_evidence` 会直接列出限定范围内的变更文件、
+patch/恢复 diff 哈希、基线提交、报告是否存在，以及每条精确验证命令和退出码。
+因此缺少报告只触发一次有界的确定性恢复收据，不会重新启动实现轮次。
 
 Dirty snapshot 的 runtime 现在区分原始 `source_base_commit` 与合成的
 `execution_base_commit`。同 worktree 重试分别校验源仓库 HEAD 和执行
 worktree HEAD，并继承既有快照基线，不会对仍然 dirty 的源工作区再次制作快照。
+
+有产品 diff 的运行会在 worktree 旁生成 `<task-id>.scoped.patch` 和机器可读的 `<task-id>.scoped-handoff.json`。patch 从执行基线开始，只包含获准产品路径和新增文件。dirty snapshot 的 manifest 会明确禁止整体合并 worktree，并给出供人审查的 `git apply --check` / `git apply` 命令；模型不会应用或合并该交付物。
 
 当 Claude diff 有用但不完整时，应保留 dirty isolated worktree。如果 Codex 已接受实现方向且只剩一个明确的语义阻塞，使用 `aiwf advisor-continuation` 在同一 worktree 中继续，并绑定状态 hash、允许路径、禁止路径和一次性调用限制；不要仅为补报告或小范围补全而重新 checkout、从头实现。
 
@@ -841,18 +862,15 @@ worktree HEAD，并继承既有快照基线，不会对仍然 dirty 的源工作
 ```bash
 python ai/aiwf.py reviewed-continuation prepare \
   --prior-task-id claude-... \
-  --next-task-card /absolute/next-card.md \
-  --next-role checker-test \
+  --next-task-card /absolute/next-task.json \
   --decision accepted-direction \
   --accepted-existing-path src/accepted-implementation.cc \
-  --allow-new-write-path tests/continuation_test.cc \
-  --output .worktrees/continuation-approval.json
+  --allow-new-write-path tests/continuation_test.cc
 
-bash ai/dispatch-to-claude.sh /absolute/next-card.md \
-  --reviewed-continuation .worktrees/continuation-approval.json
+# 严格执行收据输出的 dispatch_command。
 ```
 
-审批文件会绑定精确 dirty 状态、文件内容与 mode、source/base/worktree HEAD 及下一张任务卡 hash。调度器只消费一次审批，并复用原 worktree，不执行 reset、clean、checkout，也不再产生新 worktree 的准备窗口。Checker 可以看到已接受的实现，但新增修改仍被限制在声明的测试/验证路径内。状态漂移、旧进程仍存活、重复消费、范围扩张、managed/advisor/retry/parallel 来源以及 Checker→Builder 都会 fail closed。
+helper 可读取 Task JSON、渲染后的执行卡元数据和旧 Markdown；它会推导下一角色，继承 Builder mode、已验证 tool profile 与 Context Lease lineage，并默认把授权文件写到产品 worktree 之外。审批文件会绑定精确 dirty 状态、文件内容与 mode、source/base/worktree HEAD 及下一张任务卡 hash。调度器只消费一次审批，并复用原 worktree，不执行 reset、clean、checkout，也不再产生新 worktree 的准备窗口。状态漂移、旧进程仍存活、重复消费、范围扩张、managed/advisor/retry/parallel 来源以及 Checker→Builder 都会 fail closed。
 
 同一个冻结方案合同下的连续实现切片，在 Codex 接受每个切片后可签发一次性
 Context Lease：
@@ -1162,9 +1180,9 @@ CLAUDE_CODE_NETWORK_MONITOR=1 bash ai/dispatch-to-claude.sh ai/task-cards/PROJ-1
 | `*.codex-events.jsonl` | 可用时记录的 Codex 原始 JSON 事件 |
 | `*.codex-usage.txt` | 可用时记录的 Codex 审查 Token/费用摘要 |
 
-Claude 运行期间，Dispatcher 会区分自报的编辑就绪和持久产品内容变化。智能体控制器阻塞等待 `monitor-claude.sh wait`，只在实质或终态边界到达后审查有界 diff/decision 证据。`watch-claude.sh` 与 `status-claude.sh` 仍可用于人工诊断，但不是轮询指令。只有出现相互印证的方向偏离或已确认无进展证据时，才考虑中断 Claude。
+Claude 运行期间，Dispatcher 会区分自报的编辑就绪和持久产品内容变化。智能体控制器阻塞等待 `monitor-claude.sh wait`，只在实质或终态边界到达后审查有界 diff/decision 证据。紧凑状态中的 `last_verified_product_event` 只来自 dispatcher 的产品变化、窗口刷新或终态边界。`watch-claude.sh` 与 `status-claude.sh` 仍可用于人工诊断，但不是轮询指令。只有出现相互印证的方向偏离或已确认无进展证据时，才考虑中断 Claude。
 
-显式工具档案会在创建完整 worktree 之前，与早期 stream-init 工具清单比较；能力不匹配会生成 `builder_started=false`、`worktree_created=false` 的完整终态收据。活动收据只读取文件系统元数据，不读取 Claude 会话 JSONL；其中合并的会话活动仅供诊断，不能延长产品修改窗口。
+显式或自动推导的工具档案会在创建完整 worktree 之前，与早期 stream-init 工具清单比较；能力不匹配会生成 `builder_started=false`、`worktree_created=false` 的完整终态收据。活动收据只读取文件系统元数据，不读取 Claude 会话 JSONL；其中合并的会话活动仅供诊断，不能延长产品修改窗口。
 
 如果任务卡要求 Direction / Boundary Acknowledgement，Claude 应先写出确认内容再编辑。若该确认是阻塞式审批，Codex 需要给出一次最终决策后 Claude 才继续。Codex 给出 `proceed` 后，Claude 应继续执行任务，不应围绕同一事项反复请求确认。
 
@@ -1216,10 +1234,11 @@ bash ai/run-loop.sh ai/task-cards/PROJ-123.md 5
 **只检查验证：** 安装后的项目包含 `ai/check-worktree.sh`。优先运行任务卡里的精确验证命令：
 
 ```bash
-bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover --command 'tests=pytest tests/test_target.py'
+bash ai/check-worktree.sh --task-card ai/task-cards/PROJ-123.md --no-discover \
+  --jobs 4 --command 'tests=pytest tests/test_target.py'
 ```
 
-dispatcher 会在 Claude 结束后记录 checker report，但默认关闭广域 discover，避免与当前任务无关的 pytest/ruff/mypy 噪音。需要 dispatcher 复跑精确命令时，传入 `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'`；只有任务卡明确允许广域项目检查时，才设置 `CLAUDE_CODE_CHECKER_DISCOVER=1`。
+checker 会以有界并发（默认 4）运行彼此独立的只读命令，按输入顺序稳定汇总，并在 Markdown report 旁写一份 JSON validation receipt。强制边界预检会为未跟踪文件构造虚拟 patch，并检查 Python/JSON/TOML 与跨文件拼接，因此空的 tracked `git diff --check` 不再算完整证据。dispatcher 会在 Claude 结束后记录这些产物，但默认关闭广域 discover，避免与当前任务无关的 pytest/ruff/mypy 噪音。需要 dispatcher 复跑精确命令时，传入 `CLAUDE_CODE_CHECKER_COMMANDS=$'tests=pytest tests/test_target.py'`；只有任务卡明确允许广域项目检查时，才设置 `CLAUDE_CODE_CHECKER_DISCOVER=1`。
 
 **Checker 复用风险门：** 派发 `checker-test` 任务前，在任务卡中填写 Checker Reuse Risk Gate，包含以下精确行：Public API risk、Data model risk、Security risk、Migration risk、Permission risk、Concurrency risk、Cross-module risk、Production impact。每行必须为显式 `no` 才允许任务派生的 checker worktree 复用默认为 `reuse-managed`。缺失、`unknown`、`n/a`、`duplicate`、`high` 风险、DAG 或并行任务保持 `fresh`。环境变量 `CLAUDE_CODE_WORKTREE_STRATEGY=fresh|reuse-managed` 覆盖此默认。现有 reset 安全（`CLAUDE_CODE_REUSE_WORKTREE_RESET=1`）保持不变。
 

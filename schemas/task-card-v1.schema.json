@@ -245,6 +245,71 @@
     "extensions": {
       "type": "object",
       "description": "Profile-specific or task-specific extension data. Unknown top-level fields are rejected; all extensions must live here.",
+      "properties": {
+        "task_shape": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "responsibilities": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "description": "Distinct implementation responsibilities used by the deterministic split gate."
+            },
+            "new_modules": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "description": "Explicit new module paths; nonexistent exact write paths are also inferred."
+            },
+            "split_decision": {
+              "type": "string",
+              "enum": ["split", "exception"],
+              "description": "Reviewed response when the split gate requires action."
+            },
+            "split_reason": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required rationale for a split decision or reviewed exception."
+            }
+          },
+          "allOf": [
+            {
+              "if": {"required": ["split_decision"]},
+              "then": {"required": ["split_reason"]}
+            }
+          ]
+        },
+        "complex_gate_contract": {
+          "type": "object",
+          "required": ["enabled"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "counterexamples": {
+              "type": "array",
+              "minItems": 2,
+              "items": {"type": "string", "minLength": 1},
+              "description": "Concrete negative cases that must remain rejected."
+            },
+            "fail_closed_conditions": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "string", "minLength": 1},
+              "description": "Missing, invalid, or contradictory evidence states that must not pass."
+            },
+            "not_applicable_reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"enabled": {"const": true}}},
+              "then": {"required": ["counterexamples", "fail_closed_conditions"]},
+              "else": {"required": ["not_applicable_reason"]}
+            }
+          ]
+        }
+      },
       "additionalProperties": true
     }
   }

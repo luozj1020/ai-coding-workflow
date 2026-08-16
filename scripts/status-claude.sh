@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # status-claude.sh  -  Show status for a Claude Code dispatch run.
 #
-# Usage: bash ai/status-claude.sh [claude-<timestamp>|/path/to/worktree]
+# Usage: bash ai/status-claude.sh [runtime-id|/path/to/worktree]
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROCESS_STATE_HELPER="${SCRIPT_DIR}/claude-process-state.py"
+TASK_ID_HELPER="${SCRIPT_DIR}/claude_task_id.py"
 
 # Git for Windows can be launched through bin/bash.exe without the usual Unix tool PATH.
 # Prepending these paths is harmless on Unix and makes helper scripts stable on Windows.
 PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
 export PATH
+if command -v python3 >/dev/null 2>&1; then PYTHON_CMD=python3; else PYTHON_CMD=python; fi
 
 resolve_repo() {
     local source common
@@ -38,7 +40,7 @@ while [ $# -gt 0 ]; do
         --details) DETAILS=1 ;;
         --json) JSON_OUTPUT=1 ;;
         -h|--help)
-            echo "Usage: $0 [claude-task-id|worktree] [--json|--details]"
+            echo "Usage: $0 [runtime-id|worktree] [--json|--details]"
             exit 0 ;;
         *)
             if [ -n "$TASK_REF" ]; then echo "Error: unexpected argument: $1" >&2; exit 1; fi
@@ -57,7 +59,6 @@ if [ "$DETAILS" -eq 0 ]; then
     _compact_args=(snapshot --repo-root "$REPO_ROOT")
     if [ -n "$TASK_REF" ]; then _compact_args+=(--task-id "$TASK_REF"); fi
     if [ "$JSON_OUTPUT" -eq 1 ]; then _compact_args+=(--format json); else _compact_args+=(--format text); fi
-    if command -v python3 >/dev/null 2>&1; then PYTHON_CMD=python3; else PYTHON_CMD=python; fi
     exec "$PYTHON_CMD" "$DECISION_HELPER" "${_compact_args[@]}"
 fi
 if [ "$JSON_OUTPUT" -eq 1 ]; then
@@ -89,19 +90,21 @@ case "$WAIT_PROFILE" in
         ;;
 esac
 
+if [ ! -f "$TASK_ID_HELPER" ]; then
+    echo "Error: runtime task-id helper is unavailable: $TASK_ID_HELPER" >&2
+    exit 1
+fi
 if [ -z "$TASK_REF" ]; then
-    latest="$(find "$WORKTREE_ROOT" -maxdepth 1 -type f -name 'claude-*.progress.log' 2>/dev/null | sort | tail -1 || true)"
+    latest="$(find "$WORKTREE_ROOT" -maxdepth 1 -type f -name '*.progress.log' 2>/dev/null | sort | tail -1 || true)"
     if [ -z "$latest" ]; then
         echo "No Claude progress logs found under $WORKTREE_ROOT" >&2
         exit 1
     fi
-    TASK_ID="$(basename "$latest" .progress.log)"
-elif [ -d "$TASK_REF" ]; then
-    TASK_ID="$(basename "$TASK_REF")"
-else
-    TASK_ID="$(basename "$TASK_REF")"
-    TASK_ID="${TASK_ID%.progress.log}"
-    TASK_ID="${TASK_ID%.pid}"
+    TASK_REF="$latest"
+fi
+if ! TASK_ID="$($PYTHON_CMD "$TASK_ID_HELPER" normalize "$TASK_REF" --artifact-input 2>/dev/null)"; then
+    echo "Error: unsafe or ambiguous runtime task id." >&2
+    exit 1
 fi
 
 PREFIX="${WORKTREE_ROOT}/${TASK_ID}"

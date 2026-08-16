@@ -45,6 +45,19 @@ VALID_RISK_KEYS = {
 # contracts put executable stops only in top-level ``stop_conditions``.
 VALID_HANDOFF_KEYS = {"must_do", "must_not_do", "may_decide", "must_report", "stop_condition"}
 VALID_VALIDATION_KEYS = {"id", "command", "description", "local_allowed"}
+VALID_TASK_SHAPE_KEYS = {
+    "responsibilities", "new_modules", "split_decision", "split_reason",
+}
+VALID_SPLIT_DECISIONS = ("split", "exception")
+VALID_COMPLEX_GATE_KEYS = {
+    "enabled", "counterexamples", "fail_closed_conditions",
+    "not_applicable_reason",
+}
+COMPLEX_GATE_MARKERS = (
+    "aggregation", "aggregate", "eligibility", "quorum", "fallback",
+    "acceptance gate", "gate logic", "admission gate", "fail-closed",
+    "聚合", "门禁", "门控", "验收逻辑", "资格", "回退", "失败关闭",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +114,198 @@ def _type_name(value: Any) -> str:
     if isinstance(value, dict):
         return "object"
     return type(value).__name__
+
+
+def _validate_text_array(
+    errors: List[str], value: Any, path: str, *, minimum: int = 0
+) -> None:
+    """Validate a small machine-readable list of non-empty strings."""
+    if not isinstance(value, list):
+        errors.append(f"{path}: expected array")
+        return
+    if len(value) < minimum:
+        errors.append(f"{path}: expected at least {minimum} item(s)")
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            errors.append(f"{path}[{index}]: expected non-empty string")
+
+
+def _validate_known_extensions(
+    errors: List[str], extensions: Dict[str, Any], root: str
+) -> None:
+    """Validate extension contracts whose semantics are owned by aiwf core."""
+    task_shape = extensions.get("task_shape")
+    shape_path = f"{root}.extensions.task_shape"
+    if task_shape is not None:
+        if not isinstance(task_shape, dict):
+            errors.append(f"{shape_path}: expected object")
+        else:
+            for key in task_shape:
+                if key not in VALID_TASK_SHAPE_KEYS:
+                    errors.append(f"{shape_path}: unknown key '{key}'")
+            for key in ("responsibilities", "new_modules"):
+                if key in task_shape:
+                    _validate_text_array(errors, task_shape[key], f"{shape_path}.{key}")
+            decision = task_shape.get("split_decision")
+            if decision is not None and decision not in VALID_SPLIT_DECISIONS:
+                errors.append(
+                    f"{shape_path}.split_decision: expected one of "
+                    f"{VALID_SPLIT_DECISIONS}, got '{decision}'"
+                )
+            reason = task_shape.get("split_reason")
+            if decision is not None and (not isinstance(reason, str) or not reason.strip()):
+                errors.append(
+                    f"{shape_path}.split_reason: required when split_decision is set"
+                )
+            elif reason is not None and (not isinstance(reason, str) or not reason.strip()):
+                errors.append(f"{shape_path}.split_reason: expected non-empty string")
+
+    gate = extensions.get("complex_gate_contract")
+    gate_path = f"{root}.extensions.complex_gate_contract"
+    if gate is not None:
+        if not isinstance(gate, dict):
+            errors.append(f"{gate_path}: expected object")
+            return
+        for key in gate:
+            if key not in VALID_COMPLEX_GATE_KEYS:
+                errors.append(f"{gate_path}: unknown key '{key}'")
+        enabled = gate.get("enabled")
+        if not isinstance(enabled, bool):
+            errors.append(f"{gate_path}.enabled: expected boolean")
+        if enabled is True:
+            _validate_text_array(
+                errors, gate.get("counterexamples"),
+                f"{gate_path}.counterexamples", minimum=2,
+            )
+            _validate_text_array(
+                errors, gate.get("fail_closed_conditions"),
+                f"{gate_path}.fail_closed_conditions", minimum=1,
+            )
+        elif enabled is False:
+            reason = gate.get("not_applicable_reason")
+            if not isinstance(reason, str) or not reason.strip():
+                errors.append(
+                    f"{gate_path}.not_applicable_reason: required when enabled is false"
+                )
+
+
+def _requires_complex_gate_contract(data: Dict[str, Any]) -> bool:
+    """Detect explicit aggregation/gate language without guessing architecture."""
+    values = [data.get("goal", "")]
+    acceptance = data.get("acceptance", [])
+    if isinstance(acceptance, list):
+        values.extend(
+            item.get("description", "")
+            for item in acceptance if isinstance(item, dict)
+        )
+    extensions = data.get("extensions", {})
+    shape = extensions.get("task_shape", {}) if isinstance(extensions, dict) else {}
+    if isinstance(shape, dict):
+        responsibilities = shape.get("responsibilities", [])
+        if isinstance(responsibilities, list):
+            values.extend(responsibilities)
+    text = "\n".join(str(value).lower() for value in values)
+    return any(marker in text for marker in COMPLEX_GATE_MARKERS)
+
+
+def assess_task_granularity(
+    task: Dict[str, Any], repo: Optional[Union[str, Path]] = None
+) -> Dict[str, Any]:
+    """Return a deterministic pre-dispatch split advisory for one JSON task.
+
+    The gate is intentionally conservative: a single large dimension emits a
+    strong advisory, while clearly oversized or compound work blocks model
+    dispatch until the card is split or a reviewed exception is recorded.
+    """
+    scope = task.get("scope", {}) if isinstance(task.get("scope"), dict) else {}
+    write_paths = [
+        str(value).strip().replace("\\", "/")
+        for value in scope.get("write_paths", [])
+        if str(value).strip()
+    ]
+    extensions = task.get("extensions", {})
+    extensions = extensions if isinstance(extensions, dict) else {}
+    shape = extensions.get("task_shape", {})
+    shape = shape if isinstance(shape, dict) else {}
+    responsibilities = [
+        str(value).strip() for value in shape.get("responsibilities", [])
+        if str(value).strip()
+    ]
+    declared_new_modules = [
+        str(value).strip().replace("\\", "/")
+        for value in shape.get("new_modules", []) if str(value).strip()
+    ]
+    repo_path = Path(repo).resolve() if repo is not None else None
+    inferred_new_modules: List[str] = []
+    broad_paths: List[str] = []
+    for path in write_paths:
+        has_pattern = any(char in path for char in "*?[")
+        candidate = repo_path / path if repo_path is not None else None
+        is_directory = path.endswith("/") or bool(candidate and candidate.is_dir())
+        if has_pattern or is_directory:
+            broad_paths.append(path)
+        elif candidate is not None and not candidate.exists():
+            inferred_new_modules.append(path)
+
+    new_modules = sorted(set(declared_new_modules + inferred_new_modules))
+    responsibility_count = len(responsibilities) if responsibilities else 1
+    write_path_count = len(write_paths)
+    new_module_count = len(new_modules)
+
+    blocking_reasons: List[str] = []
+    advisory_reasons: List[str] = []
+    if write_path_count >= 6:
+        blocking_reasons.append("six-or-more-write-paths")
+    elif write_path_count >= 4:
+        advisory_reasons.append("four-or-more-write-paths")
+    if responsibility_count >= 3:
+        blocking_reasons.append("three-or-more-responsibilities")
+    elif responsibility_count >= 2:
+        advisory_reasons.append("multiple-responsibilities")
+    if new_module_count >= 3:
+        blocking_reasons.append("three-or-more-new-modules")
+    elif new_module_count >= 2:
+        advisory_reasons.append("multiple-new-modules")
+    if write_path_count >= 4 and responsibility_count >= 2:
+        blocking_reasons.append("compound-multi-file-task")
+    if broad_paths:
+        advisory_reasons.append("broad-write-scope")
+
+    decision = str(shape.get("split_decision", "")).strip()
+    reason = str(shape.get("split_reason", "")).strip()
+    if decision == "split":
+        blocking_reasons.append("reviewed-split-decision")
+    split_required = bool(blocking_reasons)
+    exception_applied = split_required and decision == "exception" and bool(reason)
+    blocking = split_required and not exception_applied
+    if blocking:
+        status = "split-required"
+        action = "split-task-before-dispatch"
+    elif exception_applied:
+        status = "split-exception-reviewed"
+        action = "proceed-with-recorded-exception"
+    elif advisory_reasons:
+        status = "split-advised"
+        action = "review-task-shape-before-dispatch"
+    else:
+        status = "ready"
+        action = "proceed"
+    return {
+        "schema_version": 1,
+        "status": status,
+        "blocking": blocking,
+        "action": action,
+        "write_path_count": write_path_count,
+        "responsibility_count": responsibility_count,
+        "new_module_count": new_module_count,
+        "broad_write_paths": sorted(set(broad_paths)),
+        "responsibilities": responsibilities or [task.get("goal", "task responsibility")],
+        "new_modules": new_modules,
+        "reason_codes": sorted(set(blocking_reasons + advisory_reasons)),
+        "blocking_reason_codes": sorted(set(blocking_reasons)),
+        "split_decision": decision or None,
+        "split_reason": reason or None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -307,9 +512,19 @@ def validate_task(data: Any, path: str = "") -> List[str]:
             if not isinstance(item, str) or not item:
                 errors.append(f"{root}.stop_conditions[{i}]: expected non-empty string")
 
-    # extensions (optional, any shape allowed)
+    # extensions are open for profiles, while core-owned contracts are strict.
     if "extensions" in data and not isinstance(data["extensions"], dict):
         errors.append(f"{root}.extensions: expected object")
+    elif isinstance(data.get("extensions"), dict):
+        _validate_known_extensions(errors, data["extensions"], root)
+    extensions = data.get("extensions")
+    if _requires_complex_gate_contract(data) and not (
+        isinstance(extensions, dict) and "complex_gate_contract" in extensions
+    ):
+        errors.append(
+            f"{root}.extensions.complex_gate_contract: required for explicit "
+            "aggregation/gate/fallback semantics"
+        )
 
     return errors
 
@@ -404,7 +619,7 @@ def _deep_merge(base: Any, override: Any, path: str) -> Any:
     - Scalars: reject unless identical
     - Incompatible types: reject
     """
-    if type(base) != type(override):
+    if type(base) is not type(override):
         raise ProfileConflictError(
             f"incompatible types at {path}: {_type_name(base)} vs {_type_name(override)}"
         )
@@ -563,6 +778,45 @@ def _render_execution_context(context: Dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+def _render_complex_gate_contract(task: Dict[str, Any]) -> str:
+    extensions = task.get("extensions", {})
+    extensions = extensions if isinstance(extensions, dict) else {}
+    contract = extensions.get("complex_gate_contract")
+    if not isinstance(contract, dict) or contract.get("enabled") is not True:
+        return ""
+    return "\n\n".join((
+        "**Counterexamples that must remain rejected:**\n{}".format(
+            _render_list(_text_items(contract.get("counterexamples")))
+        ),
+        "**Fail-closed conditions:**\n{}".format(
+            _render_list(_text_items(contract.get("fail_closed_conditions")))
+        ),
+        "If required evidence is missing, contradictory, or unparseable, preserve the "
+        "rejected/pending state; do not infer success from partial inputs.",
+    ))
+
+
+def _render_task_granularity(context: Dict[str, Any]) -> str:
+    assessment = context.get("task_granularity")
+    if not isinstance(assessment, dict) or assessment.get("status") == "ready":
+        return ""
+    lines = [
+        "**Status:** {}".format(assessment.get("status", "unknown")),
+        "**Required action:** {}".format(assessment.get("action", "review")),
+        "**Shape:** write paths={}, responsibilities={}, new modules={}".format(
+            assessment.get("write_path_count", 0),
+            assessment.get("responsibility_count", 0),
+            assessment.get("new_module_count", 0),
+        ),
+        "**Reason codes:** {}".format(
+            ", ".join(_text_items(assessment.get("reason_codes"))) or "none"
+        ),
+    ]
+    if assessment.get("split_reason"):
+        lines.append("**Reviewed exception:** {}".format(assessment["split_reason"]))
+    return "\n\n".join(lines)
+
+
 def _render_execution_task_card(
     task: Dict[str, Any], execution_context: Optional[Dict[str, Any]]
 ) -> str:
@@ -600,6 +854,14 @@ def _render_execution_task_card(
     context_body = _render_execution_context(context)
     if context_body:
         sections.append(_render_section("Execution Context", context_body))
+
+    granularity_body = _render_task_granularity(context)
+    if granularity_body:
+        sections.append(_render_section("Task Granularity", granularity_body))
+
+    complex_gate_body = _render_complex_gate_contract(task)
+    if complex_gate_body:
+        sections.append(_render_section("Complex Gate Contract", complex_gate_body))
 
     acceptance = task.get("acceptance", [])
     if isinstance(acceptance, list) and acceptance:

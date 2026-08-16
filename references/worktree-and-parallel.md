@@ -58,8 +58,16 @@ Builder-to-Checker transition; the runtime receipt and task-card fallback use
 the same role normalization. A narrow Checker-to-Checker continuation is also
 supported when the runtime records a valid Claude session UUID; it must resume
 that same session and remain in the Checker role. Checker-to-Builder remains
-fail closed. The approval binds the baseline content hash, prior role and
-session, and exact new Write paths. On supported hosts the
+fail closed. The continuation helper reads raw Task JSON, rendered
+`aiwf-execution-card-v1` metadata, or legacy Markdown; role and Builder mode do
+not depend on a Markdown table. It inherits the prior Builder mode, verified
+tool profile, and Context Lease lineage unless the new machine-readable card
+requires a compatible transition. By default it writes the one-use approval
+under the common `.worktrees/continuations/` control directory and returns a
+copyable `dispatch_command`; an approval path inside the product worktree is
+rejected because it would invalidate the approved state hash. The approval
+binds the baseline content hash, prior role and session, and exact new Write
+paths. On supported hosts the
 dispatcher runs Claude inside a read-only-root sandbox with writable binds only
 for those exact paths and control reports, so Edit/Write/Bash cannot create
 forbidden siblings. Required enforcement fails closed when paths are globbed or
@@ -78,6 +86,15 @@ the baseline hash, selected acceptance IDs, new diff/test refs, unresolved
 findings, and new validation refs; it explicitly records that the full prior
 task card was not repeated. Packet hash, worktree state, and next-card drift
 continue to fail closed.
+
+Every productive dispatch also attempts to emit `<task-id>.scoped.patch` and
+`<task-id>.scoped-handoff.json` beside the worktree. The patch is computed from
+`execution_base_commit` and contains only receipt-approved product paths,
+including new files. Unexpected paths block the handoff. In dirty-snapshot mode
+the manifest records both source and execution baselines and explicitly warns
+that the whole worktree cannot be merged; the human may run only the listed
+`git apply --check` and `git apply` commands after reviewing the patch. No model
+is authorized to apply or merge it.
 
 Checker worktree reuse requires every Checker Reuse Risk Gate row to be explicit `no`. Missing/unknown/high risk, DAG, parallel, or shared-contract work stays fresh. Environment overrides remain explicit.
 

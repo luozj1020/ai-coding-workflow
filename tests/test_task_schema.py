@@ -359,6 +359,106 @@ class TestValidationRequiredAndUnknown(unittest.TestCase):
         self.assertIn("expected object", errors[0])
 
 
+class TestCoreExtensionContracts(unittest.TestCase):
+    """Core-owned extension fields are strict and execution-relevant."""
+
+    def setUp(self):
+        self.ts = _load_task_schema()
+
+    def test_split_exception_requires_reason(self):
+        task = _make_valid_task(extensions={
+            "task_shape": {"split_decision": "exception"},
+        })
+        errors = self.ts.validate_task(task)
+        self.assertTrue(any("split_reason" in error for error in errors))
+
+    def test_complex_gate_requires_counterexamples_and_fail_closed_rule(self):
+        task = _make_valid_task(extensions={
+            "complex_gate_contract": {
+                "enabled": True,
+                "counterexamples": ["one negative case"],
+                "fail_closed_conditions": [],
+            },
+        })
+        errors = self.ts.validate_task(task)
+        self.assertTrue(any("counterexamples" in error for error in errors))
+        self.assertTrue(any("fail_closed_conditions" in error for error in errors))
+
+    def test_explicit_gate_semantics_require_contract_or_reasoned_opt_out(self):
+        task = _make_valid_task(goal="Implement aggregate acceptance gate")
+        errors = self.ts.validate_task(task)
+        self.assertTrue(any("complex_gate_contract" in error for error in errors))
+        task["extensions"] = {
+            "complex_gate_contract": {
+                "enabled": False,
+                "not_applicable_reason": "only renaming an existing label",
+            },
+        }
+        self.assertEqual(self.ts.validate_task(task), [])
+
+    def test_complex_gate_execution_card_renders_negative_contract(self):
+        task = _make_valid_task(extensions={
+            "complex_gate_contract": {
+                "enabled": True,
+                "counterexamples": [
+                    "missing child evidence stays pending",
+                    "contradictory child evidence stays rejected",
+                ],
+                "fail_closed_conditions": ["unparseable evidence cannot pass"],
+            },
+        })
+        self.assertEqual(self.ts.validate_task(task), [])
+        rendered = self.ts.render_task_card(task, view="execution")
+        self.assertIn("Complex Gate Contract", rendered)
+        self.assertIn("missing child evidence stays pending", rendered)
+        self.assertIn("do not infer success from partial inputs", rendered)
+
+    def test_granularity_blocks_six_write_paths(self):
+        task = _make_valid_task()
+        task["scope"]["write_paths"] = [f"src/file-{index}.py" for index in range(6)]
+        value = self.ts.assess_task_granularity(task)
+        self.assertTrue(value["blocking"])
+        self.assertEqual(value["status"], "split-required")
+        self.assertIn("six-or-more-write-paths", value["blocking_reason_codes"])
+
+    def test_granularity_counts_responsibilities_and_new_modules(self):
+        task = _make_valid_task(extensions={
+            "task_shape": {
+                "responsibilities": ["parse", "aggregate", "gate"],
+                "new_modules": ["src/a.py", "src/b.py", "src/c.py"],
+            },
+        })
+        value = self.ts.assess_task_granularity(task)
+        self.assertEqual(value["responsibility_count"], 3)
+        self.assertEqual(value["new_module_count"], 3)
+        self.assertTrue(value["blocking"])
+
+    def test_reviewed_split_exception_allows_dispatch(self):
+        task = _make_valid_task(extensions={
+            "task_shape": {
+                "responsibilities": ["one cohesive generated update"],
+                "new_modules": ["a.py", "b.py", "c.py"],
+                "split_decision": "exception",
+                "split_reason": "all files are generated atomically from one frozen schema",
+            },
+        })
+        self.assertEqual(self.ts.validate_task(task), [])
+        value = self.ts.assess_task_granularity(task)
+        self.assertFalse(value["blocking"])
+        self.assertEqual(value["status"], "split-exception-reviewed")
+
+    def test_explicit_split_decision_stops_current_card(self):
+        task = _make_valid_task(extensions={
+            "task_shape": {
+                "split_decision": "split",
+                "split_reason": "separate parser and renderer ownership",
+            },
+        })
+        value = self.ts.assess_task_granularity(task)
+        self.assertTrue(value["blocking"])
+        self.assertIn("reviewed-split-decision", value["blocking_reason_codes"])
+
+
 # ─── 5. Empty strings/arrays constrained by v1 ───
 
 class TestEmptyStringsArrays(unittest.TestCase):
@@ -904,6 +1004,7 @@ class TestLegacyScriptsUntouched(unittest.TestCase):
         dispatch_test = pathlib.Path(__file__).parent / "test_dispatch_to_claude.py"
         # This is informational — the task card says to find the actual module
         # The actual dispatch tests live in test_dirty_source_guard.py
+        self.assertFalse(dispatch_test.exists())
         pass
 
     def test_dirty_source_guard_dispatch_test_present(self):

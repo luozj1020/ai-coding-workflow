@@ -59,6 +59,26 @@ read it.
 
 Builder presets ship with conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation are disabled/not-required until Codex replaces them with exact assignments. Do not leave ambiguous placeholders or enable broad tail work merely to make the card look complete.
 
+Every JSON task is assessed before dispatch on declared write-path count,
+distinct responsibilities, and explicit/inferred new modules. Four paths,
+multiple responsibilities, multiple new modules, or a broad directory emits a
+strong `split-advised` receipt. Six paths, three responsibilities, three new
+modules, or a compound four-path/multi-responsibility task emits
+`split-required` and blocks both Spark and Claude. Split the task, or record
+`extensions.task_shape.split_decision=exception` plus a concrete
+`split_reason`; the exception remains visible in the execution card and run
+receipt. `split_decision=split` records intent but never authorizes the current
+card to run.
+
+Tasks implementing aggregation, eligibility, quorum, fallback, or acceptance
+gates must declare `extensions.complex_gate_contract`. When enabled, it
+contains at least two concrete negative counterexamples and one fail-closed
+condition; the JSON validator rejects incomplete contracts and the execution
+renderer passes them verbatim to Builder. When inapplicable but explicitly
+audited, set `enabled=false` with `not_applicable_reason`. This stronger task
+contract does not automatically justify a Checker model; deterministic checks
+remain the default.
+
 Every `Write paths` and `Full file replacement paths` item is a pure
 repository-relative path. Put descriptions such as “new focused test module”
 in surrounding prose, never after the path; dispatch lint rejects an unquoted
@@ -198,7 +218,8 @@ python ai/render-task-card.py task.json --view execution
 
 Profile scalar conflicts hard-fail. Audit view retains risk and handoff detail;
 execution view contains task ID, goal, scope, acceptance, validation, top-level
-stop conditions, and conditional routing context. It omits the identity table,
+stop conditions, task-shape advice, enabled complex-gate counterexamples, and
+conditional routing context. It omits the identity table,
 full handoff, static builder protocol, progress checklist, and duplicated scope
 context. Installed schemas, profiles, and examples live under `ai/schemas/`,
 `ai/profiles/`, and `ai/examples/`.

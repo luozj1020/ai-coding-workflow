@@ -2,7 +2,8 @@
 # check-worktree.sh  -  Run project validation checks without editing files.
 #
 # Usage: bash ai/check-worktree.sh [--report <path>] [--logs-dir <dir>]
-#       [--task-card <path>] [--command <label=command>] [--discover|--no-discover]
+#       [--task-card <path>] [--command <label=command>] [--jobs <n>]
+#       [--receipt <path>] [--discover|--no-discover]
 #
 # The checker runs explicitly assigned validation commands and, when discovery
 # is enabled, common project validation commands. It writes a concise report and
@@ -10,15 +11,20 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATH="/usr/bin:/bin:/mingw64/bin:${PATH}"
 export PATH
 
 REPORT_FILE=""
+RECEIPT_FILE=""
 LOGS_DIR=""
 TASK_CARD_FILE=""
 DISCOVER="${AI_CHECK_WORKTREE_DISCOVER:-1}"
+JOBS="${AI_CHECK_WORKTREE_JOBS:-4}"
 COMMANDS=()
 COMMAND_LABELS=()
+RESULT_CODES=()
+RESULT_LOG_FILES=()
 
 add_command() {
     local label="$1"
@@ -66,6 +72,22 @@ while [ $# -gt 0 ]; do
             LOGS_DIR="$2"
             shift 2
             ;;
+        --receipt)
+            if [ $# -lt 2 ]; then
+                echo "Error: --receipt requires a path" >&2
+                exit 1
+            fi
+            RECEIPT_FILE="$2"
+            shift 2
+            ;;
+        --jobs)
+            if [ $# -lt 2 ]; then
+                echo "Error: --jobs requires a positive integer" >&2
+                exit 1
+            fi
+            JOBS="$2"
+            shift 2
+            ;;
         --command)
             if [ $# -lt 2 ]; then
                 echo "Error: --command requires label=command" >&2
@@ -108,6 +130,16 @@ case "$DISCOVER" in
         exit 1
         ;;
 esac
+case "$JOBS" in
+    ''|*[!0-9]*|0)
+        echo "Error: --jobs must be a positive integer." >&2
+        exit 1
+        ;;
+esac
+if [ "$JOBS" -gt 8 ]; then
+    echo "Error: --jobs must not exceed 8." >&2
+    exit 1
+fi
 
 if ! command -v git >/dev/null 2>&1; then
     echo "Error: git is not installed or not in PATH." >&2
@@ -134,6 +166,107 @@ if [ -z "$REPORT_FILE" ]; then
     REPORT_FILE="${LOGS_DIR}/checker-report.md"
 fi
 mkdir -p "$(dirname "$REPORT_FILE")"
+if [ -z "$RECEIPT_FILE" ]; then
+    case "$REPORT_FILE" in
+        *.md) RECEIPT_FILE="${REPORT_FILE%.md}.json" ;;
+        *) RECEIPT_FILE="${REPORT_FILE}.json" ;;
+    esac
+fi
+mkdir -p "$(dirname "$RECEIPT_FILE")"
+
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD=python3
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD=python
+else
+    PYTHON_CMD=""
+fi
+
+BOUNDARY_RECEIPT="${LOGS_DIR}/worktree-boundary.json"
+BOUNDARY_STATUS="unavailable"
+BOUNDARY_FAILED=0
+BOUNDARY_HELPER="${SCRIPT_DIR}/validate-worktree-diff.py"
+if [ -n "$PYTHON_CMD" ] && [ -f "$BOUNDARY_HELPER" ]; then
+    set +e
+    "$PYTHON_CMD" "$BOUNDARY_HELPER" --worktree "$REPO_ROOT" \
+        --output "$BOUNDARY_RECEIPT" >/dev/null 2>&1
+    _boundary_rc=$?
+    set -e
+    if [ "$_boundary_rc" -eq 0 ]; then
+        BOUNDARY_STATUS="passed"
+    else
+        BOUNDARY_STATUS="failed"
+        BOUNDARY_FAILED=1
+    fi
+else
+    BOUNDARY_FAILED=1
+fi
+
+write_validation_receipt() {
+    local validation_state="$1"
+    local overall_status="$2"
+    [ -n "$PYTHON_CMD" ] || return 0
+    local args=(
+        "$RECEIPT_FILE" "$REPORT_FILE" "$BOUNDARY_RECEIPT"
+        "$validation_state" "$overall_status" "$JOBS" "${#COMMANDS[@]}"
+    )
+    local index
+    for index in "${!COMMANDS[@]}"; do
+        args+=(
+            "${COMMAND_LABELS[$index]}" "${COMMANDS[$index]}"
+            "${RESULT_CODES[$index]:-not-run}" "${RESULT_LOG_FILES[$index]:-}"
+        )
+    done
+    "$PYTHON_CMD" - "${args[@]}" <<'PYEOF'
+import hashlib, json, os, sys, tempfile
+(
+    output, report, boundary, validation_state, overall_status, jobs, count,
+    *items,
+) = sys.argv[1:]
+results = []
+for index in range(int(count)):
+    label, command, returncode, log = items[index * 4:(index + 1) * 4]
+    results.append({
+        "index": index + 1, "label": label, "command": command,
+        "exit_code": None if returncode == "not-run" else int(returncode),
+        "log": os.path.abspath(log) if log else None,
+    })
+def evidence(path):
+    if not path or not os.path.isfile(path):
+        return {"path": os.path.abspath(path) if path else None, "available": False}
+    raw = open(path, "rb").read()
+    value = {"path": os.path.abspath(path), "available": True,
+             "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+        value["status"] = parsed.get("status")
+        value["untracked_diff_check_complete"] = parsed.get(
+            "untracked_diff_check_complete"
+        )
+    except (UnicodeDecodeError, ValueError, TypeError):
+        pass
+    return value
+value = {
+    "schema_version": 1,
+    "status": overall_status,
+    "validation_state": validation_state,
+    "read_only_fanout": True,
+    "max_concurrency": int(jobs),
+    "command_count": int(count),
+    "results": results,
+    "boundary_validation": evidence(boundary),
+    "report": evidence(report),
+}
+directory = os.path.dirname(os.path.abspath(output)) or "."
+fd, temporary = tempfile.mkstemp(prefix=".validation-receipt-", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True); handle.write("\n")
+    os.replace(temporary, output)
+finally:
+    if os.path.exists(temporary): os.unlink(temporary)
+PYEOF
+}
 
 task_card_local_validation_disabled() {
     [ -n "$TASK_CARD_FILE" ] || return 1
@@ -198,7 +331,8 @@ if task_card_local_validation_disabled; then
         echo ""
         echo "## Artifact Collection"
         echo ""
-        echo "OK"
+        if [ "$BOUNDARY_FAILED" -eq 0 ]; then echo "OK"; else echo "FAILED"; fi
+        echo "Boundary receipt: ${BOUNDARY_RECEIPT} (${BOUNDARY_STATUS})"
         echo ""
         echo "## Validation"
         echo ""
@@ -210,8 +344,9 @@ if task_card_local_validation_disabled; then
         echo ""
         echo "Local validation is disabled by the task card. Provide commands only; do not run local validation."
     } > "$REPORT_FILE"
+    write_validation_receipt "skipped-by-policy" "$([ "$BOUNDARY_FAILED" -eq 0 ] && echo passed || echo failed)"
     cat "$REPORT_FILE"
-    exit 0
+    exit "$BOUNDARY_FAILED"
 fi
 
 load_task_card_validation_commands
@@ -304,7 +439,8 @@ BEFORE_STATUS="$(status_snapshot)"
     echo ""
     echo "## Artifact Collection"
     echo ""
-    echo "OK"
+    if [ "$BOUNDARY_FAILED" -eq 0 ]; then echo "OK"; else echo "FAILED"; fi
+    echo "Boundary receipt: ${BOUNDARY_RECEIPT} (${BOUNDARY_STATUS})"
     echo ""
     echo "## Discovered Commands"
     echo ""
@@ -316,9 +452,11 @@ BEFORE_STATUS="$(status_snapshot)"
         done
     fi
     echo ""
+    echo "Validation workers: ${JOBS}"
+    echo ""
 } > "$REPORT_FILE"
 
-FAILED=0
+FAILED="$BOUNDARY_FAILED"
 
 if [ "${#COMMANDS[@]}" -eq 0 ]; then
     if [ "$DISCOVER" -eq 0 ]; then
@@ -330,8 +468,9 @@ if [ "${#COMMANDS[@]}" -eq 0 ]; then
             echo "No explicit validation commands were provided and broad discovery is disabled."
             echo "Pass --command 'label=command' for task-card-assigned checks, or pass --discover to run broad project discovery."
         } >> "$REPORT_FILE"
+        write_validation_receipt "no-commands" "$([ "$FAILED" -eq 0 ] && echo passed || echo failed)"
         cat "$REPORT_FILE"
-        exit 0
+        exit "$FAILED"
     fi
     FAILED=1
     {
@@ -347,16 +486,39 @@ else
         echo ""
     } >> "$REPORT_FILE"
 
+    _batch_start=0
+    while [ "$_batch_start" -lt "${#COMMANDS[@]}" ]; do
+        _batch_end=$((_batch_start + JOBS))
+        if [ "$_batch_end" -gt "${#COMMANDS[@]}" ]; then
+            _batch_end="${#COMMANDS[@]}"
+        fi
+        _batch_pids=()
+        _batch_indexes=()
+        for ((i=_batch_start; i<_batch_end; i++)); do
+            label="${COMMAND_LABELS[$i]}"
+            command="${COMMANDS[$i]}"
+            safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '_')"
+            log_file="${LOGS_DIR}/${safe_label}.log"
+            RESULT_LOG_FILES[$i]="$log_file"
+            bash -lc "$command" > "$log_file" 2>&1 &
+            _batch_pids+=("$!")
+            _batch_indexes+=("$i")
+        done
+        for _batch_offset in "${!_batch_pids[@]}"; do
+            i="${_batch_indexes[$_batch_offset]}"
+            set +e
+            wait "${_batch_pids[$_batch_offset]}"
+            RESULT_CODES[$i]=$?
+            set -e
+        done
+        _batch_start="$_batch_end"
+    done
+
     for i in "${!COMMANDS[@]}"; do
         label="${COMMAND_LABELS[$i]}"
         command="${COMMANDS[$i]}"
-        safe_label="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '_')"
-        log_file="${LOGS_DIR}/${safe_label}.log"
-
-        set +e
-        bash -lc "$command" > "$log_file" 2>&1
-        rc=$?
-        set -e
+        log_file="${RESULT_LOG_FILES[$i]}"
+        rc="${RESULT_CODES[$i]}"
 
         {
             echo "### ${label}"
@@ -414,6 +576,8 @@ fi
         echo "FAILED"
     fi
 } >> "$REPORT_FILE"
+
+write_validation_receipt "completed" "$([ "$FAILED" -eq 0 ] && echo passed || echo failed)"
 
 cat "$REPORT_FILE"
 exit "$FAILED"

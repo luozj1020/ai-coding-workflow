@@ -34,6 +34,7 @@ deterministic correction. Unknown risk increases review, not ownership changes.
 For JSON-backed delegation, Codex freezes and reviews Task JSON; `aiwf run`
 renders its execution card deterministically. Never hand-edit JSON, rendered
 cards, or receipts. Helpers create workflow state deterministically.
+Oversized JSON blocks models; gates require counterexamples and fail-closed rules.
 Claude `solution-planner` is never inferred and requires
 `solution_planner_opt_in=true`. Prefer one Claude execution round; additional
 roles must remove material Codex work, not merely save model tokens.
@@ -69,6 +70,7 @@ renders JSON-backed execution cards directly.
   semantic acceptance. Model reports remain claims until diff, receipts, and
   deterministic tests agree. Missing or contradictory evidence is
   `needs-review`.
+- Missing prose gets one recovery; never rerun for prose.
 - Models never merge. Do not automatically coordinate portfolio concurrency;
   repository-local parallel helpers remain explicit compatibility tools.
 
