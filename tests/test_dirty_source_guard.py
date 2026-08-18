@@ -4736,7 +4736,10 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         self.assertIn("Second extension used: no", status)
         self.assertFalse(data["second_extension_used"])
         self.assertEqual(data["growth_extension_limit"], 0)
-        self.assertLess(wall, 25, "Wall-clock exceeded hard bounded single-extension behavior")
+        # Deterministic assertions above prove the single-extension boundary.
+        # Keep wall time only as a coarse hang guard: final evidence generation
+        # on mounted/Windows filesystems can add several seconds under full-suite load.
+        self.assertLess(wall, 35, "Wall-clock exceeded hard bounded single-extension behavior")
 
     def test_continuous_product_growth_renews_until_child_finishes(self):
         self._write_builder_task_card()
@@ -4835,7 +4838,7 @@ class DirtySourceGuardBehaviorTests(unittest.TestCase):
         # Progress is stale (last activity >1s ago at the 4s base deadline) → no extension.
         self.assertNotIn("Single growth extension started", progress)
         self.assertIn("active execution timeout", progress)
-        self.assertLess(wall, 25, "Wall-clock exceeded 25s; run should terminate at base deadline")
+        self.assertLess(wall, 35, "Wall-clock exceeded 35s; run should terminate at base deadline")
 
     def test_recent_progress_at_base_deadline_extends(self):
         """Progress within the recent-activity window at the base deadline

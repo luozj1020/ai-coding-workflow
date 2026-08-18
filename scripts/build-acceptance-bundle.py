@@ -84,6 +84,8 @@ def _task_card_source(path: Path | None) -> str:
 
 def _review_evidence(
     paths: list[str],
+    outcome: dict[str, Any] | None,
+    report_artifact: dict[str, Any] | None,
     report: dict[str, Any] | None,
     validation: dict[str, Any] | None,
     handoff: dict[str, Any] | None,
@@ -114,11 +116,31 @@ def _review_evidence(
     return {
         "changed_files": changed_files,
         "changed_path_count": len(changed_files),
+        "product_change_count": (outcome or {}).get(
+            "product_changes", (handoff or {}).get("product_change_count", 0)
+        ),
+        "control_change_count": (outcome or {}).get(
+            "control_changes", (handoff or {}).get("control_change_count", 0)
+        ),
         "diff_sha256": (recovered or {}).get("diff_sha256") or patch.get("sha256"),
         "source_base_commit": (handoff or {}).get("source_base_commit"),
         "execution_base_commit": (handoff or {}).get("execution_base_commit"),
         "claude_report_available": report_available,
+        "claude_report_artifact_valid": bool((report_artifact or {}).get("valid")),
+        "claude_report_invalid_reasons": (report_artifact or {}).get("reasons", []),
+        "claude_report_normalized": bool(
+            (report_artifact or {}).get("normalization_applied")
+        ),
         "report_status": report_status,
+        "patch_bytes": patch.get("bytes", 0),
+        "handoff_status": (handoff or {}).get("status", "missing"),
+        "deliverable": bool((handoff or {}).get("deliverable")),
+        "control_changed_paths": (handoff or {}).get("control_changed_paths", []),
+        "out_of_scope_product_paths": (handoff or {}).get(
+            "out_of_scope_product_paths",
+            (handoff or {}).get("unexpected_changed_paths", []),
+        ),
+        "handoff_internal_error_reason": (handoff or {}).get("internal_error_reason"),
         "validation_status": status_of(validation, "status"),
         "validation_results": validation_results,
         "validation_command_count": len(validation_results),
@@ -231,6 +253,8 @@ def recommend(
         return "revise-validation"
     if handoff and handoff.get("status") == "blocked":
         return "revise-scope"
+    if handoff and handoff.get("status") == "internal-error":
+        return "inspect-workflow-error"
     report_status = status_of(report, "status")
     if report_status in {"conflict", "invalid", "failed"}:
         return "revise-report-or-code"
@@ -243,6 +267,7 @@ def recommend(
 
 def build(args: argparse.Namespace) -> dict[str, Any]:
     outcome = load(args.outcome)
+    report_artifact = load(getattr(args, "report_artifact_validation", None))
     report = load(args.report_consistency)
     scope = load(args.write_scope)
     checker = load(args.checker_contract)
@@ -262,7 +287,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         checker_skip_reason = "checker skipped: deterministic evidence sufficient"
     paths = changed_paths(args.worktree)
     review_evidence = _review_evidence(
-        paths, report, validation, handoff, recovered
+        paths, outcome, report_artifact, report, validation, handoff, recovered
     )
     value = {
         "schema_version": 1,
@@ -286,6 +311,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "gates": {
             "dispatch": status_of(outcome, "dispatch_success"),
             "artifact": status_of(outcome, "artifact_valid"),
+            "report_artifact": status_of(report_artifact, "valid"),
             "report_consistency": status_of(report, "status"),
             "validation": status_of(outcome, "validation_success"),
             "write_scope": status_of(scope, "enforcement_passed"),
@@ -307,6 +333,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "scoped_handoff": {
             "manifest": str(getattr(args, "scoped_handoff", "") or "") or None,
             "patch": (handoff or {}).get("patch"),
+            "status": (handoff or {}).get("status"),
+            "deliverable": bool((handoff or {}).get("deliverable")),
+            "out_of_scope_product_paths": (handoff or {}).get(
+                "out_of_scope_product_paths",
+                (handoff or {}).get("unexpected_changed_paths", []),
+            ),
             "dirty_snapshot": (handoff or {}).get("dirty_snapshot"),
             "whole_worktree_merge_allowed": False,
         },
@@ -354,6 +386,17 @@ def compact_capsule(
         "validation_command_count": value.get("review_evidence", {}).get(
             "validation_command_count", 0
         ),
+        "product_change_count": value.get("review_evidence", {}).get(
+            "product_change_count", 0
+        ),
+        "report_invalid_reasons": bounded_selector(
+            value.get("review_evidence", {}).get("claude_report_invalid_reasons", [])
+        ),
+        "patch_bytes": value.get("review_evidence", {}).get("patch_bytes", 0),
+        "deliverable": bool(value.get("review_evidence", {}).get("deliverable")),
+        "out_of_scope_product_path_count": len(
+            value.get("review_evidence", {}).get("out_of_scope_product_paths", [])
+        ),
         "gates": value.get("gates", {}),
         "changed_path_count": len(value.get("changed_paths", [])),
         "changed_symbol_count": len(value.get("changed_symbols", [])),
@@ -396,6 +439,7 @@ def main() -> int:
     parser.add_argument("--worktree", type=Path, required=True)
     parser.add_argument("--outcome", type=Path, required=True)
     parser.add_argument("--report-consistency", type=Path)
+    parser.add_argument("--report-artifact-validation", type=Path)
     parser.add_argument("--write-scope", type=Path)
     parser.add_argument("--checker-contract", type=Path)
     parser.add_argument("--validation-receipt", type=Path)

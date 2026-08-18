@@ -157,6 +157,10 @@ Because dispatch uses `claude --bare`, project `CLAUDE.md`/`AGENTS.md` are not
 the model-facing startup cost. Execution-only and Context Lease calls use
 `build-execution-capsule.py` to render a bounded bootstrap or delta card;
 `TASK_CARD_FULL.md` remains the audit source and is not appended to the prompt.
+Native JSON/rendered reviewed continuations also use a delta capsule that binds
+accepted path digests, unresolved findings, and new validation refs from the
+external approval. It never repeats the prior full card. Minimal legacy table
+cards retain the compatibility view so unnamed prose cannot be dropped.
 
 The deterministic skill-context packet adds only registry-approved procedural,
 retrieval, validation, or output-contract cues. Each cue has source/hash
@@ -228,6 +232,12 @@ Missing or mismatched bundle components stop before Builder execution as
 ## Progress and Monitoring
 
 Execution-only, batch, and test-writing Checker tasks use a first durable-output boundary at the 600-second context-acquisition window. Narrow, retry, revision, and split-child routing reduce task scope but never shorten this response window, and natural-language task-card prose never changes scheduler policy. Generic planning, acknowledgement, timestamps, and claimed command starts do not satisfy durable progress; a canonical product delta does. Validation-only Checker work retains the ordinary observation policy. Shortly before the initial context boundary and every later active deadline, the dispatcher starts one bounded Spark `monitor-triage` evaluation while Claude continues running. At the context boundary, a hash-current `continue` may extend orientation, while a high-confidence `interrupt-candidate` may stop only while the product digest still equals the approved baseline. After the first product delta, a fresh 600-second active window begins, and every later canonical product-content change refreshes that complete window. At an active boundary, a high-confidence stop candidate additionally requires deterministic product-idle corroboration. The capsule contains the frozen contract, product-state summary, redacted recent assistant output, and normalized tool events. Missing, late, low-confidence, or invalid Spark output never stops Claude; the 1500-second hard cap remains absolute.
+
+Spark is always launched with an exact, Git-verified `--context-worktree`; a
+source-root mismatch disables the advisory before any model starts. When one
+authorized host invocation should cover both Spark and Claude, use
+`aiwf run ... --host-authority`; the narrower `--spark-host-authority` remains
+available for Spark-only compatibility.
 
 The active deadline therefore enters `extension-pending`, not immediate termination. If Claude produces a canonical product-content change while Spark is running or while its snapshot is pending, the dispatcher cancels the task-scoped Spark process group and invalidates the stale judgment; the ordinary product-growth rule has already refreshed a complete active window from that change. Spark results are accepted only when their bound product digest still matches. When the digest is quiet but Spark confirms useful on-plan activity, further extensions use `CLAUDE_CODE_ACTIVE_PROGRESS_EXTENSION_SECONDS` and `CLAUDE_CODE_GROWING_PROGRESS_EXTENSION_SECONDS`; report, progress, terminal text, token use, and control-file growth never refresh a product window.
 
@@ -355,8 +365,9 @@ evaluation identity, state, bounded decision fields, and whether Claude keeps
 running. Every notice states that the same wait is continuing toward terminal.
 Codex must consume these notices instead of polling or inferring state from
 elapsed wall time.
-`--until material` also returns immediately when a refresh already exists or
-arrives after the wait starts.
+`--until material` returns only for a real nonzero product delta, whether it
+already exists or arrives after the wait starts. Context acquisition, seeded
+controls, report/progress rewrites, and window-only events are not material.
 
 The human-readable progress log likewise emits running detail only after a
 phase/file/result/report change or when a timeout threshold is near. Unchanged
@@ -424,7 +435,24 @@ not claim a provider cache hit.
 
 ## Reports
 
-Seeded/fallback reports are not Claude-owned completion. Before progress or completion use, `validate-claude-report.py` requires the standard title and report sections and rejects seeded/progress markers, progress/report role swaps, oversized reports, and source-dominated bodies. Missing reports may be reconstructed when the diff matches the card and assigned checks pass. The dispatcher then runs `verify-claude-report.py`; changed-file/count/cleanliness claims are mandatory. Assigned tests additionally require a test diff and a claimed count that matches detected added test declarations. Assigned validation requires its exact command and exit code, but model-authored claims remain `claimed-unverified` until a deterministic receipt exists. A revision `RESOLVED` claim binds finding ID, changed file, symbol, and exact test name. Prose-only, missing, or contradictory claims produce `needs-review`.
+Seeded/fallback reports are not Claude-owned completion. The seeded file now
+contains the complete required heading template so finalization does not spend
+the tail reconstructing structure, but its marker keeps it invalid until
+Claude owns the content. Before progress or completion use,
+`validate-claude-report.py` requires the standard semantic sections and rejects
+seeded/progress markers, progress/report role swaps, oversized reports, and
+source-dominated bodies. A bounded deterministic normalization accepts only
+known title/heading aliases and records the exact mapping; every validation,
+including failure reasons, is persisted in
+`<task-id>.report-artifact-validation.json`. Missing reports may be
+reconstructed when the diff matches the card and assigned checks pass. The
+dispatcher then runs `verify-claude-report.py`; changed-file/count/cleanliness
+claims are mandatory. Assigned tests additionally require a test diff and a
+claimed count that matches detected added test declarations. Assigned
+validation requires its exact command and exit code, but model-authored claims
+remain `claimed-unverified` until a deterministic receipt exists. A revision
+`RESOLVED` claim binds finding ID, changed file, symbol, and exact test name.
+Prose-only, missing, or contradictory claims produce `needs-review`.
 
 Treat `<task-id>.outcome.json` as the terminal control-plane summary. Keep
 `dispatch_success`, `artifact_valid`, `validation_success`, and
@@ -434,5 +462,9 @@ Checker ALL GREEN may supersede an earlier validation approval blocker, but it
 never substitutes for semantic review.
 `<task-id>.acceptance-bundle.json` is the compact review entry point for changed
 paths, scope/report/validation gates, environment-failure classification, and a
-recommended next decision. It is evidence-summary-only, always records
+recommended next decision. Its high-signal summary includes product/control
+change counts, exact report-invalid reasons, scoped patch bytes, workflow
+control versus out-of-scope product paths, and deliverability. A nonzero product
+change paired with a zero-byte patch is an internal workflow error, never an
+empty successful handoff. It is evidence-summary-only, always records
 `merge_authorized=false`, and never replaces the underlying receipts.

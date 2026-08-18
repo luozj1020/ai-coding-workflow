@@ -88,6 +88,26 @@ class PrepareWriteSandboxTests(unittest.TestCase):
         )
         self.assertNotIn("src/reference.py", value["declared_write_paths"])
 
+    def test_json_renderer_bold_scope_is_accepted(self) -> None:
+        self.card.write_text(
+            "<!-- aiwf-execution-card-v1; task-mode=builder; builder-mode=standard -->\n"
+            "## Scope\n\n"
+            "**Write paths:**\n"
+            "- `src/a.py`\n"
+            "- `tests/test_a.py`\n\n"
+            "**Read paths:**\n"
+            "- `src/reference.py`\n",
+            encoding="utf-8",
+        )
+
+        value = MOD.prepare(self.card, self.worktree, self.output)
+
+        self.assertEqual(
+            value["declared_write_paths"],
+            ["src/a.py", "tests/test_a.py"],
+        )
+        self.assertNotIn("src/reference.py", value["declared_write_paths"])
+
     def test_multiline_write_path_prose_fails_closed(self) -> None:
         self.card.write_text(
             "- Write paths:\n"

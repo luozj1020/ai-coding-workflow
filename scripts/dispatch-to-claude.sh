@@ -2167,6 +2167,7 @@ WORKTREE_STATUS_FILE="${WORKTREE_ROOT}/${TASK_ID}.worktree-status.txt"
 UNTRACKED_FILE="${WORKTREE_ROOT}/${TASK_ID}.untracked.txt"
 USAGE_FILE="${WORKTREE_ROOT}/${TASK_ID}.usage.txt"
 REPORT_FILE="${WORKTREE_ROOT}/${TASK_ID}.report.md"
+REPORT_ARTIFACT_VALIDATION_FILE="${WORKTREE_ROOT}/${TASK_ID}.report-artifact-validation.json"
 REPORT_CONSISTENCY_FILE="${WORKTREE_ROOT}/${TASK_ID}.report-consistency.json"
 OUTCOME_FILE="${WORKTREE_ROOT}/${TASK_ID}.outcome.json"
 ACCEPTANCE_BUNDLE_FILE="${WORKTREE_ROOT}/${TASK_ID}.acceptance-bundle.json"
@@ -2226,6 +2227,15 @@ _EXECUTION_CAPSULE_KIND="initial"
 if [ -n "$CONTEXT_LEASE_OPTION" ]; then
     _EXECUTION_CAPSULE_MODE="delta"
     _EXECUTION_CAPSULE_KIND="$CONTINUATION_KIND_OPTION"
+elif [ -n "${CLAUDE_CODE_REVIEWED_CONTINUATION:-}" ]; then
+    # Native JSON/rendered cards have executable sections that can be reduced
+    # to a delta capsule. Minimal legacy table cards remain on their compatible
+    # view instead of silently dropping prose outside named sections.
+    if grep -qE 'aiwf-execution-card-v1|^[[:space:]]*\{|^##[[:space:]]+(Goal|Handoff Contract|Required Changes|Required Revisions)' \
+        "$TASK_CARD" 2>/dev/null; then
+        _EXECUTION_CAPSULE_MODE="delta"
+        _EXECUTION_CAPSULE_KIND="revision"
+    fi
 elif [ "$CLAUDE_CODE_BUILDER_MODE" = "execution-only" ] || [ -n "$RECOVERY_CLASSIFICATION_OPTION" ]; then
     _EXECUTION_CAPSULE_MODE="bootstrap"
 fi
@@ -3607,6 +3617,10 @@ if [ -n "$PYTHON_CMD" ] && [ -f "$_EXECUTION_CAPSULE_HELPER" ] && \
             --recovery-delta "$RECOVERY_DELTA_FILE"
             --recovery-delta-receipt "$RECOVERY_DELTA_RECEIPT_FILE"
         )
+    [ -z "${_REVIEWED_CONTINUATION_APPROVAL:-}" ] || \
+        _execution_capsule_args+=(
+            --reviewed-continuation "$_REVIEWED_CONTINUATION_APPROVAL"
+        )
     if ! "$PYTHON_CMD" "$_EXECUTION_CAPSULE_HELPER" "${_execution_capsule_args[@]}" >/dev/null; then
         echo "Error: failed to render the bounded Claude execution capsule." >&2
         exit 1
@@ -3903,11 +3917,17 @@ fi
     echo ""
     echo "Full Codex planning card: ${WORKTREE_DIR}/TASK_CARD_FULL.md"
     echo ""
-    echo "## Current State"
-    echo "Claude has not yet reported implementation progress."
+    echo "The required completion headings are pre-created below. Fill them and remove the seeded marker."
+    echo ""
+    echo "## Requirements Summary"
+    echo "## Files Changed"
+    echo "## Acceptance Criteria Mapping"
+    echo "## Out-of-Scope Confirmation"
+    echo "## Plan Match"
+    echo "## Checks Run"
 } > "${WORKTREE_DIR}/CLAUDE_REPORT.md"
 
-if [ -n "$CONTEXT_LEASE_OPTION" ]; then
+if [ -n "$CONTEXT_LEASE_OPTION" ] || [ -n "${_REVIEWED_CONTINUATION_TASK_ID:-}" ]; then
 cat > "${WORKTREE_DIR}/CLAUDE_PROMPT.md" <<'EOF'
 You are continuing a hash-bound execution lineage in a Codex/Claude Code workflow.
 
@@ -6324,6 +6344,7 @@ COMPLETION_EVIDENCE_ELAPSED_SECONDS=""
 VALIDATION_STARTED_ELAPSED_SECONDS=""
 VALIDATION_EVIDENCE_ACTIVE=0
 _LAST_MONITOR_MATERIAL_DIGEST=""
+_LAST_MONITOR_PRODUCT_DIGEST="$DISPATCH_PRODUCT_BASELINE_DIGEST"
 _LAST_EMITTED_PHASE=""
 _LAST_EMITTED_VALIDATION_COMMAND=""
 _CONTINUATION_THRESHOLD_SECONDS=120
@@ -7196,8 +7217,12 @@ PYEOF
     # this file instead of running ps/tail or starting a second polling watcher.
     _MONITOR_MATERIAL_DIGEST="${RESULT_BYTES}|${STATUS_BYTES}|${CURRENT_REPORT_HASH}|${CURRENT_PROGRESS_SEMANTIC_HASH}|${WORKTREE_CHANGES}|${CURRENT_WORKTREE_DIGEST}|${FIRST_PROGRESS_DETECTED}|${FIRST_PROGRESS_SIGNAL}|${EDIT_READY_DETECTED}|${EXECUTION_ACTIVITY_STATE}|${PRODUCT_IDLE_CONFIRMATION_COUNT}|${BLOCKER_RECORDED}|${IMPLEMENTATION_COMPLETE_DETECTED}|${COMPLETION_READY_DETECTED}|${VALIDATION_STARTED_ELAPSED_SECONDS}"
     if [ "$_MONITOR_MATERIAL_DIGEST" != "$_LAST_MONITOR_MATERIAL_DIGEST" ]; then
-        monitor_event "event=material-change running=yes terminal=no elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET_SECONDS} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_remaining_seconds=${ACTIVE_WINDOW_REMAINING_SECONDS} hard_timeout_remaining_seconds=${HARD_TIMEOUT_REMAINING_SECONDS} activity_receipt=${ACTIVITY_OBSERVATION_FILE} result_bytes=${RESULT_BYTES} status_bytes=${STATUS_BYTES} report_bytes=${REPORT_BYTES} progress_bytes=${CLAUDE_PROGRESS_BYTES} worktree_changes=${WORKTREE_CHANGES} product_changes=${WORKTREE_CHANGES} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} first_progress=${FIRST_PROGRESS_DETECTED} first_progress_signal=${FIRST_PROGRESS_SIGNAL:-none} active_window_refreshed=${ACTIVE_WINDOW_REFRESHED} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} blocker=${BLOCKER_RECORDED} implementation_complete=${IMPLEMENTATION_COMPLETE_DETECTED} completion_ready=${COMPLETION_READY_DETECTED}"
+        if [ "$PRODUCT_DELTA_FROM_BASELINE" -eq 1 ] && \
+           [ "$CURRENT_WORKTREE_DIGEST" != "$_LAST_MONITOR_PRODUCT_DIGEST" ]; then
+            monitor_event "event=material-change running=yes terminal=no elapsed_seconds=${ELAPSED} quiet_seconds=${QUIET_SECONDS} session_activity_seconds_ago=${SESSION_ACTIVITY_SECONDS_AGO} product_activity_seconds_ago=${PRODUCT_ACTIVITY_SECONDS_AGO} last_product_change_epoch=${LAST_PRODUCT_CHANGE_EPOCH} active_window_remaining_seconds=${ACTIVE_WINDOW_REMAINING_SECONDS} hard_timeout_remaining_seconds=${HARD_TIMEOUT_REMAINING_SECONDS} activity_receipt=${ACTIVITY_OBSERVATION_FILE} result_bytes=${RESULT_BYTES} status_bytes=${STATUS_BYTES} report_bytes=${REPORT_BYTES} progress_bytes=${CLAUDE_PROGRESS_BYTES} worktree_changes=${WORKTREE_CHANGES} product_changes=${WORKTREE_CHANGES} product_delta_from_baseline=${PRODUCT_DELTA_FROM_BASELINE} first_progress=${FIRST_PROGRESS_DETECTED} first_progress_signal=${FIRST_PROGRESS_SIGNAL:-none} active_window_refreshed=${ACTIVE_WINDOW_REFRESHED} active_deadline_epoch=${ACTIVE_EXECUTION_DEADLINE} hard_deadline_epoch=${HARD_TIMEOUT_DEADLINE} edit_ready=${EDIT_READY_DETECTED} execution_state=${EXECUTION_ACTIVITY_STATE} product_idle_seconds=${PRODUCT_IDLE_SECONDS} idle_confirmations=${PRODUCT_IDLE_CONFIRMATION_COUNT} blocker=${BLOCKER_RECORDED} implementation_complete=${IMPLEMENTATION_COMPLETE_DETECTED} completion_ready=${COMPLETION_READY_DETECTED}"
+        fi
         _LAST_MONITOR_MATERIAL_DIGEST="$_MONITOR_MATERIAL_DIGEST"
+        _LAST_MONITOR_PRODUCT_DIGEST="$CURRENT_WORKTREE_DIGEST"
     fi
 
     # --- Spec item 2: approval-blocked early convergence ---
@@ -8357,9 +8382,35 @@ elif [ "$CLAUDE_FIRST_PROGRESS_TIMED_OUT" -eq 0 ] && \
     progress_log "First-progress timeout reconciled after child exit: elapsed_seconds=${ELAPSED}, timeout_seconds=${CLAUDE_CODE_FIRST_PROGRESS_TIMEOUT_SECONDS}"
 fi
 VALID_CLAUDE_REPORT=0
-if valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
+REPORT_ARTIFACT_REASON="validation-not-run"
+REPORT_ARTIFACT_NORMALIZED="no"
+_REPORT_ARTIFACT_VALIDATOR="${SCRIPT_DIR}/validate-claude-report.py"
+if [ -n "$PYTHON_CMD" ] && [ -f "$_REPORT_ARTIFACT_VALIDATOR" ]; then
+    if "$PYTHON_CMD" "$_REPORT_ARTIFACT_VALIDATOR" \
+        "${WORKTREE_DIR}/CLAUDE_REPORT.md" \
+        --output "$REPORT_ARTIFACT_VALIDATION_FILE" >/dev/null 2>&1; then
+        VALID_CLAUDE_REPORT=1
+    fi
+    if [ -s "$REPORT_ARTIFACT_VALIDATION_FILE" ]; then
+        IFS=$'\t' read -r REPORT_ARTIFACT_REASON REPORT_ARTIFACT_NORMALIZED < <(
+            "$PYTHON_CMD" - "$REPORT_ARTIFACT_VALIDATION_FILE" <<'PYEOF' 2>/dev/null || printf 'validation-receipt-unreadable\tno\n'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+reasons = value.get("reasons") or []
+print("\t".join((
+    ",".join(str(reason) for reason in reasons) or "valid",
+    "yes" if value.get("normalization_applied") else "no",
+)))
+PYEOF
+        )
+    fi
+elif valid_claude_report_file "${WORKTREE_DIR}/CLAUDE_REPORT.md"; then
     VALID_CLAUDE_REPORT=1
+    REPORT_ARTIFACT_REASON="compatibility-validator-pass"
+else
+    REPORT_ARTIFACT_REASON="validator-unavailable-or-invalid"
 fi
+progress_log "Claude report artifact validation: valid=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), reason=${REPORT_ARTIFACT_REASON}, normalized=${REPORT_ARTIFACT_NORMALIZED}, artifact=${REPORT_ARTIFACT_VALIDATION_FILE}"
 
 # Verify cheap mechanical report claims before semantic Codex review.  This is
 # evidence: conflicts never become acceptance and never rewrite the
@@ -8622,6 +8673,7 @@ if [ -n "$PYTHON_CMD" ]; then
     [ "$CLAUDE_FIRST_SATISFIED" = "yes" ] && WORKFLOW_EXECUTION_STATUS="claude-first-executed"
     "$PYTHON_CMD" - "$OUTCOME_FILE" "$TASK_ID" "$DISPATCH_OUTCOME" "$DISPATCH_SUCCESS" \
         "$REPORT_CONSISTENCY_STATUS" "$ARTIFACT_VALID" "$VALIDATION_STATUS" \
+        "$REPORT_ARTIFACT_REASON" "$REPORT_ARTIFACT_NORMALIZED" "$REPORT_ARTIFACT_VALIDATION_FILE" \
         "$SEMANTIC_ACCEPTANCE" "$COMPLETION_STATE" "$OPERATOR_STATE" "$CLAUDE_LAUNCHED" \
         "$CLAUDE_FIRST_SATISFIED" "$WORKFLOW_EXECUTION_STATUS" \
         "$DISPATCH_EXECUTION_ENV" "$CLAUDE_CODE_HOST_AUTHORITY" \
@@ -8634,7 +8686,9 @@ if [ -n "$PYTHON_CMD" ]; then
 import json, os, sys, tempfile
 (
     output, task_id, dispatch_outcome, dispatch_success, report_consistency,
-    artifact_valid, validation_success, semantic_acceptance, completion_state,
+    artifact_valid, validation_success, report_artifact_reason,
+    report_artifact_normalized, report_artifact_validation,
+    semantic_acceptance, completion_state,
     operator_state, builder_launched, claude_first_satisfied, workflow_status,
     requested_env, host_authority, startup_probe, write_runtime_blocked,
     evidence_state, product_changes, total_product_changes, control_changes, product_hash,
@@ -8648,6 +8702,11 @@ value = {
     "dispatch_outcome": dispatch_outcome,
     "dispatch_success": dispatch_success == "yes",
     "artifact_valid": artifact_valid == "yes",
+    "report_artifact_reason": report_artifact_reason,
+    "report_artifact_normalized": report_artifact_normalized == "yes",
+    "report_artifact_validation": (
+        report_artifact_validation if os.path.isfile(report_artifact_validation) else None
+    ),
     "report_consistency": report_consistency,
     "validation_success": validation_success,
     "semantic_acceptance": semantic_acceptance,
@@ -8813,6 +8872,7 @@ if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/build-acceptance-bundle.py" ]; th
     _ACCEPTANCE_BUNDLE_ARGS=(
         --worktree "$WORKTREE_DIR"
         --outcome "$OUTCOME_FILE"
+        --report-artifact-validation "$REPORT_ARTIFACT_VALIDATION_FILE"
         --report-consistency "$REPORT_CONSISTENCY_FILE"
         --write-scope "$WRITE_SCOPE_RECEIPT_FILE"
         --checker-contract "$CHECKER_CONTRACT_RECEIPT_FILE"
@@ -9061,7 +9121,30 @@ if [ -n "$_TAKEOVER_PRIOR_TASK_ID" ] && [ -s "$ATTEMPT_CLASSIFICATION_FILE" ] &&
     fi
 fi
 
-progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no), probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, observation_probe_ran=$([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"
+HANDOFF_STATUS="missing"
+HANDOFF_PATCH_BYTES="0"
+HANDOFF_OUT_OF_SCOPE_COUNT="0"
+HANDOFF_DELIVERABLE="no"
+if [ -n "$PYTHON_CMD" ] && [ -s "$SCOPED_HANDOFF_MANIFEST_FILE" ]; then
+    IFS=$'\t' read -r HANDOFF_STATUS HANDOFF_PATCH_BYTES HANDOFF_OUT_OF_SCOPE_COUNT HANDOFF_DELIVERABLE < <(
+        "$PYTHON_CMD" - "$SCOPED_HANDOFF_MANIFEST_FILE" <<'PYEOF' 2>/dev/null || printf 'invalid\t0\t0\tno\n'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+patch = value.get("patch") if isinstance(value.get("patch"), dict) else {}
+out_of_scope = value.get("out_of_scope_product_paths")
+if not isinstance(out_of_scope, list):
+    out_of_scope = value.get("unexpected_changed_paths") or []
+print("\t".join((
+    str(value.get("status", "unknown")),
+    str(patch.get("bytes", 0)),
+    str(len(out_of_scope)),
+    "yes" if value.get("deliverable") else "no",
+)))
+PYEOF
+    )
+fi
+progress_log "Dispatch evidence classification: state=${DISPATCH_EVIDENCE_STATE}, implementation_changes=${IMPLEMENTATION_CHANGES}, valid_claude_report=$([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no), report_artifact_reason=${REPORT_ARTIFACT_REASON}, dispatch_outcome=${DISPATCH_OUTCOME}, semantic_error=$([ "$CLAUDE_SEMANTIC_ERROR" -eq 1 ] && echo yes || echo no), probe_mode=${CLAUDE_CODE_API_PROBE_MODE}, probe_environment=${CLAUDE_CODE_PROBE_ENVIRONMENT}, first_progress_action=${CLAUDE_CODE_FIRST_PROGRESS_ACTION}, observation_probe_ran=$([ "${_OBSERVATION_PROBE_RAN:-0}" -eq 1 ] && echo yes || echo no)"
+progress_log "Delivery summary: product_changes=${IMPLEMENTATION_CHANGES}, report_reason=${REPORT_ARTIFACT_REASON}, report_normalized=${REPORT_ARTIFACT_NORMALIZED}, handoff_status=${HANDOFF_STATUS}, patch_bytes=${HANDOFF_PATCH_BYTES}, out_of_scope_product_paths=${HANDOFF_OUT_OF_SCOPE_COUNT}, deliverable=${HANDOFF_DELIVERABLE}"
 progress_log "Outcome gates: dispatch_success=${DISPATCH_SUCCESS}, artifact_valid=${ARTIFACT_VALID}, report_consistency=${REPORT_CONSISTENCY_STATUS}, validation_success=${VALIDATION_STATUS}, semantic_acceptance=${SEMANTIC_ACCEPTANCE}, completion_state=${COMPLETION_STATE}, operator_state=${OPERATOR_STATE}, artifact=${OUTCOME_FILE}"
 progress_log "API attribution: startup_conclusion=${_STARTUP_PROBE_CONCLUSION:-not-run}, startup_source=${_STARTUP_PROBE_SOURCE:-not-run}, zero_output_conclusion=${ZERO_OUTPUT_PROBE_CONCLUSION}, authoritative=${ZERO_OUTPUT_PROBE_AUTHORITATIVE}"
 # Authoritative final outcome — emitted exactly once, after semantic validation.
@@ -9071,6 +9154,12 @@ progress_log "Final dispatch outcome: ${DISPATCH_OUTCOME}, elapsed_seconds=${ELA
     echo "[dispatch] Evidence classification: ${DISPATCH_EVIDENCE_STATE}"
     echo "[dispatch] Implementation changes: ${IMPLEMENTATION_CHANGES}"
     echo "[dispatch] Valid Claude-owned report: $([ "$VALID_CLAUDE_REPORT" -eq 1 ] && echo yes || echo no)"
+    echo "[dispatch] Claude report artifact reason: ${REPORT_ARTIFACT_REASON}"
+    echo "[dispatch] Claude report normalized: ${REPORT_ARTIFACT_NORMALIZED}"
+    echo "[dispatch] Scoped handoff status: ${HANDOFF_STATUS}"
+    echo "[dispatch] Scoped patch bytes: ${HANDOFF_PATCH_BYTES}"
+    echo "[dispatch] Out-of-scope product paths: ${HANDOFF_OUT_OF_SCOPE_COUNT}"
+    echo "[dispatch] Deliverable: ${HANDOFF_DELIVERABLE}"
     echo "[dispatch] Dispatch outcome: ${DISPATCH_OUTCOME}"
     echo "[dispatch] Dispatch success: ${DISPATCH_SUCCESS}"
     echo "[dispatch] Artifact valid: ${ARTIFACT_VALID}"
@@ -9537,6 +9626,9 @@ echo "Hard Cap:        ${CLAUDE_CODE_HARD_TIMEOUT_SECONDS}s"
 echo "Dispatch Outcome:${DISPATCH_OUTCOME}"
 echo "Completion State:${COMPLETION_STATE}"
 echo "Operator State:  ${OPERATOR_STATE}"
+echo "Product Changes: ${IMPLEMENTATION_CHANGES}"
+echo "Report Reason:   ${REPORT_ARTIFACT_REASON} (normalized=${REPORT_ARTIFACT_NORMALIZED})"
+echo "Scoped Handoff:  ${HANDOFF_STATUS} (patch_bytes=${HANDOFF_PATCH_BYTES}, out_of_scope=${HANDOFF_OUT_OF_SCOPE_COUNT}, deliverable=${HANDOFF_DELIVERABLE})"
 echo "Outcome Gates:   $OUTCOME_FILE"
 echo "Product State:   $PRODUCT_STATE_FILE"
 if [ -s "$ACCEPTANCE_BUNDLE_FILE" ]; then

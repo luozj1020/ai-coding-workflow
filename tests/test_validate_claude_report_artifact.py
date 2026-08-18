@@ -1,5 +1,8 @@
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -33,6 +36,23 @@ class ValidateClaudeReportArtifactTests(unittest.TestCase):
     def test_accepts_standard_report(self):
         self.assertTrue(self.validate(report())["valid"])
 
+    def test_accepts_safe_report_aliases_and_records_normalization(self):
+        value = self.validate(
+            "# Implementation Report\n\n"
+            "## Requirements Covered\nDone.\n\n"
+            "## Changed Files\n- src/a.py\n\n"
+            "## Acceptance Mapping\n- AC-1 met\n\n"
+            "## Scope Compliance\nNo out-of-scope work.\n\n"
+            "## Plan Alignment\nfull\n\n"
+            "## Validation Evidence\npytest passed\n"
+        )
+
+        self.assertTrue(value["valid"])
+        self.assertTrue(value["normalization_applied"])
+        self.assertEqual(
+            value["normalized_headings"]["Files Changed"], "Changed Files"
+        )
+
     def test_rejects_seeded_progress_role_swap(self):
         value = self.validate(report("AI-CODING-WORKFLOW:DISPATCH-SEEDED-PROGRESS"))
         self.assertFalse(value["valid"])
@@ -53,6 +73,25 @@ class ValidateClaudeReportArtifactTests(unittest.TestCase):
         value = self.validate(report(source))
         self.assertFalse(value["valid"])
         self.assertIn("source-body-dominates-report", value["reasons"])
+
+    def test_output_receipt_preserves_exact_invalid_reasons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "CLAUDE_REPORT.md"
+            output = root / "validation.json"
+            path.write_text("# Claude Report\n\nDone.\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(path), "--output", str(output)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            value = json.loads(output.read_text(encoding="utf-8"))
+            self.assertFalse(value["valid"])
+            self.assertIn("Requirements Summary", value["missing_headings"])
 
 
 if __name__ == "__main__":

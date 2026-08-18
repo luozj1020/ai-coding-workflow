@@ -1523,9 +1523,21 @@ class InstallWorkflowTests(unittest.TestCase):
                     )
                 time.sleep(1.2)
                 self.assertIsNone(waiter.poll(), "child exit is not a review-ready boundary")
+                with event_log.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        f"monitor_event source=dispatcher task_id={task_id} "
+                        "event=material-change running=yes terminal=no "
+                        "product_changes=0 product_delta_from_baseline=0\n"
+                    )
+                time.sleep(1.2)
+                self.assertIsNone(
+                    waiter.poll(),
+                    "control/context events with zero product changes are not material",
+                )
                 material = (
                     f"monitor_event source=dispatcher task_id={task_id} "
-                    "event=material-change running=yes terminal=no worktree_changes=1\n"
+                    "event=material-change running=yes terminal=no worktree_changes=1 "
+                    "product_changes=1 product_delta_from_baseline=1\n"
                 )
                 with event_log.open("a", encoding="utf-8") as handle:
                     handle.write(material)
@@ -1552,7 +1564,8 @@ class InstallWorkflowTests(unittest.TestCase):
                 f"monitor_event source=dispatcher task_id={task_id} "
                 "event=active-window-refreshed running=yes terminal=no "
                 "elapsed_seconds=125 signal=builder_worktree_change "
-                "active_deadline_epoch=9999999999\n"
+                "active_deadline_epoch=9999999999 product_changes=1 "
+                "product_delta_from_baseline=1\n"
             )
             (worktrees / f"{task_id}.monitor-events.log").write_text(
                 refreshed, encoding="utf-8"

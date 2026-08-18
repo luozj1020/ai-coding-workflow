@@ -14,10 +14,18 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 DEFAULT_CONTROL_PATHS = {
+    "ADVISOR_REQUEST.json",
+    "CLAUDE_PROMPT.md",
     "CLAUDE_PROGRESS.md",
     "CLAUDE_REPORT.md",
     "CLAUDE_TASK_CARD.md",
+    "TASK_CARD.md",
     "TASK_CARD_FULL.md",
+    "advisor-decision.json",
+    "advisor-packet.json",
+    "advisor-packet.md",
+    "solution-contract.draft.json",
+    "truncation-manifest.json",
 }
 
 
@@ -117,6 +125,21 @@ def matches(path: str, allowed: Sequence[str], directories: Set[str]) -> bool:
         path == candidate
         or (candidate in directories and path.startswith(candidate + "/"))
         for candidate in allowed
+    )
+
+
+def is_control_path(path: str, controls: Set[str]) -> bool:
+    """Return whether *path* is workflow metadata, never product output."""
+    if path in controls:
+        return True
+    # Runtime-generated advisor artifacts have bounded root-level names. Keep
+    # the rule here aligned with the dispatcher without treating product
+    # subdirectories as workflow metadata.
+    name = PurePosixPath(path)
+    return (
+        len(name.parts) == 1
+        and name.name.startswith("advisor-response-")
+        and name.suffix == ".json"
     )
 
 
@@ -221,9 +244,10 @@ def build(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     all_paths.update(
         entry["source_path"] for entry in tracked_status if entry.get("source_path")
     )
+    control_changed = sorted(path for path in all_paths if is_control_path(path, controls))
     unexpected = sorted(
         path for path in all_paths
-        if path not in controls and not matches(path, allowed, directories)
+        if not is_control_path(path, controls) and not matches(path, allowed, directories)
     )
     selected = sorted(
         path for path in all_paths if matches(path, allowed, directories)
@@ -241,8 +265,14 @@ def build(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         patch = build_patch(
             worktree, execution_base, selected_tracked, selected_untracked
         )
-        status = "ready" if patch else "empty"
-        exit_code = 0
+        if selected and not patch:
+            # A non-empty product delta paired with an empty handoff is an
+            # internal workflow failure, not a valid empty delivery.
+            status = "internal-error"
+            exit_code = 3
+        else:
+            status = "ready" if patch else "empty"
+            exit_code = 0
     atomic_bytes(patch_path, patch)
 
     status_by_path = {entry["path"]: entry["status"] for entry in tracked_status}
@@ -273,8 +303,17 @@ def build(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "Models never merge; review and apply only the scoped patch."
         ),
         "declared_product_paths": allowed,
+        "product_change_count": len(selected),
+        "control_change_count": len(control_changed),
         "changed_files": changed_files,
+        "control_changed_paths": control_changed,
         "unexpected_changed_paths": unexpected,
+        "out_of_scope_product_paths": unexpected,
+        "deliverable": status == "ready",
+        "internal_error_reason": (
+            "product-changes-with-empty-patch"
+            if status == "internal-error" else None
+        ),
         "patch": {
             "path": str(patch_path),
             "bytes": len(patch),

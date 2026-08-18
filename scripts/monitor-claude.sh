@@ -129,6 +129,16 @@ last_event() {
     fi
 }
 
+real_material_events() {
+    # --until material means an observable product delta, never seeded control
+    # files, context acquisition, a report rewrite, or a clock/window event.
+    awk '
+        / event=(material-change|active-window-refreshed|active-window-extended)([[:space:]]|$)/ &&
+        / product_delta_from_baseline=1([[:space:]]|$)/ &&
+        / product_changes=[1-9][0-9]*([[:space:]]|$)/ { print }
+    ' "$@"
+}
+
 emit_boundary_summary() {
     local boundary="$1"
     printf '%s\n' "$boundary"
@@ -160,7 +170,7 @@ case "$ACTION" in
         _existing_material_event=""
         _existing_continuing_event=""
         if [ -f "$EVENT_LOG" ]; then
-            _existing_material_event="$(grep -E ' event=(material-change|active-window-refreshed|active-window-extended)([[:space:]]|$)' "$EVENT_LOG" | tail -1 || true)"
+            _existing_material_event="$(real_material_events "$EVENT_LOG" | tail -1 || true)"
             _existing_continuing_event="$(grep -E ' event=(active-window-(refreshed|extended)|extension-evaluation-(started|pending|result))([[:space:]]|$)' "$EVENT_LOG" | tail -1 || true)"
         fi
         if [ "$WAIT_UNTIL" = "material" ] && [ -n "$_existing_material_event" ]; then
@@ -198,7 +208,7 @@ case "$ACTION" in
                     done <<< "$_continuing_events"
                 fi
                 if [ "$WAIT_UNTIL" = "material" ]; then
-                    _material="$(printf '%s\n' "$_new_events" | grep -E ' event=(material-change|active-window-refreshed|active-window-extended)([[:space:]]|$)' | tail -1 || true)"
+                    _material="$(printf '%s\n' "$_new_events" | real_material_events | tail -1 || true)"
                     if [ -n "$_material" ]; then
                         emit_boundary_summary "$_material"
                         exit 0

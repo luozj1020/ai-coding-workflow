@@ -193,6 +193,7 @@ class RunContext:
         repo: Optional[Path] = None,
         dispatcher: Optional[str] = None,
         spark_host_authority: bool = False,
+        host_authority: bool = False,
         spark_host_retry_timeout: int = 120,
     ):
         self.task_path = task_path
@@ -201,7 +202,8 @@ class RunContext:
         self.profiles_dir = profiles_dir
         self.repo = repo or _find_repo_root(task_path)
         self.dispatcher = dispatcher
-        self.spark_host_authority = spark_host_authority
+        self.host_authority = host_authority
+        self.spark_host_authority = spark_host_authority or host_authority
         self.spark_host_retry_timeout = spark_host_retry_timeout
 
         self.run_id = run_dir.name
@@ -326,6 +328,31 @@ def _spark_needs_host_execution(stdout_text: str, stderr_text: str) -> bool:
     return "host_handoff_required=true" in text or "needs_host_execution=true" in text
 
 
+def _spark_context_preflight(repo: Path, dispatch_card: Path) -> tuple[bool, str, str]:
+    """Bind Spark to the exact source worktree before any model process starts."""
+    if not dispatch_card.is_file():
+        return False, "dispatch-card-missing", ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except (OSError, FileNotFoundError):
+        return False, "git-root-unavailable", ""
+    if result.returncode != 0 or not result.stdout.strip():
+        return False, "git-root-unavailable", ""
+    declared = os.path.normcase(os.path.realpath(repo))
+    observed_root = result.stdout.strip()
+    observed = os.path.normcase(os.path.realpath(observed_root))
+    if declared != observed:
+        return False, "source-root-mismatch", observed_root
+    return True, "verified", observed_root
+
+
 def _run_spark_attempt(
     helper: Path,
     dispatch_card: Path,
@@ -342,6 +369,7 @@ def _run_spark_attempt(
         "--result-mode", "direct",
         "--diagnostics", "failure",
         "--execution-env", execution_env,
+        "--context-worktree", str(repo.resolve()),
     ]
     try:
         with stdout_path.open("wb") as out_f, stderr_path.open("wb") as err_f:
@@ -774,6 +802,9 @@ def phase_dispatch(ctx: RunContext) -> None:
             "spark-preflight-host.stderr" if initial_env == "host"
             else "spark-preflight.stderr"
         )
+        spark_context_valid, spark_context_reason, spark_context_root = (
+            _spark_context_preflight(ctx.repo, dispatch_card)
+        )
         spark_record = {
             "schema_version": 2,
             "attempted": False,
@@ -792,6 +823,10 @@ def phase_dispatch(ctx: RunContext) -> None:
             "execution_environment_cache": spark_cache,
             "circuit_breaker": spark_circuit,
             "time_budget_seconds": spark_timeout,
+            "context_worktree": str(ctx.repo.resolve()),
+            "source_root_verified": spark_context_valid,
+            "source_root_verification_reason": spark_context_reason,
+            "observed_source_root": spark_context_root or None,
         }
 
         if circuit_open:
@@ -801,13 +836,24 @@ def phase_dispatch(ctx: RunContext) -> None:
                 final_state="circuit_open",
             )
 
-        if not circuit_open and cached_host and not ctx.spark_host_authority:
+        if not circuit_open and not spark_context_valid:
+            spark_record.update(
+                continued_to_claude=True,
+                skip_reason="skip.spark-context-invalid",
+                final_state="auto_disabled",
+                exit_code=64,
+            )
+
+        if (
+            not circuit_open and spark_context_valid
+            and cached_host and not ctx.spark_host_authority
+        ):
             spark_record.update(
                 skip_reason="skip.needs_host_execution",
                 needs_host_execution=True,
                 final_state="needs_host_execution",
                 host_handoff_action=(
-                    "rerun-current-workflow-from-authorized-host-with---spark-host-authority"
+                    "rerun-current-workflow-from-authorized-host-with---host-authority"
                 ),
             )
             write_artifact(spark_record_path, spark_record)
@@ -820,9 +866,9 @@ def phase_dispatch(ctx: RunContext) -> None:
                 "before Claude dispatch",
             )
 
-        spark_exit = 127
+        spark_exit = 64 if not spark_context_valid else 127
         spark_timed_out = False
-        if not circuit_open and spark_helper.is_file():
+        if not circuit_open and spark_context_valid and spark_helper.is_file():
             spark_exit, spark_timed_out = _run_spark_attempt(
                 spark_helper,
                 dispatch_card,
@@ -865,7 +911,7 @@ def phase_dispatch(ctx: RunContext) -> None:
                     skip_reason="skip.needs_host_execution",
                     final_state="needs_host_execution",
                     host_handoff_action=(
-                        "rerun-current-workflow-from-authorized-host-with---spark-host-authority"
+                        "rerun-current-workflow-from-authorized-host-with---host-authority"
                     ),
                 )
                 write_artifact(spark_record_path, spark_record)
@@ -879,7 +925,7 @@ def phase_dispatch(ctx: RunContext) -> None:
                     "dispatch",
                     "needs-host-execution",
                     "Spark sandbox networking is restricted; retry the same workflow "
-                    "once outside the sandbox with --spark-host-authority",
+                    "once outside the sandbox with --host-authority",
                 )
 
             host_stdout = ctx.run_dir / "spark-preflight-host.stdout"
@@ -914,7 +960,7 @@ def phase_dispatch(ctx: RunContext) -> None:
         )
         spark_record["invoked"] = spark_success
         spark_record["continued_to_claude"] = True
-        if not circuit_open:
+        if not circuit_open and spark_context_valid:
             spark_record["skip_reason"] = (
                 None if spark_success else "skip.spark-unavailable-or-failed"
             )
@@ -1011,6 +1057,10 @@ def phase_dispatch(ctx: RunContext) -> None:
     # Execute through broker-mediated path
     dispatcher = ctx.dispatcher or str(HERE / "dispatch-to-claude.sh")
     cmd = ["bash", dispatcher, str(dispatch_card)]
+    if ctx.host_authority:
+        # One explicit workflow-level host grant covers the already-authorized
+        # Spark and Claude launches without a second fragmented handoff.
+        cmd.extend(["--execution-env", "host", "--host-authority"])
 
     stdout_path = ctx.run_dir / "dispatch.stdout"
     stderr_path = ctx.run_dir / "dispatch.stderr"
@@ -1347,6 +1397,7 @@ def run_lifecycle(
     run_dir_base: Optional[Path] = None,
     dispatcher: Optional[str] = None,
     spark_host_authority: bool = False,
+    host_authority: bool = False,
     spark_host_retry_timeout: int = 120,
 ) -> Dict[str, Any]:
     """Run the full 13-phase lifecycle.
@@ -1383,6 +1434,7 @@ def run_lifecycle(
         repo=repo_root,
         dispatcher=dispatcher,
         spark_host_authority=spark_host_authority,
+        host_authority=host_authority,
         spark_host_retry_timeout=spark_host_retry_timeout,
     )
 
@@ -1542,6 +1594,15 @@ def main(argv: Optional[list] = None) -> int:
         ),
     )
     parser.add_argument(
+        "--host-authority",
+        action="store_true",
+        default=_truthy(os.environ.get("AI_WORKFLOW_HOST_AUTHORITY", "")),
+        help=(
+            "Assert this workflow already has explicit host authority for both "
+            "the bounded Spark audit and Claude dispatch, avoiding a second handoff."
+        ),
+    )
+    parser.add_argument(
         "--spark-host-retry-timeout",
         type=int,
         default=os.environ.get("CODEX_SPARK_HOST_RETRY_TIMEOUT", "120"),
@@ -1566,6 +1627,7 @@ def main(argv: Optional[list] = None) -> int:
         run_dir_base=Path(args.run_dir_base) if args.run_dir_base else None,
         dispatcher=args.dispatcher,
         spark_host_authority=args.spark_host_authority,
+        host_authority=args.host_authority,
         spark_host_retry_timeout=args.spark_host_retry_timeout,
     )
 

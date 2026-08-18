@@ -161,6 +161,16 @@ class ReviewedContinuationTest(unittest.TestCase):
         self.assertEqual(approval["inherited_builder_mode"], "execution-only")
         self.assertEqual(approval["inherited_tool_profile"], "locator-builder")
         self.assertEqual(approval["prior_context_lease_id"], "lease-prior-1")
+        self.assertEqual(
+            approval["context_reuse"]["strategy"],
+            "same-session-plus-delta-capsule",
+        )
+        self.assertEqual(
+            approval["context_reuse"]["accepted_path_summaries_reused"], 1
+        )
+        self.assertFalse(
+            approval["context_reuse"]["full_prior_task_card_repeated"]
+        )
         self.assertTrue(
             Path(approval["authorization_path"]).samefile(self.approval)
         )

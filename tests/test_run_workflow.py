@@ -515,6 +515,28 @@ class TestRunWorkflowStandardLane(unittest.TestCase):
 
 
 class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
+    def test_spark_attempt_binds_verified_context_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            helper = root / "spark.sh"
+            helper.write_text(
+                '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8"
+            )
+            card = root / "card.md"
+            card.write_text("# Card\n", encoding="utf-8")
+            stdout = root / "stdout"
+            stderr = root / "stderr"
+
+            exit_code, timed_out = run_workflow._run_spark_attempt(
+                helper, card, "task-card-audit", "auto", stdout, stderr, ROOT, 5
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(timed_out)
+            args = stdout.read_text(encoding="utf-8").splitlines()
+            index = args.index("--context-worktree")
+            self.assertEqual(Path(args[index + 1]).resolve(), ROOT.resolve())
+
     def test_recent_equivalent_failure_skips_spark_and_continues_to_claude(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -548,6 +570,47 @@ class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
             self.assertEqual(record["skip_reason"], "skip.spark-circuit-open")
             self.assertTrue(record["continued_to_claude"])
             self.assertEqual(record["time_budget_seconds"], 30)
+            self.assertTrue(record["source_root_verified"])
+            self.assertEqual(
+                Path(record["context_worktree"]).resolve(), ROOT.resolve()
+            )
+
+    def test_combined_host_authority_is_forwarded_to_claude_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task_path = write_task(root, make_task())
+            capture = root / "dispatcher-args.txt"
+            dispatcher = root / "dispatcher.sh"
+            dispatcher.write_text(
+                '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{}"\n'.format(capture),
+                encoding="utf-8",
+            )
+
+            def fake_spark(
+                _helper, _card, _mode, _execution_env,
+                stdout_path, stderr_path, _repo, _timeout,
+            ):
+                stdout_path.write_text("spark_status=success\n", encoding="utf-8")
+                stderr_path.write_text("", encoding="utf-8")
+                return 0, False
+
+            with mock.patch.object(
+                run_workflow, "_run_spark_attempt", side_effect=fake_spark
+            ):
+                run_workflow.run_lifecycle(
+                    task_path=task_path,
+                    execute=True,
+                    dispatcher=str(dispatcher),
+                    run_dir_base=root,
+                    repo=ROOT,
+                    profiles_dir=PROFILES,
+                    host_authority=True,
+                )
+
+            args = capture.read_text(encoding="utf-8").splitlines()
+            self.assertIn("--execution-env", args)
+            self.assertIn("host", args)
+            self.assertIn("--host-authority", args)
 
     def test_sandbox_handoff_stops_before_claude_and_persists_route(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -592,6 +655,7 @@ class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
             )
             self.assertTrue(record["needs_host_execution"])
             self.assertFalse(record["continued_to_claude"])
+            self.assertIn("--host-authority", record["host_handoff_action"])
             self.assertEqual(
                 json.loads(state.read_text())["status"], "host-required"
             )

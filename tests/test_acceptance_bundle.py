@@ -79,6 +79,7 @@ class AcceptanceBundleTests(unittest.TestCase):
             (root / "new.py").write_text("value = 1\n", encoding="utf-8")
             outcome = root / "outcome.json"
             validation = root / "validation.json"
+            report_artifact = root / "report-artifact.json"
             handoff = root / "handoff.json"
             recovered = root / "recovered.json"
             outcome.write_text(json.dumps({
@@ -91,12 +92,22 @@ class AcceptanceBundleTests(unittest.TestCase):
                     {"index": 2, "label": "pytest", "command": "pytest -q", "exit_code": 1},
                 ],
             }), encoding="utf-8")
+            report_artifact.write_text(json.dumps({
+                "valid": False,
+                "reasons": ["missing-headings:Checks Run"],
+                "normalization_applied": True,
+            }), encoding="utf-8")
             handoff.write_text(json.dumps({
                 "status": "ready",
+                "deliverable": True,
+                "product_change_count": 1,
+                "control_change_count": 2,
+                "control_changed_paths": ["TASK_CARD.md", "CLAUDE_PROMPT.md"],
+                "out_of_scope_product_paths": [],
                 "source_base_commit": "source-base",
                 "execution_base_commit": "execution-base",
                 "changed_files": [{"path": "new.py", "change": "added"}],
-                "patch": {"sha256": "sha256:patch"},
+                "patch": {"sha256": "sha256:patch", "bytes": 321},
             }), encoding="utf-8")
             recovered.write_text(json.dumps({
                 "diff_sha256": "sha256:recovered",
@@ -104,6 +115,7 @@ class AcceptanceBundleTests(unittest.TestCase):
             }), encoding="utf-8")
             args = argparse.Namespace(
                 worktree=root, outcome=outcome, report_consistency=None,
+                report_artifact_validation=report_artifact,
                 write_scope=None, checker_contract=None,
                 validation_receipt=validation, scoped_handoff=handoff,
                 recovered_completion=recovered,
@@ -116,6 +128,13 @@ class AcceptanceBundleTests(unittest.TestCase):
             self.assertEqual(evidence["validation_command_count"], 2)
             self.assertEqual(evidence["validation_results"][1]["exit_code"], 1)
             self.assertEqual(evidence["execution_base_commit"], "execution-base")
+            self.assertEqual(evidence["patch_bytes"], 321)
+            self.assertTrue(evidence["deliverable"])
+            self.assertEqual(
+                evidence["claude_report_invalid_reasons"],
+                ["missing-headings:Checks Run"],
+            )
+            self.assertTrue(evidence["claude_report_normalized"])
 
     def test_blocked_scoped_handoff_routes_to_scope_revision(self):
         module = load_module()

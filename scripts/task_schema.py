@@ -796,6 +796,53 @@ def _render_complex_gate_contract(task: Dict[str, Any]) -> str:
     ))
 
 
+def _interface_surfaces(task: Dict[str, Any]) -> List[str]:
+    """Conservatively identify CLI/UI work that needs entrypoint-level proof."""
+    scope = task.get("scope", {}) if isinstance(task.get("scope"), dict) else {}
+    values = [task.get("goal", "")]
+    values.extend(_text_items(scope.get("write_paths")))
+    for item in task.get("acceptance", []):
+        if isinstance(item, dict):
+            values.append(item.get("description", ""))
+    text = "\n".join(str(value).lower().replace("\\", "/") for value in values)
+    surfaces: List[str] = []
+    cli_markers = (
+        " cli", "cli ", "/cli", "command line", "command-line", "命令行",
+        "argparse", "click command", "typer command", "parser option",
+    )
+    ui_markers = (
+        " ui", "ui ", "/ui/", "streamlit", "frontend", "front-end",
+        "/pages/", "/components/", "user interface", "用户界面", "界面",
+    )
+    if any(marker in text for marker in cli_markers):
+        surfaces.append("CLI")
+    if any(marker in text for marker in ui_markers):
+        surfaces.append("UI")
+    return surfaces
+
+
+def _render_interface_acceptance(task: Dict[str, Any]) -> str:
+    surfaces = _interface_surfaces(task)
+    if not surfaces:
+        return ""
+    requirements = [
+        "Discover and cite the real parser/app entrypoint and its current signature before editing; never invent flags, JSON levels, callbacks, or component APIs.",
+        "Exercise the real interface boundary, not a helper that bypasses parsing/rendering.",
+        "If the entrypoint, schema, or runnable harness cannot be resolved from allowed sources, stop and report the missing evidence instead of fabricating compatibility.",
+    ]
+    if "CLI" in surfaces:
+        requirements.append(
+            "CLI proof must parse the exact accepted and rejected argument forms (or invoke the real help/parser path) and assert unknown options fail closed."
+        )
+    if "UI" in surfaces:
+        requirements.append(
+            "UI proof must use the assigned app/component harness (for example AppTest) and verify the actual data/schema boundary."
+        )
+    return "**Detected surfaces:** {}\n\n{}".format(
+        ", ".join(surfaces), _render_list(requirements)
+    )
+
+
 def _render_task_granularity(context: Dict[str, Any]) -> str:
     assessment = context.get("task_granularity")
     if not isinstance(assessment, dict) or assessment.get("status") == "ready":
@@ -862,6 +909,10 @@ def _render_execution_task_card(
     complex_gate_body = _render_complex_gate_contract(task)
     if complex_gate_body:
         sections.append(_render_section("Complex Gate Contract", complex_gate_body))
+
+    interface_body = _render_interface_acceptance(task)
+    if interface_body:
+        sections.append(_render_section("Interface Acceptance", interface_body))
 
     acceptance = task.get("acceptance", [])
     if isinstance(acceptance, list) and acceptance:
@@ -942,6 +993,10 @@ def render_task_card(
     if "forbidden_paths" in scope:
         scope_parts.append("**Forbidden paths:**\n" + _render_list(scope["forbidden_paths"]))
     sections.append(_render_section("Scope", "\n\n".join(scope_parts)))
+
+    interface_body = _render_interface_acceptance(task)
+    if interface_body:
+        sections.append(_render_section("Interface Acceptance", interface_body))
 
     # Acceptance
     acceptance = task.get("acceptance", [])

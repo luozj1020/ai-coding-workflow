@@ -39,6 +39,7 @@ DELTA_SECTIONS = {
 MAX_CHECKPOINT_BYTES = 32 * 1024
 MAX_COMPILED_CONTEXT_BYTES = 12 * 1024
 MAX_RECOVERY_DELTA_BYTES = 12 * 1024
+MAX_REVIEWED_CONTINUATION_BYTES = 64 * 1024
 SAFE_COMPILED_CONTEXT_KINDS = frozenset(
     ("procedure", "retrieval", "validation", "output-contract")
 )
@@ -294,6 +295,73 @@ def _recovery_delta(
     }
 
 
+def _reviewed_continuation(
+    path: Optional[Path], task_card_sha256: str,
+) -> tuple[str, Optional[dict[str, object]]]:
+    """Render only accepted state summaries and unresolved review delta."""
+    if path is None:
+        return "", None
+    raw = path.read_bytes()
+    if len(raw) > MAX_REVIEWED_CONTINUATION_BYTES:
+        raise CapsuleError("reviewed continuation approval is oversized")
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise CapsuleError("reviewed continuation approval is invalid") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise CapsuleError("reviewed continuation approval has an unsupported schema")
+    if value.get("status") != "available" or value.get("decision") != "accepted-direction":
+        raise CapsuleError("reviewed continuation approval is not available")
+    expected = task_card_sha256.split(":", 1)[-1]
+    if value.get("next_task_card_sha256") != expected:
+        raise CapsuleError("reviewed continuation is not bound to this task card")
+    delta = value.get("delta_continuation")
+    state = value.get("accepted_path_state")
+    if not isinstance(delta, dict) or not isinstance(state, dict):
+        raise CapsuleError("reviewed continuation lacks accepted delta state")
+    if delta.get("full_prior_task_card_repeated") is not False:
+        raise CapsuleError("reviewed continuation repeats the prior task card")
+
+    def clean(item: object) -> str:
+        return re.sub(r"\s+", " ", str(item)).strip()
+
+    lines = [
+        "<!-- aiwf-reviewed-continuation-delta-v1 -->",
+        "## Accepted Continuation Context",
+        "- Prior task: `{}`".format(clean(value.get("prior_task_id", "unknown"))),
+        "- Accepted baseline: `{}`".format(
+            clean(delta.get("baseline_worktree_state_hash", "unknown"))
+        ),
+        "- Reuse the accepted file state below; do not re-explore it unless a hash mismatch is observed.",
+    ]
+    for name in sorted(state):
+        item = state[name] if isinstance(state[name], dict) else {}
+        evidence = item.get("sha256") or item.get("kind") or "unknown"
+        lines.append("  - `{}`: `{}`".format(clean(name), clean(evidence)))
+    findings = delta.get("unresolved_findings")
+    findings = findings if isinstance(findings, list) else []
+    lines.extend(["", "## Unresolved Review Findings"])
+    lines.extend("- {}".format(clean(item)) for item in findings)
+    if not findings:
+        lines.append("- None recorded; execute only the current task-card delta.")
+    refs = delta.get("new_validation_refs")
+    refs = refs if isinstance(refs, list) else []
+    lines.extend(["", "## New Validation Evidence"])
+    lines.extend("- `{}`".format(clean(item)) for item in refs)
+    if not refs:
+        lines.append("- None supplied.")
+    text = "\n".join(lines)
+    return text, {
+        "path": str(path.resolve()),
+        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw),
+        "accepted_path_count": len(state),
+        "unresolved_finding_count": len(findings),
+        "new_validation_ref_count": len(refs),
+        "full_prior_task_card_repeated": False,
+    }
+
+
 def render(
     text: str,
     *,
@@ -302,6 +370,7 @@ def render(
     checkpoint: str,
     compiled_context: str = "",
     recovery_delta: str = "",
+    reviewed_continuation: str = "",
 ) -> str:
     preamble, sections = _sections(text)
     keep = DELTA_SECTIONS if mode == "delta" else BOOTSTRAP_SECTIONS
@@ -333,6 +402,8 @@ def render(
         body += "\n\n" + checkpoint
     if recovery_delta:
         body += "\n\n" + recovery_delta
+    if reviewed_continuation:
+        body += "\n\n" + reviewed_continuation
     if compiled_context:
         body += "\n\n" + compiled_context
     return "\n".join(header) + body.rstrip() + "\n"
@@ -358,6 +429,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--compiled-context-receipt", type=Path)
     result.add_argument("--recovery-delta", type=Path)
     result.add_argument("--recovery-delta-receipt", type=Path)
+    result.add_argument("--reviewed-continuation", type=Path)
     result.add_argument(
         "--require-complete-contract", action="store_true",
         help="fail if any hard-contract category is absent from the source card",
@@ -382,6 +454,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         recovery_delta, recovery_delta_receipt = _recovery_delta(
             args.recovery_delta, args.recovery_delta_receipt, task_card_sha256
         )
+        reviewed_continuation, reviewed_continuation_receipt = _reviewed_continuation(
+            args.reviewed_continuation, task_card_sha256
+        )
         source_text = source.read_text(encoding="utf-8", errors="replace")
         contract_content = render(
             source_text,
@@ -390,6 +465,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             checkpoint="",
             compiled_context="",
             recovery_delta="",
+            reviewed_continuation="",
         )
         content = render(
             source_text,
@@ -398,6 +474,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             checkpoint=checkpoint,
             compiled_context=compiled_context,
             recovery_delta=recovery_delta,
+            reviewed_continuation=reviewed_continuation,
         )
         hard_contract_coverage = _hard_contract_coverage(
             source_text, contract_content, require_complete=args.require_complete_contract,
@@ -413,6 +490,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             "checkpoint_binding": checkpoint_receipt,
             "compiled_context": compiled_context_receipt,
             "recovery_delta": recovery_delta_receipt,
+            "reviewed_continuation": reviewed_continuation_receipt,
             "hard_contract_coverage": hard_contract_coverage,
             "output": str(args.output.resolve()),
             "output_sha256": _sha256(content),

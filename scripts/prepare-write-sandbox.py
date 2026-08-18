@@ -20,6 +20,7 @@ CONTROL_WRITES = (
     "CLAUDE_TASK_CARD.md",
 )
 UNSAFE_PATTERN = re.compile(r"[*?\[\]{}:]")
+CARD_FIELD_PATTERN = r"(?i)^(?:-[ \t]*)?(?:\*\*)?{label}:(?:\*\*)?[ \t]*(.*)$"
 
 
 class SandboxError(RuntimeError):
@@ -44,7 +45,9 @@ def _path_item(raw: str) -> str:
 def _card_paths(text: str) -> List[str]:
     lines = text.splitlines()
     for index, line in enumerate(lines):
-        match = re.match(r"(?i)^-[ \t]*Write paths:[ \t]*(.*)$", line)
+        match = re.match(
+            CARD_FIELD_PATTERN.format(label=r"Write[ \t]+paths"), line
+        )
         if not match:
             continue
         inline = match.group(1).strip()
@@ -59,11 +62,14 @@ def _card_paths(text: str) -> List[str]:
 
         values: List[str] = []
         for nested in lines[index + 1:]:
-            if re.match(r"^-[ \t]*[^:]+:", nested) or nested.startswith("#"):
+            if re.match(
+                r"(?i)^(?:-[ \t]*)?(?:\*\*)?[^:#]+:(?:\*\*)?[ \t]*$",
+                nested,
+            ) or nested.startswith("#"):
                 break
             if not nested.strip():
                 continue
-            item = re.match(r"^[ \t]+-[ \t]+(.+?)\s*$", nested)
+            item = re.match(r"^[ \t]*-[ \t]+(.+?)\s*$", nested)
             if item is None:
                 raise SandboxError(
                     f"invalid multi-line Write paths entry: {nested!r}"
@@ -75,7 +81,8 @@ def _card_paths(text: str) -> List[str]:
 
 def _full_replacement_paths(text: str) -> List[str]:
     match = re.search(
-        r"(?im)^-[ \t]*Full file replacement paths:[ \t]*(.*)$", text
+        r"(?im)^(?:-[ \t]*)?(?:\*\*)?Full[ \t]+file[ \t]+replacement[ \t]+paths:(?:\*\*)?[ \t]*(.*)$",
+        text,
     )
     if not match:
         return []

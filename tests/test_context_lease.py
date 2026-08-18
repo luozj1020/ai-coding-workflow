@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -92,6 +93,55 @@ class ExecutionCapsuleTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 2)
             self.assertIn("lacks required hard-contract categories", completed.stderr)
+
+    def test_reviewed_continuation_embeds_only_accepted_delta_context(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            card = root / "card.md"
+            output = root / "capsule.md"
+            receipt = root / "receipt.json"
+            approval = root / "approval.json"
+            card.write_text(
+                "# Revision\n\n## Goal\n\nFix the rejected parser behavior.\n\n"
+                "## Scope\n\n- Write paths: src/cli.py\n\n"
+                "## Required Changes\n\n- Use the real parser entrypoint.\n",
+                encoding="utf-8",
+            )
+            approval.write_text(json.dumps({
+                "schema_version": 1,
+                "status": "available",
+                "decision": "accepted-direction",
+                "prior_task_id": "claude-prior",
+                "next_task_card_sha256": hashlib.sha256(card.read_bytes()).hexdigest(),
+                "accepted_path_state": {
+                    "src/cli.py": {"kind": "file", "sha256": "a" * 64}
+                },
+                "delta_continuation": {
+                    "baseline_worktree_state_hash": "sha256:" + "b" * 64,
+                    "unresolved_findings": ["Parser flag does not exist"],
+                    "new_validation_refs": ["sha256:" + "c" * 64],
+                    "full_prior_task_card_repeated": False,
+                },
+            }), encoding="utf-8")
+
+            completed = run(
+                sys.executable, str(SCRIPTS / "build-execution-capsule.py"),
+                "--task-card", str(card), "--output", str(output),
+                "--mode", "delta", "--continuation-kind", "revision",
+                "--reviewed-continuation", str(approval),
+                "--receipt", str(receipt), cwd=ROOT,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            text = output.read_text(encoding="utf-8")
+            self.assertIn("Accepted Continuation Context", text)
+            self.assertIn("Parser flag does not exist", text)
+            self.assertNotIn("full prior", text.lower())
+            bound = json.loads(receipt.read_text(encoding="utf-8"))[
+                "reviewed_continuation"
+            ]
+            self.assertEqual(bound["accepted_path_count"], 1)
+            self.assertFalse(bound["full_prior_task_card_repeated"])
 
     def test_capsule_fails_when_card_has_no_executable_contract(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

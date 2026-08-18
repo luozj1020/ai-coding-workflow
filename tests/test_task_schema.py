@@ -934,6 +934,20 @@ class TestAuditVsExecution(unittest.TestCase):
         self.assertIn("Worker.run", execution)
         self.assertIn("preserve retry behavior", execution)
 
+    def test_cli_ui_tasks_receive_real_entrypoint_acceptance_contract(self):
+        task = _make_valid_task(
+            goal="Update the CLI and Streamlit UI.",
+            scope={"write_paths": ["src/cli.py", "ui/pages/results.py"]},
+        )
+
+        execution = self.ts.render_task_card(task, view="execution")
+
+        self.assertIn("## Interface Acceptance", execution)
+        self.assertIn("**Detected surfaces:** CLI, UI", execution)
+        self.assertIn("never invent flags", execution)
+        self.assertIn("unknown options fail closed", execution)
+        self.assertIn("actual data/schema boundary", execution)
+
     def test_audit_includes_risk_section(self):
         task = _make_valid_task()
         audit = self.ts.render_task_card(task, view="audit")

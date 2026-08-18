@@ -177,6 +177,17 @@ def bind_delta_review(path: Optional[Path]) -> Optional[Dict[str, Any]]:
     }
 
 
+def optional_artifact_ref(value: object) -> Optional[Dict[str, Any]]:
+    path = Path(str(value or "")).resolve()
+    if not str(value or "").strip() or not path.is_file() or path.is_symlink():
+        return None
+    return {
+        "path": str(path),
+        "sha256": "sha256:" + sha256_file(path),
+        "bytes": path.stat().st_size,
+    }
+
+
 def bounded_findings(values: Iterable[str]) -> List[str]:
     findings = sorted({str(value).strip() for value in values if str(value).strip()})
     if len(findings) > 20 or any(len(value) > 240 for value in findings):
@@ -534,6 +545,17 @@ def prepare(args: argparse.Namespace) -> Dict[str, Any]:
             "delta_review_packet": delta_review,
             "unresolved_findings": unresolved_findings,
             "new_validation_refs": new_validation_refs,
+            "full_prior_task_card_repeated": False,
+        },
+        "context_reuse": {
+            "strategy": "same-session-plus-delta-capsule",
+            "prior_skill_context_compilation": optional_artifact_ref(
+                runtime.get("skill_context_compilation")
+            ),
+            "prior_execution_capsule_receipt": optional_artifact_ref(
+                runtime.get("execution_capsule_receipt")
+            ),
+            "accepted_path_summaries_reused": len(accepted_state),
             "full_prior_task_card_repeated": False,
         },
     }
