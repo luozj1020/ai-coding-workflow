@@ -22,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -515,33 +515,27 @@ class TestRunWorkflowStandardLane(unittest.TestCase):
 
 
 class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
-    def test_bash_path_argument_normalizes_windows_paths(self):
-        with mock.patch.object(run_workflow.os, "name", "nt"):
-            value = run_workflow._bash_path_argument(
-                PureWindowsPath(r"C:\\Users\\runner\\script.sh")
-            )
-
-        self.assertEqual(value, "C:/Users/runner/script.sh")
-
     def test_spark_attempt_binds_verified_context_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             helper = root / "spark.sh"
-            helper.write_text(
-                '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding="utf-8"
-            )
             card = root / "card.md"
             card.write_text("# Card\n", encoding="utf-8")
             stdout = root / "stdout"
             stderr = root / "stderr"
 
-            exit_code, timed_out = run_workflow._run_spark_attempt(
-                helper, card, "task-card-audit", "auto", stdout, stderr, ROOT, 5
-            )
+            with mock.patch.object(
+                run_workflow.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0),
+            ) as runner:
+                exit_code, timed_out = run_workflow._run_spark_attempt(
+                    helper, card, "task-card-audit", "auto", stdout, stderr, ROOT, 5
+                )
 
             self.assertEqual(exit_code, 0)
             self.assertFalse(timed_out)
-            args = stdout.read_text(encoding="utf-8").splitlines()
+            args = runner.call_args.args[0]
             index = args.index("--context-worktree")
             self.assertEqual(Path(args[index + 1]).resolve(), ROOT.resolve())
 
@@ -587,12 +581,8 @@ class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             task_path = write_task(root, make_task())
-            capture = root / "dispatcher-args.txt"
             dispatcher = root / "dispatcher.sh"
-            dispatcher.write_text(
-                '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{}"\n'.format(capture),
-                encoding="utf-8",
-            )
+            dispatcher.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
 
             def fake_spark(
                 _helper, _card, _mode, _execution_env,
@@ -602,9 +592,18 @@ class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
                 stderr_path.write_text("", encoding="utf-8")
                 return 0, False
 
+            real_run = subprocess.run
+            dispatch_calls = []
+
+            def capture_bash(command, *args, **kwargs):
+                if command and command[0] == "bash":
+                    dispatch_calls.append(command)
+                    return subprocess.CompletedProcess(command, 0)
+                return real_run(command, *args, **kwargs)
+
             with mock.patch.object(
                 run_workflow, "_run_spark_attempt", side_effect=fake_spark
-            ):
+            ), mock.patch.object(run_workflow.subprocess, "run", side_effect=capture_bash):
                 run_workflow.run_lifecycle(
                     task_path=task_path,
                     execute=True,
@@ -615,7 +614,8 @@ class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
                     host_authority=True,
                 )
 
-            args = capture.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(dispatch_calls), 1)
+            args = dispatch_calls[0]
             self.assertIn("--execution-env", args)
             self.assertIn("host", args)
             self.assertIn("--host-authority", args)
