@@ -22,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -515,6 +515,14 @@ class TestRunWorkflowStandardLane(unittest.TestCase):
 
 
 class TestRunWorkflowSparkHostHandoff(unittest.TestCase):
+    def test_bash_path_argument_normalizes_windows_paths(self):
+        with mock.patch.object(run_workflow.os, "name", "nt"):
+            value = run_workflow._bash_path_argument(
+                PureWindowsPath(r"C:\\Users\\runner\\script.sh")
+            )
+
+        self.assertEqual(value, "C:/Users/runner/script.sh")
+
     def test_spark_attempt_binds_verified_context_worktree(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

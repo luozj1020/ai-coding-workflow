@@ -364,7 +364,7 @@ def _run_spark_attempt(
     timeout: int,
 ) -> tuple:
     command = [
-        "bash", str(helper), str(dispatch_card),
+        "bash", _bash_path_argument(helper), _bash_path_argument(dispatch_card),
         "--mode", mode,
         "--result-mode", "direct",
         "--diagnostics", "failure",
@@ -387,6 +387,16 @@ def _run_spark_attempt(
                 f"\nSpark {execution_env} attempt timed out after {timeout}s.\n".encode()
             )
         return -1, True
+
+
+def _bash_path_argument(path: Path) -> str:
+    """Return a path form Git Bash can execute on Windows.
+
+    A native ``C:\\...`` path reaches Bash with backslashes interpreted as
+    escapes.  Forward-slash drive paths are accepted by Git Bash and leave
+    POSIX paths unchanged.
+    """
+    return path.as_posix() if os.name == "nt" else str(path)
 
 
 def _find_repo_root(task_path: Path) -> Path:
@@ -1056,7 +1066,7 @@ def phase_dispatch(ctx: RunContext) -> None:
 
     # Execute through broker-mediated path
     dispatcher = ctx.dispatcher or str(HERE / "dispatch-to-claude.sh")
-    cmd = ["bash", dispatcher, str(dispatch_card)]
+    cmd = ["bash", _bash_path_argument(Path(dispatcher)), _bash_path_argument(dispatch_card)]
     if ctx.host_authority:
         # One explicit workflow-level host grant covers the already-authorized
         # Spark and Claude launches without a second fragmented handoff.
