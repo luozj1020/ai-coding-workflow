@@ -291,8 +291,8 @@ class InstallForCodexTests(unittest.TestCase):
         skill = ROOT / "SKILL.md"
         content = skill.read_text(encoding="utf-8")
         self.assertIn("Reference Router", content)
-        self.assertIn("Builder", content)
-        self.assertIn("Checker/Test", content)
+        self.assertIn("Codex", content)
+        self.assertIn("Claude", content)
         self.assertIn("claude-runtime.md", content)
         self.assertIn("review-policy.md", content)
         self.assertNotIn("Dirty source requires clean restoration or an explicit hash-bound snapshot", content)

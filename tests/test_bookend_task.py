@@ -1,6 +1,7 @@
 """Behavioral tests for the durable Bookend control plane."""
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -360,6 +361,7 @@ class BookendTaskTests(unittest.TestCase):
                     break
                 __import__("time").sleep(0.05)
             self.assertEqual(state["state"], "review_ready")
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
