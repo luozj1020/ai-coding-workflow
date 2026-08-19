@@ -6,8 +6,8 @@ Load this reference when authoring task cards/specs, choosing gates, building Co
 
 Create a legacy Markdown task card only after routing selects actual Claude
 delegation or an explicit human-requested planning/spec artifact. The primary
-JSON-backed `aiwf run` path freezes the Task JSON and renders its execution card
-deterministically; Codex does not hand-author that Markdown. A direct Codex
+JSON-backed `aiwf submit` path freezes the Task JSON, renders its execution card
+deterministically, and ends the Codex episode; Codex does not hand-author that Markdown. A direct Codex
 change—including Skill/workflow maintenance—uses `aiwf direct` plus its exact
 paths/checks instead; do not compose a `control-plane` card merely to document
 or audit your own local edit. Legacy Markdown work reads the small
@@ -36,14 +36,13 @@ python ai/compose_task_card.py --select-from routing-facts.json --output ai/task
 If those facts select `codex-fast-path`, the command returns `skip_card=true`
 and writes no delegation card.
 
-The integrated `aiwf run` path performs selection after routing and renders
+The integrated `aiwf submit` freeze path performs selection after routing and renders
 `delegation-task-card.md` from reviewed Task JSON plus bounded routing facts.
 It does not create a duplicate standalone Context Packet or pass source JSON to
-the Markdown dispatcher. After deterministic validation and bounded Codex
-review, an ordinary-risk task proceeds directly to dispatch; `--preview`
-explicitly requests the zero-model inspection path. Product/API/data-model
-ambiguity and destructive/high-impact actions remain stop conditions requiring
-human authority.
+the Markdown dispatcher. After deterministic validation and Codex contract
+freeze, the durable supervisor owns dispatch. Product ambiguity that prevents
+a frozen contract and destructive/high-impact actions remain stop conditions
+requiring human authority.
 
 The local composer remains for explicit legacy Markdown cards. On the JSON
 path, Codex reviews the compact JSON goal, boundaries, acceptance, and high-risk
@@ -57,18 +56,17 @@ v1 `handoff.stop_condition` field remains accepted only to render legacy audit
 cards; the base profile no longer generates it, and execution projections never
 read it.
 
-Builder presets ship with conservative Post-Implementation defaults: changed-file self-review is enabled, while narrow validation, documentation, and long validation are disabled/not-required until Codex replaces them with exact assignments. Do not leave ambiguous placeholders or enable broad tail work merely to make the card look complete.
+Execution presets ship with conservative Post-Implementation defaults. The
+frozen contract, not a mid-run Codex decision, assigns tests, validation,
+documentation, and long tail work. Do not leave ambiguous placeholders merely
+to make the card look complete.
 
-Every JSON task is assessed before dispatch on declared write-path count,
-distinct responsibilities, and explicit/inferred new modules. Four paths,
-multiple responsibilities, multiple new modules, or a broad directory emits a
-strong `split-advised` receipt. Six paths, three responsibilities, three new
-modules, or a compound four-path/multi-responsibility task emits
-`split-required` and blocks both Spark and Claude. Split the task, or record
-`extensions.task_shape.split_decision=exception` plus a concrete
-`split_reason`; the exception remains visible in the execution card and run
-receipt. `split_decision=split` records intent but never authorizes the current
-card to run.
+Every JSON task is assessed on declared write-path count, responsibilities, and
+new modules. The result remains visible as task-shape evidence. In a frozen
+Bookend task, size alone is advisory and cannot create a mid-task Codex split
+checkpoint; concrete authority, contradictory acceptance, or an unbounded
+write boundary still fails before submission. Foreground compatibility runs
+retain their historical `split-required` behavior.
 
 Tasks implementing aggregation, eligibility, quorum, fallback, or acceptance
 gates must declare `extensions.complex_gate_contract`. When enabled, it
@@ -206,7 +204,7 @@ No model authorizes merge. Codex gives accept/revise/split/reject; humans merge.
 
 ## JSON Task Cards
 
-JSON is the primary contract for delegated `aiwf run` work. When JSON and
+JSON is the primary contract for delegated `aiwf submit` work. When JSON and
 Markdown share an identity, JSON is source of truth and the generated Markdown
 must not be edited. Use:
 

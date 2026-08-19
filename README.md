@@ -31,40 +31,32 @@ python scripts/aiwf.py direct --kind workflow-maintenance \
 
 It records exact paths and checks, but starts neither Spark nor Claude.
 
-## Claude-first routing for scarce Codex quota
+## Bookend routing for scarce Codex quota
 
-The default `claude-first` profile minimizes Codex editing and rereview work.
-Codex freezes and reviews the short core plan in Task JSON; `aiwf run`
-deterministically renders the execution card. Claude owns implementation,
-revision, assigned tests, and long validation. `solution-planner` is never
-selected automatically and requires explicit `solution_planner_opt_in=true`.
-Single-task latency is advisory because users can run different repositories in
-independent CLI terminals. Set `ownership_profile=economy-first` to restore the
-strict total-cost and latency gate.
+The default production model uses Codex only at the task bookends. Codex
+freezes a compact Task contract, submits it once, and ends its inference
+episode. A durable control plane then owns Claude exploration, implementation,
+tests, diagnosis, revision, validation, timeout recovery, and session/epoch
+replacement. Codex returns only for strict `semantic_blocked` or one final
+semantic review of a stable `DONE_CANDIDATE`.
 
 `quota-ledger.py` enforces call budgets and duplicate-evidence guards. `evaluate-acceptance.py` performs L0 deterministic checks, `select-review-tier.py` chooses L0 local/L1 Spark/L2 Codex, `context-cache.py` reuses bounded locator evidence, and `check-retry-evidence.py` blocks retries without changed evidence. The `quota-efficient-balanced` profile uses a 32 KB Standard review packet.
 
 For Bazel repositories, `build-bazel-context.py` turns a bounded list of source files into candidate BUILD rules, dependencies, test targets, and narrow validation commands without running Bazel. Remote Bazel handoff remains human-controlled: `generate-handoff.py` emits preview-only publish/update/batched-validation instructions, while `validation-ingest.py` classifies returned logs locally. These helpers never push, SSH, merge, or authorize acceptance.
 
-The primary quota-efficient path dispatches automatically after deterministic
-validation, routing, and bounded Codex review of the composed card:
+The primary path is asynchronous:
 
 ```bash
-python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1
-# Opt into a zero-model preview when inspection is desired.
-python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview
+python scripts/aiwf.py submit task.json
+# Later, only when the durable state requests Codex:
+python scripts/aiwf.py bookend review-input .worktrees/bookend-.../
 ```
 
-`aiwf run` performs lint → profile validation → repository facts → deterministic
-routing. The normal result is a short Claude execution card with context inlined
-once after Codex freezes a compact plan. Open multi-phase features do not add a
-Claude planning round unless the user explicitly opts into `solution-planner`.
-Explicit/high-risk Codex work stops before card construction. Spark may fill a
-structured uncertainty when that avoids Codex analysis. A valid ordinary-risk
-card does not wait for a second human confirmation; material product ambiguity
-and destructive/high-impact actions still stop for explicit human authority.
-Explicit `--preview` remains zero-model, and `--execute` remains accepted for
-backward compatibility.
+`aiwf submit` performs zero-model lint, grounding, routing, and contract freeze,
+writes `bookend-state.json`, starts an independent supervisor, and returns. The
+submitting Codex must not wait on `monitor-claude.sh` or perform a direction
+review. `aiwf run` remains the foreground compatibility lifecycle and
+`aiwf loop` remains the legacy per-iteration Codex-review experiment.
 
 The lower-level control-plane commands remain available:
 
@@ -92,7 +84,8 @@ ai-coding-workflow bootstraps repositories with:
 - `AGENTS.md` - shared rules for all agents
 - `CLAUDE.md` - Claude Code execution rules
 - Task-card and evidence-packet templates
-- Safe dispatch/review/loop scripts for Codex + Claude Code workflows
+- Durable `submit/supervise/status/review-input` Bookend control plane
+- Foreground dispatch/review/loop scripts retained as compatibility tools
 - Opt-in Spark structured routing/monitoring with direct short output; long preflight remains diagnostic-only
 - Stable Spark/Claude launcher forms for authorized host retries, dirty snapshots, and approval-prefix reuse
 - Two-stage Claude progress semantics: edit readiness is advisory, while durable product writes drive active/idle decisions
@@ -101,8 +94,8 @@ ai-coding-workflow bootstraps repositories with:
 - Execution profiles for token-saving balanced dispatch, safe full-context dispatch, and explicit fast large-repository dispatch
 - Large-repository dispatch options for managed worktree reuse and reduced expensive untracked-file scans
 - Local-validation gates and task-card validation command extraction
-- Builder / Checker-Test task modes for separating implementation from validation
-- Direction / boundary acknowledgement gates with anti-loop rules
+- Claude-owned implementation/test/revision duties without Codex direction-review handoffs
+- Coverage-preserving Review Projections and hash-bound Codex wake requests
 - Managed blocks for idempotent updates
 
 ## Codex token-efficient review
@@ -129,7 +122,36 @@ repository discovery, intent freeze, planning review, monitoring, diff review,
 revision drafting, and final review. These are measurements and routing inputs;
 they do not impose a hard Codex token/input budget.
 
-## Workflow at a glance
+## Bookend workflow at a glance
+
+```mermaid
+flowchart TD
+    U[Human goal] --> G[Deterministic grounding]
+    G --> F[Codex FREEZE]
+    F --> S[aiwf submit]
+    S --> Z[Codex episode ends]
+    S --> C[Control plane owns Claude]
+    C --> E[Explore / implement / test / fix / validate]
+    E --> R{Runtime outcome}
+    R -- epoch expired + safe --> C
+    R -- runtime / authority / budget blocked --> O[Operator or human; no Codex wake]
+    R -- semantic contract decision --> W1[semantic_blocked wake request]
+    R -- stable DONE_CANDIDATE --> P[Coverage-preserving Review Projection]
+    P --> W2[review_ready wake request]
+    W1 --> X[New bounded Codex episode]
+    W2 --> X
+    X -- revision delta --> C
+    X -- accept --> H[Human review and merge]
+```
+
+Normal success uses two Codex inference episodes regardless of internal Claude
+compile failures, revisions, sessions, or execution epochs. Runtime transitions
+never become model handoffs.
+
+## Legacy foreground workflow at a glance
+
+The following diagram documents the retained `aiwf run` / `aiwf loop`
+compatibility path. It is not the production agent path.
 
 ```mermaid
 flowchart TD
@@ -187,7 +209,7 @@ flowchart TD
     FD -. Codex responsibility usage .-> KM[Economics · token hotspots per accepted acceptance]
 ```
 
-The control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW**.
+The legacy control loop is **OBSERVE → ROUTE → PLAN → DISPATCH → EXECUTE → VERIFY → REVIEW**.
 ROUTE defaults source-writing to Claude. Codex direct is explicit or reserved for
 confirmed high-risk core semantics and deterministic reviewed corrections.
 Checker/Test remains conditional; humans merge.
@@ -235,8 +257,11 @@ tool probing, while conflicting combinations fail early.
 | **Cross-sandbox process check** | Treat invisible dispatch PIDs as unknown, never as permission to launch a duplicate Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Classify Claude round** | Decide whether a failure counts toward takeover | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **Validate Claude context** | Check execution-only packet density | `python scripts/validate-claude-context.py task.md --require-complete` |
+| **Submit Bookend task** | Freeze once, return Codex, and let the control plane own Claude | `python scripts/aiwf.py submit task.json` |
+| **Bookend task state** | Read durable state without polling model processes | `python scripts/aiwf.py bookend status .worktrees/bookend-.../` |
+| **Read Codex wake request** | Start final review or bounded semantic delta only when scheduled | `python scripts/aiwf.py bookend review-input .worktrees/bookend-.../` |
 | **Preview integrated run** | Inspect every phase without model calls | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview` |
-| **Execute integrated run** | Validate, compose, and dispatch without a second confirmation step | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
+| **Execute foreground compatibility run** | Diagnose the old synchronous lifecycle explicitly | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 
 Advisor calls require a non-empty request/evidence binding and an explicit one-call cap. The Broker enforces the same `request_id` cap across roles and records interrupts as cancelled. Fixed Claude probes are `diagnostic_call` entries that never consume Builder, takeover, or success budgets. Same-worktree continuation audits feed summary/benchmark metrics without inventing token or time savings.
 
@@ -313,6 +338,7 @@ ai-coding-workflow/
     install_workflow.py  -> Bootstrap a repository
     compose_task_card.py -> Deterministic task-card component selector/composer
     workflow_economics.py -> Record delegation overhead and calibrate owner routing
+    audit-codex-wakeups.py -> Audit observed Codex usage and conservative Bookend bounds
     install_for_codex.py -> Install skill for Codex discovery
     update_skill.py      -> Convenience updater for skill + optional repo bootstrap
     dispatch-to-claude.sh -> Dispatch task cards to Claude Code
@@ -646,6 +672,7 @@ CLAUDE.md
 ai/task-card-components/catalog.md
 ai/compose_task_card.py
 ai/workflow_economics.py
+ai/audit-codex-wakeups.py
 ai/task-card-template.md
 ai/evidence-packet-template.md
 ai/plan-task-template.md
@@ -710,12 +737,20 @@ python scripts/update_skill.py --bootstrap-current
 
 ## Typical daily workflow
 
-The workflow is an explicit loop: **OBSERVE  ->  PLAN  ->  DISPATCH  ->  EXECUTE  ->  VERIFY  ->  REVIEW  ->  LEARN  ->  repeat.**
+The production workflow is:
 
-**Core principle:** Codex keeps core planning and frozen intent in the Task
-Card, its only normal handwritten workflow artifact. Claude implements and
-revises by default. Deterministic tools generate route, review, freeze, receipt,
-and other control artifacts; Spark remains advisory.
+```text
+GROUND -> FREEZE -> SUBMIT -> Claude CONVERGE -> PROJECT -> REVIEW
+```
+
+Codex runs `aiwf submit`, returns the durable state path, and ends its episode.
+The next Codex episode starts only from `review_ready` or `semantic_blocked`.
+Claude owns tests and revisions without a Direction Review handoff.
+
+### Legacy foreground role split
+
+The detailed Builder/Checker and per-iteration procedures below describe the
+retained foreground compatibility workflow, not the default Bookend path.
 
 For non-trivial changes, split the work into two Claude roles:
 
@@ -1085,6 +1120,20 @@ and by lane, plus conservative classifications such as `cold-start`,
 These labels explain observable harness changes; they do not claim knowledge of
 provider TTL, eviction, or backend routing.
 
+For a conservative historical Codex wakeup audit, freeze and follow
+[`Codex Wakeup Audit Protocol v1`](references/codex-wakeup-audit-protocol-v1.md),
+then run:
+
+```bash
+python ai/aiwf.py audit-wakeups --root .ai-workflow \
+  --output /tmp/codex-wakeup-audit-v1.json \
+  --episodes-output /tmp/codex-wakeup-audit-v1.episodes.jsonl
+```
+
+The summary keeps observed facts separate from the Bookend counterfactual.
+Unknown stages, missing tokens, and unprovable historical causes remain
+`unclassified`, `null`, or `indeterminate`; they are never counted as savings.
+
 To keep the tool schema reusable, frozen validation commands are executed by
 the fixed `.aiwf-runtime/run-approved-validation.py run` entry point instead of being
 embedded one-by-one in `allowedTools`. Exact-write commands let the helper read
@@ -1319,7 +1368,7 @@ This creates `*.network.log` with proxy mode, redacted proxy settings, tool avai
 | `*.codex-events.jsonl` | Raw Codex JSON events when available |
 | `*.codex-usage.txt` | Codex review token/cost usage summary when available |
 
-While Claude is running, the dispatcher distinguishes self-reported edit readiness from durable product-content changes. Agent controllers block on `monitor-claude.sh wait` and review bounded diff/decision evidence only when a material or terminal boundary arrives. Compact status includes `last_verified_product_event`, sourced only from dispatcher product/window/terminal boundaries. `watch-claude.sh` and `status-claude.sh` remain manual diagnostics; they are not polling instructions. Interruption still requires corroborated deviation or confirmed no-progress evidence.
+While Claude is running, the dispatcher distinguishes self-reported edit readiness from durable product-content changes. The Bookend supervisor consumes these events without keeping Codex active. A legacy foreground controller may block once on `monitor-claude.sh wait`; `watch-claude.sh` and `status-claude.sh` remain manual diagnostics, not polling instructions.
 
 An explicit or auto-resolved tool profile is checked against the early stream-init inventory before a full worktree is created. Capability mismatch writes terminal result/outcome receipts with `builder_started=false` and `worktree_created=false`. The ordinary metadata-only activity receipt exposes session/control/product ages and remaining windows without reading Claude session JSONL; its combined session signal is diagnostic and cannot extend a product window. Only near an active deadline, the timeout-advisor capsule reads the current session UUID's bounded transcript tail, strips thinking and successful tool-result payloads, redacts assistant text, and records normalized tool events for Spark advice.
 
@@ -1554,7 +1603,7 @@ While Claude Code is running, `dispatch-to-claude.sh` writes transient PID hints
 
 Claude is instructed to keep `CLAUDE_PROGRESS.md` updated at natural milestones. `Execution Phase: implementation` counts only as edit readiness when accompanied by `Context Acquisition Complete: yes` and a non-empty `Planned First Write`; a canonical product-content delta is durable Builder progress. Root dispatcher controls are excluded consistently from tracked, staged, and untracked product state, while same-named files below product directories remain visible. Final receipts expose separate `product_changes`, `control_changes`, and total `worktree_changes`; human-readable Markdown status is never parsed as machine evidence. The dispatcher copies progress to `.worktrees/claude-<id>.claude-progress.md`; Codex reads it only at a review boundary.
 
-`dispatch-to-claude.sh` prints a copy-paste `monitor-claude.sh wait` command. Agent controllers use this single blocking wait instead of repeated status, process, log-tail, or clock calls.
+`dispatch-to-claude.sh` prints a copy-paste `monitor-claude.sh wait` command for foreground compatibility. Bookend Codex callers do not run it; the supervisor consumes lifecycle events.
 
 `watch-claude.sh` is a manual terminal diagnostic, not an agent wait API. It
 defaults to a low-cost status panel and prints full progress/status/network
@@ -1566,7 +1615,7 @@ refused so an accidental caller loop cannot keep producing
 
 `watch-claude.sh` and `status-claude.sh` also print machine-readable monitor fields (`monitor_level`, `action`, `evidence_state`, quiet/elapsed seconds, suspect count when available). Codex should prefer these low-token fields before reading full status, progress, or network tails.
 
-For agent-driven runs, the dispatcher is the only sampling owner and writes material/window/finalized terminal boundaries to `*.monitor-events.log`. Codex should make one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated `watch`, `ps`, `tail`, status, process-tree, or clock-only calls are forbidden. That single terminal wait streams `active-window-refreshed`, `active-window-extended`, and `extension-evaluation-*` notices immediately while continuing to block for terminal, so Codex sees both the new deadline and Spark's pending/result state without polling; Codex must not infer a refresh from elapsed time. There is no detached supervisor. Near the initial context boundary or a later active deadline, Spark may receive the privacy-limited extension capsule and return bounded advice while Claude keeps running. It never receives raw process listings, full logs, network tails, source diffs, thinking content, user input, or tool-result payloads. Spark does not control either process; the dispatcher validates the product hash, applies the fixed extension/stop policy, and keeps the hard cap authoritative.
+For Bookend runs, the durable supervisor owns task lifecycle and the dispatcher is the only sampler within an epoch. Codex ends after submit and receives none of the heartbeat/window traffic. A foreground compatibility run may use one blocking wait instead of repeated `watch`, `ps`, `tail`, status, process-tree, or clock calls. Near an active deadline, Spark may receive the privacy-limited extension capsule; it never controls either process or creates a Codex wakeup.
 
 Spark routing, Claude monitoring, failure triage, and parallel planning now use
 one strict control protocol. Successful direct calls emit
@@ -1671,7 +1720,7 @@ bash ai/status-claude.sh claude-20260701-093934
 # Optional manual terminal view; do not use this as an agent wait loop
 bash ai/watch-claude.sh claude-20260701-093934
 
-# Agent path: one blocking wait, no repeated watch/ps/tail/status calls
+# Foreground compatibility only: one blocking wait, no repeated polling
 bash ai/monitor-claude.sh wait claude-20260701-093934 --until terminal
 # Optional one-shot local/Spark triage at a review boundary
 bash ai/monitor-claude.sh decision claude-20260701-093934

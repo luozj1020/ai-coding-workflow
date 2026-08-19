@@ -1,28 +1,19 @@
 # Review Policy
 
-## Division of Labor
+## Bookend Review Boundary
 
-### Builder Claude - Primary Execution
+Claude owns implementation convergence; Codex owns semantic acceptance. There
+is no mandatory Direction Review between implementation and testing. Builder,
+Checker/Test, revision, and validation remain Claude-owned duties under one
+frozen contract and may use separate sessions without waking Codex.
 
-Responsibilities:
+Claude may implement, write contract-authorized tests, run assigned validation,
+diagnose failures, and make in-scope revisions. It must preserve command, exit
+code, key original output, changed paths, assumptions, and unresolved risks.
+It cannot change the frozen contract or grant acceptance.
 
-- Implement the assigned frozen, exploratory, mechanical, core, or auxiliary change
-- Keep edits within the Handoff Contract
-- Update `CLAUDE_PROGRESS.md` and `CLAUDE_TASK_CARD.md` progress after each assigned item
-- Report changed files, plan match, deviations, assumptions, and risks
-- Run only narrow sanity checks explicitly allowed by the task card
-
-Builder Claude does not own acceptance testing. It should not write acceptance tests or run broad suites unless the task card explicitly defines a mixed exception.
-
-### Checker/Test Claude  -  Validation and Tests
-
-Responsibilities:
-
-- Write or update assigned tests
-- Run assigned test, lint, type, build, or aggregate validation commands
-- Preserve command, exit code, key original output, and `file:line` locations
-- Produce evidence packets with diffstat, test results, and report paths
-- Make only concrete small fixes explicitly allowed by the task card when validation exposes a clear defect
+The Workflow control plane verifies mechanical evidence and schedules Codex
+only after `DONE_CANDIDATE`, or earlier for a strict `SEMANTIC_BLOCKED` receipt.
 
 Report evidence is claim-bound, not trust-based. The changed-file manifest must
 match the diff; claimed test counts must match detected test declarations and
@@ -74,11 +65,11 @@ unknown ID, unchanged test file, missing symbol, or missing assertion as a
 `conflict`. These bindings verify report-to-diff consistency only; they never
 prove semantic acceptance.
 
-Checker dispatch is conditional. Use local deterministic validation without a
-model when it closes acceptance and no test changes are required. Dispatch
-Checker/Test Claude only for assigned test writing, long-running validation,
-large failure/log evidence, or an independent validation responsibility that
-materially reduces Codex work. Record the skip reason when no Checker is used.
+An additional Checker/Test Claude session is conditional. The Claude owner or
+control plane may start it for assigned test writing, long validation, or large
+evidence processing without a Codex handoff. Use deterministic validation when
+it closes the mechanical obligation, and record the skip reason when no
+additional model is useful.
 
 After the Builder stops writing, `check-worktree.sh` fans independent read-only
 commands out with bounded concurrency (default 4) and preserves deterministic
@@ -106,92 +97,61 @@ The configured cost-efficient Claude-compatible model may be used when the diff 
 Responsibilities:
 
 - Evaluate whether the implementation matches the task card intent
-- Perform Builder direction review before validation work is dispatched
 - Assess regression risk  -  what could break, what depends on this
 - Review design decisions  -  is this the right abstraction, the right boundary
 - Check for security implications
-- Check whether the token budget and delegation policy was followed:
-  - Did Codex stay within the context budget during planning?
-  - Were high-token reads and multi-file work delegated to Claude?
-  - Did Claude return compressed evidence (summaries + artifact paths) instead of pasted large logs?
 - Check validation evidence quality:
-  - Was `ai/check-worktree.sh` run when available?
   - Are failed commands, exit codes, key original output lines, and `file:line` locations preserved?
-  - Did any checker command mutate the worktree?
-  - Did the loop stop when failures repeated, regressed, or stopped improving?
+  - Does every changed byte have exactly one Review Projection classification?
+  - Are machine facts separated from Claude semantic claims?
 - Return a structured decision (see below)
 
-Claude is the default implementation owner. During a live Claude round Codex
-remains reviewer-only and must not race the Builder.
+Codex is dormant during Claude convergence and cannot race the owner.
 
-### Planning Review and Stop Rule
+### Contract Delta Stop Rule
 
-When explicit `solution_planner_opt_in=true` routing selects
-`solution-planner`, Claude owns one convergent structured draft and Codex owns
-one adversarial review. Codex classifies findings as:
-
-- `blocking`: violates the stated goal, invariant, required compatibility, or
-  acceptance surface; it must be resolved before freeze;
-- `recommended`: improves quality without invalidating acceptance;
-- `backlog`: useful future work outside the current economic scope;
-- `spec-change`: changes the requested contract and is rejected/deferred unless
-  Codex or the human explicitly incorporates it into a new draft.
-
-Only an unresolved `blocking` finding or an explicitly incorporated
-`spec-change` reopens planning. Recommendations and backlog items cannot cause a
-second full planning round or block implementation. After freeze, Codex reviews
-implementation against the contract rather than inventing a new ideal design.
-New improvements go to backlog unless concrete evidence shows a frozen invariant
-or acceptance criterion is wrong.
+After freeze, only `semantic_blocked` may request a new Codex contract decision.
+Recommendations and backlog items cannot wake Codex or block Claude convergence.
+A delta changes only the contradicted or newly ambiguous contract surface; it
+does not reopen repository discovery or create a full planning round.
 
 ## Phase Responsibility Matrix
 
-| Phase | Codex responsibilities | Claude responsibilities | Claude must not | Codex must not |
-|-------|------------------------|-------------------------|-----------------|----------------|
-| OBSERVE | Gather only enough evidence to freeze the goal and risk boundary | Perform bounded exploration when routed | Edit outside the task boundary | Perform broad reads when Claude/Spark can return durable evidence |
-| PLAN | Review goal, boundaries, acceptance, and critical invariants | Produce a solution contract or execute from the composed short card | Reopen frozen product direction | Hand-author a monolithic task card |
-| DISPATCH | Render the Claude execution card and preserve the full planning card | Read `CLAUDE_TASK_CARD.md` as the contract | Depend on Codex-only planning sections | Hand-write a second divergent Claude card |
-| BUILDER EXECUTE | Observe compact material transitions only | Implement scoped changes, update progress, report direction | Run unassigned broad suites | Patch implementation because the Builder is merely quiet |
-| DIRECTION REVIEW | Decide wait, local deterministic verification, optional Checker/Test, revise, split, reject, or takeover | Provide progress/report evidence and stop on blockers | Repeatedly ask for the same approval after proceed | Send off-plan work to validation |
-| CHECKER/TEST | Dispatch only when the Checker value gate passes; review evidence quality | Write/update assigned tests, run assigned commands, report bounded failures | Perform broad implementation rewrites | Use a model when local evidence already closes acceptance |
-| FINAL REVIEW | Review compressed evidence and semantic hotspots; accept/revise/split/reject | N/A unless re-dispatched | N/A | Merge automatically or reread unaffected files without evidence need |
-| TAKEOVER | Edit only after explicit human request or current-task threshold, record scope and validation | N/A | N/A | Use prior-session failures alone as takeover permission |
+| Phase | Codex | Claude | Control plane |
+|---|---|---|---|
+| GROUND | Freezeability only | Not active | Locate boundaries/tests/validation |
+| FREEZE | Freeze intent and submit | Not active | Hash contract/base and assign owner |
+| CONVERGE | Dormant | Explore, implement, test, fix, validate | Single writer, epochs, recovery, budgets |
+| PROJECT | Dormant | Supply semantic claims/risks | Prove facts and complete diff coverage |
+| REVIEW | Accept/revise/split/reject | Dormant unless resubmitted | Verify wake request and persist decision |
 
-## Delegation Restoration Before Takeover
+## Runtime Recovery and Takeover
 
-Dirty source or stale HEAD means Claude may not see the required context. Treat this as a delegation blocker, not a Claude failure and not a takeover trigger. Before Codex edits implementation files, it must try or explicitly rule out a restoration path:
+Dirty source, stale HEAD, transport failure, timeout, session loss, missing
+reports, and unsuccessful validation are runtime/evidence conditions. The
+control plane restores or continues Claude when it can prove the same contract,
+owner, base/worktree lineage, write boundary, and absence of another writer.
+Otherwise it emits `runtime_blocked`, `authority_blocked`, or
+`budget_exhausted`; none wakes Codex.
 
-- commit an accepted phase so HEAD contains the required context
-- stash or patch uncommitted source changes
-- refresh outdated local workflow files
-- re-dispatch Claude from updated clean HEAD
-- request explicit dirty-source dispatch approval
-- stop for human input when the base cannot be made reliable
+### No Direction Review Synchronization Point
 
-Codex takeover after a delegation blocker requires either an independent current-task threshold, an explicit human override, or a recorded reason restoration is impossible or unsafe.
-
-### Direction Review Before Testing
-
-After a Builder Claude task, Codex reviews the partial or final diff before assigning Checker/Test work:
-
-- If the implementation direction matches the plan, Codex waits for Builder completion when still in progress, then dispatches a Checker/Test task when validation is needed.
-- If the implementation direction is off-plan, scope-expanding, risky, or violates a stop condition, Codex interrupts or revises with a narrower Builder task.
-- If Builder Claude repeatedly runs off-plan, stalls, or exits without useful progress, Codex may enter direct intervention only after citing current-task threshold evidence.
-- Codex should not dispatch Checker/Test Claude to validate an implementation direction it has not accepted.
-
-Before calling a Builder stalled, Codex classifies the likely cause: task-card ambiguity, mixed builder/checker responsibilities, dirty source/stale HEAD, permission/tool approval blocker, long-running validation, missing progress artifact, external environment, or true Claude no-progress. Permission denials, sandbox write failures, forbidden-file rules, missing CLI/auth, network restrictions, human-approval requirements, dirty source, and stale HEAD are not Claude execution failures unless Claude ignored an available allowed path after restoration.
+Testing and revision do not wait for a Codex direction decision. Claude and the
+control plane continue while the frozen contract remains satisfiable. A scope
+violation is handled by deterministic guards; an implementation defect remains
+inside Claude convergence; an unavoidable contract choice produces a strict
+`semantic_blocked` receipt.
 
 ### Codex Direct Intervention
 
-Codex may directly edit implementation files only when at least one condition is true:
+Codex may directly edit implementation files only after the human explicitly
+requests takeover or approves a separately frozen ownership transfer. Timeout,
+epoch count, repeated compile/test failure, or missing prose alone does not
+transfer ownership.
 
-- The loop reached its configured maximum Claude iterations without acceptance.
-- The same failure appears in two consecutive Claude iterations.
-- Failure count does not decrease for two consecutive Claude iterations.
-- Claude Code is unavailable, repeatedly times out, or the blocker is external to execution but fixable in the repository after delegation restoration was attempted or ruled out.
-- The human explicitly asks Codex to take over.
-
-Before editing, Codex must state the failed attempts, why another Claude revision is unlikely to help, the files/modules it will touch, and the validation it will run. The edit should be narrow and should not bypass safety approvals.
+Before editing, Codex must state the explicit human authority, revoke Claude's
+Owner Lease, identity-stop all writer processes, freeze a stable baseline, name
+the exact paths, and bind validation. The edit cannot bypass safety approvals.
 
 When two directly linked attempts both have counted classifications, the
 dispatcher may issue a `*.takeover-receipt.json` candidate only when the second
@@ -204,41 +164,18 @@ single-writer transfer and produces the actual grant only after old-process
 termination and a stable baseline. Codex stays inside the grant's hash-bound
 `allowed_write_paths` and runs the bound narrow validation.
 
-No-progress evidence, an early Claude exit, invalid result JSON, missing report, or a single failed implementation does not by itself satisfy the threshold. However, a successful interaction that reaches context timeout with zero product delta is a counted `model-no-progress` round, and a role-mismatched/contradictory report with zero delta is counted `report-evidence-mismatch`; two consecutive counted rounds must not deadlock merely because the transport retry budget is zero. In single-round cases Codex should produce a smaller revision task with clearer acceptance criteria, stronger stop conditions, and required evidence for Claude.
-
-Under `claude-first`, useful on-plan evidence gets one same-worktree continuation
-before takeover review. Transport and approval failures remain recoverable
-environment events and do not spend the model-failure allowance. `economy-first`
-may still use the canary stop-loss.
-
-### Reviewer-Owned Bounded Correction
-
-This is an ownership re-route, not failure-based takeover. After Codex accepts the main implementation direction, it may directly apply a deterministic correction without waiting for two Claude failures only when all of the following hold:
-
-- a fresh `revision` ROUTE explicitly selects Codex rather than the default Claude continuation;
-- Codex has already read the exact affected diff/context during direction review;
-- the correction is precise, local, and introduces no new architecture, product, API, or data-model decision;
-- affected files and symbols are known and the calibrated correction fits the ordinary direct gate, or a tightly concentrated gate with unchanged scope and high confidence;
-- the intervention is recorded as `reviewer-owned bounded correction`, with changed paths and narrow validation evidence.
-
-A first architectural, broad semantic, or poorly understood direction deviation is not eligible and does not automatically authorize takeover. Revise, split, or reject instead. If routing still selects Claude, prefer reviewed same-worktree continuation so Claude does not reacquire accepted large-repository context.
-
-Failure counts are scoped to one session-bound retry lineage. Prior-session
-Claude failures may justify a sharper task card, narrower scope, or stronger
-stop gates, but they do not authorize Codex to skip Claude in a new session.
-Matching task IDs or artifact paths alone are insufficient: the runtime must
-prove the explicit retry edge and every bound identity must match.
-
-If Claude first produced a usable implementation direction but lacked required tests/evidence, and a tightened second Claude task exits with no result/report and no useful progress, Codex may mark the current task as repeated Claude failure. The direct intervention should be a control-plane salvage, not a rewrite: cite both attempts, reuse or mirror the reviewer-accepted first-round direction when possible, add only the missing implementation/tests/evidence, and run the validation named in the task card.
+No-progress, invalid result JSON, missing prose, or repeated implementation
+failure does not transfer ownership. They consume runtime budgets and may end in
+a non-semantic blocked state for operator action.
 
 ### Evidence Gap Recovery
 
-Missing `result.json`, `CLAUDE_REPORT.md`, or acceptance prose is an evidence gap, not automatically an implementation failure. Codex should first classify the gap:
+Missing `result.json`, `CLAUDE_REPORT.md`, or acceptance prose is an evidence gap, not automatically an implementation failure. The control plane first classifies the gap:
 
-- If the diff matches the task card, no stop gate was crossed, and the assigned validation is green, Codex may reconstruct a minimal evidence packet from the diff, worktree status, checker output, and its own verification.
+- If the diff matches the task card, no stop gate was crossed, and assigned validation is green, deterministic helpers reconstruct the machine-evidence packet.
 - If the task card did not assign Claude to write new tests, absence of new tests is not by itself a reason to revise. Codex may still mark residual test risk or add a follow-up task when coverage is materially weak.
-- If the task card assigned Claude to write tests, run checks, or produce specific acceptance evidence, and that evidence cannot be reconstructed, revise with a narrow "tests/evidence only" task. The revision should preserve the accepted implementation direction and should not invite broad rewrites.
-- If that narrow tests/evidence-only revision also produces no result/report and no useful progress, stop re-dispatching and move to the control-plane salvage rule above.
+- If assigned tests or checks are missing, the same Claude owner receives a narrow internal continuation that preserves the frozen contract.
+- If recovery budgets expire, emit `budget_exhausted`; do not draft a Codex revision.
 - If Codex decides after seeing the diff that tests are acceptance-critical, it must say that explicitly in the next task card's Testing Responsibility instead of treating the original omission as Claude failure.
 
 Use the acceptance bundle's `review_evidence` block as the bounded starting
@@ -269,6 +206,19 @@ The following always require explicit human approval  -  agents must not perform
 - Production data changes
 
 ## Structured Review Decision
+
+### Coverage-Preserving Review Projection
+
+Final review consumes a Review Projection, not an unconstrained summary. The
+projection binds the full diff hash and partitions every changed byte into
+exactly one classification. `unclassified_byte_count` must be zero and no
+coverage spans may overlap. Any invalid or unknown classification expands to
+`semantic-frontier`; it never disappears from review.
+
+Machine-computable fields are deterministic facts. Claude supplies only the
+semantic assumptions, acceptance implications, and unresolved risks that tools
+cannot prove. The safe baseline is to classify the entire diff as semantic
+frontier; later compression must preserve the same total coverage.
 
 ### State-Backed Incremental Review
 
@@ -341,17 +291,17 @@ A concise explanation of why this decision was made. Reference specific acceptan
 
 ### Next-Loop Instructions
 
-For **accept**: state whether this accepts the whole task or only the completed phase. If implementation or test-writing phases remain, do not mark the whole task ready for merge; produce a compact remaining-work brief and run a fresh owner route. Create another task card only if that route positively selects Claude.
+For **accept**: accept the complete frozen logical task represented by the
+`DONE_CANDIDATE`. Human merge remains separate.
 
-For **revise**: provide specific, actionable revision instructions. These instructions become the "Revision instructions" field in the next iteration's task card. Be explicit about:
+For **revise**: provide a bounded Revision Delta for the same Claude owner. Be explicit about:
 - What needs to change and why
 - Which files or modules are affected
 - What evidence the next iteration should produce
 
-Inline the exact structured findings in the revision card. Do not rely on a
-path outside the execution worktree as the only source. Preserve finding IDs,
-original evidence, bounded required change, and exact acceptance check so the
-receiver does not reconstruct the review from memory.
+Bind findings to the contract, projection, affected acceptance IDs, exact
+evidence, and validation. Submit the delta, end the Codex episode, and wait for
+a new `review_ready` wake request; do not remain in a revision loop.
 
 For **split**: decompose the task into smaller child task cards. For each child, provide:
 - A goal
@@ -372,26 +322,19 @@ Record any knowledge gained during review that could inform future planning:
 
 ## Review Workflow
 
-1. Codex direct work proceeds directly to deterministic verification; delegated work starts with Builder implementation evidence.
-2. Codex/GPT reviews direction: plan match, scope, risks, deviations, and progress evidence.
-3. If direction is acceptable, run deterministic local checks first. Dispatch Checker/Test Claude only when test writing, long validation, or evidence processing passes the value gate; otherwise record the skip reason.
-4. When dispatched, Checker/Test Claude writes/runs assigned tests and produces validation evidence.
-5. Codex/GPT reviews validation evidence and returns a structured decision.
-6. If **accept** and no phases remain: the change is ready for human merge.
-7. If **accept** but unfinished phases remain: Codex plans the next phase and dispatches Claude again. A high-priority subset being accepted is not permission for Codex to implement lower-priority remaining work.
-8. If **revise**: run a fresh revision ROUTE before authoring another task card. Use reviewer-owned bounded correction only when its gate passes; otherwise create the revision card and prefer reviewed same-worktree continuation when safe. If Claude made no useful progress, the next task should be narrower, more diagnostic, and evidence-focused rather than replaced by Codex edits.
-9. If **split**: the original task card is decomposed into smaller child cards, each entering its own loop.
-10. If **reject**: the task returns to OBSERVE with the rejection reasoning as new context.
-11. If an intervention threshold is reached, Codex may perform a scoped direct fix and must produce validation evidence.
-12. Human performs final merge and any required high-risk approvals.
+1. A new Codex episode starts only from a valid `codex-wake-request.json`.
+2. Verify contract, base, diff, projection, and evidence hashes.
+3. Expand only semantic-frontier segments or evidence-integrity conflicts.
+4. Return `accept`, `revision-delta`, `split`, or `reject`.
+5. `accept` hands the result to the human; it never merges automatically.
+6. `revision-delta` is submitted to the same Claude owner and ends this Codex
+   episode. A later wake request starts delta review.
+7. `split` freezes independent child contracts; each uses its own Bookend task.
+8. `reject` invalidates the implementation direction and returns a bounded
+   replacement contract, not an interactive monitoring loop.
 
-## Loop Integration
+## Legacy Loop Integration
 
-The review decision drives the loop state machine defined in `references/loop-model.md`:
-
-- Each decision includes next-loop instructions that feed into the next PLAN or OBSERVE phase.
-- The task card carries loop metadata (parent task, iteration, prior decision, revision instructions).
-- The evidence packet records review feedback for traceability.
-- Lessons learned flow from review back into future planning.
-
-See `references/loop-model.md` for the full loop state machine.
+`references/loop-model.md` and `run-loop.sh` describe a compatibility workflow
+for explicit experiments. Their per-iteration direction/final reviews do not
+apply to production Bookend tasks.

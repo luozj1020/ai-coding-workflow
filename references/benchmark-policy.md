@@ -6,6 +6,11 @@ This workflow is a harness, not just a launcher. Evaluate changes to the harness
 
 ## Metrics
 
+For historical Codex inference accounting and Bookend counterfactual analysis,
+freeze and follow `references/codex-wakeup-audit-protocol-v1.md`. Observed usage
+and counterfactual savings remain separate; missing historical attribution is
+`indeterminate`, never zero or presumed avoidable.
+
 ### Quality
 
 Quality answers whether the loop produced an acceptable result.

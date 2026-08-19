@@ -289,14 +289,10 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
     explicit_claude = owner_hint in ("claude", "claude-builder")
     economical_delegation = economy_gate["status"] in ("pass", "canary")
 
-    confirmed_high_risk = False
     effective_risks = data.get("effective_risks")
-    if isinstance(effective_risks, dict):
-        confirmed_high_risk = any(effective_risks.get(key) == "yes" for key in HIGH)
-    high_risk_codex_bias = bool(
-        confirmed_high_risk
-        and data.get("task_role") == "core-semantic"
-        and data.get("allow_high_risk_claude") is not True
+    risk_guard_set = sorted(
+        key for key in HIGH
+        if isinstance(effective_risks, dict) and effective_risks.get(key) == "yes"
     )
 
     inferred_claude_role = requested_role
@@ -311,6 +307,8 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
             inferred_claude_role = "execution-builder"
     elif inferred_claude_role == "solution-planner" and not solution_planner_candidate:
         inferred_claude_role = "execution-builder"
+    if data.get("bookend_owned") is True and inferred_claude_role == "solution-planner":
+        inferred_claude_role = "exploratory-builder"
 
     execution_owner = "codex-fast-path"
     claude_role = "none"
@@ -324,8 +322,6 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         )
     elif explicit_read_only_task and not readonly_value:
         owner_source = "readonly-without-durable-value"
-    elif high_risk_codex_bias:
-        owner_source = "confirmed-high-risk-core-codex-bias"
     elif handoff_tax_veto and not explicit_owner_hint and not continuity_selected:
         owner_source = "handoff-tax-veto"
     elif ownership_profile == "claude-first" and (
@@ -450,12 +446,8 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
         communication_mode = "same-model-single-pass"
     elif execution_owner == "codex-fast-path":
         communication_mode = "direct-codex"
-    elif claude_role == "solution-planner":
-        communication_mode = "claude-planner-builder-shared-state"
-    elif single_pass_allowed:
-        communication_mode = "claude-builder-local-acceptance"
-    elif data.get("delta_review_available") is True:
-        communication_mode = "claude-builder-delta-codex-review"
+    elif execution_owner == "claude-builder":
+        communication_mode = "bookend-owner-convergence"
     else:
         communication_mode = "full-cross-model-workflow"
 
@@ -509,24 +501,25 @@ def route(data: Dict[str, Any]) -> Dict[str, Any]:
             "single_pass_reason": single_pass_reason,
             "remote_rounds": 0 if evidence_closes_acceptance else 1,
             "no_further_model_rounds": evidence_closes_acceptance,
+            "risk_guard_set": risk_guard_set,
+            "risk_increases_evidence_not_codex_wakeups": True,
+            "codex_sync_points": ["final-review", "semantic-blocked"],
         },
         "planning": {
             "strategy": (
-                "claude-converge-codex-freeze"
-                if claude_role == "solution-planner"
-                else (
-                    "codex-short-plan-then-claude-build"
-                    if execution_owner == "claude-builder"
-                    else "codex-owned"
-                )
+                "codex-contract-freeze-then-claude-convergence"
+                if execution_owner == "claude-builder" else "codex-owned"
             ),
-            "draft_owner": "claude" if claude_role == "solution-planner" else "codex",
-            "core_plan_owner": "codex",
+            "draft_owner": "codex",
+            "core_plan_owner": "not-required",
             "generated_artifact_owner": "deterministic-tools",
-            "adversarial_review_owner": "codex",
+            "adversarial_review_owner": "final-codex-review",
             "adversarial_review_artifact_owner": "deterministic-tools",
-            "max_adversarial_review_rounds": 1,
+            "max_adversarial_review_rounds": 0,
             "solution_contract_required": claude_role == "solution-planner",
+            "solution_planning_internal_to_owner": bool(
+                data.get("bookend_owned") is True and solution_planner_candidate
+            ),
             "solution_planner_opt_in": solution_planner_opt_in,
             "solution_planner_automatic_candidate_suppressed": bool(
                 automatic_planner_shape and not solution_planner_opt_in

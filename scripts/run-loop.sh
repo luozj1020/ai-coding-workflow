@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# run-loop.sh  -  Compose dispatch and review in an explicit loop.
+# run-loop.sh  -  Legacy synchronous dispatch/review experiment.
 #
 # Usage: bash ai/run-loop.sh <task-card-path> [max-iterations]
 #
-# This script dispatches task cards to Claude Code, reviews with Codex/GPT,
-# persists all artifacts, records usage summaries, and never merges automatically.
+# This compatibility script wakes Codex after each Claude iteration. Production
+# Bookend tasks use `aiwf submit` and never call this loop implicitly.
 
 set -euo pipefail
 

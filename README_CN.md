@@ -29,34 +29,55 @@ python scripts/aiwf.py direct --kind workflow-maintenance \
 
 它会记录精确路径和检查项，但不会启动 Spark 或 Claude。
 
-## 面向稀缺 Codex 额度的 Claude-first 路由
+## 生产主架构：Bookend 托管
 
-默认 `claude-first` Profile 优化的是 Codex 编辑和重复审查消耗。Codex
-负责短核心规划和规划文件；Claude 负责实现、修订、指定测试和长验证。
-`solution-planner` 不会被自动选择，只有显式设置
-`solution_planner_opt_in=true` 才可启用。用户可在不同终端分别运行不同仓库，因此单任务时延只作
-观测指标。需要恢复严格总成本/时延 Gate 时，设置
-`ownership_profile=economy-first`。
+默认生产路径只在任务头尾使用 Codex。Codex 冻结目标、验收项、不变量、禁止
+边界和验证权限后，一次性提交任务并结束当前推理 episode；持久控制平面随后
+托管 Claude 的探索、实现、测试、修复、验证、超时恢复和 session 更换。只有
+Claude 产生 `DONE_CANDIDATE`，或证明冻结契约需要新语义决策而进入严格的
+`SEMANTIC_BLOCKED`，才创建新的 Codex wake request。
+
+```text
+GROUND -> Codex FREEZE -> SUBMIT -> Codex 休眠
+                                  -> Claude CONVERGE
+                                  -> tools PROJECT
+                                  -> Codex REVIEW
+```
+
+生产提交命令是异步的：
+
+```bash
+python scripts/aiwf.py submit task.json
+python scripts/aiwf.py bookend status /path/to/bookend-state.json
+# 只有状态为 review_ready / semantic_blocked 时才读取：
+python scripts/aiwf.py bookend review-input /path/to/bookend-state.json
+```
+
+`submit` 返回持久状态路径后，Codex 不应阻塞等待、轮询 Claude、做 Direction
+Review，或因编译失败、测试失败、timeout、transport recovery、context exhaustion
+而醒来。这些都是 Claude owner / runtime 的内部状态。硬时间窗口只终止一个
+execution epoch，不终止逻辑任务或 Owner Lease；安全续跑必须重新证明单写者和
+稳定状态。风险事实只增加确定性 guard 与证据义务，不自动增加 Codex 调用。
+
+工具生成 diff/hash/scope/validation 和逐字节 Review Projection；Claude 只陈述
+语义假设、验收含义和未决风险。每个 changed byte 必须恰好有一个覆盖分类，覆盖
+空洞、重叠或过期绑定都会使 projection 失效并扩大最终审查面。
 
 `quota-ledger.py` 管理调用预算并拦截重复 evidence；`evaluate-acceptance.py` 执行 L0 确定性验收；`select-review-tier.py` 选择 L0 本地/L1 Spark/L2 Codex；`context-cache.py` 复用有界定位证据；`check-retry-evidence.py` 阻止无新证据重试。`quota-efficient-balanced` Profile 将 Standard Review Packet 限制为 32 KB。
 
 对于 Bazel 仓库，`build-bazel-context.py` 会把有界的目标文件列表转换为候选 BUILD rule、依赖、测试 target 和窄范围验证命令，且不会执行 Bazel。远程 Bazel 仍由人工控制：`generate-handoff.py` 只生成预览式发布、更新和合并 target 验证指令，`validation-ingest.py` 在本地分类返回日志；这些工具不会自动 push、SSH、merge 或批准验收。
 
-额度优化的主入口会在确定性校验、路由和 Codex 对短任务卡的有界审查通过后自动派发：
+旧的同步前台生命周期仅作为兼容/诊断入口保留：
 
 ```bash
-python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1
+python scripts/aiwf.py run task.json
 # 如需零模型预览，显式添加 --preview。
-python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview
+python scripts/aiwf.py run task.json --preview
 ```
 
-`aiwf run` 串联 lint → Profile 重验 → 仓库事实 → 确定性路由。正常结果
-是一张在 Codex 冻结短规划后、上下文只内联一次的 Claude 执行卡。开放
-多阶段功能默认不增加 Claude 规划轮次；只有用户显式选择时才启用
-`solution-planner`。显式/高风险 Codex 路由不生成卡；
-Spark 仅在结构化结果能够替代 Codex 分析时介入。普通风险任务卡不再等待第二次
-人工确认；产品方向仍有实质歧义，或涉及破坏性/高影响操作时，仍须取得明确人工
-授权。显式 `--preview` 保持零模型调用，`--execute` 继续作为兼容写法。
+`aiwf run` 会在一个前台进程内完成旧生命周期，不是新的 Codex 生产路径；
+`aiwf loop` 是更旧的逐轮 Codex review 兼容入口。`solution-planner` 仍只允许显式
+opt-in。破坏性或高影响操作仍需人工授权，模型永不拥有 merge 权限。
 
 底层控制面命令继续保留：
 
@@ -72,6 +93,9 @@ fast-path 不需要 `--task-card`。`preflight-bundle` 仅作诊断，结构化 
 路由/监测只在能够减少 Codex 读取时使用。
 
 ## 功能说明
+
+> 下文保留大量旧前台/多阶段 helper 的操作参考。它们仍可用于兼容和诊断，
+> 但不定义生产模型调用图；生产语义以前述 Bookend 托管规则为准。
 
 安装后的工作流使用渐进式加载：`SKILL.md` 只保留核心循环和 reference
 路由，托管的 `AGENTS.md` 只保留仓库级安全内核；安装、Spark、Claude
@@ -92,8 +116,8 @@ ai-coding-workflow 可以为仓库自动配置：
 - Execution profiles：默认省 token 的 balanced、完整上下文的 safe，以及显式大仓加速的 fast-large-repo
 - 大型仓库调度选项：受管 worktree 复用，以及减少昂贵的未跟踪文件扫描
 - 本地验证 gate，以及从任务卡 validation fenced block 自动抽取命令
-- Builder / Checker-Test 任务模式，用于分离实现和验证职责
-- Direction / Boundary Acknowledgement 方向/边界确认门，以及防反复确认规则
+- Claude owner 内部可使用 Builder / Checker-Test 职责，但不会因此唤醒 Codex
+- 严格 `SEMANTIC_BLOCKED` 收据；普通方向、失败和恢复不形成 Codex 同步点
 - 幂等更新的托管块（managed blocks）
 
 ## Codex 低 Token 审查路径
@@ -118,6 +142,9 @@ diff 审查、修订编写和最终审查的 Codex 用量。这些字段只用�
 不会建立 Codex Token/输入硬预算。
 
 ## 工作流架构概览
+
+下面的大图描述兼容的前台多阶段 helper。生产调用图是本页开头的三模型节点
+Bookend 路径，而不是这张图中的逐阶段 Codex 审查。
 
 ```mermaid
 flowchart TD

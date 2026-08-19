@@ -2,6 +2,22 @@
 
 Load this reference for dispatch, execution-only mode, connection diagnosis, zero progress, timeouts, monitoring, retries, takeover, or report recovery.
 
+## Bookend Precedence
+
+The production agent path is `aiwf submit`, not a Codex-owned blocking
+dispatch. Submission ends the Codex inference episode and a durable supervisor
+owns every runtime transition until `review_ready` or `semantic_blocked`.
+Startup, progress, validation, timeout, recovery, session replacement, and
+epoch rollover never schedule Codex. The detailed foreground monitor and
+takeover rules below remain runtime mechanisms and compatibility behavior; they
+must not reintroduce a mid-execution semantic reviewer.
+
+Logical Claude ownership spans epochs, but each epoch has a separate write
+grant. A next epoch is legal only after identity-bound termination proves the
+old writer absent and the worktree is stable. `continuation_safe=true` is a
+deterministic control-plane assertion, not a model claim. Unknown process or
+worktree visibility produces `runtime_blocked`, never a second writer.
+
 ## Dispatch Contract
 
 Local routing facts and task-card components own the full audit card. Codex
@@ -21,7 +37,12 @@ or exploratory cards keep their legacy execution view rather than guessing
 missing requirements. Set `CLAUDE_CODE_AUTO_BOOTSTRAP_CAPSULE=0` only for a
 compatibility diagnosis.
 
-Builder implements and reports direction. Codex reviews direction. Checker/Test writes or runs assigned tests only after direction acceptance. Do not mix implementation, test writing, and broad validation unless the task card explicitly records `mixed-exception`. Non-blocking acknowledgement with `proceed` must continue editing in the same run.
+Claude owns implementation, revision, assigned tests, and validation until
+convergence. Builder/Checker names may still describe internal Claude duties,
+but switching between them does not require Codex direction acceptance. Do not
+mix authority boundaries implicitly; the frozen contract must name write scope,
+validation authority, and human-only decisions. A non-blocking acknowledgement
+must continue in the same logical task.
 
 ## Failure Attribution
 
@@ -65,8 +86,8 @@ authoritative. `CLAUDE_CODE_STARTUP_PREFLIGHT_REQUIRED=0` is an explicit
 diagnostic override, not the normal workflow.
 
 A restricted-sandbox interaction failure emits exit 75 plus
-`needs_host_execution=true` before Builder execution. The outer Codex caller
-must immediately replay the identical dispatcher command once through its
+`needs_host_execution=true` before Builder execution. The authorized outer
+control plane may replay the identical dispatcher command once through its
 host-execution permission surface (for example,
 `sandbox_permissions=require_escalated`) using the stable CLI form:
 
@@ -103,10 +124,12 @@ Dispatcher and monitor resolve runtime IDs through the same
 lookup. The dispatcher prints `Runtime ID` explicitly, and host retry receipts
 must reuse that returned value instead of reconstructing an ID from filenames.
 
-One failed Builder attempt is not takeover permission. Tighten and re-dispatch
-once. Two consecutive current-lineage counted rounds issue a hash-bound
+One failed Builder attempt is not takeover permission. The Claude owner may
+continue inside its frozen contract. Two consecutive current-lineage counted
+rounds may issue a hash-bound
 `*.takeover-receipt.json` candidate containing only the permitted write scope
-and required validation. It is not write authority. Run `aiwf prepare-takeover`
+and required validation. It is not write authority and never wakes Codex by
+itself. Human-authorized takeover may run `aiwf prepare-takeover`
 to revoke (or explicitly declare absent) the Owner Lease, terminate and
 identity-confirm every recorded Claude/dispatcher/checker process tree, sample a
 stable worktree content hash, and issue the single-writer Codex grant. Unknown
@@ -114,8 +137,10 @@ process visibility fails closed. Transport, trust, approval, and sandbox
 failures never contribute.
 
 For `model-no-progress`, `acknowledgement-only`, or
-`report-evidence-mismatch`, Codex may first freeze a revised card with an
-explicit `Revision Delta` or `Required Revisions`, then dispatch it with:
+`report-evidence-mismatch`, the control plane normally continues the same
+Claude owner with a deterministic recovery delta. A Codex-authored Revision
+Delta is permitted only after final review or a true semantic escalation, then
+dispatches with:
 
 ```bash
 bash ai/dispatch-to-claude.sh REVISED_CARD.md \
@@ -134,8 +159,8 @@ When useful on-plan work has exactly one semantic blocker, `aiwf advisor-continu
 Worktree continuity and model memory are separate. Initial dispatch assigns an explicit Claude session UUID. Retry-in-place, reviewed continuation, and advisor continuation resume that UUID from the prior runtime receipt when valid. If Claude rejects that UUID with a conversation/session-not-found result, the dispatcher writes a hash-bound `session-resume-failure.json` receipt with `counts_as_model_failure=false`, then makes exactly one fresh-session attempt with the same owner, task, worktree, and write scope. The runtime receipt is atomically updated with the replacement UUID and generation, so that attempt starts a new takeover-accounting scope. Other resume failures remain terminal. When no resumable UUID exists, runtime records `unavailable-file-backed-fallback` and starts a new named session. `--bare` disables auto-memory/customization, not explicit conversation persistence. Never describe file-only continuation as restored model memory.
 
 Sequential slices under one frozen solution contract may use a one-use Context
-Lease. Create it with `ai/context-lease.py create` only after Codex accepts the
-current dirty state. Dispatch with `--context-lease PATH --continuation-kind
+Lease. Create it with `ai/context-lease.py create` only after deterministic
+state and single-writer gates accept the current dirty state. Dispatch with `--context-lease PATH --continuation-kind
 next-slice|revision|checker-followup`. The lease extends reviewed continuation:
 it binds the exact worktree/card plus solution-contract, session, role,
 tool-profile, and visible model/provider identities. Every accepted slice gets
@@ -231,6 +256,13 @@ Missing or mismatched bundle components stop before Builder execution as
 
 ## Progress and Monitoring
 
+In Bookend mode the supervisor is the only consumer of these signals. Codex
+does not call `monitor-claude.sh wait`; submission already ended its inference
+episode. The 600-second context/activity policy and 1500-second hard cap bound
+one execution epoch. A hard cap revokes that epoch's process/write grant and
+may produce a same-owner continuation; it does not fail the logical task or
+create semantic meaning.
+
 Execution-only, batch, and test-writing Checker tasks use a first durable-output boundary at the 600-second context-acquisition window. Narrow, retry, revision, and split-child routing reduce task scope but never shorten this response window, and natural-language task-card prose never changes scheduler policy. Generic planning, acknowledgement, timestamps, and claimed command starts do not satisfy durable progress; a canonical product delta does. Validation-only Checker work retains the ordinary observation policy. Shortly before the initial context boundary and every later active deadline, the dispatcher starts one bounded Spark `monitor-triage` evaluation while Claude continues running. At the context boundary, a hash-current `continue` may extend orientation, while a high-confidence `interrupt-candidate` may stop only while the product digest still equals the approved baseline. After the first product delta, a fresh 600-second active window begins, and every later canonical product-content change refreshes that complete window. At an active boundary, a high-confidence stop candidate additionally requires deterministic product-idle corroboration. The capsule contains the frozen contract, product-state summary, redacted recent assistant output, and normalized tool events. Missing, late, low-confidence, or invalid Spark output never stops Claude; the 1500-second hard cap remains absolute.
 
 Spark is always launched with an exact, Git-verified `--context-worktree`; a
@@ -257,7 +289,7 @@ Activity observation is bound to the active session UUID; unrelated historical
 or concurrent transcripts under the same Claude home cannot make a new task
 appear active.
 
-The single terminal monitor wait streams `extension-evaluation-started`,
+For standalone foreground compatibility, the single terminal monitor wait streams `extension-evaluation-started`,
 `extension-evaluation-pending`, and `extension-evaluation-result` notices as
 continuing boundaries. These notices never end the wait or authorize Codex to
 poll or stop either process; they make the dispatcher-owned state transition
@@ -332,12 +364,13 @@ Relevant overrides are `CLAUDE_CODE_CONTEXT_ACQUISITION_TIMEOUT_SECONDS`, `CLAUD
 
 Approval-blocked early convergence requires two stable heartbeats by default. `CLAUDE_CODE_APPROVAL_CONVERGENCE_HEARTBEATS` may lower or raise that count for unusually slow filesystem environments or deterministic tests; production defaults remain conservative.
 
-Do not spend Codex turns polling unchanged heartbeats. The dispatcher is the
-default single sampling owner and appends only `started`, `material-change`,
+Do not spend Codex turns polling or waiting on heartbeats. The durable
+supervisor is the default lifecycle owner and the dispatcher is the single
+sampling owner within an epoch. It appends only `started`, `material-change`,
 `active-window-refreshed`, `active-window-extended`, `child-exited`, and
 finalized `terminal` boundaries to
-`<task-id>.monitor-events.log`. An agent must issue one blocking
-`monitor-claude.sh wait <task-id> --until terminal` call; repeated
+`<task-id>.monitor-events.log`. A human-operated foreground compatibility run
+may issue one blocking `monitor-claude.sh wait <task-id> --until terminal` call; repeated
 `watch`, `ps`, `tail`, status, process-tree, or clock-only commands are forbidden. Read a bounded
 decision/diff only after that wait returns. Compact terminal output includes
 `operator_state` and `evidence_state`, so a stopped Builder awaiting Codex review
@@ -363,8 +396,8 @@ as the dispatcher records it. Window notices include the progress signal,
 elapsed time, and new active/hard deadlines; advisor notices expose only the
 evaluation identity, state, bounded decision fields, and whether Claude keeps
 running. Every notice states that the same wait is continuing toward terminal.
-Codex must consume these notices instead of polling or inferring state from
-elapsed wall time.
+The Bookend supervisor consumes these notices instead of polling or inferring
+state from elapsed wall time. They are not sent to dormant Codex.
 `--until material` returns only for a real nonzero product delta, whether it
 already exists or arrives after the wait starts. Context acquisition, seeded
 controls, report/progress rewrites, and window-only events are not material.
@@ -386,7 +419,7 @@ invoke Spark `monitor-triage` to compress ambiguous evidence only when the local
 `interrupt-candidate`; active-window extension evaluation also uses this mode
 with the privacy-limited capsule above. Spark receives compact JSON rather than
 raw process listings, full logs, network tails, source diffs, thinking content,
-or tool-result payloads. Its diagnostic summary is capped at 240 characters and explicitly distinguishes edit readiness, durable writes, and confirmed product-idle duration. Codex receives that summary plus fixed decision fields; raw evidence remains file-backed. Stable `continue`, `terminal`, and
+or tool-result payloads. Its diagnostic summary is capped at 240 characters and explicitly distinguishes edit readiness, durable writes, and confirmed product-idle duration. The control plane receives that summary plus fixed decision fields; raw evidence remains file-backed. Stable `continue`, `terminal`, and
 `visibility-unknown` states use no model call. `monitor-claude.sh decision`
 provides the same one-shot path manually. Neither local monitoring nor Spark
 authorizes interruption. Use

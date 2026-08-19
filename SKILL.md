@@ -1,73 +1,108 @@
 ---
 name: ai-coding-workflow
-description: Run or update a Claude-first workflow only for non-trivial repository changes that will use durable Claude delegation. Skip questions, read-only work, tiny/urgent local edits, and direct Skill maintenance unless delegation is explicitly requested.
+description: Run or maintain a durable Claude-owned Bookend coding workflow in which Codex freezes intent, submits once, exits, and returns only for a semantic block or final review. Skip questions, read-only work, tiny/urgent edits, and direct Skill maintenance unless durable delegation is explicitly requested.
 ---
 
 # AI Coding Workflow
 
 ## Applicability Gate
 
-Classify before references, a Task Card, or a model call:
-**bypass** (question/read-only/tiny/urgent: record `workflow bypassed: <reason>`);
-**direct** (bounded Codex or Skill maintenance: in a bootstrapped repo run
-`python ai/aiwf.py direct --reason ... --path ...`, no card/Spark/Claude);
-**delegated** (durable Claude
-output materially reduces Codex work); or **setup/update** (load only
-`references/setup-policy.md`).
+Classify first: **bypass** for questions/read-only/tiny work (record
+`workflow bypassed: <reason>`); **direct** for bounded edits and Skill
+maintenance (`aiwf direct --reason ... --path ...`); **delegated** when durable
+Claude ownership materially reduces Codex work; or **setup/update**.
 
-Semantic auto-load without `$` never expands bypass/direct into model work.
-For delegation, load only one matching reference; do not load multiple preemptively.
+## Bookend Contract
 
-## Core Contract
+The production model is asynchronous:
+`GROUND -> FREEZE -> SUBMIT -> CONVERGE -> PROJECT -> REVIEW`.
 
-- Follow `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
-- For JSON-backed delegation, Codex freezes and reviews the compact Task JSON;
-  `aiwf run` deterministically renders the execution card. Claude owns assigned
-  Builder/Checker/Test work. Legacy Markdown cards remain an explicit
-  compatibility path; `solution-planner` is explicit opt-in.
-- Before any advisory or Builder call, `aiwf run` evaluates write-path count,
-  responsibility count, and new-module count. A `split-required` result blocks
-  model dispatch unless the JSON task carries a reviewed exception. Complex
-  aggregation/gate tasks freeze negative counterexamples and fail-closed rules
-  in `extensions.complex_gate_contract`.
-- Model reports are claims until diff, receipt, and validation agree. Keep one
-  writer, exact scope, isolated worktrees, and hash-bound recovery; stale
-  ownership fails closed. Read-only validation may fan out behind one aggregate
-  receipt. Models never merge; humans review scoped patch handoffs and own
-  high-impact approval. Acceptance bundles surface changed files, patch/diff
-  hash, exact validation commands and exit codes even when report prose is
-  missing.
+Codex freezes the goal, acceptance, invariants, forbidden boundaries,
+validation authority, and concrete risk facts. Freeze ends when the contract is
+executable; Codex does not need to discover implementation files or design the
+implementation path.
 
-## Minimal Procedure
+Submit with:
 
-1. Classify; bypass/direct stop after local edits/checks.
-2. Delegated only: query valid CodeGraph once; use `ai/locate-code.py` for
-   behavior/files and lexical search for Shell/config/text; record result/skip.
-3. Route, freeze/review Task JSON, and dispatch its deterministic execution
-   projection. Use Checker/Test only when its assigned work materially reduces
-   Codex effort.
-4. Verify deterministically, then review bounded evidence: accept, revise,
-   split, or reject. Humans merge.
+```bash
+python ai/aiwf.py submit TASK.json
+```
 
-When the user explicitly requests Skill feedback, produce a read-only
-retrospective from the current conversation and the minimum necessary runtime
-receipts. Do not persist telemetry, invoke a model, create a task card, or start
-remediation until the user separately asks for changes.
+The command returns `bookend-state.json`; Codex then ends the current episode.
+Do not block on
+`monitor-claude.sh`, poll Claude, perform direction review, dispatch Checker
+through Codex, or interpret ordinary runtime transitions.
+
+The control plane owns Claude exploration, implementation, assigned tests,
+validation, revision, epochs, and sessions until convergence. These are
+internal duties, not model handoffs.
+
+## Wakeup Boundary
+
+Only these states schedule Codex:
+
+- `review_ready` — tools proved a stable `DONE_CANDIDATE` and constructed a
+  coverage-preserving Review Projection. Codex performs one bounded final
+  semantic review.
+- `semantic_blocked` — completing the frozen contract requires a new semantic
+  decision. Codex returns one bounded contract delta, then ownership returns to
+  Claude.
+
+Read the hash-bound wake request with:
+
+```bash
+python ai/aiwf.py bookend review-input BOOKEND_STATE_OR_DIR
+```
+
+Compile/test failures, unknown code locations, timeout, session/transport/report
+recovery, scope checks, and mechanical revisions never wake Codex.
+`runtime_blocked`, `authority_blocked`, `budget_exhausted`, and `cancelled` go
+to the control plane or human.
+
+## Ownership and Runtime Safety
+
+Logical Claude ownership persists across epochs; process/write authority does
+not. Before another epoch, revoke the old grant, identity-stop its process tree,
+prove no active writer, and freeze a stable state. Unknown visibility fails
+closed.
+
+Hard timeout expires an epoch, not the task. Continue only with a deterministic
+`continuation_safe=true` receipt. Budget exhaustion is not semantic. Models
+never merge; high-impact authority remains human.
+
+## Evidence and Review Projection
+
+Tools establish typed facts; models make typed claims. Claude is not the source
+of truth for hashes, paths, commands, exit codes, scope, or validation.
+
+Every changed byte has exactly one Review Projection class. Gaps/overlaps
+invalidate it and expand the semantic frontier. Codex reviews contract,
+semantic implications, and unresolved risks—not routine runtime history.
+
+## Compatibility Paths
+
+`aiwf run` is the foreground compatibility lifecycle. `aiwf loop` /
+`run-loop.sh` is the legacy per-iteration Codex-review loop. Neither is the
+default agent path and neither should be selected merely because it already
+exists. `monitor-claude.sh` remains an operator diagnostic for standalone
+legacy dispatches; it is not a Codex synchronization mechanism.
 
 ## Reference Router
 
-| Operation | Load |
-|---|---|
-| roles, default loop, evidence hierarchy | `references/operating-model.md` |
-| install, update, bootstrap, environment tools | `references/setup-policy.md` |
-| ownership, Spark, Owner Lease, Handoff Tax | `references/routing-and-spark.md` |
-| task cards, solution contracts, Context Packets | `references/task-card-policy.md` |
-| Claude probes, host retry, write scope, monitoring, failure attribution | `references/claude-runtime.md` |
-| Builder/Checker review, acceptance, takeover, human authority | `references/review-policy.md` |
-| worktrees, dirty snapshots, continuation, parallel compatibility | `references/worktree-and-parallel.md` |
-| retrieval order and context budgets | `references/mcp-policy.md` |
-| compatibility loop state machine | `references/loop-model.md` |
-| metrics, calibration, regression comparison | `references/benchmark-policy.md` |
-| user-triggered Skill feedback | `references/feedback-policy.md` |
+Load only the reference for the current operation; do not load multiple
+references speculatively.
 
-For command syntax, prefer installed `ai/README.md`.
+| Operation | Reference |
+|---|---|
+| Bookend roles, states, evidence | `references/operating-model.md` |
+| Contract and Task JSON | `references/task-card-policy.md` |
+| Claude epochs, recovery, single writer | `references/claude-runtime.md` |
+| Review Projection and Codex decisions | `references/review-policy.md` |
+| Compatibility synchronous loop | `references/loop-model.md` |
+| Worktrees and continuation | `references/worktree-and-parallel.md` |
+| Retrieval and context budgets | `references/mcp-policy.md` |
+| Setup/update/doctor | `references/setup-policy.md` |
+| Metrics and pilots | `references/benchmark-policy.md` |
+| User-triggered feedback | `references/feedback-policy.md` |
+
+For installed command syntax, prefer `ai/README.md`.

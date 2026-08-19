@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""run-workflow.py — Quota-efficient aiwf run lifecycle.
+"""run-workflow.py — Foreground compatibility lifecycle.
 
-Implements `aiwf run task.json` as the primary optimized lifecycle:
+Implements the retained synchronous `aiwf run task.json` lifecycle. Production
+Codex agents use `aiwf submit`, which runs freeze deterministically and hands
+execution to the durable Bookend supervisor.
   1. lint Task
   2. compose profiles
   3. validate composed Task
@@ -16,8 +18,8 @@ Implements `aiwf run task.json` as the primary optimized lifecycle:
   12. remote handoff requirement or final structured decision
   13. ledger/benchmark metrics
 
-Default is execute: dispatches through the broker-mediated Claude path.
-`--preview` suppresses execution for a safe dry run.
+Default is foreground execute for backward compatibility. `--preview`
+suppresses execution for a safe dry run.
 
 Each phase writes a stable artifact under one run directory plus append-only
 phase events and an artifact manifest.  On failure, stop with exact
@@ -195,6 +197,7 @@ class RunContext:
         spark_host_authority: bool = False,
         host_authority: bool = False,
         spark_host_retry_timeout: int = 120,
+        bookend_owned: bool = False,
     ):
         self.task_path = task_path
         self.run_dir = run_dir
@@ -205,6 +208,7 @@ class RunContext:
         self.host_authority = host_authority
         self.spark_host_authority = spark_host_authority or host_authority
         self.spark_host_retry_timeout = spark_host_retry_timeout
+        self.bookend_owned = bookend_owned
 
         self.run_id = run_dir.name
         self.manifest_entries: List[Dict[str, Any]] = []
@@ -300,7 +304,11 @@ class RunContext:
 
     def _final_decision(self, status: str) -> str:
         """Determine the final decision string."""
-        if self.task_granularity and self.task_granularity.get("blocking"):
+        if (
+            self.task_granularity
+            and self.task_granularity.get("blocking")
+            and not self.bookend_owned
+        ):
             return "split-required"
         if status == "completed":
             if self.ladder and self.ladder.get("tier") == "L0-local":
@@ -550,7 +558,13 @@ def phase_route(ctx: RunContext) -> None:
     ctx.phase_order.append("route")
     start = time.monotonic()
 
-    ctx.routing = route_task.route(ctx.facts)
+    routing_facts = dict(ctx.facts)
+    if ctx.bookend_owned:
+        # A solution-planning request becomes an internal duty of the durable
+        # Claude owner.  It must not create a planner -> Codex -> builder
+        # synchronization point inside the Bookend execution model.
+        routing_facts["bookend_owned"] = True
+    ctx.routing = route_task.route(routing_facts)
 
     out = ctx.run_dir / "routing-decision.json"
     write_artifact(out, ctx.routing)
@@ -700,7 +714,7 @@ def phase_dispatch(ctx: RunContext) -> None:
     ctx.phase_order.append("dispatch")
 
     execution = ctx.execution_plan.get("execution", {})
-    if (ctx.task_granularity or {}).get("blocking"):
+    if (ctx.task_granularity or {}).get("blocking") and not ctx.bookend_owned:
         decision = {
             "schema_version": 1,
             "task_id": ctx.facts.get("task_id", ""),
@@ -1397,6 +1411,7 @@ def run_lifecycle(
     spark_host_authority: bool = False,
     host_authority: bool = False,
     spark_host_retry_timeout: int = 120,
+    bookend_owned: bool = False,
 ) -> Dict[str, Any]:
     """Run the full 13-phase lifecycle.
 
@@ -1434,6 +1449,7 @@ def run_lifecycle(
         spark_host_authority=spark_host_authority,
         host_authority=host_authority,
         spark_host_retry_timeout=spark_host_retry_timeout,
+        bookend_owned=bookend_owned,
     )
 
     # Set provisional task_data so emit_event can derive a non-empty task_id
@@ -1539,10 +1555,10 @@ def _phase_to_event_phase(phase_name: str) -> str:
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="aiwf run",
-        description="Quota-efficient aiwf run lifecycle.",
+        description="Foreground compatibility aiwf run lifecycle.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "Default is execute mode: dispatches through the broker-mediated Claude path.\n"
+            "Foreground compatibility mode: production agents should use aiwf submit.\n"
             "Use --preview for a safe dry run with no model calls or destructive mutations.\n"
             "Exit codes: 0=success, 1=phase failure, 2=task error."
         ),
@@ -1612,6 +1628,14 @@ def main(argv: Optional[list] = None) -> int:
         dest="json_output",
         help="Output result as JSON.",
     )
+    parser.add_argument(
+        "--bookend-owned",
+        action="store_true",
+        help=(
+            "Run under a previously frozen Bookend owner contract. Task-size "
+            "advice remains visible but does not create a Codex split checkpoint."
+        ),
+    )
 
     args = parser.parse_args(argv)
     if args.spark_host_retry_timeout < 1:
@@ -1627,6 +1651,7 @@ def main(argv: Optional[list] = None) -> int:
         spark_host_authority=args.spark_host_authority,
         host_authority=args.host_authority,
         spark_host_retry_timeout=args.spark_host_retry_timeout,
+        bookend_owned=args.bookend_owned,
     )
 
     if args.json_output:

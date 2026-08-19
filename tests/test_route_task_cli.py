@@ -39,6 +39,28 @@ class RouteTaskCliTests(unittest.TestCase):
                 "deterministic-tools",
             )
 
+    def test_concrete_high_risk_fact_strengthens_guards_without_codex_handoff(self):
+        facts = {
+            "effective_risks": {key: "no" for key in MODULE.HIGH},
+            "files": 4,
+            "diff_lines": 400,
+            "exact_validation": True,
+            "durable_output_required": True,
+            "task_role": "core-semantic",
+        }
+        facts["effective_risks"]["security"] = "yes"
+
+        route = MODULE.route(facts)
+
+        execution = route["execution"]
+        self.assertEqual(execution["owner"], "claude-builder")
+        self.assertEqual(execution["risk_guard_set"], ["security"])
+        self.assertTrue(execution["risk_increases_evidence_not_codex_wakeups"])
+        self.assertEqual(
+            route["communication_routing"]["mode"],
+            "bookend-owner-convergence",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

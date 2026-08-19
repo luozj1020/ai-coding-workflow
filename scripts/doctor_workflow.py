@@ -98,6 +98,7 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/benchmark-loop-runs.py",
     "ai/workflow_economics.py",
     "ai/model-usage.py",
+    "ai/audit-codex-wakeups.py",
     "ai/run-approved-validation.py",
     "ai/economics-experiment.py",
     "ai/parse-spark-output.py",
@@ -109,6 +110,7 @@ WORKFLOW_REQUIRED_FILES = [
     "ai/init-plan.py",
     "ai/session-catchup.py",
     "ai/run-workflow.py",
+    "ai/bookend-task.py",
     "ai/parallel-task-gate.py",
     ".worktrees/.gitkeep",
 ]
@@ -160,6 +162,7 @@ WORKFLOW_RUNTIME_HELPERS = [
     "ai/init-plan.py",
     "ai/session-catchup.py",
     "ai/run-workflow.py",
+    "ai/bookend-task.py",
     "ai/parallel-task-gate.py",
 ]
 
@@ -229,6 +232,7 @@ WORKFLOW_PLAIN_FILE_SOURCES = [
     ("scripts/summarize-loop-run.py", "ai/summarize-loop-run.py"),
     ("scripts/benchmark-loop-runs.py", "ai/benchmark-loop-runs.py"),
     ("scripts/model-usage.py", "ai/model-usage.py"),
+    ("scripts/audit-codex-wakeups.py", "ai/audit-codex-wakeups.py"),
     ("scripts/run-approved-validation.py", "ai/run-approved-validation.py"),
     ("scripts/economics-experiment.py", "ai/economics-experiment.py"),
     ("scripts/init-spec.py", "ai/init-spec.py"),
@@ -241,6 +245,7 @@ WORKFLOW_PLAIN_FILE_SOURCES = [
     ("scripts/init-plan.py", "ai/init-plan.py"),
     ("scripts/session-catchup.py", "ai/session-catchup.py"),
     ("scripts/run-workflow.py", "ai/run-workflow.py"),
+    ("scripts/bookend-task.py", "ai/bookend-task.py"),
     ("scripts/spark_execution_availability.py", "ai/spark_execution_availability.py"),
 ]
 

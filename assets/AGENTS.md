@@ -5,142 +5,110 @@ Project-specific text outside the managed block is preserved by the installer.
 <!-- AI-CODING-WORKFLOW:BEGIN managed -->
 ## AI Coding Workflow Core
 
-**Minimize scarce Codex work while preserving correctness.** Codex freezes
-intent and performs bounded semantic review; Claude owns implementation,
-revision, assigned tests, and long validation; Spark gives bounded advice;
-humans own merge and destructive or high-impact approval.
+**Use Codex only at the bookends.** Codex freezes intent and performs bounded
+semantic review. After `aiwf submit`, a durable control plane owns Claude until
+the task reaches `review_ready` or strict `semantic_blocked`. Runtime state
+changes are not Codex synchronization points.
 
-Use `OBSERVE -> ROUTE -> PLAN -> DISPATCH -> EXECUTE -> VERIFY -> REVIEW`.
-For indexed-code symbols, use one bounded CodeGraph query first;
-`ai/locate-code.py` for behavior/files; lexical search for Shell/config/text.
-Record result/skip before broad reads. Do not browse the web unless asked. Ordinary-risk
-work proceeds after deterministic checks without a second business confirmation.
+Classify first: `bypass` for questions/read-only/tiny/urgent work; `direct` for
+bounded Codex edits and workflow maintenance; `delegated` for non-trivial work
+where durable Claude ownership reduces Codex work. Direct work records
+`python ai/aiwf.py direct --reason ... --path ...`. Setup/update loads setup
+policy only. Bypass records `workflow bypassed: <reason>`.
 
-Classify before workflow references/cards: `bypass` for questions/read-only/
-tiny/urgent work; `direct` for bounded local Codex edits (including workflow
-maintenance); and `delegated` only when durable Claude output will materially
-reduce Codex work. Bypass records `workflow bypassed: <reason>`. Direct work
-records `python ai/aiwf.py direct --reason ...
---path ...` and uses only the files/checks needed for the edit—no Task Card,
-Spark, or Claude call merely to audit it. Setup/update loads setup policy only.
+For indexed code, use one healthy CodeGraph query first; use
+`ai/locate-code.py` for behavior/files and lexical search for text, Shell, and
+configuration. Ground only enough to freeze behavior, acceptance, invariants,
+forbidden boundaries, validation authority, and concrete risk facts. Unknown
+implementation files do not block freeze. Do not browse the web unless asked.
 
-## Claude-First Ownership
+## Production Bookend Path
 
-ROUTE every initial, revision, narrow, retry, split-child, and next-phase action.
-`ownership_profile=claude-first` is default: Claude writes source unless the human selects Codex,
-confirmed high-risk core semantics favor Codex, or Codex applies a reviewed
-deterministic correction. Unknown risk increases review, not ownership changes.
+```text
+GROUND -> Codex FREEZE -> aiwf submit -> Codex episode ends
+                                      -> Claude CONVERGE
+                                      -> tools PROJECT
+                                      -> new Codex REVIEW episode
+```
 
-For JSON-backed delegation, Codex freezes and reviews Task JSON; `aiwf run`
-renders its execution card deterministically. Never hand-edit JSON, rendered
-cards, or receipts. Helpers create workflow state deterministically.
-Oversized JSON blocks models; gates require counterexamples and fail-closed rules.
-Claude `solution-planner` is never inferred and requires
-`solution_planner_opt_in=true`. Prefer one Claude execution round; additional
-roles must remove material Codex work, not merely save model tokens.
+For JSON-backed delegation, Codex freezes Task JSON and runs:
 
-When quota allows, run one advisory `task-card-audit` before non-Express
-delegation; use `execution-cost-estimator` only for unresolved ownership. Spark
-cannot expand scope or replace Codex review. Network failure exits 75, then
-requires one identical authorized host retry. Reuse the stable launcher/host
-preference, never environment prefixes. `implementation` aliases `next-phase`;
-`preflight-bundle` is diagnostic-only. Load routing policy for exact rules.
+```bash
+python ai/aiwf.py submit TASK.json
+```
 
-Use `execution-builder` for frozen solutions, `batch-builder` for mechanical
-work, and `exploratory-builder` for bounded new features. Large work uses a
-short Codex plan; the solution planner remains explicit opt-in.
-Route every frozen implementation slice independently. Compatible sequential
-slices may reuse one hash-bound Context Lease.
+Return the durable `bookend-state.json` path, then end the current Codex
+episode. Do not block on `monitor-claude.sh`, poll Claude, perform Direction
+Review, or dispatch Checker through Codex. `aiwf run` is foreground
+compatibility and `aiwf loop` is the legacy per-iteration review loop.
+The component composer is for explicit legacy Markdown cards only.
 
-The component composer is for explicit legacy Markdown cards only; `aiwf run`
-renders JSON-backed execution cards directly.
+## Claude-Owned Convergence
 
-## Dispatch and Validation
+Claude owns exploration, implementation, assigned tests, diagnosis, revision,
+validation, and evidence claims. Builder Claude, Checker/Test Claude, and revision are
+internal duties and may use separate Claude sessions under one logical owner.
+Compile/test failures, missing code knowledge, timeouts, transport recovery,
+session loss, and context exhaustion stay inside Claude/runtime convergence.
 
-- Builder Claude receives one responsibility, exact paths/symbols, a
-  source-of-truth example, forbidden paths, measurable acceptance, and narrow
-  validation. `execution-only` requires explicit readiness markers.
-- Builder does not own acceptance tests or broad suites unless assigned a mixed
-  exception or narrow sanity check.
-- Checker/Test Claude is conditional, not automatic. Use it only when assigned
-  test writing, long validation, or evidence processing materially reduces
-  Codex work. Otherwise record
-  `checker skipped: deterministic evidence sufficient`.
-- Codex reviews Builder direction before Checker dispatch and owns final
-  semantic acceptance. Model reports remain claims until diff, receipts, and
-  deterministic tests agree. Missing or contradictory evidence is
-  `needs-review`.
-- Missing prose gets one recovery; never rerun for prose.
-- Models never merge. Do not automatically coordinate portfolio concurrency;
-  repository-local parallel helpers remain explicit compatibility tools.
+Only `semantic_blocked` may wake Codex early. It requires proof that the frozen
+contract cannot be completed without a new semantic choice, such as
+contradictory acceptance, materially ambiguous external behavior, an
+unavoidable forbidden boundary, or an invalid frozen assumption.
 
-## Runtime and Recovery
+## Runtime and Single Writer
 
-Use stable CLI flags for host execution, dirty snapshots, tool profiles,
-retry-in-place, and reviewed continuation. If a launcher lacks them or Spark's
-exit-75 handoff, refresh the bootstrapped workflow before any model call.
+The logical Claude owner survives execution epochs; process and write grants do
+not. Every next epoch requires identity-bound termination of the old process,
+proof of no active writer, a stable state hash, the same contract/base/scope,
+and a fresh epoch grant. Unknown visibility fails closed.
 
-Do not poll or use PID/clock-only liveness. Use one blocking
-`monitor-claude.sh wait` and inspect only boundary evidence. Product content
-alone refreshes the active window. Spark sees redacted, session-bound activity:
-`task-directed` may extend; `unproductive` may advise interruption, never stop
-Claude. Mtimes, control files, reports, and tokens never prove work.
-Product-idle corroboration and the hard cap apply.
+The hard timeout expires an execution epoch, not the logical task. A
+deterministic `continuation_safe=true` may continue the same owner. Runtime,
+authority, and budget failures become `runtime_blocked`, `authority_blocked`,
+or `budget_exhausted`; they never request semantic Codex inference.
 
-Classify failures before retry or takeover. Pre-interaction transport,
-approval/sandbox blockers, dirty source, and stale HEAD are not model failures.
-One acknowledgement-only/no-progress round gets one tighter retry; only an
-explicit same-session `retry-in-place` pair with matching card, baseline, and
-worktree bindings may permit scoped takeover. Prior-session failures, including
-a fresh session after resume failure, do not transfer automatically.
+## Evidence and Review
 
-Keep useful on-plan evidence. Prefer a reviewed same-worktree continuation after
-direction acceptance. Resume the leased Builder before opening a new same-owner
-session. Missing prose is an evidence gap; matching diff plus deterministic
-checks may recover it. Seeded/fallback reports never count as completion.
-A fresh route may use a reviewer-owned correction only for a deterministic
-local delta.
+Tools establish facts; models make claims. Hashes, changed paths, commands,
+exit codes, validation, scope, and diff coverage must be machine generated.
+Claude supplies semantic assumptions, acceptance implications, and unresolved
+risks.
 
-Resolve runtime state from Git's common directory. Fresh execution worktrees
-are siblings directly under its top-level `.worktrees/`, never recursively
-nested. An external reviewed card may be passed by absolute path without being
-copied into the product baseline.
+Every changed byte must have exactly one Review Projection classification.
+Gaps, overlaps, stale bindings, or unknown classifications invalidate the
+projection and expand semantic review. Read a scheduled wake request with:
 
-Takeover is an atomic single-writer transfer: revoke or prove absence of the
-Owner Lease, identity-stop the old task process tree, freeze a stable baseline,
-then issue the Codex grant. Unknown visibility fails closed. PID-only kills and
-unapproved write paths fail closed; `editor-only` removes Bash.
+```bash
+python ai/aiwf.py bookend review-input BOOKEND_STATE_OR_DIR
+```
 
-## Context and Safety
+At `review_ready`, Codex reviews the frozen contract and remaining semantic
+frontier once. A revision becomes a bounded Revision Delta submitted back to
+the same Claude owner; Codex ends that episode and returns only for delta
+review. Models never merge.
 
-- Use CodeGraph once for indexed-code questions when `codegraph status . -j`
-  matches the clean worktree; record result/skip reason. Delegated graph use
-  needs a ready receipt.
-- Keep artifacts under `.worktrees/` or `ai/plans/<task-id>/`; return compact summaries and paths,
-  not logs, full diffs, or repeated file bodies.
-- Skill feedback is user-triggered and read-only: use the conversation and
-  minimum receipts; do not persist telemetry or start remediation implicitly.
-- Spark is advisory and cannot satisfy acceptance, interrupt Claude, approve a
-  review, or authorize merge. External MCP/plugins are default-off and do not widen Bash/Edit authority.
-- Destructive actions, deletion, migration, auth/permission, billing,
-  deployment, public API, secrets, and production-data changes require explicit
-  human authority.
+Humans retain destructive, deletion, migration, authentication/permission,
+billing, deployment, public-API, secrets, production-data, and merge authority.
+Spark remains advisory: it cannot satisfy acceptance or authorize merge;
+`preflight-bundle` is diagnostic-only. External MCP/plugins are default-off and
+do not widen Bash/Edit authority. The compatibility configuration name remains
+`ownership_profile=claude-first`.
 
-## On-Demand References
+## References
 
-Load only the single reference for the current operation; load another only
-after the phase changes or the first is insufficient.
+Load only the reference for the current operation.
 
 | Need | Reference |
 |---|---|
-| roles/default loop/evidence | `references/operating-model.md` |
-| ownership/Spark/results | `references/routing-and-spark.md` |
-| task cards/specs/context | `references/task-card-policy.md` |
-| Claude dispatch/monitor/recovery | `references/claude-runtime.md` |
-| review/Checker/takeover | `references/review-policy.md` |
-| worktrees/continuation | `references/worktree-and-parallel.md` |
-| retrieval/context budgets | `references/mcp-policy.md` |
-| setup/update/doctor | `references/setup-policy.md` |
-| metrics/regressions | `references/benchmark-policy.md` |
-| user-triggered feedback | `references/feedback-policy.md` |
+| Bookend roles/states/evidence | `references/operating-model.md` |
+| Task contract | `references/task-card-policy.md` |
+| Claude epochs/recovery | `references/claude-runtime.md` |
+| Review Projection/decisions | `references/review-policy.md` |
+| Worktrees/continuation | `references/worktree-and-parallel.md` |
+| Retrieval/context | `references/mcp-policy.md` |
+| Setup/update/doctor | `references/setup-policy.md` |
+| Metrics/pilots | `references/benchmark-policy.md` |
+| Skill feedback | `references/feedback-policy.md` |
+| Legacy synchronous loop | `references/loop-model.md` |
 <!-- AI-CODING-WORKFLOW:END managed -->

@@ -315,7 +315,7 @@ class TestRunWorkflowPreview(unittest.TestCase):
             self.assertEqual(plan["execution"]["claude_role"], "execution-builder")
             self.assertEqual(
                 plan["planning"]["strategy"],
-                "codex-short-plan-then-claude-build",
+                "codex-contract-freeze-then-claude-convergence",
             )
             self.assertEqual(
                 plan["planning"]["solution_planner_skip_reason"],
@@ -864,10 +864,12 @@ class TestRunWorkflowRegistration(unittest.TestCase):
         aiwf_content = (SCRIPTS / "aiwf.py").read_text()
         self.assertIn("legacy-full-codex-review", aiwf_content)
 
-    def test_run_is_primary_label(self):
-        """run command is labeled as quota-efficient primary."""
+    def test_submit_is_primary_and_run_is_compatibility(self):
+        """Bookend submit is primary; foreground run is compatibility-only."""
         aiwf_content = (SCRIPTS / "aiwf.py").read_text()
-        self.assertIn("quota-efficient", aiwf_content)
+        self.assertIn('"submit":"bookend-task.py"', aiwf_content)
+        self.assertIn("Bookend task (primary)", aiwf_content)
+        self.assertIn("foreground compatibility lifecycle", aiwf_content)
 
     def test_installer_registration(self):
         """run-workflow.py is registered in install_workflow.py."""

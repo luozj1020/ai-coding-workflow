@@ -19,6 +19,36 @@ python ai/aiwf.py direct --kind workflow-maintenance \
 This records scope and checks without creating a Task Card, calling Spark, or
 starting Claude.
 
+## Production Bookend Usage
+
+For delegated work, Codex freezes the Task JSON, submits once, and ends its
+inference episode:
+
+```bash
+python ai/aiwf.py submit TASK.json
+```
+
+The command returns `bookend-state.json` immediately while a durable supervisor
+owns Claude exploration, implementation, tests, revisions, validation,
+timeouts, session replacement, and execution epochs. Do not call
+`monitor-claude.sh wait` from Codex after submission.
+
+Inspect durable state without polling a model process:
+
+```bash
+python ai/aiwf.py bookend status BOOKEND_STATE_OR_DIR
+```
+
+Only `review_ready` and strict `semantic_blocked` schedule a new Codex episode:
+
+```bash
+python ai/aiwf.py bookend review-input BOOKEND_STATE_OR_DIR
+```
+
+Runtime, authority, and budget blocks go to the control plane or human, not
+Codex semantic review. `aiwf run` is foreground compatibility; `aiwf loop` is
+the legacy per-iteration Codex-review workflow.
+
 ## Installing This Skill for Codex
 
 To make this Skill discoverable by Codex, install it from a cloned copy of `ai-coding-workflow`:
@@ -110,7 +140,11 @@ python ~/.codex/skills/ai-coding-workflow/scripts/update_skill.py \
   --bootstrap-current
 ```
 
-## What Is This?
+## Legacy Foreground Details
+
+The remainder of this guide documents lower-level and compatibility helpers.
+Its Direction Review and blocking-monitor descriptions do not override the
+production Bookend path above.
 
 This repository has been set up with a multi-agent AI coding workflow. The workflow splits software work between planning, execution, and review agents in an explicit loop:
 

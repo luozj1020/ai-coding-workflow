@@ -1,171 +1,183 @@
-﻿# Operating Model
+# Bookend Operating Model
 
 ## Core Principle
 
-**Codex owns core planning and review. Claude implements, revises, tests, and validates. Tools generate control artifacts from low-token evidence.**
+**Codex freezes the contract, Claude owns convergence, tools construct facts
+and prove complete diff coverage, and Codex reviews only the remaining semantic
+surface.**
 
-This is the default operating principle for all work in this workflow:
+The scarce Codex model is not the task process owner. A Codex inference episode
+exists only at the two bookends or for a strict semantic contract escalation.
 
-1. Codex/GPT is responsible for bounded core planning, frozen planning files, high-risk decisions, and final semantic review.
-2. Claude Code is the default source-writing owner and handles implementation, mechanical batches, revisions, assigned tests, and long validation. Solution planning is explicit opt-in only.
-3. LSP, bounded locator search, CodeGraph, and MCP tools are used before broad file reads or repository scans to reduce token consumption and wall-clock stalls.
-
-## Agent Roles
-
-### Codex / GPT  -  Core Planner and Reviewer
-
-- Routes every initial, revision, split-child, and next-phase brief before any delegation card.
-- Owns the compact core plan, invariants, acceptance, and Codex planning files.
-- Avoids implementation unless the human selects it, confirmed high-risk core semantics require it, or a reviewed correction is deterministic and local.
-- Decomposes only positively delegated work into short component cards with clear acceptance criteria.
-- Reviews execution evidence and returns structured accept / revise / split / reject decisions with explicit next-loop instructions.
-- Evaluates architectural intent, regression risk, and design coherence.
-- Gathers context using low-token tools (LSP, `ai/locate-code.py`, bounded CodeGraph, MCP) during the OBSERVE phase.
-- May apply reviewer-owned bounded corrections after a fresh route when the accepted context and deterministic delta are already known.
-
-### Claude Code  -  Primary Execution Agent
-
-- Produces a validated structured solution contract only after explicit Planner opt-in, without source edits.
-- Implements frozen, exploratory, mechanical, core, and auxiliary task cards in isolated git worktrees.
-- Runs only assigned narrow checks, tests, long validation, or evidence processing.
-- Produces evidence packets documenting what changed, why, and how it was verified.
-- Records assumptions, attempted commands, failed checks, and lessons learned.
-- Works within the LSP/locator/CodeGraph/MCP evidence hierarchy to minimize unnecessary file reads.
-- Receives source-writing by default under `claude-first`; single-task wall time is advisory when the user runs independent projects in separate terminals.
-- Returns compressed evidence: summaries and artifact paths, not pasted large logs or full files.
-
-### Claude-Compatible Models  -  High-Token Execution Helpers
-
-- Assist with exhaustive diff scanning, long log analysis, and test suggestion generation.
-- Useful for tasks that require processing large amounts of text or code.
-- Optional  -  invoked when the task warrants the token cost.
-
-### LSP / Locator / Codegraph / MCP  -  Low-Token Project Intelligence
-
-- First-choice information source before reading files or scanning repositories, with `ai/locate-code.py` preferred for initial large-repository code location.
-- Provides definitions, references, diagnostics, callers, callees, and impact analysis.
-- Dramatically reduces token consumption compared to whole-file reads.
-- See `mcp-policy.md` for the retrieval order.
-
-## Loop Workflow
-
-The workflow is an explicit loop, not a linear handoff. See `references/loop-model.md` for the full state machine.
+## Semantic Model
 
 ```text
-OBSERVE -> ROUTE -> PLAN/DIRECT -> EXECUTE -> VERIFY -> REVIEW
-                                                     |
-                                                     +-- accept -> DONE
-                                                     +-- revise -> PLAN (next iteration)
-                                                     +-- split  -> PLAN (child cards)
-                                                     +-- reject -> OBSERVE (re-plan)
+GROUND -> FREEZE -> CONVERGE -> PROJECT -> REVIEW
+           Codex      Claude       tools      Codex
 ```
 
-For a genuinely small local change, use `python ai/aiwf.py direct --reason ...
---path ...` to record the explicit no-delegation decision. It skips task cards,
-Spark, and Claude but still names exact write paths and deterministic checks;
-it never grants merge authority.
+- **GROUND** is deterministic repository grounding: behavioral entry,
+  compatibility boundary, relevant tests, validation target, and concrete risk
+  facts. Unknown implementation files do not block freeze.
+- **FREEZE** produces an immutable Task contract: goal, acceptance, invariants,
+  forbidden boundaries, validation authority, and human-approval boundaries.
+- **CONVERGE** is one Claude-owned logical task. Exploration, implementation,
+  tests, diagnosis, revision, validation, epoch recovery, and session
+  replacement remain inside it.
+- **PROJECT** constructs machine evidence and a coverage-preserving Review
+  Projection. It never summarizes away unclassified changes.
+- **REVIEW** is one bounded Codex semantic decision over the frozen contract and
+  projection.
 
-Each delegated iteration:
+`GROUND` and `PROJECT` are control-plane phases, not model synchronization
+points.
 
-1. **OBSERVE:** Codex gathers context using low-token tools.
-2. **ROUTE:** deterministic facts select a Claude execution role by default; Planner requires explicit opt-in. Spark can replace Codex estimation.
-3. **PLAN/DIRECT:** Codex freezes the compact Task JSON; local helpers render its Claude execution projection and structured artifacts.
-4. **EXECUTE:** Claude produces its assigned durable result in an isolated worktree; Codex direct is exceptional.
-5. **VERIFY:** local deterministic tools run by default; Checker/Test Claude is conditional.
-6. **REVIEW:** Codex evaluates the evidence and decides.
-7. **LEARN:** Both agents capture lessons from the iteration.
+## Model Call Graph
 
-## Task Card and Evidence Packet Handoff Model
-
-### Task Card
-
-A JSON-backed task card is a compact deterministic execution projection for one
-Claude unit. The reviewed Task JSON is the contract; local routing facts add
-only material context, and Codex does not write a monolithic Markdown card.
-Components remain available only for explicit legacy Markdown compatibility.
-
-Fields:
-
-- **Goal**  -  what needs to be accomplished
-- **Context**  -  background, related work, constraints
-- **Acceptance criteria**  -  how to verify the work is complete
-- **Files / modules**  -  the scope of changes expected
-- **Codex context budget**  -  estimated token budget for Codex context gathering; 0 if LSP/locator/CodeGraph evidence is sufficient
-- **LSP / locator / CodeGraph evidence**  -  structured low-token evidence gathered before implementation
-- **High-token work route**  -  economic owner decision; size alone never forces Claude
-- **Evidence compression requirements**  -  instructions for Claude to return summaries + artifact paths, not pasted logs
-- **Dependencies**  -  other task cards, external services, data requirements
-- **Evidence**  -  LSP/locator/CodeGraph/MCP data gathered before implementation
-- **Loop context**  -  parent task ID, iteration, prior decision, revision instructions, budget/stop conditions, required evidence
-
-Default authoring: Codex reviews the compact Task JSON, the deterministic
-renderer projects it with routing facts, and Spark may advise structured gaps
-without rewriting the contract. The monolithic `ai/task-card-template.md` and
-component composer are compatibility-only.
-
-### Evidence Packet
-
-An evidence packet documents routed execution and verification. Local tools, Claude, and Codex may each contribute bounded evidence; Codex and the human consume the final packet.
-
-Fields:
-
-- **Task card reference**  -  which task card was executed
-- **Summary**  -  what was done in one paragraph
-- **Context budget used**  -  actual token budget consumed by Codex during planning vs task card target
-- **High-token work delegated**  -  list of high-token tasks explicitly delegated to Claude
-- **Compressed evidence summary**  -  summaries and artifact paths instead of pasted large logs
-- **Changes**  -  list of files modified with a brief description per file
-- **Diffstat**  -  file-level change summary
-- **Diff**  -  full patch
-- **Assumptions**  -  decisions made without explicit guidance
-- **Attempted commands**  -  commands run and their outcomes
-- **Failed checks**  -  checks that failed and resolution status
-- **Tests**  -  what tests were added or modified, pass/fail status
-- **Verification**  -  lint, type check, build results
-- **Verification evidence**  -  specific output from checks
-- **Review feedback**  -  reviewer's decision and instructions (filled after review)
-- **Lessons learned**  -  reusable knowledge from this execution
-- **Open questions**  -  anything the executor wants the reviewer to consider
-
-Template: `ai/evidence-packet-template.md`
-
-### Handoff Flow
-
-```
-Human or Codex/GPT
-       |
-       v
-   Deterministic ROUTE
-       |
-       +-- explicit/high-risk Codex -> implementation
-       |
-       +-- default Claude role -> reviewed Task JSON -> deterministic execution card -> isolated worktree
-       |
-       v
-  Evidence Packet (bounded results + diff/checks when applicable)
-       |
-       v
-  Codex/GPT (reviewer, structured decision)
-       |
-       v
-  Decision: accept / revise / split / reject
-       |
-       +-- revise -> new Task JSON (next iteration)
-       +-- split  -> child Task JSON files
-       +-- reject -> re-observe
-       +-- accept -> Human (final merge)
+```text
+Codex FREEZE
+      |
+      | aiwf submit; Codex episode ends
+      v
+Claude-owned convergence
+      |
+      | review_ready or semantic_blocked
+      v
+new Codex REVIEW episode
 ```
 
-## Evidence Hierarchy
+The production target for an accepted ordinary task is two Codex calls. Claude
+may use multiple processes, sessions, epochs, or internal roles without
+increasing that count.
 
-Before reading files or scanning repositories, agents must follow this order:
+## Roles
 
-1. One bounded CodeGraph query for concrete indexed-code symbols or relationships when the current worktree index is healthy
-2. LSP definitions/references/diagnostics, when available
-3. `ai/locate-code.py` for behavior/file discovery (its default also attempts healthy CodeGraph)
-4. Targeted search for Shell, configuration, text, logs, unsupported languages, or a recorded graph fallback
-5. Targeted snippet reads
-6. Whole-file reads only when necessary
-7. Full repository scan only with explicit human approval
+### Codex — Contract Freezer and Semantic Reviewer
 
-This applies to both Codex (during OBSERVE) and Claude Code (during EXECUTE).
+Codex:
+
+- grounds only enough repository fact to freeze intent;
+- freezes acceptance, invariants, compatibility and forbidden boundaries;
+- submits once with `python ai/aiwf.py submit TASK.json` and then exits;
+- reads only a hash-bound wake request in a later inference episode;
+- returns `accept`, `revision-delta`, `split`, or `reject` at final review;
+- makes a bounded contract decision for a true `semantic_blocked` receipt.
+
+Codex does not monitor Claude, review implementation direction mid-run, inspect
+ordinary compile/test failures, draft mechanical revisions, or remain blocked
+inside the Claude process lifetime.
+
+### Claude — Logical Task Owner
+
+Claude owns the full convergence loop:
+
+```text
+explore -> implement -> test -> diagnose -> revise -> validate
+```
+
+Builder, test writer, Checker, and recovery are execution responsibilities,
+not cross-model synchronization points. Separate Claude sessions may perform
+them under the same logical owner and contract.
+
+Claude has implementation authority but not acceptance, merge, destructive,
+deployment, migration, authentication/permission, billing, public-API, secret,
+or production-data authority.
+
+### Workflow Control Plane
+
+The control plane owns task durability after submission. It:
+
+- stores `logical_task_id`, contract hash, base SHA, owner, worktree, epoch,
+  budgets, and evidence bindings;
+- enforces a single writer and epoch-scoped write grants;
+- handles startup, transport, timeout, session and checkpoint recovery;
+- runs deterministic scope and validation gates;
+- constructs the Review Projection and emits a wake request;
+- never makes a product-semantic choice.
+
+### Tools
+
+Tools establish facts: hashes, changed paths, byte coverage, commands, exit
+codes, test receipts, scope, process identity, and artifact provenance. A tool
+relationship is not semantic acceptance.
+
+## Runtime State Machine
+
+Runtime transitions are intentionally separate from the five semantic phases:
+
+```text
+submitted -> freezing -> converging -> classifying
+                       |              |
+                       |              +-> recovering -> converging
+                       +-----------------> projecting -> review_ready
+```
+
+Additional terminal or suspended states are:
+
+| State | Codex wakeup | Owner |
+|---|---:|---|
+| `review_ready` | yes | Codex final review |
+| `semantic_blocked` | yes | Codex contract delta |
+| `runtime_blocked` | no | control plane/operator |
+| `authority_blocked` | no | human approval |
+| `budget_exhausted` | no | policy/human |
+| `cancelled` | no | terminal |
+
+Starting, running, validating, retrying, timing out, recovering, resuming, and
+changing sessions never imply a model handoff.
+
+## Semantic Block Rule
+
+`semantic_blocked` means Claude cannot complete the frozen contract without a
+new semantic decision. Valid examples are contradictory acceptance items,
+materially ambiguous externally observable behavior, an unavoidable forbidden
+boundary, an invalid frozen assumption, or a required public contract change.
+
+Compile errors, test failures, performance misses, unknown code locations,
+incorrect first implementations, tool errors, timeouts, lost sessions, missing
+reports, and context exhaustion are not semantic blockers.
+
+## Evidence Types
+
+Every evidence edge is typed:
+
+- `deterministic_fact`
+- `model_claim`
+- `human_decision`
+
+An acceptance item normally contains both machine facts and a semantic claim:
+
+```text
+A3
+|- deterministic facts: diff ref, validation receipt, test binding
+`- model claim: why those facts imply A3
+```
+
+Codex reviews the implication. It does not spend a new inference reproducing
+facts already proved by valid receipts.
+
+## Review Projection
+
+A Review Projection is a complete partition of the full diff, not a natural
+language summary. Every changed byte must belong to exactly one class, such as
+`semantic-frontier`, `mechanically-verified`, or `generated-derived`. Missing,
+overlapping, stale, or unreadable coverage invalidates the projection and
+expands review; it never authorizes acceptance.
+
+The initial safe implementation may classify the entire diff as semantic
+frontier. Compression is an optimization only after complete coverage is
+preserved.
+
+## Retrieval
+
+Use one healthy CodeGraph query first for indexed-code relationships, then LSP,
+`ai/locate-code.py`, lexical search for text/Shell/configuration, targeted
+snippets, and finally whole files only as needed. During FREEZE, stop when the
+contract is executable rather than when repository understanding feels
+complete. Claude owns implementation discovery during CONVERGE.
+
+## Compatibility
+
+`aiwf run` remains a foreground compatibility lifecycle. `run-loop.sh` remains
+available only for explicit legacy experiments that require per-iteration
+Codex review. Neither defines the production architecture.
