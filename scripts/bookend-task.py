@@ -11,6 +11,11 @@ Python executable with the same CLI/result contract.  An adapter can request a
 same-owner next epoch by returning ``bookend_state=epoch_expired`` together
 with ``continuation_safe=true``.  Runtime, authority, and budget failures never
 request a Codex semantic inference.
+
+Product state continuity: when an executor returns ``product_worktree`` in its
+result, the controller persists that path in the bookend state and passes it to
+the next epoch via ``AIWF_BOOKEND_PRODUCT_WORKTREE``.  This allows the next
+epoch to resume from the same working tree rather than starting fresh.
 """
 
 from __future__ import annotations
@@ -333,6 +338,9 @@ def run_epoch(state_path: Path, epoch: int) -> Tuple[int, Dict[str, Any]]:
             "AIWF_BOOKEND_PREVIOUS_RESULT": str(state.get("last_result") or ""),
         }
     )
+    product_worktree = state.get("product_worktree")
+    if product_worktree:
+        env["AIWF_BOOKEND_PRODUCT_WORKTREE"] = str(product_worktree)
     command = executor_command(state, epoch_dir)
     atomic_json(
         epoch_dir / "epoch-request.json",
@@ -772,12 +780,15 @@ def supervise(state_path: Path) -> Dict[str, Any]:
         result_path = (
             control_dir / "epochs" / f"epoch-{epoch:03d}" / "epoch-result.json"
         )
-        state = update_state(
-            state_path,
-            "classifying",
-            last_result=str(result_path),
-            epoch_write_grant=f"revoked:{epoch}",
-        )
+        # Persist the executor's product worktree so the next epoch can
+        # resume from the same working tree rather than starting fresh.
+        state_updates: Dict[str, Any] = {
+            "last_result": str(result_path),
+            "epoch_write_grant": f"revoked:{epoch}",
+        }
+        if result.get("product_worktree"):
+            state_updates["product_worktree"] = str(result["product_worktree"])
+        state = update_state(state_path, "classifying", **state_updates)
         outcome = classify_result(exit_code, result)
 
         if outcome == "epoch_expired" and result.get("continuation_safe") is True:

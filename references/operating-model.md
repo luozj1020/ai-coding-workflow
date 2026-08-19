@@ -121,6 +121,27 @@ failure (compile error, test failure, incomplete acceptance) occurred but
 more execution epochs remain. The same Claude owner automatically continues
 in the next epoch without a Codex wakeup.
 
+## Product State Continuity
+
+When an executor returns `product_worktree` in its result, the controller
+persists that path in the bookend state and passes it to the next epoch via
+`AIWF_BOOKEND_PRODUCT_WORKTREE`.  This enables the convergence-continue
+mechanism to resume from the same working tree rather than starting fresh.
+
+```text
+epoch 1: executor creates/updates worktree
+         result.product_worktree = "/path/to/worktree"
+         ↓ supervisor persists in bookend state
+epoch 2: AIWF_BOOKEND_PRODUCT_WORKTREE="/path/to/worktree"
+         executor resumes from existing state
+```
+
+The executor is responsible for:
+- creating the worktree on first use
+- returning `product_worktree` in its result
+- reading `AIWF_BOOKEND_PRODUCT_WORKTREE` on subsequent epochs
+- verifying prior state before continuing
+
 Additional terminal or suspended states are:
 
 | State | Codex wakeup | Owner |

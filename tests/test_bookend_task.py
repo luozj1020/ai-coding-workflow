@@ -132,6 +132,43 @@ def write_executor(path, mode):
                 "error": "test failures in module X",
             }}))
             raise SystemExit(1)
+        if mode == "persist-state":
+            prior = os.environ.get("AIWF_BOOKEND_PRODUCT_WORKTREE")
+            if prior and epoch > 1:
+                product = Path(prior) / "product.txt"
+                if not product.exists():
+                    print(json.dumps({{"status": "failed", "error": "product state lost"}}))
+                    raise SystemExit(1)
+                content = product.read_text(encoding="utf-8")
+                if content.strip() != "partial":
+                    print(json.dumps({{"status": "failed", "error": "unexpected state"}}))
+                    raise SystemExit(1)
+                product.write_text("complete", encoding="utf-8")
+                run_dir = Path(args.run_dir_base) / "fake-run"
+                run_dir.mkdir(parents=True)
+                diff = run_dir / "product.diff"
+                diff.write_text("diff --git a/a.py b/a.py\\n@@ -1 +1 @@\\n-old\\n+new\\n", encoding="utf-8")
+                (run_dir / "dispatch.stdout").write_text(f"Diff: {{diff}}\\n", encoding="utf-8")
+                for name in ("result.json", "evidence.json", "acceptance-result.json", "review-ladder-result.json", "artifact-manifest.json"):
+                    (run_dir / name).write_text("{{}}\\n", encoding="utf-8")
+                print(json.dumps({{
+                    "status": "completed",
+                    "bookend_state": "done_candidate",
+                    "acceptance_status": "passed",
+                    "run_dir": str(run_dir),
+                    "product_worktree": prior,
+                }}))
+                raise SystemExit(0)
+            wt = str(Path(args.run_dir_base) / "product-worktree")
+            Path(wt).mkdir(parents=True, exist_ok=True)
+            (Path(wt) / "product.txt").write_text("partial", encoding="utf-8")
+            print(json.dumps({{
+                "status": "failed",
+                "bookend_state": "runtime_blocked",
+                "error": "validation failed",
+                "product_worktree": wt,
+            }}))
+            raise SystemExit(1)
         if mode == "slow":
             time.sleep(1.0)
 
@@ -301,6 +338,25 @@ class BookendTaskTests(unittest.TestCase):
             )
             self.assertIn('"state": "recovering"', events)
             self.assertEqual(events.count('"event": "codex_wakeup_requested"'), 1)
+
+    def test_product_state_persists_across_convergence_epochs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, state = self.run_submit(tmp, mode="persist-state", max_epochs=2)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(state["state"], "review_ready")
+            self.assertEqual(state["epoch"], 2)
+            state_path = Path(state["control_dir"]) / "bookend-state.json"
+            final = json.loads(state_path.read_text(encoding="utf-8"))
+            wt = final["product_worktree"]
+            self.assertTrue(
+                Path(wt, "product.txt").exists(),
+                "product worktree must survive across epochs",
+            )
+            self.assertEqual(
+                Path(wt, "product.txt").read_text(encoding="utf-8"),
+                "complete",
+                "epoch 2 must build on epoch 1 product state, not restart from scratch",
+            )
 
     def test_unproven_semantic_claim_does_not_wake_codex(self):
         with tempfile.TemporaryDirectory() as tmp:
