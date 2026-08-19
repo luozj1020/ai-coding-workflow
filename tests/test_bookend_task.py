@@ -159,9 +159,21 @@ def write_executor(path, mode):
                     "product_worktree": prior,
                 }}))
                 raise SystemExit(0)
-            wt = str(Path(args.run_dir_base) / "product-worktree")
+            # Create worktree under the repo's .worktrees/ boundary so the
+            # receipt generator's boundary check passes.
+            import subprocess as _sp
+            repo_root = _sp.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True
+            ).stdout.strip()
+            wt = str(Path(repo_root) / ".worktrees" / "bookend-test-wt")
             Path(wt).mkdir(parents=True, exist_ok=True)
+            _sp.run(["git", "init", wt], capture_output=True)
+            _sp.run(["git", "-C", wt, "config", "user.email", "test@test"], capture_output=True)
+            _sp.run(["git", "-C", wt, "config", "user.name", "test"], capture_output=True)
             (Path(wt) / "product.txt").write_text("partial", encoding="utf-8")
+            _sp.run(["git", "-C", wt, "add", "-A"], capture_output=True)
+            _sp.run(["git", "-C", wt, "commit", "-m", "init"], capture_output=True)
             print(json.dumps({{
                 "status": "failed",
                 "bookend_state": "runtime_blocked",

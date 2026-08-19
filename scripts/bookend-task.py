@@ -793,7 +793,7 @@ def generate_convergence_receipt(
 
     # Compute stable state hash of the dirty worktree.
     try:
-        state_hash = compute_worktree_state_hash(str(wt))
+        state_hash = compute_worktree_state_hash(wt)
     except Exception as exc:
         raise BookendError(f"cannot compute worktree state hash: {exc}")
 
@@ -968,8 +968,17 @@ def supervise(state_path: Path) -> Dict[str, Any]:
                     receipt_path = generate_convergence_receipt(
                         state_path, epoch, str(wt),
                     )
-                except BookendError:
-                    pass  # Receipt generation failure is not fatal
+                except BookendError as exc:
+                    # Fail closed: if we have a product worktree but cannot
+                    # generate a valid continuation receipt, stop rather than
+                    # risk the next epoch starting from a fresh worktree and
+                    # silently discarding the prior epoch's work.
+                    return update_state(
+                        state_path,
+                        "runtime_blocked",
+                        blocker=f"convergence-receipt-failed: {exc}",
+                        owner_lease_state="suspended",
+                    )
             update_state(
                 state_path,
                 "recovering",

@@ -2157,46 +2157,62 @@ elif [ -n "${CLAUDE_CODE_BOOKEND_CONTINUATION:-}" ]; then
         echo "Error: bookend-continuation: Python is required for receipt validation." >&2
         exit 1
     fi
-    # Validate receipt and extract fields
-    IFS=$'\t' read -r _BOOKEND_WORKTREE_DIR _BOOKEND_STATE_HASH _BOOKEND_EPOCH < <(
+    # Extract receipt fields and validate structure + contract binding in one pass.
+    IFS=$'\t' read -r _BOOKEND_WORKTREE_DIR _BOOKEND_STATE_HASH _BOOKEND_EPOCH \
+        _BOOKEND_TASK_ID _BOOKEND_CONTRACT_HASH < <(
         "$PYTHON_CMD" - "$_BOOKEND_RECEIPT" <<'PYEOF'
 import json, sys
 try:
     r = json.load(open(sys.argv[1], encoding="utf-8"))
 except (OSError, ValueError):
-    print("\t\t")
-    sys.exit(0)
-fields = ("product_worktree", "worktree_state_hash", "epoch")
-print("\t".join(str(r.get(f, "")) for f in fields))
-PYEOF
-    )
-    if [ -z "$_BOOKEND_WORKTREE_DIR" ] || [ -z "$_BOOKEND_STATE_HASH" ]; then
-        echo "Error: bookend-continuation: receipt is missing product_worktree or worktree_state_hash." >&2
-        exit 1
-    fi
-    # Validate receipt structure
-    if ! "$PYTHON_CMD" - "$_BOOKEND_RECEIPT" "$REPO_ROOT" <<'PYEOF' >/dev/null 2>&1; then
-import json, sys
-r = json.load(open(sys.argv[1], encoding="utf-8"))
+    print("\t\t\t\t")
+    sys.exit(1)
 errors = []
 if r.get("schema_version") != 1:
     errors.append("bad schema")
 if r.get("kind") != "bookend-convergence-continuation":
     errors.append("bad kind")
-if not r.get("logical_task_id"):
-    errors.append("missing logical_task_id")
-if not r.get("contract_hash"):
-    errors.append("missing contract_hash")
 if r.get("owner") != "claude":
     errors.append("owner must be claude")
 if r.get("prior_write_grant_revoked") is not True:
     errors.append("prior_write_grant_revoked must be true")
 if r.get("no_active_writer") is not True:
     errors.append("no_active_writer must be true")
-sys.exit(1 if errors else 0)
+if not r.get("product_worktree"):
+    errors.append("missing product_worktree")
+if not r.get("worktree_state_hash"):
+    errors.append("missing worktree_state_hash")
+if errors:
+    print("\t\t\t\t")
+    sys.exit(1)
+fields = ("product_worktree", "worktree_state_hash", "epoch",
+          "logical_task_id", "contract_hash")
+print("\t".join(str(r.get(f, "")) for f in fields))
 PYEOF
-        echo "Error: bookend-continuation: receipt structure validation failed." >&2
+    )
+    if [ -z "$_BOOKEND_WORKTREE_DIR" ] || [ -z "$_BOOKEND_STATE_HASH" ]; then
+        echo "Error: bookend-continuation: receipt validation failed or missing required fields." >&2
         exit 1
+    fi
+    # Fix 2: Exact contract binding — receipt must match the current Bookend
+    # task.  The supervisor sets AIWF_BOOKEND_LOGICAL_TASK_ID and
+    # AIWF_BOOKEND_CONTRACT_HASH in the executor environment.
+    if [ -n "${AIWF_BOOKEND_LOGICAL_TASK_ID:-}" ] && \
+       [ "$_BOOKEND_TASK_ID" != "$AIWF_BOOKEND_LOGICAL_TASK_ID" ]; then
+        echo "Error: bookend-continuation: receipt logical_task_id mismatch: receipt=${_BOOKEND_TASK_ID} expected=${AIWF_BOOKEND_LOGICAL_TASK_ID}" >&2
+        exit 1
+    fi
+    if [ -n "${AIWF_BOOKEND_CONTRACT_HASH:-}" ] && \
+       [ "$_BOOKEND_CONTRACT_HASH" != "$AIWF_BOOKEND_CONTRACT_HASH" ]; then
+        echo "Error: bookend-continuation: receipt contract_hash mismatch: receipt=${_BOOKEND_CONTRACT_HASH} expected=${AIWF_BOOKEND_CONTRACT_HASH}" >&2
+        exit 1
+    fi
+    if [ -n "${AIWF_BOOKEND_EPOCH:-}" ] && [ -n "$_BOOKEND_EPOCH" ]; then
+        _expected_prior_epoch=$((AIWF_BOOKEND_EPOCH - 1))
+        if [ "$_BOOKEND_EPOCH" -ne "$_expected_prior_epoch" ] 2>/dev/null; then
+            echo "Error: bookend-continuation: receipt epoch mismatch: receipt=${_BOOKEND_EPOCH} expected=${_expected_prior_epoch}" >&2
+            exit 1
+        fi
     fi
     # Worktree must exist and be a git worktree
     if [ ! -d "$_BOOKEND_WORKTREE_DIR" ]; then
@@ -2215,25 +2231,51 @@ PYEOF
             exit 1
             ;;
     esac
-    # Verify state hash has not drifted
+    # Fix 4: State hash verification — fail closed on computation failure.
     if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/worktree_state_hash.py" ]; then
-        _current_hash="$("$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" --worktree "$_BOOKEND_WORKTREE_DIR" 2>/dev/null || echo "")"
-        if [ -n "$_current_hash" ] && [ "$_current_hash" != "$_BOOKEND_STATE_HASH" ]; then
+        _current_hash="$("$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" --worktree "$_BOOKEND_WORKTREE_DIR" 2>/dev/null)" || {
+            echo "Error: bookend-continuation: worktree state hash computation failed; refusing continuation." >&2
+            exit 1
+        }
+        if [ "$_current_hash" != "$_BOOKEND_STATE_HASH" ]; then
             echo "Error: bookend-continuation: worktree state hash drifted since receipt: current=${_current_hash} receipt=${_BOOKEND_STATE_HASH}" >&2
             exit 1
         fi
+    else
+        echo "Error: bookend-continuation: worktree_state_hash.py is unavailable; refusing continuation without hash verification." >&2
+        exit 1
     fi
-    # No live processes from prior epoch
-    _bookend_prior_pid_files=("$_BOOKEND_WORKTREE_DIR"/*.pid)
-    for _pid_file in "${_bookend_prior_pid_files[@]}"; do
-        [ -f "$_pid_file" ] || continue
-        _pid_val="$(tr -d '[:space:]' < "$_pid_file" 2>/dev/null || true)"
-        [ -n "$_pid_val" ] || continue
-        if kill -0 "$_pid_val" 2>/dev/null; then
-            echo "Error: bookend-continuation: prior process still active (PID $_pid_val) in worktree." >&2
+    # Fix 3: Validate no active writer using canonical runtime process
+    # identity files, not a naive *.pid glob in the worktree.
+    # Derive the prior runtime task ID from the worktree basename.
+    _BOOKEND_PRIOR_TASK_ID="$(basename "$_BOOKEND_WORKTREE_DIR")"
+    _bookend_prior_runtime="${WORKTREE_ROOT}/${_BOOKEND_PRIOR_TASK_ID}.runtime.json"
+    if [ -f "$_bookend_prior_runtime" ]; then
+        _bookend_prior_pid="${WORKTREE_ROOT}/${_BOOKEND_PRIOR_TASK_ID}.pid"
+        _bookend_prior_dispatcher_pid="${WORKTREE_ROOT}/${_BOOKEND_PRIOR_TASK_ID}.dispatcher.pid"
+        _bookend_prior_claude_pid="${WORKTREE_ROOT}/${_BOOKEND_PRIOR_TASK_ID}.claude.pid"
+        _bookend_prior_checker_pid="${WORKTREE_ROOT}/${_BOOKEND_PRIOR_TASK_ID}.checker.pid"
+        _bookend_prior_dispatcher_id="${WORKTREE_ROOT}/${_BOOKEND_PRIOR_TASK_ID}.dispatcher.process.json"
+        _bookend_prior_claude_id="${WORKTREE_ROOT}/${_BOOKEND_PRIOR_TASK_ID}.claude.process.json"
+        _bookend_prior_checker_id="${WORKTREE_ROOT}/${_BOOKEND_PRIOR_TASK_ID}.checker.process.json"
+        if recorded_process_is_running "$_bookend_prior_dispatcher_pid" "$_bookend_prior_dispatcher_id" "$_BOOKEND_PRIOR_TASK_ID" dispatcher; then
+            echo "Error: bookend-continuation: prior dispatcher is still running for task $_BOOKEND_PRIOR_TASK_ID." >&2
             exit 1
         fi
-    done
+        if [ -f "$_bookend_prior_claude_pid" ]; then
+            if recorded_process_is_running "$_bookend_prior_claude_pid" "$_bookend_prior_claude_id" "$_BOOKEND_PRIOR_TASK_ID" claude; then
+                echo "Error: bookend-continuation: prior Claude process is still running for task $_BOOKEND_PRIOR_TASK_ID." >&2
+                exit 1
+            fi
+        elif recorded_process_is_running "$_bookend_prior_pid" "$_bookend_prior_claude_id" "$_BOOKEND_PRIOR_TASK_ID" claude; then
+            echo "Error: bookend-continuation: prior Claude process is still running." >&2
+            exit 1
+        fi
+        if recorded_process_is_running "$_bookend_prior_checker_pid" "$_bookend_prior_checker_id" "$_BOOKEND_PRIOR_TASK_ID" checker; then
+            echo "Error: bookend-continuation: prior checker process is still running for task $_BOOKEND_PRIOR_TASK_ID." >&2
+            exit 1
+        fi
+    fi
     TASK_ID="claude-bookend-${TIMESTAMP}-${RAND_SUFFIX}"
     WORKTREE_DIR="$_BOOKEND_WORKTREE_DIR"
     BRANCH_NAME="$(git -C "$WORKTREE_DIR" symbolic-ref --short HEAD 2>/dev/null || true)"
