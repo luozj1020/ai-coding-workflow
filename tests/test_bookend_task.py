@@ -125,6 +125,13 @@ def write_executor(path, mode):
                 "error": "transport unavailable",
             }}))
             raise SystemExit(1)
+        if mode == "fail-then-succeed" and epoch == 1:
+            print(json.dumps({{
+                "status": "failed",
+                "bookend_state": "runtime_blocked",
+                "error": "test failures in module X",
+            }}))
+            raise SystemExit(1)
         if mode == "slow":
             time.sleep(1.0)
 
@@ -259,11 +266,41 @@ class BookendTaskTests(unittest.TestCase):
 
     def test_runtime_failure_does_not_wake_codex(self):
         with tempfile.TemporaryDirectory() as tmp:
-            proc, state = self.run_submit(tmp, mode="runtime")
+            proc, state = self.run_submit(tmp, mode="runtime", max_epochs=1)
             self.assertEqual(proc.returncode, 1, proc.stderr)
             self.assertEqual(state["state"], "runtime_blocked")
             self.assertFalse(state["codex_wakeup_required"])
             self.assertIsNone(state["review_request"])
+
+    def test_runtime_failure_continues_across_epochs_until_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, state = self.run_submit(tmp, mode="runtime", max_epochs=3)
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+            self.assertEqual(state["state"], "runtime_blocked")
+            self.assertEqual(state["epoch"], 3)
+            state_path = Path(state["control_dir"]) / "bookend-state.json"
+            final = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(final["recovery"], "convergence-continue")
+            events = (Path(state["control_dir"]) / "bookend-events.jsonl").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('"state": "recovering"', events)
+            self.assertEqual(events.count('"event": "codex_wakeup_requested"'), 0)
+
+    def test_convergence_continue_reaches_done_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, state = self.run_submit(tmp, mode="fail-then-succeed", max_epochs=3)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(state["state"], "review_ready")
+            self.assertEqual(state["epoch"], 2)
+            state_path = Path(state["control_dir"]) / "bookend-state.json"
+            final = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(final["recovery"], "convergence-continue")
+            events = (Path(state["control_dir"]) / "bookend-events.jsonl").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('"state": "recovering"', events)
+            self.assertEqual(events.count('"event": "codex_wakeup_requested"'), 1)
 
     def test_unproven_semantic_claim_does_not_wake_codex(self):
         with tempfile.TemporaryDirectory() as tmp:

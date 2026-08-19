@@ -872,6 +872,21 @@ def supervise(state_path: Path) -> Dict[str, Any]:
             return update_state(
                 state_path, "budget_exhausted", owner_lease_state="suspended"
             )
+        # Non-semantic failure: if more epochs remain, let Claude continue
+        # converging under the same owner rather than stopping the supervisor.
+        # Compile errors, test failures, incomplete acceptance, transport
+        # failures, and executor crashes are all non-semantic — the frozen
+        # contract may still be satisfiable in a subsequent epoch.
+        if epoch < max_epochs:
+            update_state(
+                state_path,
+                "recovering",
+                recovery="convergence-continue",
+                blocker=result.get("error")
+                or result.get("failure_status")
+                or "executor-did-not-converge",
+            )
+            continue
         return update_state(
             state_path,
             "runtime_blocked",

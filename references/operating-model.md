@@ -107,10 +107,19 @@ Runtime transitions are intentionally separate from the five semantic phases:
 
 ```text
 submitted -> freezing -> converging -> classifying
-                       |              |
+                       ^              |
                        |              +-> recovering -> converging
+                       |              |       ^
+                       +--------------+       |
+                       |  convergence-continue |
+                       +-----------------------+
                        +-----------------> projecting -> review_ready
 ```
+
+`recovering` with `recovery=convergence-continue` means a non-semantic
+failure (compile error, test failure, incomplete acceptance) occurred but
+more execution epochs remain. The same Claude owner automatically continues
+in the next epoch without a Codex wakeup.
 
 Additional terminal or suspended states are:
 
