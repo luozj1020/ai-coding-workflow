@@ -232,6 +232,7 @@ class RunContext:
         self.model_calls: List[Dict[str, Any]] = []
         self.phase_order: List[str] = []
         self.stop_after_dispatch = False
+        self.product_worktree: Optional[str] = None
 
     def emit_event(self, event_name: str, phase: str, detail: Optional[Dict[str, Any]] = None) -> None:
         """Emit a phase event to the append-only event log."""
@@ -297,6 +298,8 @@ class RunContext:
             "events": str(self.events_path),
             "run_dir": str(self.run_dir),
         }
+        if self.product_worktree:
+            result["product_worktree"] = self.product_worktree
         self.result_path.write_text(
             json.dumps(result, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -329,6 +332,50 @@ def _safe_path(p: Path) -> Optional[str]:
 
 def _truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _extract_worktree_from_dispatch(stdout_path: Path) -> Optional[str]:
+    """Extract the worktree path from dispatch-to-claude.sh stdout.
+
+    The dispatcher echoes ``Worktree ready (strategy, Ns): /path`` or
+    ``Worktree reuse (kind): /path ...`` to stdout after setup.
+    """
+    if not stdout_path.is_file():
+        return None
+    try:
+        text = stdout_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in reversed(text.splitlines()):
+        if line.startswith("Worktree ready") or line.startswith("Worktree reuse"):
+            # Format: "Worktree ready (fresh, 3s): /path/to/worktree"
+            # or:     "Worktree reuse (retry-in-place): /path (prior task: ...)"
+            # Find the first ": " after the strategy parenthetical.
+            paren_close = line.find("): ")
+            if paren_close != -1:
+                candidate = line[paren_close + 3:].strip()
+                # Strip trailing parenthetical like "(prior task: ...)"
+                trailing = candidate.find(" (")
+                if trailing != -1:
+                    candidate = candidate[:trailing].strip()
+                if candidate:
+                    return candidate
+    return None
+
+
+def _find_prior_task_id(worktree_path: str) -> Optional[str]:
+    """Find the runtime task ID for a given worktree directory.
+
+    The dispatcher writes ``<WORKTREE_ROOT>/<TASK_ID>.runtime.json`` after
+    each run.  Given a worktree path, derive the task ID from its parent
+    directory and verify the runtime file exists.
+    """
+    wt = Path(worktree_path)
+    task_id = wt.name
+    runtime_file = wt.parent / f"{task_id}.runtime.json"
+    if runtime_file.is_file():
+        return task_id
+    return None
 
 
 def _spark_needs_host_execution(stdout_text: str, stderr_text: str) -> bool:
@@ -1074,6 +1121,15 @@ def phase_dispatch(ctx: RunContext) -> None:
         # Spark and Claude launches without a second fragmented handoff.
         cmd.extend(["--execution-env", "host", "--host-authority"])
 
+    # Bookend epoch continuity: when a prior product worktree exists, reuse it
+    # via the dispatcher's existing retry-in-place mechanism instead of
+    # creating a fresh worktree.
+    prior_worktree = os.environ.get("AIWF_BOOKEND_PRODUCT_WORKTREE")
+    if prior_worktree:
+        prior_task_id = _find_prior_task_id(prior_worktree)
+        if prior_task_id:
+            cmd.extend(["--retry-in-place-task-id", prior_task_id])
+
     stdout_path = ctx.run_dir / "dispatch.stdout"
     stderr_path = ctx.run_dir / "dispatch.stderr"
     claude_phase_metrics_path = ctx.run_dir / "claude-phase-metrics.json"
@@ -1121,6 +1177,12 @@ def phase_dispatch(ctx: RunContext) -> None:
     ctx.record_artifact(stderr_path, is_json=False)
     if claude_phase_metrics_path.is_file():
         ctx.record_artifact(claude_phase_metrics_path)
+
+    # Extract the worktree path for Bookend epoch continuity.  The
+    # dispatcher writes "Worktree ready/reuse ...: <path>" to stdout.
+    worktree = _extract_worktree_from_dispatch(stdout_path)
+    if worktree:
+        ctx.product_worktree = worktree
 
     ctx.phase_timings["dispatch"] = time.monotonic() - start
     ctx.emit_event("dispatch_complete", "dispatch", {"exit_code": exit_code})

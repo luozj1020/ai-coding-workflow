@@ -992,6 +992,73 @@ class TestRunWorkflowCLI(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
 
 
+class TestWorktreeExtraction(unittest.TestCase):
+    """Verify worktree extraction from dispatch output."""
+
+    def _load_helpers(self):
+        spec = importlib.util.spec_from_file_location(
+            "_run_workflow", SCRIPTS / "run-workflow.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_extract_worktree_from_fresh_ready_line(self):
+        mod = self._load_helpers()
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = Path(tmp) / "dispatch.stdout"
+            stdout.write_text(
+                "Some preamble\n"
+                "Worktree ready (fresh, 3s): /repo/.worktrees/claude-20260819-abc\n"
+                "Dispatching...\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                mod._extract_worktree_from_dispatch(stdout),
+                "/repo/.worktrees/claude-20260819-abc",
+            )
+
+    def test_extract_worktree_from_reuse_line(self):
+        mod = self._load_helpers()
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = Path(tmp) / "dispatch.stdout"
+            stdout.write_text(
+                "Worktree reuse (retry-in-place): /repo/.worktrees/claude-old "
+                "(prior task: claude-old, new task: claude-new)\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                mod._extract_worktree_from_dispatch(stdout),
+                "/repo/.worktrees/claude-old",
+            )
+
+    def test_extract_worktree_returns_none_when_no_match(self):
+        mod = self._load_helpers()
+        with tempfile.TemporaryDirectory() as tmp:
+            stdout = Path(tmp) / "dispatch.stdout"
+            stdout.write_text("No worktree info here\n", encoding="utf-8")
+            self.assertIsNone(mod._extract_worktree_from_dispatch(stdout))
+
+    def test_find_prior_task_id_from_runtime_json(self):
+        mod = self._load_helpers()
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp) / ".worktrees" / "claude-abc-123"
+            wt.mkdir(parents=True)
+            runtime = wt.parent / "claude-abc-123.runtime.json"
+            runtime.write_text(
+                json.dumps({"task_id": "claude-abc-123", "worktree": str(wt)}),
+                encoding="utf-8",
+            )
+            self.assertEqual(mod._find_prior_task_id(str(wt)), "claude-abc-123")
+
+    def test_find_prior_task_id_returns_none_when_missing(self):
+        mod = self._load_helpers()
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = Path(tmp) / ".worktrees" / "claude-missing"
+            wt.mkdir(parents=True)
+            self.assertIsNone(mod._find_prior_task_id(str(wt)))
+
+
 class TestRunWorkflowPython39(unittest.TestCase):
     """Verify Python 3.9 compatibility patterns in run-workflow.py."""
 
