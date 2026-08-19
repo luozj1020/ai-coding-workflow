@@ -40,7 +40,7 @@ PYTHONDONTWRITEBYTECODE=1
 export PYTHONDONTWRITEBYTECODE
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--tool-profile PROFILE] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL | --context-lease LEASE --continuation-kind KIND] [--recovery-classification ATTEMPT_CLASSIFICATION] [--context-compile-strategy coverage|anchors-only] [--force-fresh-session] [--rehydrate-from CAPSULE] [--preflight-task-id TASK_ID]" >&2
+    echo "Usage: $0 <task-card-path> [--empty-api-config-env NAME] [--execution-env auto|sandbox|host] [--dirty-source-mode block|snapshot] [--tool-profile PROFILE] [--retry-in-place-task-id TASK_ID | --reviewed-continuation APPROVAL | --bookend-continuation RECEIPT | --context-lease LEASE --continuation-kind KIND] [--recovery-classification ATTEMPT_CLASSIFICATION] [--context-compile-strategy coverage|anchors-only] [--force-fresh-session] [--rehydrate-from CAPSULE] [--preflight-task-id TASK_ID]" >&2
     exit 1
 fi
 
@@ -52,6 +52,7 @@ DIRTY_SOURCE_MODE_OPTION=""
 TOOL_PROFILE_OPTION=""
 RETRY_IN_PLACE_TASK_ID_OPTION=""
 REVIEWED_CONTINUATION_OPTION=""
+BOOKEND_CONTINUATION_OPTION=""
 CONTEXT_LEASE_OPTION=""
 CONTINUATION_KIND_OPTION=""
 FORCE_FRESH_SESSION_OPTION=0
@@ -128,6 +129,14 @@ while [ $# -gt 0 ]; do
                 exit 1
             }
             REVIEWED_CONTINUATION_OPTION="$2"
+            shift 2
+            ;;
+        --bookend-continuation)
+            [ $# -ge 2 ] || {
+                echo "Error: --bookend-continuation requires a receipt path." >&2
+                exit 1
+            }
+            BOOKEND_CONTINUATION_OPTION="$2"
             shift 2
             ;;
         --context-lease)
@@ -248,6 +257,10 @@ fi
 if [ -n "$REVIEWED_CONTINUATION_OPTION" ]; then
     CLAUDE_CODE_REVIEWED_CONTINUATION="$REVIEWED_CONTINUATION_OPTION"
     export CLAUDE_CODE_REVIEWED_CONTINUATION
+fi
+if [ -n "$BOOKEND_CONTINUATION_OPTION" ]; then
+    CLAUDE_CODE_BOOKEND_CONTINUATION="$BOOKEND_CONTINUATION_OPTION"
+    export CLAUDE_CODE_BOOKEND_CONTINUATION
 fi
 if [ -n "$DIRTY_SOURCE_MODE_OPTION" ]; then
     CLAUDE_CODE_DIRTY_SOURCE_MODE="$DIRTY_SOURCE_MODE_OPTION"
@@ -2004,8 +2017,9 @@ _continuation_selector_count=0
 [ -n "${CLAUDE_CODE_RETRY_IN_PLACE_TASK_ID:-}" ] && _continuation_selector_count=$((_continuation_selector_count + 1))
 [ -n "${CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID:-}" ] && _continuation_selector_count=$((_continuation_selector_count + 1))
 [ -n "${CLAUDE_CODE_REVIEWED_CONTINUATION:-}" ] && _continuation_selector_count=$((_continuation_selector_count + 1))
+[ -n "${CLAUDE_CODE_BOOKEND_CONTINUATION:-}" ] && _continuation_selector_count=$((_continuation_selector_count + 1))
 if [ "$_continuation_selector_count" -gt 1 ]; then
-    echo "Error: retry-in-place, advisor continuation, and reviewed continuation are mutually exclusive." >&2
+    echo "Error: retry-in-place, advisor continuation, reviewed continuation, and bookend continuation are mutually exclusive." >&2
     exit 1
 fi
 
@@ -2128,6 +2142,103 @@ elif [ -n "${CLAUDE_CODE_ADVISOR_CONTINUE_TASK_ID:-}" ]; then
     BRANCH_NAME="$_ADVISOR_CONTINUE_BRANCH"
     WORKTREE_START_COMMIT="$_ADVISOR_EXECUTION_BASE_COMMIT"
     echo "Worktree reuse (advisor-continuation): $WORKTREE_DIR (prior task: $_ADVISOR_CONTINUE_TASK_ID, new task: $TASK_ID)"
+elif [ -n "${CLAUDE_CODE_BOOKEND_CONTINUATION:-}" ]; then
+    # --- Bookend convergence continuation ---
+    # Reuses a dirty product worktree from a prior Bookend epoch.  Unlike
+    # retry-in-place (which requires a clean worktree), this allows dirty
+    # state because the frozen contract is the authority — no Codex review
+    # is needed for ordinary compile/test failures.
+    _BOOKEND_RECEIPT="$CLAUDE_CODE_BOOKEND_CONTINUATION"
+    if [ ! -f "$_BOOKEND_RECEIPT" ]; then
+        echo "Error: bookend-continuation: receipt file not found: $_BOOKEND_RECEIPT" >&2
+        exit 1
+    fi
+    if [ -z "$PYTHON_CMD" ]; then
+        echo "Error: bookend-continuation: Python is required for receipt validation." >&2
+        exit 1
+    fi
+    # Validate receipt and extract fields
+    IFS=$'\t' read -r _BOOKEND_WORKTREE_DIR _BOOKEND_STATE_HASH _BOOKEND_EPOCH < <(
+        "$PYTHON_CMD" - "$_BOOKEND_RECEIPT" <<'PYEOF'
+import json, sys
+try:
+    r = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    print("\t\t")
+    sys.exit(0)
+fields = ("product_worktree", "worktree_state_hash", "epoch")
+print("\t".join(str(r.get(f, "")) for f in fields))
+PYEOF
+    )
+    if [ -z "$_BOOKEND_WORKTREE_DIR" ] || [ -z "$_BOOKEND_STATE_HASH" ]; then
+        echo "Error: bookend-continuation: receipt is missing product_worktree or worktree_state_hash." >&2
+        exit 1
+    fi
+    # Validate receipt structure
+    if ! "$PYTHON_CMD" - "$_BOOKEND_RECEIPT" "$REPO_ROOT" <<'PYEOF' >/dev/null 2>&1; then
+import json, sys
+r = json.load(open(sys.argv[1], encoding="utf-8"))
+errors = []
+if r.get("schema_version") != 1:
+    errors.append("bad schema")
+if r.get("kind") != "bookend-convergence-continuation":
+    errors.append("bad kind")
+if not r.get("logical_task_id"):
+    errors.append("missing logical_task_id")
+if not r.get("contract_hash"):
+    errors.append("missing contract_hash")
+if r.get("owner") != "claude":
+    errors.append("owner must be claude")
+if r.get("prior_write_grant_revoked") is not True:
+    errors.append("prior_write_grant_revoked must be true")
+if r.get("no_active_writer") is not True:
+    errors.append("no_active_writer must be true")
+sys.exit(1 if errors else 0)
+PYEOF
+        echo "Error: bookend-continuation: receipt structure validation failed." >&2
+        exit 1
+    fi
+    # Worktree must exist and be a git worktree
+    if [ ! -d "$_BOOKEND_WORKTREE_DIR" ]; then
+        echo "Error: bookend-continuation: product worktree missing: $_BOOKEND_WORKTREE_DIR" >&2
+        exit 1
+    fi
+    if ! git -C "$_BOOKEND_WORKTREE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "Error: bookend-continuation: product worktree is not a git worktree: $_BOOKEND_WORKTREE_DIR" >&2
+        exit 1
+    fi
+    # Verify worktree is under .worktrees boundary
+    case "$_BOOKEND_WORKTREE_DIR" in
+        "${WORKTREE_ROOT}/"*) ;;
+        *)
+            echo "Error: bookend-continuation: worktree is outside .worktrees boundary: $_BOOKEND_WORKTREE_DIR" >&2
+            exit 1
+            ;;
+    esac
+    # Verify state hash has not drifted
+    if [ -n "$PYTHON_CMD" ] && [ -f "${SCRIPT_DIR}/worktree_state_hash.py" ]; then
+        _current_hash="$("$PYTHON_CMD" "${SCRIPT_DIR}/worktree_state_hash.py" --worktree "$_BOOKEND_WORKTREE_DIR" 2>/dev/null || echo "")"
+        if [ -n "$_current_hash" ] && [ "$_current_hash" != "$_BOOKEND_STATE_HASH" ]; then
+            echo "Error: bookend-continuation: worktree state hash drifted since receipt: current=${_current_hash} receipt=${_BOOKEND_STATE_HASH}" >&2
+            exit 1
+        fi
+    fi
+    # No live processes from prior epoch
+    _bookend_prior_pid_files=("$_BOOKEND_WORKTREE_DIR"/*.pid)
+    for _pid_file in "${_bookend_prior_pid_files[@]}"; do
+        [ -f "$_pid_file" ] || continue
+        _pid_val="$(tr -d '[:space:]' < "$_pid_file" 2>/dev/null || true)"
+        [ -n "$_pid_val" ] || continue
+        if kill -0 "$_pid_val" 2>/dev/null; then
+            echo "Error: bookend-continuation: prior process still active (PID $_pid_val) in worktree." >&2
+            exit 1
+        fi
+    done
+    TASK_ID="claude-bookend-${TIMESTAMP}-${RAND_SUFFIX}"
+    WORKTREE_DIR="$_BOOKEND_WORKTREE_DIR"
+    BRANCH_NAME="$(git -C "$WORKTREE_DIR" symbolic-ref --short HEAD 2>/dev/null || true)"
+    WORKTREE_START_COMMIT="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || true)"
+    echo "Worktree reuse (bookend-continuation): $WORKTREE_DIR (epoch: $_BOOKEND_EPOCH, new task: $TASK_ID)"
 else
     # --- Normal worktree setup (fresh or reuse-managed) ---
     if [ -n "$PREFLIGHT_TASK_ID_OPTION" ]; then

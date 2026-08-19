@@ -1121,14 +1121,13 @@ def phase_dispatch(ctx: RunContext) -> None:
         # Spark and Claude launches without a second fragmented handoff.
         cmd.extend(["--execution-env", "host", "--host-authority"])
 
-    # Bookend epoch continuity: when a prior product worktree exists, reuse it
-    # via the dispatcher's existing retry-in-place mechanism instead of
-    # creating a fresh worktree.
-    prior_worktree = os.environ.get("AIWF_BOOKEND_PRODUCT_WORKTREE")
-    if prior_worktree:
-        prior_task_id = _find_prior_task_id(prior_worktree)
-        if prior_task_id:
-            cmd.extend(["--retry-in-place-task-id", prior_task_id])
+    # Bookend epoch continuity: when a convergence receipt exists, pass it to
+    # the dispatcher so it can reuse the dirty product worktree instead of
+    # creating a fresh one.  This is distinct from --retry-in-place which
+    # requires a clean worktree for transport retries.
+    convergence_receipt = os.environ.get("AIWF_BOOKEND_CONVERGENCE_RECEIPT")
+    if convergence_receipt and Path(convergence_receipt).is_file():
+        cmd.extend(["--bookend-continuation", convergence_receipt])
 
     stdout_path = ctx.run_dir / "dispatch.stdout"
     stderr_path = ctx.run_dir / "dispatch.stderr"

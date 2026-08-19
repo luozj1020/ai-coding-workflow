@@ -34,6 +34,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
 SCHEMA_VERSION = 1
 TERMINAL_STATES = {
     "review_ready",
@@ -341,6 +343,9 @@ def run_epoch(state_path: Path, epoch: int) -> Tuple[int, Dict[str, Any]]:
     product_worktree = state.get("product_worktree")
     if product_worktree:
         env["AIWF_BOOKEND_PRODUCT_WORKTREE"] = str(product_worktree)
+    convergence_receipt = state.get("convergence_receipt")
+    if convergence_receipt:
+        env["AIWF_BOOKEND_CONVERGENCE_RECEIPT"] = str(convergence_receipt)
     command = executor_command(state, epoch_dir)
     atomic_json(
         epoch_dir / "epoch-request.json",
@@ -742,6 +747,73 @@ def validate_semantic_block_receipt(
     return True, "verified"
 
 
+def generate_convergence_receipt(
+    state_path: Path,
+    epoch: int,
+    product_worktree: str,
+) -> Path:
+    """Generate a Bookend convergence continuation receipt.
+
+    The receipt proves that the product worktree is under Bookend control,
+    the prior epoch writer has been revoked, and the worktree state is
+    stable.  Unlike a reviewed-continuation approval, it does not require
+    a Codex semantic decision — the frozen contract is the authority.
+    """
+    from worktree_state_hash import compute_worktree_state_hash
+
+    state = load_json(state_path)
+    control_dir = state_path.parent
+    wt = Path(product_worktree).resolve()
+
+    if not wt.is_dir():
+        raise BookendError(f"product worktree is not a directory: {wt}")
+    if wt.is_symlink():
+        raise BookendError(f"product worktree is a symlink: {wt}")
+
+    # Verify the worktree is under the expected .worktrees boundary.
+    repo = Path(str(state["repo"]))
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            check=False,
+        )
+        if result.returncode == 0:
+            common = Path(result.stdout.strip())
+            if not common.is_absolute():
+                common = (repo / common).resolve()
+            runtime_root = (common.parent if common.name == ".git" else repo.resolve())
+            expected_root = (runtime_root / ".worktrees").resolve()
+            if not str(wt).startswith(str(expected_root) + os.sep):
+                raise BookendError(
+                    f"product worktree {wt} is outside .worktrees boundary {expected_root}"
+                )
+    except (OSError, FileNotFoundError):
+        pass  # If git is unavailable, skip boundary check
+
+    # Compute stable state hash of the dirty worktree.
+    try:
+        state_hash = compute_worktree_state_hash(str(wt))
+    except Exception as exc:
+        raise BookendError(f"cannot compute worktree state hash: {exc}")
+
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "bookend-convergence-continuation",
+        "logical_task_id": state["logical_task_id"],
+        "contract_hash": state["contract_hash"],
+        "epoch": epoch,
+        "owner": "claude",
+        "product_worktree": str(wt),
+        "worktree_state_hash": state_hash,
+        "prior_write_grant_revoked": True,
+        "no_active_writer": True,
+    }
+    receipt_path = control_dir / f"convergence-receipt-epoch-{epoch:03d}.json"
+    atomic_json(receipt_path, receipt)
+    return receipt_path
+
+
 def acquire_supervisor(control_dir: Path) -> None:
     lock = control_dir / "supervisor.lock"
     try:
@@ -889,10 +961,20 @@ def supervise(state_path: Path) -> Dict[str, Any]:
         # failures, and executor crashes are all non-semantic — the frozen
         # contract may still be satisfiable in a subsequent epoch.
         if epoch < max_epochs:
+            wt = state.get("product_worktree")
+            receipt_path = None
+            if wt:
+                try:
+                    receipt_path = generate_convergence_receipt(
+                        state_path, epoch, str(wt),
+                    )
+                except BookendError:
+                    pass  # Receipt generation failure is not fatal
             update_state(
                 state_path,
                 "recovering",
                 recovery="convergence-continue",
+                convergence_receipt=str(receipt_path) if receipt_path else None,
                 blocker=result.get("error")
                 or result.get("failure_status")
                 or "executor-did-not-converge",
