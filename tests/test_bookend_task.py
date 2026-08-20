@@ -183,6 +183,9 @@ def write_executor(path, mode):
             raise SystemExit(1)
         if mode == "slow":
             time.sleep(1.0)
+        if mode == "slow-epoch":
+            # Sleep longer than the review window (1 min) to trigger timeout.
+            time.sleep(120)
 
         run_dir = Path(args.run_dir_base) / "fake-run"
         run_dir.mkdir(parents=True)
@@ -206,31 +209,37 @@ def write_executor(path, mode):
 
 
 class BookendTaskTests(unittest.TestCase):
-    def run_submit(self, tmp, mode="done", max_epochs=3, task_data=None):
+    def run_submit(self, tmp, mode="done", max_epochs=3, task_data=None,
+                   bookend_mode=None, window_minutes=None):
         tmp_path = Path(tmp)
         task = tmp_path / "task.json"
         task.write_text(json.dumps(task_data or task_value()), encoding="utf-8")
         executor = tmp_path / "fake-executor.py"
         write_executor(executor, mode)
+        cmd = [
+            sys.executable,
+            str(SCRIPT),
+            "submit",
+            str(task),
+            "--repo",
+            str(ROOT),
+            "--profiles-dir",
+            str(PROFILES),
+            "--run-dir-base",
+            str(tmp_path / "runs"),
+            "--executor",
+            str(executor),
+            "--max-epochs",
+            str(max_epochs),
+            "--foreground",
+            "--json",
+        ]
+        if bookend_mode:
+            cmd.extend(["--mode", bookend_mode])
+        if window_minutes is not None:
+            cmd.extend(["--window-minutes", str(window_minutes)])
         proc = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT),
-                "submit",
-                str(task),
-                "--repo",
-                str(ROOT),
-                "--profiles-dir",
-                str(PROFILES),
-                "--run-dir-base",
-                str(tmp_path / "runs"),
-                "--executor",
-                str(executor),
-                "--max-epochs",
-                str(max_epochs),
-                "--foreground",
-                "--json",
-            ],
+            cmd,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -467,6 +476,193 @@ class BookendTaskTests(unittest.TestCase):
                 __import__("time").sleep(0.05)
             self.assertEqual(state["state"], "review_ready")
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_balanced_mode_window_triggers_checkpoint(self):
+        """Window expiry should emit checkpoint_ready, not runtime_blocked."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, state = self.run_submit(
+                tmp, mode="slow-epoch", max_epochs=3,
+                bookend_mode="balanced", window_minutes=1,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(state["state"], "checkpoint_ready")
+            self.assertTrue(state["codex_wakeup_required"])
+            self.assertEqual(state["checkpoint_count"], 1)
+            # Checkpoint wake request should exist.
+            ckpt = Path(state["checkpoint_request"])
+            self.assertTrue(ckpt.is_file())
+            request = json.loads(ckpt.read_text(encoding="utf-8"))
+            self.assertEqual(request["kind"], "checkpoint-review")
+            self.assertIn(request["codex_action"], ("checkpoint-verdict",))
+
+    def test_balanced_mode_checkpoint_verdict_continue(self):
+        """After CONTINUE verdict, supervisor resumes and converges."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            task = tmp_path / "task.json"
+            task.write_text(json.dumps(task_value()), encoding="utf-8")
+            executor = tmp_path / "fake-executor.py"
+            # slow-epoch sleeps 30s; window=1min so timeout fires at 30s.
+            # max_epochs=2: epoch1→checkpoint, resume→epoch2→budget_exhausted.
+            write_executor(executor, "slow-epoch")
+            import threading
+
+            def write_verdict_when_ready(state_path):
+                deadline = __import__("time").monotonic() + 60
+                while __import__("time").monotonic() < deadline:
+                    try:
+                        st = json.loads(state_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        __import__("time").sleep(0.5)
+                        continue
+                    if st.get("state") == "checkpoint_ready":
+                        control_dir = Path(st["control_dir"])
+                        verdict_path = control_dir / "checkpoint-verdict.json"
+                        verdict_path.write_text(json.dumps({
+                            "schema_version": 1,
+                            "kind": "checkpoint-verdict",
+                            "logical_task_id": st["logical_task_id"],
+                            "contract_hash": st["contract_hash"],
+                            "epoch": st.get("epoch", 0),
+                            "action": "continue",
+                            "reason": "keep going",
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                        }), encoding="utf-8")
+                        return
+                    if st.get("terminal"):
+                        return
+                    __import__("time").sleep(0.5)
+
+            cmd = [
+                sys.executable, str(SCRIPT), "submit", str(task),
+                "--repo", str(ROOT), "--profiles-dir", str(PROFILES),
+                "--run-dir-base", str(tmp_path / "runs"),
+                "--executor", str(executor),
+                "--max-epochs", "2", "--mode", "balanced",
+                "--window-minutes", "1", "--foreground", "--json",
+            ]
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+            )
+
+            # Poll for state file.
+            runs_dir = tmp_path / "runs"
+            state_path = None
+            for _ in range(20):
+                __import__("time").sleep(0.5)
+                for p in runs_dir.rglob("bookend-state.json"):
+                    state_path = p
+                    break
+                if state_path:
+                    break
+            self.assertIsNotNone(state_path, "bookend-state.json not found")
+
+            verdict_thread = threading.Thread(
+                target=write_verdict_when_ready, args=(state_path,),
+                daemon=True,
+            )
+            verdict_thread.start()
+
+            try:
+                stdout, stderr = proc.communicate(timeout=90)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+
+            verdict_thread.join(timeout=5)
+
+            # Read final state.
+            final = json.loads(state_path.read_text(encoding="utf-8"))
+            # Supervisor should have processed the checkpoint and continued.
+            self.assertEqual(final.get("checkpoint_count"), 1)
+            self.assertIn(final.get("state"), (
+                "review_ready", "budget_exhausted", "runtime_blocked",
+            ))
+
+    def test_balanced_mode_overnight_unchanged(self):
+        """Overnight mode ignores review_window_seconds entirely."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, state = self.run_submit(tmp, mode="done", max_epochs=3)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(state["state"], "review_ready")
+            self.assertIsNone(state.get("review_window_seconds"))
+
+    def test_balanced_mode_second_window_does_not_wake_codex(self):
+        """Second window expiry should NOT produce another checkpoint."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            task = tmp_path / "task.json"
+            task.write_text(json.dumps(task_value()), encoding="utf-8")
+            executor = tmp_path / "fake-executor.py"
+            write_executor(executor, "slow-epoch")
+            import threading
+
+            def write_verdict_once(state_path):
+                deadline = __import__("time").monotonic() + 60
+                while __import__("time").monotonic() < deadline:
+                    try:
+                        st = json.loads(state_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        __import__("time").sleep(0.5)
+                        continue
+                    if st.get("state") == "checkpoint_ready":
+                        control_dir = Path(st["control_dir"])
+                        verdict_path = control_dir / "checkpoint-verdict.json"
+                        verdict_path.write_text(json.dumps({
+                            "schema_version": 1,
+                            "kind": "checkpoint-verdict",
+                            "logical_task_id": st["logical_task_id"],
+                            "contract_hash": st["contract_hash"],
+                            "epoch": st.get("epoch", 0),
+                            "action": "continue",
+                            "reason": "",
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                        }), encoding="utf-8")
+                        return
+                    if st.get("terminal"):
+                        return
+                    __import__("time").sleep(0.5)
+
+            cmd = [
+                sys.executable, str(SCRIPT), "submit", str(task),
+                "--repo", str(ROOT), "--profiles-dir", str(PROFILES),
+                "--run-dir-base", str(tmp_path / "runs"),
+                "--executor", str(executor),
+                "--max-epochs", "2", "--mode", "balanced",
+                "--window-minutes", "1", "--foreground", "--json",
+            ]
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+            )
+            runs_dir = tmp_path / "runs"
+            state_path = None
+            for _ in range(20):
+                __import__("time").sleep(0.5)
+                for p in runs_dir.rglob("bookend-state.json"):
+                    state_path = p
+                    break
+                if state_path:
+                    break
+            self.assertIsNotNone(state_path, "bookend-state.json not found")
+
+            verdict_thread = threading.Thread(
+                target=write_verdict_once, args=(state_path,), daemon=True,
+            )
+            verdict_thread.start()
+
+            try:
+                stdout, stderr = proc.communicate(timeout=90)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+
+            verdict_thread.join(timeout=5)
+
+            if state_path and state_path.is_file():
+                final = json.loads(state_path.read_text(encoding="utf-8"))
+                self.assertEqual(final.get("checkpoint_count", 0), 1)
 
 
 if __name__ == "__main__":

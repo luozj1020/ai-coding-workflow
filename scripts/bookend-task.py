@@ -16,6 +16,13 @@ Product state continuity: when an executor returns ``product_worktree`` in its
 result, the controller persists that path in the bookend state and passes it to
 the next epoch via ``AIWF_BOOKEND_PRODUCT_WORKTREE``.  This allows the next
 epoch to resume from the same working tree rather than starting fresh.
+
+Balanced mode: when ``--mode balanced`` is selected, the controller enforces
+a review window (default 15 min).  When the window expires mid-epoch, the
+executor is terminated, the dirty worktree is preserved, and a checkpoint
+wake request is emitted.  After at most one intermediate Codex review, the
+controller resumes the same Claude owner.  A second window expiry does NOT
+wake Codex again — the supervisor continues autonomously to completion.
 """
 
 from __future__ import annotations
@@ -45,7 +52,9 @@ TERMINAL_STATES = {
     "budget_exhausted",
     "cancelled",
 }
-CODEX_WAKE_STATES = {"review_ready", "semantic_blocked"}
+# checkpoint_ready wakes Codex but is NOT terminal — the supervisor blocks
+# waiting for the verdict, then resumes the same owner.
+CODEX_WAKE_STATES = {"review_ready", "checkpoint_ready", "semantic_blocked"}
 SEMANTIC_FAILURES = {
     "semantic-blocked",
     "semantic_blocked",
@@ -276,6 +285,11 @@ def create_task(args: argparse.Namespace) -> Tuple[Path, Dict[str, Any]]:
         ),
         "dispatcher": str(Path(args.dispatcher).resolve()) if args.dispatcher else None,
         "host_authority": bool(args.host_authority),
+        "review_window_seconds": (
+            int(args.window_minutes) * 60 if args.window_minutes else None
+        ),
+        "max_checkpoints": 1 if args.mode == "balanced" else 0,
+        "checkpoint_count": 0,
         "review_request": None,
         "last_result": None,
     }
@@ -358,27 +372,62 @@ def run_epoch(state_path: Path, epoch: int) -> Tuple[int, Dict[str, Any]]:
             "command": command,
         },
     )
-    proc = subprocess.run(
-        command,
-        cwd=str(state["repo"]),
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
-    (epoch_dir / "executor.stdout").write_text(proc.stdout, encoding="utf-8")
-    (epoch_dir / "executor.stderr").write_text(proc.stderr, encoding="utf-8")
+
+    # Balanced mode: enforce a review window on this epoch.  When the
+    # window expires, the executor is terminated and the epoch is treated
+    # as a checkpoint trigger rather than a failure.
+    window_seconds = state.get("review_window_seconds")
+    timed_out = False
     try:
-        result = parse_json_stdout(proc.stdout)
-    except BookendError as exc:
+        proc = subprocess.run(
+            command,
+            cwd=str(state["repo"]),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=window_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        # Capture partial output from the timed-out process.
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        proc_stdout = stdout
+        proc_stderr = stderr
+        proc_rc = -1
+    else:
+        proc_stdout = proc.stdout
+        proc_stderr = proc.stderr
+        proc_rc = proc.returncode
+
+    (epoch_dir / "executor.stdout").write_text(proc_stdout, encoding="utf-8")
+    (epoch_dir / "executor.stderr").write_text(proc_stderr, encoding="utf-8")
+
+    if timed_out:
+        # Review window expired — this is a checkpoint trigger, not a failure.
         result = {
-            "status": "failed",
-            "bookend_state": "runtime_blocked",
-            "error": str(exc),
-            "executor_exit_code": proc.returncode,
+            "status": "checkpoint_trigger",
+            "bookend_state": "checkpoint_trigger",
+            "error": "review window expired",
         }
+    else:
+        try:
+            result = parse_json_stdout(proc_stdout)
+        except BookendError as exc:
+            result = {
+                "status": "failed",
+                "bookend_state": "runtime_blocked",
+                "error": str(exc),
+                "executor_exit_code": proc_rc,
+            }
+
     result_path = epoch_dir / "epoch-result.json"
     atomic_json(result_path, result)
     append_event(
@@ -386,13 +435,14 @@ def run_epoch(state_path: Path, epoch: int) -> Tuple[int, Dict[str, Any]]:
         "epoch_finished",
         {
             "epoch": epoch,
-            "exit_code": proc.returncode,
+            "exit_code": proc_rc,
+            "timed_out": timed_out,
             "bookend_state": result.get("bookend_state"),
             "status": result.get("status"),
             "result": str(result_path),
         },
     )
-    return proc.returncode, result
+    return proc_rc, result
 
 
 def artifact_ref(path: Optional[Path]) -> Optional[Dict[str, Any]]:
@@ -642,12 +692,113 @@ def emit_wake_request(
     return path
 
 
+def emit_checkpoint_wake_request(
+    state_path: Path,
+    result: Dict[str, Any],
+    receipt: Optional[Path] = None,
+) -> Path:
+    """Emit a checkpoint wake request for balanced mode.
+
+    The checkpoint request is smaller than a final review request.  It
+    includes the frozen contract, the current epoch result, and the
+    convergence receipt.  Codex responds with CONTINUE / NARROW /
+    REVISION_DELTA / STOP.
+    """
+    state = load_json(state_path)
+    control_dir = state_path.parent
+
+    # Collect acceptance progress from the latest epoch result.
+    last_result_path = state.get("last_result")
+    acceptance_progress = {}
+    if last_result_path:
+        try:
+            lr = load_json(Path(str(last_result_path)))
+            acceptance_progress = {
+                "acceptance_status": lr.get("acceptance_status"),
+                "status": lr.get("status"),
+            }
+        except BookendError:
+            pass
+
+    request = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "checkpoint-review",
+        "logical_task_id": state["logical_task_id"],
+        "contract_hash": state["contract_hash"],
+        "epoch": state.get("epoch", 0),
+        "reason": "review-window-expired",
+        "created_at": utc_now(),
+        "frozen_task": artifact_ref(Path(str(state["frozen_task"]))),
+        "convergence_receipt": artifact_ref(receipt),
+        "acceptance_progress": acceptance_progress,
+        "codex_action": "checkpoint-verdict",
+        "verdict_options": ["continue", "narrow", "revision_delta", "stop"],
+    }
+    path = control_dir / "checkpoint-wake-request.json"
+    atomic_json(path, request)
+    append_event(
+        control_dir,
+        "codex_wakeup_requested",
+        {
+            "kind": "checkpoint-review",
+            "reason": "review-window-expired",
+            "request": str(path),
+        },
+    )
+    return path
+
+
+def wait_for_checkpoint_verdict(state_path: Path, poll_interval: float = 2.0) -> Dict[str, Any]:
+    """Block until Codex writes a checkpoint verdict file.
+
+    The verdict file is written by ``cmd_checkpoint_verdict`` and must
+    match the current checkpoint request.  Returns the verdict dict.
+    """
+    control_dir = state_path.parent
+    verdict_path = control_dir / "checkpoint-verdict.json"
+    deadline = time.monotonic() + 3600  # 1 hour safety timeout
+
+    while time.monotonic() < deadline:
+        if verdict_path.is_file():
+            try:
+                verdict = load_json(verdict_path)
+            except BookendError:
+                time.sleep(poll_interval)
+                continue
+            # Validate the verdict matches our request.
+            state = load_json(state_path)
+            if verdict.get("logical_task_id") != state.get("logical_task_id"):
+                time.sleep(poll_interval)
+                continue
+            if verdict.get("contract_hash") != state.get("contract_hash"):
+                time.sleep(poll_interval)
+                continue
+            action = str(verdict.get("action") or "").strip().lower()
+            if action in ("continue", "narrow", "revision_delta", "stop"):
+                append_event(
+                    control_dir,
+                    "checkpoint_verdict_received",
+                    {"action": action, "verdict": str(verdict_path)},
+                )
+                return verdict
+        time.sleep(poll_interval)
+
+    # Safety timeout: treat as CONTINUE to avoid deadlock.
+    append_event(
+        control_dir,
+        "checkpoint_verdict_timeout",
+        {"action": "continue", "reason": "verdict-not-received-within-safety-timeout"},
+    )
+    return {"action": "continue", "reason": "timeout"}
+
+
 def classify_result(exit_code: int, result: Dict[str, Any]) -> str:
     explicit = str(result.get("bookend_state") or "").strip().lower().replace("-", "_")
     if explicit in {
         "done_candidate",
         "semantic_blocked",
         "epoch_expired",
+        "checkpoint_trigger",
         "runtime_blocked",
         "authority_blocked",
         "budget_exhausted",
@@ -955,6 +1106,58 @@ def supervise(state_path: Path) -> Dict[str, Any]:
             return update_state(
                 state_path, "budget_exhausted", owner_lease_state="suspended"
             )
+        # Balanced mode: review window expired mid-epoch.  If checkpoint
+        # budget remains, wake Codex for one bounded intermediate review.
+        # Otherwise continue autonomously (second window expiry is silent).
+        if outcome == "checkpoint_trigger":
+            max_cp = int(state.get("max_checkpoints", 0))
+            cp_count = int(state.get("checkpoint_count", 0))
+            if cp_count < max_cp:
+                # Preserve product worktree before pausing.
+                wt = state.get("product_worktree")
+                receipt_path = None
+                if wt:
+                    try:
+                        receipt_path = generate_convergence_receipt(
+                            state_path, epoch, str(wt),
+                        )
+                    except BookendError as exc:
+                        return update_state(
+                            state_path,
+                            "runtime_blocked",
+                            blocker=f"checkpoint-receipt-failed: {exc}",
+                            owner_lease_state="suspended",
+                        )
+                wake = emit_checkpoint_wake_request(
+                    state_path, result, receipt_path,
+                )
+                state = update_state(
+                    state_path,
+                    "checkpoint_ready",
+                    checkpoint_count=cp_count + 1,
+                    checkpoint_request=str(wake),
+                    convergence_receipt=str(receipt_path) if receipt_path else None,
+                    owner_lease_state="paused",
+                )
+                # Block until Codex writes a verdict.
+                verdict = wait_for_checkpoint_verdict(state_path)
+                if verdict.get("action") == "stop":
+                    return update_state(
+                        state_path,
+                        "runtime_blocked",
+                        blocker="checkpoint-verdict-stop",
+                        owner_lease_state="suspended",
+                    )
+                # CONTINUE / NARROW / REVISION_DELTA: resume same owner.
+                update_state(
+                    state_path,
+                    "recovering",
+                    recovery="checkpoint-resume",
+                    checkpoint_verdict=verdict.get("action"),
+                )
+                continue
+            # Second window expiry: no more Codex wakes, keep converging.
+            continue
         # Non-semantic failure: if more epochs remain, let Claude continue
         # converging under the same owner rather than stopping the supervisor.
         # Compile errors, test failures, incomplete acceptance, transport
@@ -1040,6 +1243,9 @@ def spawn_supervisor(state_path: Path) -> int:
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
+    # Balanced mode defaults: 15-minute review window if not specified.
+    if args.mode == "balanced" and args.window_minutes is None:
+        args.window_minutes = 15
     state_path, _ = create_task(args)
     if args.foreground:
         final = supervise(state_path)
@@ -1126,6 +1332,65 @@ def cmd_review_input(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_checkpoint_input(args: argparse.Namespace) -> int:
+    """Return the checkpoint wake request for a balanced-mode task."""
+    state_path = resolve_state(args.state)
+    state = load_json(state_path)
+    if state.get("state") != "checkpoint_ready":
+        raise BookendError(
+            "checkpoint review is not scheduled for state=" + str(state.get("state"))
+        )
+    request = Path(str(state.get("checkpoint_request") or ""))
+    if not request.is_file():
+        raise BookendError("checkpoint wake request is missing")
+    value = load_json(request)
+    # Basic validation.
+    if value.get("logical_task_id") != state.get("logical_task_id"):
+        raise BookendError("checkpoint request logical task mismatch")
+    if value.get("contract_hash") != state.get("contract_hash"):
+        raise BookendError("checkpoint request contract mismatch")
+    print(json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def cmd_checkpoint_verdict(args: argparse.Namespace) -> int:
+    """Write a Codex checkpoint verdict to resume the supervisor.
+
+    The verdict must be one of: continue, narrow, revision_delta, stop.
+    """
+    state_path = resolve_state(args.state)
+    state = load_json(state_path)
+    if state.get("state") != "checkpoint_ready":
+        raise BookendError(
+            "checkpoint verdict not expected for state=" + str(state.get("state"))
+        )
+    action = str(args.action).strip().lower()
+    if action not in ("continue", "narrow", "revision_delta", "stop"):
+        raise BookendError(
+            f"invalid checkpoint verdict: {action!r}; "
+            "expected: continue, narrow, revision_delta, stop"
+        )
+    verdict = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "checkpoint-verdict",
+        "logical_task_id": state["logical_task_id"],
+        "contract_hash": state["contract_hash"],
+        "epoch": state.get("epoch", 0),
+        "action": action,
+        "reason": args.reason or "",
+        "created_at": utc_now(),
+    }
+    control_dir = state_path.parent
+    verdict_path = control_dir / "checkpoint-verdict.json"
+    atomic_json(verdict_path, verdict)
+    if args.json:
+        print(json.dumps(verdict, indent=2, ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"Checkpoint verdict: {action}")
+        print(f"Written to: {verdict_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aiwf bookend",
@@ -1148,6 +1413,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     submit.add_argument("--max-epochs", type=int, default=3)
     submit.add_argument("--host-authority", action="store_true")
+    submit.add_argument(
+        "--mode",
+        choices=["overnight", "balanced"],
+        default="overnight",
+        help="Execution profile: overnight (default) or balanced (with review window).",
+    )
+    submit.add_argument(
+        "--window-minutes",
+        type=int,
+        default=None,
+        help="Review window in minutes for balanced mode (default: 15).",
+    )
     submit.add_argument(
         "--foreground",
         action="store_true",
@@ -1173,6 +1450,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument("state")
     review.set_defaults(func=cmd_review_input)
+
+    ckpt_input = sub.add_parser(
+        "checkpoint-input", help="Return the checkpoint wake request (balanced mode)."
+    )
+    ckpt_input.add_argument("state")
+    ckpt_input.set_defaults(func=cmd_checkpoint_input)
+
+    ckpt_verdict = sub.add_parser(
+        "checkpoint-verdict", help="Write a Codex checkpoint verdict to resume the supervisor."
+    )
+    ckpt_verdict.add_argument("state")
+    ckpt_verdict.add_argument(
+        "action",
+        choices=["continue", "narrow", "revision_delta", "stop"],
+        help="Checkpoint verdict action.",
+    )
+    ckpt_verdict.add_argument("--reason", default="")
+    ckpt_verdict.add_argument("--json", action="store_true")
+    ckpt_verdict.set_defaults(func=cmd_checkpoint_verdict)
     return parser
 
 
