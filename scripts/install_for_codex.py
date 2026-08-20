@@ -799,6 +799,22 @@ def parse_args(argv=None):
         action="store_true",
         help="Emit compact machine-readable update summaries and suppress guidance/no-op detail.",
     )
+    parser.add_argument(
+        "--install-agents",
+        action="store_true",
+        help="Install Interactive Codex subagent configurations to ~/.codex/agents/.",
+    )
+    parser.add_argument(
+        "--agent-model",
+        choices=["spark", "luna", "inherit"],
+        default="spark",
+        help="Default model for execution subagents (default: spark = gpt-5.3-codex-spark).",
+    )
+    parser.add_argument(
+        "--override-built-in-agents",
+        action="store_true",
+        help="Install agents without aiwf_ prefix, overriding Codex built-in worker/explorer.",
+    )
     args = parser.parse_args(argv)
     if args.bootstrap_current and args.bootstrap_repo:
         parser.error("--bootstrap-current and --bootstrap-repo are mutually exclusive")
@@ -896,6 +912,97 @@ def print_next_steps(installed_skill_dir, source_dir=None):
     print("Restart Codex after updating: active conversations do not hot-reload Skill or AGENTS.md instructions.")
 
 
+AGENT_MODEL_MAP = {
+    "spark": "gpt-5.3-codex-spark",
+    "luna": "gpt-5.6-luna",
+    "inherit": None,
+}
+
+
+def install_agents(skill_dir, agent_model="spark", override_built_in=False, summary_only=False):
+    """Install Interactive Codex subagent configurations.
+
+    Copies agent TOML files from ``assets/codex-agents/`` to ``~/.codex/agents/``
+    and merges ``[agents]`` settings into ``~/.codex/config.toml``.
+    """
+    import shutil
+
+    source_dir = os.path.join(skill_dir, "assets", "codex-agents")
+    if not os.path.isdir(source_dir):
+        if not summary_only:
+            print(f"Error: agent templates not found: {source_dir}")
+        return False
+
+    codex_dir = os.path.expanduser("~/.codex")
+    agents_dir = os.path.join(codex_dir, "agents")
+    os.makedirs(agents_dir, exist_ok=True)
+
+    model_id = AGENT_MODEL_MAP.get(agent_model)
+
+    # Copy agent files, optionally renaming to remove aiwf_ prefix.
+    installed = []
+    for filename in sorted(os.listdir(source_dir)):
+        if not filename.endswith(".toml"):
+            continue
+        src = os.path.join(source_dir, filename)
+        if override_built_in:
+            dest_name = filename.replace("aiwf_", "")
+        else:
+            dest_name = filename
+        dest = os.path.join(agents_dir, dest_name)
+        shutil.copy2(src, dest)
+        installed.append(dest_name)
+
+    if not summary_only:
+        print(f"\nInstalled {len(installed)} agent(s) to {agents_dir}:")
+        for name in installed:
+            print(f"  {name}")
+
+    # Merge [agents] settings into config.toml.
+    config_path = os.path.join(codex_dir, "config.toml")
+    agents_section = {
+        "enabled": "true",
+        "max_concurrent_threads_per_session": "6",
+    }
+    if model_id:
+        agents_section["default_subagent_model"] = f'"{model_id}"'
+        agents_section["default_subagent_reasoning_effort"] = '"medium"'
+
+    _merge_agents_config(config_path, agents_section, summary_only)
+
+    return True
+
+
+def _merge_agents_config(config_path, agents_section, summary_only=False):
+    """Merge [agents] settings into an existing config.toml without clobbering."""
+    existing = ""
+    if os.path.isfile(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            existing = f.read()
+
+    # Check if [agents] section already exists.
+    if "[agents]" in existing:
+        if not summary_only:
+            print(f"\n[agents] section already exists in {config_path}; skipping merge.")
+            print("  To update manually, edit the [agents] section in config.toml.")
+        return
+
+    # Append [agents] section.
+    lines = ["\n[agents]"]
+    for key, value in agents_section.items():
+        lines.append(f"{key} = {value}")
+    lines.append("")
+
+    with open(config_path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    if not summary_only:
+        print(f"\nMerged [agents] settings into {config_path}:")
+
+        for key, value in agents_section.items():
+            print(f"  {key} = {value}")
+
+
 def main(argv=None):
     args = parse_args(argv)
     skill_dir = get_skill_dir()
@@ -940,6 +1047,15 @@ def main(argv=None):
         print("\nTo update, run this script again.")
         print("To verify, check that SKILL.md exists in the target directory.")
         print_next_steps(dest, source_dir=skill_dir)
+
+    # Install Interactive subagents if requested.
+    if args.install_agents:
+        install_agents(
+            dest,
+            agent_model=args.agent_model,
+            override_built_in=args.override_built_in_agents,
+            summary_only=args.summary_only,
+        )
 
     bootstrap_repo = None
     if args.bootstrap_current:
