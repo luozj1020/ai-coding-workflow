@@ -1,6 +1,6 @@
 ---
 name: ai-coding-workflow
-description: Durable Claude-owned Bookend workflow. Codex freezes intent, submits once, exits; returns only for semantic block, balanced checkpoint, or final review. Skip questions, read-only, tiny edits, and direct Skill maintenance.
+description: Durable Claude-owned Bookend workflow. Codex freezes intent, submits once, exits; returns only for semantic block or final review. Skip questions, read-only, tiny edits, and direct Skill maintenance.
 ---
 
 # AI Coding Workflow
@@ -79,15 +79,12 @@ high-impact authority remains human.
 
 Tools establish typed facts; models make typed claims. Every changed byte has
 exactly one Review Projection class. Gaps/overlaps invalidate it and expand the
-semantic frontier. Codex reviews contract, semantic implications, and unresolved
-risks—not routine runtime history.
+semantic frontier.
 
 ## Compatibility Paths
 
-`aiwf run` is the foreground compatibility lifecycle. `aiwf loop` /
-`run-loop.sh` is the legacy per-iteration Codex-review loop. Neither is the
-default agent path. `monitor-claude.sh` is an operator diagnostic, not a
-synchronization mechanism.
+`aiwf run` is the foreground compatibility lifecycle. `aiwf loop` is the
+legacy per-iteration Codex-review loop. Neither is the default agent path.
 
 ## Reference Router
 
@@ -105,4 +102,7 @@ references speculatively.
 | Setup/update/doctor | `references/setup-policy.md` |
 | Metrics and pilots | `references/benchmark-policy.md` |
 
-For installed command syntax, prefer `ai/README.md`.
+For command syntax, prefer this Skill package's `README.md`. If the repo has
+been bootstrapped (`ai/aiwf.py` exists), use `ai/README.md` instead. The
+absence of `ai/` in an unbootstrapped repo is expected, not an error.
+Overnight/balanced require bootstrap; interactive/direct do not.
