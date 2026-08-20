@@ -360,6 +360,13 @@ def run_epoch(state_path: Path, epoch: int) -> Tuple[int, Dict[str, Any]]:
     convergence_receipt = state.get("convergence_receipt")
     if convergence_receipt:
         env["AIWF_BOOKEND_CONVERGENCE_RECEIPT"] = str(convergence_receipt)
+    # Balanced mode: pass review window to the executor.  The executor is
+    # responsible for enforcing the window and returning a clean
+    # checkpoint_trigger result with product_worktree and state hash.
+    # The supervisor NEVER kills the executor from outside.
+    window_seconds = state.get("review_window_seconds")
+    if window_seconds:
+        env["AIWF_BOOKEND_REVIEW_WINDOW_SECONDS"] = str(int(window_seconds))
     command = executor_command(state, epoch_dir)
     atomic_json(
         epoch_dir / "epoch-request.json",
@@ -370,63 +377,36 @@ def run_epoch(state_path: Path, epoch: int) -> Tuple[int, Dict[str, Any]]:
             "contract_hash": state["contract_hash"],
             "base_sha": state["base_sha"],
             "command": command,
+            "review_window_seconds": window_seconds,
         },
     )
 
-    # Balanced mode: enforce a review window on this epoch.  When the
-    # window expires, the executor is terminated and the epoch is treated
-    # as a checkpoint trigger rather than a failure.
-    window_seconds = state.get("review_window_seconds")
-    timed_out = False
-    try:
-        proc = subprocess.run(
-            command,
-            cwd=str(state["repo"]),
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=window_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        timed_out = True
-        # Capture partial output from the timed-out process.
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", errors="replace")
-        proc_stdout = stdout
-        proc_stderr = stderr
-        proc_rc = -1
-    else:
-        proc_stdout = proc.stdout
-        proc_stderr = proc.stderr
-        proc_rc = proc.returncode
+    proc = subprocess.run(
+        command,
+        cwd=str(state["repo"]),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    proc_stdout = proc.stdout
+    proc_stderr = proc.stderr
+    proc_rc = proc.returncode
 
     (epoch_dir / "executor.stdout").write_text(proc_stdout, encoding="utf-8")
     (epoch_dir / "executor.stderr").write_text(proc_stderr, encoding="utf-8")
 
-    if timed_out:
-        # Review window expired — this is a checkpoint trigger, not a failure.
+    try:
+        result = parse_json_stdout(proc_stdout)
+    except BookendError as exc:
         result = {
-            "status": "checkpoint_trigger",
-            "bookend_state": "checkpoint_trigger",
-            "error": "review window expired",
+            "status": "failed",
+            "bookend_state": "runtime_blocked",
+            "error": str(exc),
+            "executor_exit_code": proc_rc,
         }
-    else:
-        try:
-            result = parse_json_stdout(proc_stdout)
-        except BookendError as exc:
-            result = {
-                "status": "failed",
-                "bookend_state": "runtime_blocked",
-                "error": str(exc),
-                "executor_exit_code": proc_rc,
-            }
 
     result_path = epoch_dir / "epoch-result.json"
     atomic_json(result_path, result)
@@ -436,7 +416,6 @@ def run_epoch(state_path: Path, epoch: int) -> Tuple[int, Dict[str, Any]]:
         {
             "epoch": epoch,
             "exit_code": proc_rc,
-            "timed_out": timed_out,
             "bookend_state": result.get("bookend_state"),
             "status": result.get("status"),
             "result": str(result_path),
@@ -732,7 +711,7 @@ def emit_checkpoint_wake_request(
         "convergence_receipt": artifact_ref(receipt),
         "acceptance_progress": acceptance_progress,
         "codex_action": "checkpoint-verdict",
-        "verdict_options": ["continue", "narrow", "revision_delta", "stop"],
+        "verdict_options": ["continue", "continue_with_guidance", "stop"],
     }
     path = control_dir / "checkpoint-wake-request.json"
     atomic_json(path, request)
@@ -774,7 +753,7 @@ def wait_for_checkpoint_verdict(state_path: Path, poll_interval: float = 2.0) ->
                 time.sleep(poll_interval)
                 continue
             action = str(verdict.get("action") or "").strip().lower()
-            if action in ("continue", "narrow", "revision_delta", "stop"):
+            if action in ("continue", "continue_with_guidance", "stop"):
                 append_event(
                     control_dir,
                     "checkpoint_verdict_received",
@@ -1106,28 +1085,31 @@ def supervise(state_path: Path) -> Dict[str, Any]:
             return update_state(
                 state_path, "budget_exhausted", owner_lease_state="suspended"
             )
-        # Balanced mode: review window expired mid-epoch.  If checkpoint
-        # budget remains, wake Codex for one bounded intermediate review.
-        # Otherwise continue autonomously (second window expiry is silent).
+        # Balanced mode: review window expired mid-epoch.  The executor
+        # returned checkpoint_trigger with product_worktree and state hash.
+        #
+        # Receipt generation is ALWAYS required when a product worktree
+        # exists — it is independent of checkpoint budget.  Whether to
+        # wake Codex is determined by checkpoint_count < max_checkpoints.
         if outcome == "checkpoint_trigger":
+            wt = state.get("product_worktree") or result.get("product_worktree")
+            receipt_path = None
+            if wt:
+                try:
+                    receipt_path = generate_convergence_receipt(
+                        state_path, epoch, str(wt),
+                    )
+                except BookendError as exc:
+                    return update_state(
+                        state_path,
+                        "runtime_blocked",
+                        blocker=f"checkpoint-receipt-failed: {exc}",
+                        owner_lease_state="suspended",
+                    )
             max_cp = int(state.get("max_checkpoints", 0))
             cp_count = int(state.get("checkpoint_count", 0))
             if cp_count < max_cp:
-                # Preserve product worktree before pausing.
-                wt = state.get("product_worktree")
-                receipt_path = None
-                if wt:
-                    try:
-                        receipt_path = generate_convergence_receipt(
-                            state_path, epoch, str(wt),
-                        )
-                    except BookendError as exc:
-                        return update_state(
-                            state_path,
-                            "runtime_blocked",
-                            blocker=f"checkpoint-receipt-failed: {exc}",
-                            owner_lease_state="suspended",
-                        )
+                # Budget remains: wake Codex for one bounded checkpoint.
                 wake = emit_checkpoint_wake_request(
                     state_path, result, receipt_path,
                 )
@@ -1141,22 +1123,37 @@ def supervise(state_path: Path) -> Dict[str, Any]:
                 )
                 # Block until Codex writes a verdict.
                 verdict = wait_for_checkpoint_verdict(state_path)
-                if verdict.get("action") == "stop":
+                action = str(verdict.get("action") or "").strip().lower()
+                if action == "stop":
                     return update_state(
                         state_path,
                         "runtime_blocked",
                         blocker="checkpoint-verdict-stop",
                         owner_lease_state="suspended",
                     )
-                # CONTINUE / NARROW / REVISION_DELTA: resume same owner.
+                # CONTINUE or CONTINUE_WITH_GUIDANCE: resume same owner.
+                # If guidance was provided, persist it for the next epoch.
+                guidance = verdict.get("guidance")
+                guidance_path = None
+                if guidance and action == "continue_with_guidance":
+                    guidance_path = control_dir / "checkpoint-guidance.json"
+                    atomic_json(guidance_path, guidance)
                 update_state(
                     state_path,
                     "recovering",
                     recovery="checkpoint-resume",
-                    checkpoint_verdict=verdict.get("action"),
+                    checkpoint_verdict=action,
+                    checkpoint_guidance=str(guidance_path) if guidance_path else None,
                 )
                 continue
-            # Second window expiry: no more Codex wakes, keep converging.
+            # Second window expiry: no Codex wake, but receipt was already
+            # generated above.  Continue autonomously.
+            update_state(
+                state_path,
+                "recovering",
+                recovery="window-continue",
+                convergence_receipt=str(receipt_path) if receipt_path else None,
+            )
             continue
         # Non-semantic failure: if more epochs remain, let Claude continue
         # converging under the same owner rather than stopping the supervisor.
@@ -1356,7 +1353,9 @@ def cmd_checkpoint_input(args: argparse.Namespace) -> int:
 def cmd_checkpoint_verdict(args: argparse.Namespace) -> int:
     """Write a Codex checkpoint verdict to resume the supervisor.
 
-    The verdict must be one of: continue, narrow, revision_delta, stop.
+    The verdict must be one of: continue, continue_with_guidance, stop.
+    For continue_with_guidance, a --guidance JSON file may be provided
+    with constraints for the next epoch (e.g., scope narrowing hints).
     """
     state_path = resolve_state(args.state)
     state = load_json(state_path)
@@ -1365,10 +1364,10 @@ def cmd_checkpoint_verdict(args: argparse.Namespace) -> int:
             "checkpoint verdict not expected for state=" + str(state.get("state"))
         )
     action = str(args.action).strip().lower()
-    if action not in ("continue", "narrow", "revision_delta", "stop"):
+    if action not in ("continue", "continue_with_guidance", "stop"):
         raise BookendError(
             f"invalid checkpoint verdict: {action!r}; "
-            "expected: continue, narrow, revision_delta, stop"
+            "expected: continue, continue_with_guidance, stop"
         )
     verdict = {
         "schema_version": SCHEMA_VERSION,
@@ -1380,6 +1379,11 @@ def cmd_checkpoint_verdict(args: argparse.Namespace) -> int:
         "reason": args.reason or "",
         "created_at": utc_now(),
     }
+    # For CONTINUE_WITH_GUIDANCE, attach guidance payload.
+    if action == "continue_with_guidance" and args.guidance:
+        guidance_path = Path(args.guidance).resolve()
+        if guidance_path.is_file():
+            verdict["guidance"] = load_json(guidance_path)
     control_dir = state_path.parent
     verdict_path = control_dir / "checkpoint-verdict.json"
     atomic_json(verdict_path, verdict)
@@ -1463,10 +1467,14 @@ def build_parser() -> argparse.ArgumentParser:
     ckpt_verdict.add_argument("state")
     ckpt_verdict.add_argument(
         "action",
-        choices=["continue", "narrow", "revision_delta", "stop"],
+        choices=["continue", "continue_with_guidance", "stop"],
         help="Checkpoint verdict action.",
     )
     ckpt_verdict.add_argument("--reason", default="")
+    ckpt_verdict.add_argument(
+        "--guidance",
+        help="Path to a guidance JSON file (for continue_with_guidance).",
+    )
     ckpt_verdict.add_argument("--json", action="store_true")
     ckpt_verdict.set_defaults(func=cmd_checkpoint_verdict)
     return parser

@@ -1,6 +1,6 @@
 ---
 name: ai-coding-workflow
-description: Run or maintain a durable Claude-owned Bookend coding workflow in which Codex freezes intent, submits once, exits, and returns only for a semantic block or final review. Skip questions, read-only work, tiny/urgent edits, and direct Skill maintenance unless durable delegation is explicitly requested.
+description: Durable Claude-owned Bookend workflow. Codex freezes intent, submits once, exits; returns only for semantic block, balanced checkpoint, or final review. Skip questions, read-only, tiny edits, and direct Skill maintenance.
 ---
 
 # AI Coding Workflow
@@ -25,10 +25,14 @@ implementation path.
 Submit with:
 
 ```bash
-python ai/aiwf.py submit TASK.json
+python ai/aiwf.py submit TASK.json                 # overnight (default)
+python ai/aiwf.py submit TASK.json --mode balanced  # 15-min checkpoint window
 ```
 
 The command returns `bookend-state.json`; Codex then ends the current episode.
+In balanced mode, when the review window expires the control plane emits a
+`checkpoint_ready` wake. Codex returns `continue` / `continue_with_guidance` /
+`stop`; the supervisor resumes the same owner. Second window expiry is silent.
 Do not block on
 `monitor-claude.sh`, poll Claude, perform direction review, dispatch Checker
 through Codex, or interpret ordinary runtime transitions.
@@ -47,11 +51,14 @@ Only these states schedule Codex:
 - `semantic_blocked` — completing the frozen contract requires a new semantic
   decision. Codex returns one bounded contract delta, then ownership returns to
   Claude.
+- `checkpoint_ready` — (balanced mode) review window expired; at most once per
+  task. Codex returns `continue` / `continue_with_guidance` / `stop`.
 
 Read the hash-bound wake request with:
 
 ```bash
 python ai/aiwf.py bookend review-input BOOKEND_STATE_OR_DIR
+python ai/aiwf.py bookend checkpoint-input BOOKEND_STATE_OR_DIR
 ```
 
 Compile/test failures, unknown code locations, timeout, session/transport/report
@@ -64,28 +71,22 @@ to the control plane or human.
 Logical Claude ownership persists across epochs; process/write authority does
 not. Before another epoch, revoke the old grant, identity-stop its process tree,
 prove no active writer, and freeze a stable state. Unknown visibility fails
-closed.
-
-Hard timeout expires an epoch, not the task. Continue only with a deterministic
-`continuation_safe=true` receipt. Budget exhaustion is not semantic. Models
-never merge; high-impact authority remains human.
+closed. Hard timeout expires an epoch, not the task. Models never merge;
+high-impact authority remains human.
 
 ## Evidence and Review Projection
 
-Tools establish typed facts; models make typed claims. Claude is not the source
-of truth for hashes, paths, commands, exit codes, scope, or validation.
-
-Every changed byte has exactly one Review Projection class. Gaps/overlaps
-invalidate it and expand the semantic frontier. Codex reviews contract,
-semantic implications, and unresolved risks—not routine runtime history.
+Tools establish typed facts; models make typed claims. Every changed byte has
+exactly one Review Projection class. Gaps/overlaps invalidate it and expand the
+semantic frontier. Codex reviews contract, semantic implications, and unresolved
+risks—not routine runtime history.
 
 ## Compatibility Paths
 
 `aiwf run` is the foreground compatibility lifecycle. `aiwf loop` /
 `run-loop.sh` is the legacy per-iteration Codex-review loop. Neither is the
-default agent path and neither should be selected merely because it already
-exists. `monitor-claude.sh` remains an operator diagnostic for standalone
-legacy dispatches; it is not a Codex synchronization mechanism.
+default agent path. `monitor-claude.sh` is an operator diagnostic, not a
+synchronization mechanism.
 
 ## Reference Router
 
@@ -98,11 +99,9 @@ references speculatively.
 | Contract and Task JSON | `references/task-card-policy.md` |
 | Claude epochs, recovery, single writer | `references/claude-runtime.md` |
 | Review Projection and Codex decisions | `references/review-policy.md` |
-| Compatibility synchronous loop | `references/loop-model.md` |
 | Worktrees and continuation | `references/worktree-and-parallel.md` |
 | Retrieval and context budgets | `references/mcp-policy.md` |
 | Setup/update/doctor | `references/setup-policy.md` |
 | Metrics and pilots | `references/benchmark-policy.md` |
-| User-triggered feedback | `references/feedback-policy.md` |
 
 For installed command syntax, prefer `ai/README.md`.
