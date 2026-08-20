@@ -44,6 +44,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 SCHEMA_VERSION = 1
+DEFAULT_MAX_REVISION_ROUNDS = 3
 TERMINAL_STATES = {
     "review_ready",
     "semantic_blocked",
@@ -52,9 +53,9 @@ TERMINAL_STATES = {
     "budget_exhausted",
     "cancelled",
 }
-# checkpoint_ready wakes Codex but is NOT terminal — the supervisor blocks
-# waiting for the verdict, then resumes the same owner.
-CODEX_WAKE_STATES = {"review_ready", "checkpoint_ready", "semantic_blocked"}
+# checkpoint_ready and revision_pending wake Codex but are NOT terminal —
+# the supervisor blocks waiting for the verdict, then resumes the same owner.
+CODEX_WAKE_STATES = {"review_ready", "checkpoint_ready", "revision_pending", "semantic_blocked"}
 SEMANTIC_FAILURES = {
     "semantic-blocked",
     "semantic_blocked",
@@ -290,7 +291,11 @@ def create_task(args: argparse.Namespace) -> Tuple[Path, Dict[str, Any]]:
         ),
         "max_checkpoints": 1 if args.mode == "balanced" else 0,
         "checkpoint_count": 0,
+        "max_revision_rounds": getattr(args, 'max_revision_rounds', DEFAULT_MAX_REVISION_ROUNDS),
+        "revision_count": 0,
         "review_request": None,
+        "review_receipt": None,
+        "revision_delta": None,
         "last_result": None,
     }
     atomic_json(state_path, value)
@@ -771,6 +776,83 @@ def wait_for_checkpoint_verdict(state_path: Path, poll_interval: float = 2.0) ->
     return {"action": "continue", "reason": "timeout"}
 
 
+def wait_for_review_verdict(state_path: Path, poll_interval: float = 2.0) -> Dict[str, Any]:
+    """Block until Codex writes a review verdict (accept or revise).
+
+    The verdict file is written by ``cmd_review_verdict`` and must match
+    the current contract.  Returns the verdict dict.
+    """
+    control_dir = state_path.parent
+    verdict_path = control_dir / "review-verdict.json"
+    deadline = time.monotonic() + 3600  # 1 hour safety timeout
+
+    while time.monotonic() < deadline:
+        if verdict_path.is_file():
+            try:
+                verdict = load_json(verdict_path)
+            except BookendError:
+                time.sleep(poll_interval)
+                continue
+            state = load_json(state_path)
+            if verdict.get("logical_task_id") != state.get("logical_task_id"):
+                time.sleep(poll_interval)
+                continue
+            if verdict.get("contract_hash") != state.get("contract_hash"):
+                time.sleep(poll_interval)
+                continue
+            action = str(verdict.get("action") or "").strip().lower()
+            if action in ("accept", "revise"):
+                append_event(
+                    control_dir,
+                    "review_verdict_received",
+                    {"action": action, "verdict": str(verdict_path)},
+                )
+                return verdict
+        time.sleep(poll_interval)
+
+    # Safety timeout: treat as ACCEPT to avoid deadlock.
+    append_event(
+        control_dir,
+        "review_verdict_timeout",
+        {"action": "accept", "reason": "verdict-not-received-within-safety-timeout"},
+    )
+    return {"action": "accept", "reason": "timeout"}
+
+
+def build_review_receipt(
+    state_path: Path,
+    verdict: Dict[str, Any],
+    result: Dict[str, Any],
+) -> Path:
+    """Build and persist a review receipt after Codex accepts.
+
+    The receipt records which acceptance items were accepted, which were
+    rejected (and now fixed), and the reviewed implementation refs.
+    Future delta reviews use this to skip unchanged accepted items.
+    """
+    state = load_json(state_path)
+    control_dir = state_path.parent
+    rev_count = int(state.get("revision_count", 0))
+
+    receipt = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "review-receipt",
+        "logical_task_id": state["logical_task_id"],
+        "contract_hash": state["contract_hash"],
+        "review_id": f"review-{rev_count:03d}",
+        "revision_count": rev_count,
+        "accepted_at": utc_now(),
+        "accepted_acceptance_ids": verdict.get("accepted_acceptance_ids") or [],
+        "rejected_acceptance_ids": verdict.get("rejected_acceptance_ids") or [],
+        "reviewed_implementation_refs": verdict.get("reviewed_implementation_refs") or [],
+        "unresolved_findings": verdict.get("unresolved_findings") or [],
+        "review_verdict": str(control_dir / "review-verdict.json"),
+    }
+    receipt_path = control_dir / f"review-receipt-{rev_count:03d}.json"
+    atomic_json(receipt_path, receipt)
+    return receipt_path
+
+
 def classify_result(exit_code: int, result: Dict[str, Any]) -> str:
     explicit = str(result.get("bookend_state") or "").strip().lower().replace("-", "_")
     if explicit in {
@@ -1031,22 +1113,60 @@ def supervise(state_path: Path) -> Dict[str, Any]:
                     blocker=str(exc),
                     owner_lease_state="suspended",
                 )
+            rev_count = int(state.get("revision_count", 0))
+            max_rev = int(state.get("max_revision_rounds", DEFAULT_MAX_REVISION_ROUNDS))
+            is_delta = rev_count > 0
+            wake_kind = "delta-review" if is_delta else "final-review"
+            wake_reason = "delta-candidate" if is_delta else "done-candidate"
             wake = emit_wake_request(
                 state_path,
-                "final-review",
-                "done-candidate",
+                wake_kind,
+                wake_reason,
                 result,
                 projection,
                 capsule,
             )
-            return update_state(
+            # revision_pending is NOT terminal — supervisor blocks waiting
+            # for Codex verdict, then either ACCEPTS or REVISES.
+            state = update_state(
                 state_path,
-                "review_ready",
+                "revision_pending",
                 review_request=str(wake),
                 review_projection=str(projection),
                 review_capsule=str(capsule),
-                owner_lease_state="released",
+                owner_lease_state="paused",
             )
+            # Block until Codex writes a review verdict.
+            verdict = wait_for_review_verdict(state_path)
+            action = str(verdict.get("action") or "").strip().lower()
+            if action == "accept":
+                # Build and persist the review receipt.
+                receipt = build_review_receipt(state_path, verdict, result)
+                return update_state(
+                    state_path,
+                    "review_ready",
+                    review_receipt=str(receipt),
+                    owner_lease_state="released",
+                )
+            # REVISE: store the revision delta and continue.
+            if rev_count >= max_rev:
+                return update_state(
+                    state_path,
+                    "runtime_blocked",
+                    blocker=f"maximum-revision-rounds-reached ({max_rev})",
+                    owner_lease_state="suspended",
+                )
+            delta = verdict.get("revision_delta") or verdict.get("delta") or {}
+            delta_path = control_dir / f"revision-delta-{rev_count + 1:03d}.json"
+            atomic_json(delta_path, delta)
+            update_state(
+                state_path,
+                "recovering",
+                recovery="revision-continue",
+                revision_count=rev_count + 1,
+                revision_delta=str(delta_path),
+            )
+            continue
         if outcome == "semantic_blocked":
             semantic_valid, semantic_reason = validate_semantic_block_receipt(
                 state_path,
@@ -1329,6 +1449,56 @@ def cmd_review_input(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_verdict(args: argparse.Namespace) -> int:
+    """Write a Codex review verdict to the supervisor.
+
+    The verdict must be one of: accept, revise.
+    For revise, a --revision-delta JSON file is required with findings
+    and required changes.
+    """
+    state_path = resolve_state(args.state)
+    state = load_json(state_path)
+    if state.get("state") != "revision_pending":
+        raise BookendError(
+            "review verdict not expected for state=" + str(state.get("state"))
+        )
+    action = str(args.action).strip().lower()
+    if action not in ("accept", "revise"):
+        raise BookendError(
+            f"invalid review verdict: {action!r}; expected: accept, revise"
+        )
+    verdict = {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "review-verdict",
+        "logical_task_id": state["logical_task_id"],
+        "contract_hash": state["contract_hash"],
+        "revision_count": state.get("revision_count", 0),
+        "action": action,
+        "reason": args.reason or "",
+        "created_at": utc_now(),
+    }
+    if action == "accept":
+        verdict["accepted_acceptance_ids"] = (
+            args.accepted_ids.split(",") if args.accepted_ids else []
+        )
+    if action == "revise":
+        if not args.revision_delta:
+            raise BookendError("--revision-delta is required for revise verdict")
+        delta_path = Path(args.revision_delta).resolve()
+        if not delta_path.is_file():
+            raise BookendError(f"revision delta file not found: {delta_path}")
+        verdict["revision_delta"] = load_json(delta_path)
+    control_dir = state_path.parent
+    verdict_path = control_dir / "review-verdict.json"
+    atomic_json(verdict_path, verdict)
+    if args.json:
+        print(json.dumps(verdict, indent=2, ensure_ascii=False, sort_keys=True))
+    else:
+        print(f"Review verdict: {action}")
+        print(f"Written to: {verdict_path}")
+    return 0
+
+
 def cmd_checkpoint_input(args: argparse.Namespace) -> int:
     """Return the checkpoint wake request for a balanced-mode task."""
     state_path = resolve_state(args.state)
@@ -1416,6 +1586,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--executor", help="Epoch executor implementing the run-workflow JSON contract."
     )
     submit.add_argument("--max-epochs", type=int, default=3)
+    submit.add_argument(
+        "--max-revision-rounds",
+        type=int,
+        default=DEFAULT_MAX_REVISION_ROUNDS,
+        help=f"Maximum Codex revision rounds before stopping (default: {DEFAULT_MAX_REVISION_ROUNDS}).",
+    )
     submit.add_argument("--host-authority", action="store_true")
     submit.add_argument(
         "--mode",
@@ -1454,6 +1630,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument("state")
     review.set_defaults(func=cmd_review_input)
+
+    review_verdict = sub.add_parser(
+        "review-verdict", help="Write a Codex review verdict (accept/revise)."
+    )
+    review_verdict.add_argument("state")
+    review_verdict.add_argument(
+        "action", choices=["accept", "revise"],
+        help="Review verdict: accept or revise.",
+    )
+    review_verdict.add_argument("--reason", default="")
+    review_verdict.add_argument(
+        "--accepted-ids", default="",
+        help="Comma-separated acceptance IDs accepted (for accept verdict).",
+    )
+    review_verdict.add_argument(
+        "--revision-delta",
+        help="Path to revision delta JSON file (for revise verdict).",
+    )
+    review_verdict.add_argument("--json", action="store_true")
+    review_verdict.set_defaults(func=cmd_review_verdict)
 
     ckpt_input = sub.add_parser(
         "checkpoint-input", help="Return the checkpoint wake request (balanced mode)."
