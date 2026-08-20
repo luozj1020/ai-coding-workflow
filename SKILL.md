@@ -25,14 +25,16 @@ implementation path.
 Submit with:
 
 ```bash
-python ai/aiwf.py submit TASK.json                 # overnight (default)
-python ai/aiwf.py submit TASK.json --mode balanced  # 15-min checkpoint window
+python ai/aiwf.py submit TASK.json    # overnight: detached, Codex exits
+python ai/aiwf.py balanced TASK.json  # balanced: foreground, dispatcher-managed window
 ```
 
-The command returns `bookend-state.json`; Codex then ends the current episode.
-In balanced mode, when the review window expires the control plane emits a
-`checkpoint_ready` wake. Codex returns `continue` / `continue_with_guidance` /
-`stop`; the supervisor resumes the same owner. Second window expiry is silent.
+**Overnight** returns `bookend-state.json`; Codex ends its episode. A detached
+supervisor owns Claude convergence across multiple epochs. Codex returns only
+for `review_ready` or `semantic_blocked`.
+
+**Balanced** keeps Codex in foreground. The dispatcher manages the execution
+window. When the tool returns, Codex does one bounded review.
 Do not block on
 `monitor-claude.sh`, poll Claude, perform direction review, dispatch Checker
 through Codex, or interpret ordinary runtime transitions.
@@ -51,14 +53,13 @@ Only these states schedule Codex:
 - `semantic_blocked` — completing the frozen contract requires a new semantic
   decision. Codex returns one bounded contract delta, then ownership returns to
   Claude.
-- `checkpoint_ready` — (balanced mode) review window expired; at most once per
-  task. Codex returns `continue` / `continue_with_guidance` / `stop`.
+- `checkpoint_ready` — (overnight balanced mode) review window expired; at most
+  once per task. Codex returns `continue` / `continue_with_guidance` / `stop`.
 
 Read the hash-bound wake request with:
 
 ```bash
 python ai/aiwf.py bookend review-input BOOKEND_STATE_OR_DIR
-python ai/aiwf.py bookend checkpoint-input BOOKEND_STATE_OR_DIR
 ```
 
 Compile/test failures, unknown code locations, timeout, session/transport/report

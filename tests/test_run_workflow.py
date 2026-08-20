@@ -868,7 +868,7 @@ class TestRunWorkflowRegistration(unittest.TestCase):
         """Bookend submit is primary; foreground run is compatibility-only."""
         aiwf_content = (SCRIPTS / "aiwf.py").read_text()
         self.assertIn('"submit":"bookend-task.py"', aiwf_content)
-        self.assertIn("Bookend task (primary)", aiwf_content)
+        self.assertIn("Bookend task (overnight)", aiwf_content)
         self.assertIn("foreground compatibility lifecycle", aiwf_content)
 
     def test_installer_registration(self):

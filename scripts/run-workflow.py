@@ -1473,8 +1473,16 @@ def run_lifecycle(
     host_authority: bool = False,
     spark_host_retry_timeout: int = 120,
     bookend_owned: bool = False,
+    profile: str = "standard",
 ) -> Dict[str, Any]:
-    """Run the full 13-phase lifecycle.
+    """Run the lifecycle.
+
+    In ``standard`` profile, all 13 phases run (foreground compatibility).
+    In ``balanced`` profile, phases stop after dispatch — the dispatcher's
+    built-in window management (600s context + 600s active + 1500s hard cap)
+    controls execution.  Codex stays in foreground and does one bounded review
+    when the tool returns.  Direction Review, Checker handoff, review-ladder,
+    and ledger are skipped.
 
     Returns the result dict.
     """
@@ -1527,7 +1535,10 @@ def run_lifecycle(
         "execute": execute,
     })
 
-    # Execute phases in order; stop on first failure
+    # Execute phases in order; stop on first failure.
+    # Balanced profile stops after dispatch — the dispatcher's window
+    # management controls execution length.  Codex stays in foreground
+    # and reviews the result when the tool returns.
     phase_funcs = [
         phase_lint,
         phase_compose,
@@ -1537,12 +1548,16 @@ def run_lifecycle(
         phase_context,
         phase_plan,
         phase_dispatch,
-        phase_evidence,
-        phase_acceptance,
-        phase_review_ladder,
-        phase_handoff,
-        phase_ledger,
     ]
+    if profile != "balanced":
+        # Standard profile runs the full post-dispatch lifecycle.
+        phase_funcs.extend([
+            phase_evidence,
+            phase_acceptance,
+            phase_review_ladder,
+            phase_handoff,
+            phase_ledger,
+        ])
 
     failed_phase = None
     failure_status = None
@@ -1697,6 +1712,17 @@ def main(argv: Optional[list] = None) -> int:
             "advice remains visible but does not create a Codex split checkpoint."
         ),
     )
+    parser.add_argument(
+        "--profile",
+        choices=["standard", "balanced"],
+        default="standard",
+        help=(
+            "Execution profile. 'balanced' uses the dispatcher's built-in "
+            "window management (600s context + 600s active + 1500s hard cap) "
+            "and skips Direction Review, Checker handoff, and review-ladder. "
+            "Codex stays in foreground and does one bounded review on return."
+        ),
+    )
 
     args = parser.parse_args(argv)
     if args.spark_host_retry_timeout < 1:
@@ -1713,6 +1739,7 @@ def main(argv: Optional[list] = None) -> int:
         host_authority=args.host_authority,
         spark_host_retry_timeout=args.spark_host_retry_timeout,
         bookend_owned=args.bookend_owned,
+        profile=args.profile,
     )
 
     if args.json_output:
