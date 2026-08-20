@@ -37,9 +37,44 @@ python scripts/aiwf.py direct --kind workflow-maintenance \
 Claude 产生 `DONE_CANDIDATE`，或证明冻结契约需要新语义决策而进入严格的
 `SEMANTIC_BLOCKED`，才创建新的 Codex wake request。
 
+### 执行 Profile
+
+工作流提供三种执行 profile，对应额度与时延的不同 Pareto 点：
+
+| Profile | 目标 | Codex 调用 | 适用场景 |
+|---|---|---|---|
+| **overnight** | 最省高级模型额度 | ~2 | 睡觉前、长迁移、大仓探索 |
+| **balanced** | 额度 × 时延折中 | ~3 | 日常默认；避免长时间跑偏 |
+| **interactive** | 最低时延 | 原生 | 坐在电脑前，需要立刻出结果 |
+
+```bash
+# Overnight（默认）：Claude 自主收敛，Codex 只在头尾出现
+python scripts/aiwf.py submit task.json
+
+# Balanced：15 分钟审核窗口，最多一次中间 Codex checkpoint
+python scripts/aiwf.py submit task.json --mode balanced
+
+# 自定义窗口
+python scripts/aiwf.py submit task.json --mode balanced --window-minutes 10
+```
+
+**Overnight** 保持当前 Bookend 架构：Claude 跨多个 epoch 拥有完整收敛循环。
+编译/测试失败触发 `convergence-continue`（同一 dirty worktree、同一 owner）。
+Codex 只在 `DONE_CANDIDATE` 或 `SEMANTIC_BLOCKED` 时醒来。
+
+**Balanced** 增加一个有界审核窗口（默认 15 分钟）。窗口到期时，executor 被
+终止，dirty worktree 通过 convergence receipt 保留，并发出 `checkpoint_ready`
+唤醒请求。Codex 读取 checkpoint 后返回 `continue` / `narrow` /
+`revision_delta` / `stop`，supervisor 恢复同一 Claude owner。第二次窗口到期
+**不会**再次唤醒 Codex — supervisor 自主继续到完成。
+
+**Interactive** 使用 Codex 原生编排 + GPT-family 子代理，追求最低时延。
+它是独立的执行后端，不是 Bookend 参数配置。
+
 ```text
 GROUND -> Codex FREEZE -> SUBMIT -> Codex 休眠
                                   -> Claude CONVERGE
+                                  -> (balanced: 窗口到期 -> Codex checkpoint -> 继续)
                                   -> tools PROJECT
                                   -> Codex REVIEW
 ```
@@ -51,6 +86,9 @@ python scripts/aiwf.py submit task.json
 python scripts/aiwf.py bookend status /path/to/bookend-state.json
 # 只有状态为 review_ready / semantic_blocked 时才读取：
 python scripts/aiwf.py bookend review-input /path/to/bookend-state.json
+# Balanced 模式 checkpoint：
+python scripts/aiwf.py bookend checkpoint-input /path/to/bookend-state.json
+python scripts/aiwf.py bookend checkpoint-verdict /path/to/bookend-state.json continue
 ```
 
 `submit` 返回持久状态路径后，Codex 不应阻塞等待、轮询 Claude、做 Direction
@@ -118,6 +156,9 @@ ai-coding-workflow 可以为仓库自动配置：
 - 本地验证 gate，以及从任务卡 validation fenced block 自动抽取命令
 - Claude owner 内部可使用 Builder / Checker-Test 职责，但不会因此唤醒 Codex
 - 严格 `SEMANTIC_BLOCKED` 收据；普通方向、失败和恢复不形成 Codex 同步点
+- convergence-continue：非语义失败在 epoch 间恢复同一 dirty worktree
+- Bookend convergence continuation receipt + worktree state hash 验证
+- Windowed Bookend / balanced 模式：每个任务最多一次中间 Codex checkpoint
 - 幂等更新的托管块（managed blocks）
 
 ## Codex 低 Token 审查路径
@@ -143,8 +184,8 @@ diff 审查、修订编写和最终审查的 Codex 用量。这些字段只用�
 
 ## 工作流架构概览
 
-下面的大图描述兼容的前台多阶段 helper。生产调用图是本页开头的三模型节点
-Bookend 路径，而不是这张图中的逐阶段 Codex 审查。
+下面的大图描述兼容的前台多阶段 helper。生产调用图是本页开头的 Bookend
+路径（overnight/balanced），而不是这张图中的逐阶段 Codex 审查。
 
 ```mermaid
 flowchart TD
@@ -244,6 +285,12 @@ Claude 是默认实现者：`exploratory-builder` 负责边界明确但路径不
 | **跨沙箱进程检查** | 调度 PID 不可见时标记为未知，绝不能据此启动重复 Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Claude 轮次分类** | 判断失败是否计入接管阈值 | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **校验 Claude 上下文** | 检查 execution-only 上下文密度 | `python scripts/validate-claude-context.py task.md --require-complete` |
+| **提交 Bookend 任务（overnight）** | 冻结一次，Codex 退出，Claude 自主收敛 | `python scripts/aiwf.py submit task.json` |
+| **提交 Bookend 任务（balanced）** | 同上，带 15 分钟审核窗口和最多一次 Codex checkpoint | `python scripts/aiwf.py submit task.json --mode balanced` |
+| **Bookend 任务状态** | 读取持久状态，不轮询模型进程 | `python scripts/aiwf.py bookend status .worktrees/bookend-.../` |
+| **读取 Codex 唤醒请求** | 仅在计划时启动最终审查或有界语义 delta | `python scripts/aiwf.py bookend review-input .worktrees/bookend-.../` |
+| **读取 checkpoint 请求** | 读取 balanced 模式的 checkpoint 唤醒请求 | `python scripts/aiwf.py bookend checkpoint-input .worktrees/bookend-.../` |
+| **写入 checkpoint verdict** | 中间审核后恢复 supervisor | `python scripts/aiwf.py bookend checkpoint-verdict .worktrees/bookend-.../ continue` |
 | **预览集成运行** | 零模型调用审查所有阶段 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview` |
 | **执行集成运行** | 校验、编卡并直接派发，不再二次确认 | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 
@@ -312,10 +359,12 @@ ai-coding-workflow/
     review-policy.md    ← 代码审查分工
     mcp-policy.md       ← 信息检索顺序
     benchmark-policy.md ← 质量 / 速度 / 成本 / 稳定性评估
+    codex-wakeup-audit-protocol-v1.md ← Codex 唤醒审计协议
   scripts/
     install_workflow.py ← 引导仓库
     compose_task_card.py ← 本地零模型任务卡组件选择/拼接器
     workflow_economics.py ← 记录委派开销并校准 owner 路由
+    bookend-task.py     ← 持久 Bookend 任务控制器（overnight + balanced）
     install_for_codex.py← 安装技能供 Codex 发现
     update_skill.py     ← 便捷更新 Skill，并可选更新当前项目 workflow
     dispatch-to-claude.sh← 向 Claude Code 分发任务卡
@@ -673,11 +722,29 @@ python scripts/update_skill.py --bootstrap-current
 
 ## 日常工作流程
 
-工作流是一个显式循环：**观察  ->  计划  ->  调度  ->  执行  ->  验证  ->  审查  ->  学习  ->  重复。**
+生产工作流是：
 
-**核心原则：** Codex 把核心规划和冻结意图写在 Task Card 中；Task Card 是
-Codex 常规情况下唯一手写的 workflow 产物。Claude 默认负责实现与修订；
-route、review、freeze、receipt 等控制产物由确定性工具生成，Spark 只提供建议。
+```text
+GROUND -> FREEZE -> SUBMIT -> Claude CONVERGE -> PROJECT -> REVIEW
+```
+
+Codex 运行 `aiwf submit`，返回持久状态路径，结束 episode。下一个 Codex
+episode 仅从 `review_ready`、`semantic_blocked`（overnight）或
+`checkpoint_ready`（balanced）启动。Claude 拥有测试和修订，不经过
+Direction Review 交接。
+
+### Profile 选择建议
+
+| 场景 | 推荐 Profile |
+|------|-------------|
+| 睡觉前、吃饭前、长编译任务 | `overnight`（默认） |
+| 日常开发、大多数任务 | `balanced` |
+| 坐在电脑前、需要快速结果 | `interactive`（未来） |
+
+### 旧版前台角色分工
+
+下面的 Builder/Checker 和逐轮过程描述的是保留的前台兼容工作流，
+不是默认 Bookend 路径。
 
 大型或多阶段功能默认由 Codex完成短核心规划，再交给 helper 生成执行卡并由 Claude Builder 实施。只有用户明确接受额外串行延迟并设置 `solution_planner_opt_in=true` 时，才让 Claude 先生成结构化终局方案；该方案仍只接受一轮 Codex 对抗性审查和确定性冻结。
 

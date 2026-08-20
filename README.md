@@ -40,6 +40,44 @@ tests, diagnosis, revision, validation, timeout recovery, and session/epoch
 replacement. Codex returns only for strict `semantic_blocked` or one final
 semantic review of a stable `DONE_CANDIDATE`.
 
+### Execution profiles
+
+The workflow offers three execution profiles optimized for different
+Pareto points along the quota–latency tradeoff:
+
+| Profile | Goal | Codex calls | Best for |
+|---|---|---|---|
+| **overnight** | Minimize expensive-model quota | ~2 | Sleep, long migrations, large exploration |
+| **balanced** | Quota × latency tradeoff | ~3 | Daily default; avoids long wrong-direction runs |
+| **interactive** | Minimize wall-clock latency | Native | Sitting at the computer, need result now |
+
+```bash
+# Overnight (default): Claude converges autonomously, Codex only at bookends
+python scripts/aiwf.py submit task.json
+
+# Balanced: 15-minute review window, at most one intermediate Codex checkpoint
+python scripts/aiwf.py submit task.json --mode balanced
+
+# Custom window
+python scripts/aiwf.py submit task.json --mode balanced --window-minutes 10
+```
+
+**Overnight** keeps the current Bookend architecture: Claude owns the full
+convergence loop across multiple epochs. Compile/test failures trigger
+`convergence-continue` (same dirty worktree, same owner). Codex wakes only
+for `DONE_CANDIDATE` or `SEMANTIC_BLOCKED`.
+
+**Balanced** adds one bounded review window (default 15 min). When the window
+expires mid-epoch, the executor is terminated, the dirty worktree is preserved
+via a convergence receipt, and a `checkpoint_ready` wake request is emitted.
+Codex reads the checkpoint, returns `continue` / `narrow` / `revision_delta` /
+`stop`, and the supervisor resumes the same Claude owner. A second window
+expiry does NOT wake Codex again — the supervisor continues autonomously.
+
+**Interactive** uses Codex-native orchestration with GPT-family subagents
+for minimum latency. It is a separate execution backend, not a Bookend
+parameter configuration.
+
 `quota-ledger.py` enforces call budgets and duplicate-evidence guards. `evaluate-acceptance.py` performs L0 deterministic checks, `select-review-tier.py` chooses L0 local/L1 Spark/L2 Codex, `context-cache.py` reuses bounded locator evidence, and `check-retry-evidence.py` blocks retries without changed evidence. The `quota-efficient-balanced` profile uses a 32 KB Standard review packet.
 
 For Bazel repositories, `build-bazel-context.py` turns a bounded list of source files into candidate BUILD rules, dependencies, test targets, and narrow validation commands without running Bazel. Remote Bazel handoff remains human-controlled: `generate-handoff.py` emits preview-only publish/update/batched-validation instructions, while `validation-ingest.py` classifies returned logs locally. These helpers never push, SSH, merge, or authorize acceptance.
@@ -50,6 +88,9 @@ The primary path is asynchronous:
 python scripts/aiwf.py submit task.json
 # Later, only when the durable state requests Codex:
 python scripts/aiwf.py bookend review-input .worktrees/bookend-.../
+# For balanced mode checkpoint:
+python scripts/aiwf.py bookend checkpoint-input .worktrees/bookend-.../
+python scripts/aiwf.py bookend checkpoint-verdict .worktrees/bookend-.../ continue
 ```
 
 `aiwf submit` performs zero-model lint, grounding, routing, and contract freeze,
@@ -96,6 +137,9 @@ ai-coding-workflow bootstraps repositories with:
 - Local-validation gates and task-card validation command extraction
 - Claude-owned implementation/test/revision duties without Codex direction-review handoffs
 - Coverage-preserving Review Projections and hash-bound Codex wake requests
+- Convergence-continue: non-semantic failures resume same dirty worktree across epochs
+- Bookend convergence continuation receipts with worktree state hash verification
+- Windowed Bookend / balanced mode: at most one intermediate Codex checkpoint per task
 - Managed blocks for idempotent updates
 
 ## Codex token-efficient review
@@ -134,6 +178,12 @@ flowchart TD
     C --> E[Explore / implement / test / fix / validate]
     E --> R{Runtime outcome}
     R -- epoch expired + safe --> C
+    R -- runtime failure + epochs remain --> CC[convergence-continue: same dirty worktree]
+    CC --> C
+    R -- balanced: review window expired --> CP[checkpoint_ready wake request]
+    CP --> CV[Codex checkpoint verdict: continue / narrow / stop]
+    CV -- continue --> C
+    CV -- stop --> O
     R -- runtime / authority / budget blocked --> O[Operator or human; no Codex wake]
     R -- semantic contract decision --> W1[semantic_blocked wake request]
     R -- stable DONE_CANDIDATE --> P[Coverage-preserving Review Projection]
@@ -145,7 +195,8 @@ flowchart TD
 ```
 
 Normal success uses two Codex inference episodes regardless of internal Claude
-compile failures, revisions, sessions, or execution epochs. Runtime transitions
+compile failures, revisions, sessions, or execution epochs. In balanced mode,
+at most one additional intermediate checkpoint may occur. Runtime transitions
 never become model handoffs.
 
 ## Legacy foreground workflow at a glance
@@ -257,9 +308,12 @@ tool probing, while conflicting combinations fail early.
 | **Cross-sandbox process check** | Treat invisible dispatch PIDs as unknown, never as permission to launch a duplicate Builder | `CLAUDE_CODE_PROCESS_VISIBILITY=auto bash scripts/status-claude.sh <task-id>` |
 | **Classify Claude round** | Decide whether a failure counts toward takeover | `python scripts/classify-claude-attempt.py --exit-code N --outcome NAME` |
 | **Validate Claude context** | Check execution-only packet density | `python scripts/validate-claude-context.py task.md --require-complete` |
-| **Submit Bookend task** | Freeze once, return Codex, and let the control plane own Claude | `python scripts/aiwf.py submit task.json` |
+| **Submit Bookend task (overnight)** | Freeze once, return Codex, autonomous Claude convergence | `python scripts/aiwf.py submit task.json` |
+| **Submit Bookend task (balanced)** | Same, with 15-min review window and at most one Codex checkpoint | `python scripts/aiwf.py submit task.json --mode balanced` |
 | **Bookend task state** | Read durable state without polling model processes | `python scripts/aiwf.py bookend status .worktrees/bookend-.../` |
 | **Read Codex wake request** | Start final review or bounded semantic delta only when scheduled | `python scripts/aiwf.py bookend review-input .worktrees/bookend-.../` |
+| **Read checkpoint request** | Read checkpoint wake request (balanced mode) | `python scripts/aiwf.py bookend checkpoint-input .worktrees/bookend-.../` |
+| **Write checkpoint verdict** | Resume supervisor after intermediate review | `python scripts/aiwf.py bookend checkpoint-verdict .worktrees/bookend-.../ continue` |
 | **Preview integrated run** | Inspect every phase without model calls | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1 --preview` |
 | **Execute foreground compatibility run** | Diagnose the old synchronous lifecycle explicitly | `python scripts/aiwf.py run task.json --run-dir .ai-workflow/runs/T-1` |
 
@@ -334,10 +388,12 @@ ai-coding-workflow/
     review-policy.md     -> Code review division of labor
     mcp-policy.md        -> Information retrieval order
     benchmark-policy.md  -> Quality / speed / cost / stability evaluation
+    codex-wakeup-audit-protocol-v1.md -> Codex wakeup audit protocol
   scripts/
     install_workflow.py  -> Bootstrap a repository
     compose_task_card.py -> Deterministic task-card component selector/composer
     workflow_economics.py -> Record delegation overhead and calibrate owner routing
+    bookend-task.py      -> Durable Bookend task controller (overnight + balanced)
     audit-codex-wakeups.py -> Audit observed Codex usage and conservative Bookend bounds
     install_for_codex.py -> Install skill for Codex discovery
     update_skill.py      -> Convenience updater for skill + optional repo bootstrap
