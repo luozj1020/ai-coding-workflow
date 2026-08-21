@@ -19,42 +19,40 @@ The production model is asynchronous:
 
 Codex freezes the goal, acceptance, invariants, forbidden boundaries,
 validation authority, and concrete risk facts. Freeze ends when the contract is
-executable; Codex does not need to discover implementation files or design the
-implementation path.
+executable.
 
 Submit with:
 
 ```bash
 python ai/aiwf.py submit TASK.json    # overnight: detached, Codex exits
-python ai/aiwf.py balanced TASK.json  # balanced: foreground, dispatcher-managed window
+python ai/aiwf.py balanced TASK.json  # balanced: foreground, dispatcher window
 ```
 
 **Overnight** returns `bookend-state.json`; Codex ends its episode. A detached
-supervisor owns Claude convergence across multiple epochs. Codex returns only
-for `review_ready` or `semantic_blocked`.
+supervisor owns Claude convergence. Codex returns only for `revision_pending`
+or `semantic_blocked`. On `revise`, Claude continues in the same worktree.
 
 **Balanced** keeps Codex in foreground. The dispatcher manages the execution
 window. When the tool returns, Codex does one bounded review.
-Do not block on
-`monitor-claude.sh`, poll Claude, perform direction review, dispatch Checker
-through Codex, or interpret ordinary runtime transitions.
 
-The control plane owns Claude exploration, implementation, assigned tests,
-validation, revision, epochs, and sessions until convergence. These are
-internal duties, not model handoffs.
+## Execution Profiles
+
+| Profile | Command | Control | Codex calls |
+|---|---|---|---|
+| **overnight** | `aiwf submit TASK.json` | Detached supervisor | ~2 |
+| **balanced** | `aiwf balanced TASK.json` | Foreground dispatcher window | ~3 |
+| **interactive** | Codex + `aiwf_*` subagents | Native orchestration | Internal |
 
 ## Wakeup Boundary
 
 Only these states schedule Codex:
 
-- `review_ready` — tools proved a stable `DONE_CANDIDATE` and constructed a
-  coverage-preserving Review Projection. Codex performs one bounded final
-  semantic review.
+- `revision_pending` — `DONE_CANDIDATE` proved; Codex performs one bounded
+  review and returns `accept` or `revise`. On `revise`, Claude continues in
+  the same worktree with a bounded Revision Delta.
 - `semantic_blocked` — completing the frozen contract requires a new semantic
   decision. Codex returns one bounded contract delta, then ownership returns to
   Claude.
-- `checkpoint_ready` — (overnight balanced mode) review window expired; at most
-  once per task. Codex returns `continue` / `continue_with_guidance` / `stop`.
 
 Read the hash-bound wake request with:
 
@@ -64,8 +62,14 @@ python ai/aiwf.py bookend review-input BOOKEND_STATE_OR_DIR
 
 Compile/test failures, unknown code locations, timeout, session/transport/report
 recovery, scope checks, and mechanical revisions never wake Codex.
-`runtime_blocked`, `authority_blocked`, `budget_exhausted`, and `cancelled` go
-to the control plane or human.
+
+## Interactive Profile
+
+When using Codex-native subagents, delegate to `aiwf_*` agents:
+`aiwf_explorer` (parallel read-only), `aiwf_worker` (implementation),
+`aiwf_tester` (validation), `aiwf_debugger` (failure investigation),
+`aiwf_build_fixer` (compilation), `aiwf_benchmarker` (performance),
+`aiwf_reviewer` (code review, stronger model). Keep main thread as planner.
 
 ## Ownership and Runtime Safety
 
@@ -98,9 +102,7 @@ references speculatively.
 | Claude epochs, recovery, single writer | `references/claude-runtime.md` |
 | Review Projection and Codex decisions | `references/review-policy.md` |
 | Worktrees and continuation | `references/worktree-and-parallel.md` |
-| Retrieval and context budgets | `references/mcp-policy.md` |
 | Setup/update/doctor | `references/setup-policy.md` |
-| Metrics and pilots | `references/benchmark-policy.md` |
 
 For command syntax, prefer this Skill package's `README.md`. If the repo has
 been bootstrapped (`ai/aiwf.py` exists), use `ai/README.md` instead. The

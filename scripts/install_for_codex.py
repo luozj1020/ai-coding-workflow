@@ -950,7 +950,15 @@ def install_agents(skill_dir, agent_model="spark", override_built_in=False, summ
         else:
             dest_name = filename
         dest = os.path.join(agents_dir, dest_name)
-        shutil.copy2(src, dest)
+        # Read source content and optionally rewrite the name field.
+        with open(src, "r", encoding="utf-8") as f:
+            content = f.read()
+        if override_built_in:
+            # Rewrite name = "aiwf_worker" → name = "worker"
+            agent_name = os.path.splitext(dest_name)[0]
+            content = _rewrite_toml_name(content, agent_name)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(content)
         installed.append(dest_name)
 
     if not summary_only:
@@ -973,34 +981,71 @@ def install_agents(skill_dir, agent_model="spark", override_built_in=False, summ
     return True
 
 
+def _rewrite_toml_name(content, new_name):
+    """Rewrite the name = '...' line in a TOML agent file."""
+    import re
+    return re.sub(
+        r'^(name\s*=\s*)"[^"]*"',
+        f'\\1"{new_name}"',
+        content,
+        count=1,
+        flags=re.MULTILINE,
+    )
+
+
 def _merge_agents_config(config_path, agents_section, summary_only=False):
-    """Merge [agents] settings into an existing config.toml without clobbering."""
+    """Merge [agents] settings into an existing config.toml.
+
+    Field-aware conservative merge:
+    - existing key → preserve
+    - missing key → supplement
+    - conflict key → report, do not overwrite
+    """
     existing = ""
     if os.path.isfile(config_path):
         with open(config_path, "r", encoding="utf-8") as f:
             existing = f.read()
 
-    # Check if [agents] section already exists.
-    if "[agents]" in existing:
+    import re as _re
+
+    if "[agents]" not in existing:
+        # No existing section — append the full block.
+        lines = ["\n[agents]"]
+        for key, value in agents_section.items():
+            lines.append(f"{key} = {value}")
+        lines.append("")
+        with open(config_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines))
         if not summary_only:
-            print(f"\n[agents] section already exists in {config_path}; skipping merge.")
-            print("  To update manually, edit the [agents] section in config.toml.")
+            print(f"\nMerged [agents] settings into {config_path}:")
+            for key, value in agents_section.items():
+                print(f"  {key} = {value}")
         return
 
-    # Append [agents] section.
-    lines = ["\n[agents]"]
+    # [agents] exists — field-aware merge: add missing keys only.
+    added = []
+    skipped = []
     for key, value in agents_section.items():
-        lines.append(f"{key} = {value}")
-    lines.append("")
+        pattern = rf'^{_re.escape(key)}\s*='
+        if _re.search(pattern, existing, _re.MULTILINE):
+            skipped.append(key)
+        else:
+            existing = existing.rstrip("\n") + f"\n{key} = {value}\n"
+            added.append(key)
 
-    with open(config_path, "a", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+    if added:
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(existing)
 
     if not summary_only:
-        print(f"\nMerged [agents] settings into {config_path}:")
-
-        for key, value in agents_section.items():
-            print(f"  {key} = {value}")
+        if added:
+            print(f"\nAdded missing [agents] keys to {config_path}:")
+            for key in added:
+                print(f"  {key} = {agents_section[key]}")
+        if skipped:
+            print(f"\nPreserved existing [agents] keys: {', '.join(skipped)}")
+        if not added and not skipped:
+            print(f"\n[agents] section in {config_path} is already complete.")
 
 
 def main(argv=None):

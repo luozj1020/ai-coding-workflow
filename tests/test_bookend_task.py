@@ -258,14 +258,54 @@ class BookendTaskTests(unittest.TestCase):
             cmd.extend(["--mode", bookend_mode])
         if window_minutes is not None:
             cmd.extend(["--window-minutes", str(window_minutes)])
-        proc = subprocess.run(
+        # Use Popen so we can auto-write accept verdict for revision_pending.
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
         )
-        value = json.loads(proc.stdout) if proc.stdout.strip() else None
+        # Poll state and auto-accept when revision_pending is reached.
+        runs_dir = tmp_path / "runs"
+        state_path = None
+        stdout = stderr = ""
+        deadline = __import__("time").monotonic() + 30
+        while __import__("time").monotonic() < deadline:
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate()
+                break
+            if state_path is None:
+                for p in runs_dir.rglob("bookend-state.json"):
+                    state_path = p
+                    break
+            if state_path:
+                try:
+                    st = json.loads(state_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    __import__("time").sleep(0.1)
+                    continue
+                if st.get("state") == "revision_pending":
+                    control_dir = Path(st["control_dir"])
+                    verdict_path = control_dir / "review-verdict.json"
+                    if not verdict_path.is_file():
+                        verdict_path.write_text(json.dumps({
+                            "schema_version": 1,
+                            "kind": "review-verdict",
+                            "logical_task_id": st["logical_task_id"],
+                            "contract_hash": st["contract_hash"],
+                            "revision_count": st.get("revision_count", 0),
+                            "action": "accept",
+                            "reason": "test auto-accept",
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                            "accepted_acceptance_ids": [],
+                        }), encoding="utf-8")
+            __import__("time").sleep(0.1)
+        else:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+        value = json.loads(stdout) if stdout.strip() else None
         return proc, value
 
     def test_done_candidate_emits_complete_projection_and_wake_request(self):
@@ -487,12 +527,28 @@ class BookendTaskTests(unittest.TestCase):
             submitted = json.loads(proc.stdout)
             self.assertFalse(submitted["terminal"])
             state_path = Path(submitted["control_dir"]) / "bookend-state.json"
-            deadline = __import__("time").monotonic() + 8
+            deadline = __import__("time").monotonic() + 12
             state = submitted
             while __import__("time").monotonic() < deadline:
                 state = json.loads(state_path.read_text(encoding="utf-8"))
                 if state.get("terminal"):
                     break
+                # Write accept verdict when supervisor reaches revision_pending.
+                if state.get("state") == "revision_pending":
+                    control_dir = Path(state["control_dir"])
+                    verdict_path = control_dir / "review-verdict.json"
+                    if not verdict_path.is_file():
+                        verdict_path.write_text(json.dumps({
+                            "schema_version": 1,
+                            "kind": "review-verdict",
+                            "logical_task_id": state["logical_task_id"],
+                            "contract_hash": state["contract_hash"],
+                            "revision_count": state.get("revision_count", 0),
+                            "action": "accept",
+                            "reason": "test auto-accept",
+                            "created_at": "2026-01-01T00:00:00+00:00",
+                            "accepted_acceptance_ids": [],
+                        }), encoding="utf-8")
                 __import__("time").sleep(0.05)
             self.assertEqual(state["state"], "review_ready")
             shutil.rmtree(tmp, ignore_errors=True)
@@ -529,6 +585,85 @@ class BookendTaskTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(state["state"], "review_ready")
             self.assertIsNone(state.get("review_window_seconds"))
+
+    def test_revision_loop_invariant(self):
+        """Bookend must expose review-verdict and revision loop.
+
+        DONE_CANDIDATE must enter revision_pending (not directly review_ready).
+        ACCEPT must produce a review receipt.  These invariants protect against
+        silent regression of the Overnight revision loop.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            task = tmp_path / "task.json"
+            task.write_text(json.dumps(task_value()), encoding="utf-8")
+            executor = tmp_path / "fake-executor.py"
+            write_executor(executor, "done")
+            # Run with --foreground and manually write a verdict.
+            cmd = [
+                sys.executable, str(SCRIPT), "submit", str(task),
+                "--repo", str(ROOT), "--profiles-dir", str(PROFILES),
+                "--run-dir-base", str(tmp_path / "runs"),
+                "--executor", str(executor),
+                "--max-epochs", "1", "--max-revision-rounds", "3",
+                "--foreground", "--json",
+            ]
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+            )
+            runs_dir = tmp_path / "runs"
+            state_path = None
+            saw_revision_pending = False
+            deadline = __import__("time").monotonic() + 30
+            while __import__("time").monotonic() < deadline:
+                if proc.poll() is not None:
+                    break
+                if state_path is None:
+                    for p in runs_dir.rglob("bookend-state.json"):
+                        state_path = p
+                        break
+                if state_path:
+                    try:
+                        st = json.loads(state_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        __import__("time").sleep(0.1)
+                        continue
+                    if st.get("state") == "revision_pending":
+                        saw_revision_pending = True
+                        # Verify review request exists.
+                        self.assertIsNotNone(st.get("review_request"))
+                        # Write accept verdict.
+                        control_dir = Path(st["control_dir"])
+                        verdict_path = control_dir / "review-verdict.json"
+                        if not verdict_path.is_file():
+                            verdict_path.write_text(json.dumps({
+                                "schema_version": 1,
+                                "kind": "review-verdict",
+                                "logical_task_id": st["logical_task_id"],
+                                "contract_hash": st["contract_hash"],
+                                "revision_count": st.get("revision_count", 0),
+                                "action": "accept",
+                                "reason": "test",
+                                "created_at": "2026-01-01T00:00:00+00:00",
+                                "accepted_acceptance_ids": ["ac-1"],
+                            }), encoding="utf-8")
+                __import__("time").sleep(0.1)
+            else:
+                proc.kill()
+            stdout, stderr = proc.communicate()
+            # Invariant: DONE_CANDIDATE must enter revision_pending.
+            self.assertTrue(
+                saw_revision_pending,
+                "DONE_CANDIDATE must enter revision_pending, not directly review_ready",
+            )
+            # Invariant: final state must be review_ready with a receipt.
+            final = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(final.get("state"), "review_ready")
+            self.assertIsNotNone(final.get("review_receipt"))
+            # Invariant: review-verdict and max-revision-rounds are exposed.
+            self.assertIn("max_revision_rounds", final)
+            self.assertIn("revision_count", final)
 
 
 if __name__ == "__main__":
