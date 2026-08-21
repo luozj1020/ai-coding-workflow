@@ -365,6 +365,9 @@ def run_epoch(state_path: Path, epoch: int) -> Tuple[int, Dict[str, Any]]:
     convergence_receipt = state.get("convergence_receipt")
     if convergence_receipt:
         env["AIWF_BOOKEND_CONVERGENCE_RECEIPT"] = str(convergence_receipt)
+    revision_delta = state.get("revision_delta")
+    if revision_delta:
+        env["AIWF_BOOKEND_REVISION_DELTA"] = str(revision_delta)
     # Balanced mode: pass review window to the executor.  The executor is
     # responsible for enforcing the window and returning a clean
     # checkpoint_trigger result with product_worktree and state hash.
@@ -496,7 +499,8 @@ def validate_review_request(state_path: Path, request: Dict[str, Any]) -> None:
         raise BookendError("frozen task no longer matches the contract")
     validate_artifact_reference(request.get("execution_result"), "execution result")
 
-    if request.get("kind") != "final-review":
+    # Both final-review and delta-review require full projection validation.
+    if request.get("kind") not in ("final-review", "delta-review"):
         return
     projection_path = validate_artifact_reference(
         request.get("review_projection"), "review projection"
@@ -656,8 +660,8 @@ def emit_wake_request(
         "review_capsule": artifact_ref(capsule),
         "diff": projected_diff,
         "codex_action": (
-            "final-semantic-review"
-            if kind == "final-review"
+            "final-semantic-review" if kind == "final-review"
+            else "delta-semantic-review" if kind == "delta-review"
             else "bounded-contract-delta"
         ),
         "merge_authorized": False,
@@ -771,9 +775,9 @@ def wait_for_checkpoint_verdict(state_path: Path, poll_interval: float = 2.0) ->
     append_event(
         control_dir,
         "checkpoint_verdict_timeout",
-        {"action": "continue", "reason": "verdict-not-received-within-safety-timeout"},
+        {"action": "timeout", "reason": "verdict-not-received-within-safety-timeout"},
     )
-    return {"action": "continue", "reason": "timeout"}
+    return {"action": "timeout", "reason": "timeout"}
 
 
 def wait_for_review_verdict(state_path: Path, poll_interval: float = 2.0) -> Dict[str, Any]:
@@ -810,13 +814,15 @@ def wait_for_review_verdict(state_path: Path, poll_interval: float = 2.0) -> Dic
                 return verdict
         time.sleep(poll_interval)
 
-    # Safety timeout: treat as ACCEPT to avoid deadlock.
+    # Safety timeout: fail closed.  A missing Codex verdict is NOT acceptance.
+    # The supervisor remains in revision_pending; the task is not accepted
+    # until Codex explicitly writes an accept verdict.
     append_event(
         control_dir,
         "review_verdict_timeout",
-        {"action": "accept", "reason": "verdict-not-received-within-safety-timeout"},
+        {"action": "timeout", "reason": "verdict-not-received-within-safety-timeout"},
     )
-    return {"action": "accept", "reason": "timeout"}
+    return {"action": "timeout", "reason": "timeout"}
 
 
 def build_review_receipt(
@@ -1139,6 +1145,14 @@ def supervise(state_path: Path) -> Dict[str, Any]:
             # Block until Codex writes a review verdict.
             verdict = wait_for_review_verdict(state_path)
             action = str(verdict.get("action") or "").strip().lower()
+            if action == "timeout":
+                # Codex never responded — fail closed, do not accept.
+                return update_state(
+                    state_path,
+                    "runtime_blocked",
+                    blocker="review-verdict-timeout: codex-did-not-respond",
+                    owner_lease_state="suspended",
+                )
             if action == "accept":
                 # Build and persist the review receipt.
                 receipt = build_review_receipt(state_path, verdict, result)
@@ -1148,7 +1162,8 @@ def supervise(state_path: Path) -> Dict[str, Any]:
                     review_receipt=str(receipt),
                     owner_lease_state="released",
                 )
-            # REVISE: store the revision delta and continue.
+            # REVISE: persist partial receipt, generate convergence receipt
+            # for the current worktree, store the revision delta, and continue.
             if rev_count >= max_rev:
                 return update_state(
                     state_path,
@@ -1156,6 +1171,24 @@ def supervise(state_path: Path) -> Dict[str, Any]:
                     blocker=f"maximum-revision-rounds-reached ({max_rev})",
                     owner_lease_state="suspended",
                 )
+            # Persist partial review receipt even on REVISE, so the next
+            # delta review knows which acceptance items were accepted.
+            partial_receipt = build_review_receipt(state_path, verdict, result)
+            # Generate fresh convergence receipt for the current worktree.
+            wt = state.get("product_worktree")
+            receipt_path = None
+            if wt:
+                try:
+                    receipt_path = generate_convergence_receipt(
+                        state_path, epoch, str(wt),
+                    )
+                except BookendError as exc:
+                    return update_state(
+                        state_path,
+                        "runtime_blocked",
+                        blocker=f"revision-receipt-failed: {exc}",
+                        owner_lease_state="suspended",
+                    )
             delta = verdict.get("revision_delta") or verdict.get("delta") or {}
             delta_path = control_dir / f"revision-delta-{rev_count + 1:03d}.json"
             atomic_json(delta_path, delta)
@@ -1165,6 +1198,8 @@ def supervise(state_path: Path) -> Dict[str, Any]:
                 recovery="revision-continue",
                 revision_count=rev_count + 1,
                 revision_delta=str(delta_path),
+                review_receipt=str(partial_receipt),
+                convergence_receipt=str(receipt_path) if receipt_path else None,
             )
             continue
         if outcome == "semantic_blocked":
@@ -1244,6 +1279,14 @@ def supervise(state_path: Path) -> Dict[str, Any]:
                 # Block until Codex writes a verdict.
                 verdict = wait_for_checkpoint_verdict(state_path)
                 action = str(verdict.get("action") or "").strip().lower()
+                if action == "timeout":
+                    # Codex never responded — fail closed.
+                    return update_state(
+                        state_path,
+                        "runtime_blocked",
+                        blocker="checkpoint-verdict-timeout: codex-did-not-respond",
+                        owner_lease_state="suspended",
+                    )
                 if action == "stop":
                     return update_state(
                         state_path,

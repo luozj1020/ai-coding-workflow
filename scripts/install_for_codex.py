@@ -1022,20 +1022,45 @@ def _merge_agents_config(config_path, agents_section, summary_only=False):
                 print(f"  {key} = {value}")
         return
 
-    # [agents] exists — field-aware merge: add missing keys only.
+    # [agents] exists — section-bounded field-aware merge.
+    # Find the [agents] section boundaries.
+    lines = existing.split("\n")
+    agents_start = None
+    agents_end = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "[agents]":
+            agents_start = i
+        elif agents_start is not None and stripped.startswith("[") and stripped.endswith("]"):
+            agents_end = i
+            break
+    if agents_start is not None and agents_end is None:
+        agents_end = len(lines)
+
+    # Extract the [agents] section content.
+    agents_lines = lines[agents_start:agents_end] if agents_start is not None else []
+
     added = []
     skipped = []
     for key, value in agents_section.items():
-        pattern = rf'^{_re.escape(key)}\s*='
-        if _re.search(pattern, existing, _re.MULTILINE):
+        pattern = rf'^\s*{_re.escape(key)}\s*='
+        found = False
+        for line in agents_lines:
+            if _re.match(pattern, line):
+                found = True
+                break
+        if found:
             skipped.append(key)
         else:
-            existing = existing.rstrip("\n") + f"\n{key} = {value}\n"
             added.append(key)
 
     if added:
+        # Insert missing keys at the end of the [agents] section.
+        insert_pos = agents_end if agents_end is not None else len(lines)
+        new_lines = [f"{key} = {agents_section[key]}" for key in added]
+        lines[insert_pos:insert_pos] = new_lines
         with open(config_path, "w", encoding="utf-8") as f:
-            f.write(existing)
+            f.write("\n".join(lines))
 
     if not summary_only:
         if added:
